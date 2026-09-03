@@ -1,0 +1,28 @@
+# Go build artifacts
+backend-go/server
+backend-go/server-linux
+backend-go/migrate
+backend-go/migrate-linux
+*.exe
+
+# Local configuration
+.env
+.env.*
+!.env.example
+!**/.env.example
+!frontend/.env.production
+
+# Frontend
+node_modules/
+.next/
+frontend/.next-dev.log
+
+# Local agent and code indexes
+.agents/
+.claude/
+.opencode/
+.mimosa/
+.codebase-memory/
+.codegraph/
+.zcode/
+.git-archives/

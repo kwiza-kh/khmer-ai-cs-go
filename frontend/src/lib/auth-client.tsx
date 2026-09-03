@@ -1,0 +1,120 @@
+"use client";
+
+import { createContext, useContext, useState, useEffect, ReactNode } from "react";
+import { useRouter } from "next/navigation";
+
+interface User {
+  user_id: number;
+  username: string;
+  email: string;
+  role: "user" | "admin" | "platform_admin";
+}
+
+interface AuthContextType {
+  user: User | null;
+  token: string | null;
+  login: (username: string, password: string) => Promise<void>;
+  register: (username: string, email: string, password: string) => Promise<void>;
+  logout: () => void;
+  isLoading: boolean;
+}
+
+const AuthContext = createContext<AuthContextType | null>(null);
+
+export const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080/api/v1";
+
+/**
+ * Called by apiFetch (and any raw fetch 401) when the JWT turns out to be
+ * expired/invalid. Signals the provider so it logs out the in-memory auth
+ * state — AuthGuard then redirects to /login immediately. Previously only
+ * localStorage was cleared, leaving the UI "logged in" until a reload.
+ */
+export function signalAuthExpired() {
+  localStorage.removeItem("token");
+  localStorage.removeItem("user");
+  window.dispatchEvent(new Event("khmer:auth-expired"));
+}
+
+export function AuthProvider({ children }: { children: ReactNode }) {
+  const [user, setUser] = useState<User | null>(null);
+  const [token, setToken] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const router = useRouter();
+
+  // localStorage 是外部存储, 必须在客户端挂载后才能读取 (SSR 期间 window 不存在).
+  // 这是 React 官方推荐的 "从外部系统同步状态" 用法, 因此显式关闭 set-state-in-effect 规则.
+  useEffect(() => {
+    const savedToken = localStorage.getItem("token");
+    const savedUser = localStorage.getItem("user");
+    if (savedToken && savedUser) {
+      try {
+        const parsed = JSON.parse(savedUser) as User;
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setToken(savedToken);
+        setUser(parsed);
+      } catch {
+        // localStorage 中的 user 数据损坏 (例如旧版本格式), 清理掉避免后续崩溃.
+        localStorage.removeItem("user");
+        localStorage.removeItem("token");
+      }
+    }
+    setIsLoading(false);
+  }, []);
+
+  const login = async (username: string, password: string) => {
+    const res = await fetch(`${API_BASE}/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "登录失败");
+    setToken(data.token);
+    setUser(data.user);
+    localStorage.setItem("token", data.token);
+    localStorage.setItem("user", JSON.stringify(data.user));
+  };
+
+  const register = async (username: string, email: string, password: string) => {
+    const res = await fetch(`${API_BASE}/auth/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, email, password }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "注册失败");
+    setToken(data.token);
+    setUser(data.user);
+    localStorage.setItem("token", data.token);
+    localStorage.setItem("user", JSON.stringify(data.user));
+  };
+
+  const logout = () => {
+    setToken(null);
+    setUser(null);
+    localStorage.removeItem("token");
+    localStorage.removeItem("user");
+    router.push("/login");
+  };
+
+  // 任何页面收到 401 (JWT 过期/失效) 时联动登出: signalAuthExpired 广播事件,
+  // 这里执行真正的状态清空 + 跳转登录页.
+  useEffect(() => {
+    const onAuthExpired = () => logout();
+    window.addEventListener("khmer:auth-expired", onAuthExpired);
+    return () => window.removeEventListener("khmer:auth-expired", onAuthExpired);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <AuthContext.Provider value={{ user, token, login, register, logout, isLoading }}>
+      {children}
+    </AuthContext.Provider>
+  );
+}
+
+export function useAuth() {
+  const ctx = useContext(AuthContext);
+  if (!ctx) throw new Error("useAuth must be used within AuthProvider");
+  return ctx;
+}

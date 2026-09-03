@@ -1,0 +1,25 @@
+# Next.js build output — regenerated inside the container, would bust caches.
+.next
+.next-dev.log
+
+# Local deps — installed via `npm ci` inside the deps stage.
+node_modules
+
+# Tooling state.
+.git
+.gitignore
+.vscode
+.idea
+.claude
+.agents
+
+# Env (baked via build-arg / compose env, not from file).
+.env
+.env.*
+!.env.example
+
+# Misc.
+*.log
+README.md
+CLAUDE.md
+AGENTS.md

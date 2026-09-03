@@ -1,0 +1,382 @@
+@import "tailwindcss";
+
+/* ============================================
+   Design Tokens
+   - Light theme on :root (brand-first: #0f5c50 promoted to --primary)
+   - Dark theme on .dark
+   - Semantic tokens (success / warning / info / danger) defined in both
+   ============================================ */
+
+:root {
+  /* Qwen Cloud light console palette: light-gray canvas, vivid violet accent,
+     near-black ink for pill CTAs. */
+  --app-background: hsl(220 20% 98%);
+  --app-foreground: hsl(240 10% 6%);
+  --app-card: hsl(0 0% 100%);
+  --app-card-foreground: hsl(240 10% 6%);
+  --app-popover: hsl(0 0% 100%);
+  --app-popover-foreground: hsl(240 10% 6%);
+  --app-primary: hsl(251 83% 61%);
+  --app-primary-foreground: hsl(0 0% 100%);
+  --app-secondary: hsl(220 16% 95%);
+  --app-secondary-foreground: hsl(240 10% 8%);
+  --app-muted: hsl(220 16% 96%);
+  --app-muted-foreground: hsl(222 10% 42%);
+  --app-accent: hsl(251 83% 96%);
+  --app-accent-foreground: hsl(251 60% 40%);
+  --app-destructive: hsl(0 72% 45%);
+  --app-destructive-foreground: hsl(0 0% 100%);
+  --app-border: hsl(220 14% 88%);
+  --app-input: hsl(220 14% 86%);
+  --app-ring: hsl(251 83% 61%);
+  --app-sidebar: hsl(220 20% 98%);
+  --app-sidebar-foreground: hsl(240 10% 8%);
+  --app-sidebar-accent: hsl(220 16% 94%);
+  --app-sidebar-border: hsl(220 14% 90%);
+  /* Near-black ink for primary pill CTAs (Get Started / Browse Models). */
+  --app-ink: hsl(240 10% 6%);
+  --app-ink-foreground: hsl(0 0% 100%);
+  --app-success: hsl(152 60% 32%);
+  --app-success-foreground: hsl(0 0% 100%);
+  --app-warning: hsl(38 92% 45%);
+  --app-warning-foreground: hsl(0 0% 100%);
+  --app-info: hsl(210 90% 45%);
+  --app-info-foreground: hsl(0 0% 100%);
+  --app-danger: hsl(0 72% 45%);
+  --app-danger-foreground: hsl(0 0% 100%);
+  --app-font-sans: var(--font-sans), var(--font-khmer), system-ui, -apple-system, sans-serif;
+  --text-base: 1rem;
+  --leading-base: 1.6;
+  --tracking-tight: -0.011em;
+  --radius: 0.5rem;
+  --color-background: var(--app-background);
+  --color-foreground: var(--app-foreground);
+  --color-card: var(--app-card);
+  --color-card-foreground: var(--app-card-foreground);
+  --color-popover: var(--app-popover);
+  --color-popover-foreground: var(--app-popover-foreground);
+  --color-primary: var(--app-primary);
+  --color-primary-foreground: var(--app-primary-foreground);
+  --color-secondary: var(--app-secondary);
+  --color-secondary-foreground: var(--app-secondary-foreground);
+  --color-muted: var(--app-muted);
+  --color-muted-foreground: var(--app-muted-foreground);
+  --color-accent: var(--app-accent);
+  --color-accent-foreground: var(--app-accent-foreground);
+  --color-destructive: var(--app-destructive);
+  --color-destructive-foreground: var(--app-destructive-foreground);
+  --color-border: var(--app-border);
+  --color-input: var(--app-input);
+  --color-ring: var(--app-ring);
+  --color-sidebar: var(--app-sidebar);
+  --color-sidebar-foreground: var(--app-sidebar-foreground);
+  --color-sidebar-accent: var(--app-sidebar-accent);
+  --color-sidebar-border: var(--app-sidebar-border);
+  --color-success: var(--app-success);
+  --color-success-foreground: var(--app-success-foreground);
+  --color-warning: var(--app-warning);
+  --color-warning-foreground: var(--app-warning-foreground);
+  --color-info: var(--app-info);
+  --color-info-foreground: var(--app-info-foreground);
+  --color-danger: var(--app-danger);
+  --color-danger-foreground: var(--app-danger-foreground);
+}
+
+@theme inline {
+  /* Surfaces — 浅色主题提高 foreground 对比度到 ~12:1 (原 8:1 不足) */
+  --color-background: var(--app-background);
+  --color-foreground: var(--app-foreground);
+
+  --color-card: var(--app-card);
+  --color-card-foreground: var(--app-card-foreground);
+
+  --color-popover: var(--app-popover);
+  --color-popover-foreground: var(--app-popover-foreground);
+
+  /* Brand: #0f5c50 becomes primary. */
+  --color-primary: var(--app-primary);
+  --color-primary-foreground: var(--app-primary-foreground);
+
+  --color-secondary: var(--app-secondary);
+  --color-secondary-foreground: var(--app-secondary-foreground);
+
+  --color-muted: var(--app-muted);
+  /* 提亮 muted-foreground: 从 42% → 34%,避免浅色背景下灰字看不清. */
+  --color-muted-foreground: var(--app-muted-foreground);
+
+  --color-accent: var(--app-accent);
+  --color-accent-foreground: var(--app-accent-foreground);
+
+  --color-destructive: var(--app-destructive);
+  --color-destructive-foreground: var(--app-destructive-foreground);
+
+  --color-border: var(--app-border);
+  --color-input: var(--app-input);
+  --color-ring: var(--app-ring);
+
+  /* Sidebar */
+  --color-sidebar: var(--app-sidebar);
+  --color-sidebar-foreground: var(--app-sidebar-foreground);
+  --color-sidebar-accent: var(--app-sidebar-accent);
+  --color-sidebar-border: var(--app-sidebar-border);
+
+  /* Semantic status tokens */
+  --color-success: var(--app-success);
+  --color-success-foreground: var(--app-success-foreground);
+
+  --color-warning: var(--app-warning);
+  --color-warning-foreground: var(--app-warning-foreground);
+
+  --color-info: var(--app-info);
+  --color-info-foreground: var(--app-info-foreground);
+
+  --color-danger: var(--app-danger);
+  --color-danger-foreground: var(--app-danger-foreground);
+
+  /* Near-black ink for pill CTAs. */
+  --color-ink: var(--app-ink);
+  --color-ink-foreground: var(--app-ink-foreground);
+
+  /* Typography — 全局字号/行高/字间距通过 token 暴露,各组件统一引用.
+     字号提到 WCAG 推荐底线:正文 16px、消息 14px、最小标签 13px.
+     高棉语/中文字形复杂,偏小字号几乎不可读. */
+  --font-sans: var(--app-font-sans);
+  --text-base: 1rem;          /* 16px — body 正文,浏览器默认值,最易读 */
+  --text-base--line-height: 1.6;
+  --text-sm: 0.9375rem;       /* 15px — 聊天消息正文、卡片标题 */
+  --text-sm--line-height: 1.6;
+  --text-xs: 0.875rem;        /* 14px — 次要标签/元信息,仍可读 */
+  --text-xs--line-height: 1.5;
+  --leading-base: 1.6;        /* 行高更宽松,中文/高棉语尤甚 */
+  --tracking-tight: -0.011em;
+
+  /* Radii */
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius: 0.5rem;
+}
+
+/* Dark theme — applied via next-themes (class="dark" on <html>). */
+.dark {
+  /* Three-layer elevation: app < card < popover. Sidebar sits BELOW the
+     content layer so the workspace reads as a lit surface on a dark frame. */
+  --app-background: hsl(222 18% 4.5%);
+  --app-foreground: hsl(180 12% 96%);
+
+  --app-card: hsl(221 16% 7.5%);
+  --app-card-foreground: hsl(180 12% 96%);
+
+  --app-popover: hsl(221 16% 9.5%);
+  --app-popover-foreground: hsl(180 12% 96%);
+
+  --app-primary: hsl(172 62% 44%);
+  --app-primary-foreground: hsl(222 18% 5%);
+
+  --app-secondary: hsl(220 13% 14%);
+  --app-secondary-foreground: hsl(180 12% 96%);
+
+  --app-muted: hsl(220 13% 11%);
+  --app-muted-foreground: hsl(221 10% 64%);
+
+  --app-accent: hsl(220 13% 14%);
+  --app-accent-foreground: hsl(180 12% 96%);
+
+  --app-destructive: hsl(0 62.8% 52%);
+  --app-destructive-foreground: hsl(0 0% 98%);
+
+  --app-border: hsl(220 13% 14%);
+  --app-input: hsl(220 13% 16%);
+  --app-ring: hsl(172 62% 50%);
+
+  --app-sidebar: hsl(224 19% 3.2%);
+  --app-sidebar-foreground: hsl(180 12% 92%);
+  --app-sidebar-accent: hsl(220 13% 12%);
+  --app-sidebar-border: hsl(220 13% 10%);
+
+  --app-success: hsl(152 55% 55%);
+  --app-success-foreground: hsl(222 18% 5%);
+
+  --app-warning: hsl(38 90% 58%);
+  --app-warning-foreground: hsl(222 18% 5%);
+
+  --app-info: hsl(210 90% 64%);
+  --app-info-foreground: hsl(222 18% 5%);
+
+  --app-danger: hsl(0 72% 62%);
+  --app-danger-foreground: hsl(0 0% 100%);
+}
+
+/* Elevation + glow (dark only — light theme stays flat/paper-like). */
+.dark body {
+  background:
+    radial-gradient(1100px 700px at 75% -10%, hsl(172 60% 30% / 0.13), transparent 60%),
+    radial-gradient(900px 600px at -10% 110%, hsl(214 60% 30% / 0.10), transparent 55%),
+    var(--app-background);
+}
+
+::selection {
+  background: color-mix(in oklab, var(--app-primary) 32%, transparent);
+  color: var(--color-foreground);
+}
+
+html {
+  /* 防止某些浏览器默认 16px 与我们 15px 设计冲突. */
+  font-size: 100%;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-family: var(--app-font-sans);
+  font-size: var(--text-base);
+  line-height: var(--leading-base);
+  letter-spacing: var(--tracking-tight);
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: color-mix(in oklab, var(--color-border) 72%, transparent);
+  border-radius: 8px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklab, var(--color-muted-foreground) 45%, transparent);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+
+/* Scope transitions to paint-cheap, interaction-relevant properties. The old
+   rule transitioned only 3 properties on every element, which made transforms
+   snap while colors crawled. */
+*,
+*::before,
+*::after {
+  transition-property: color, background-color, border-color, text-decoration-color, fill, stroke, opacity, box-shadow, transform, filter;
+  transition-duration: 140ms;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+:focus-visible {
+  outline: 2px solid color-mix(in oklch, var(--color-ring), transparent 60%);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ============================================
+   Workspace utility classes
+   Previously referenced in admin/knowledge pages but never defined,
+   which caused those pages to render without the intended layout.
+   ============================================ */
+
+.workspace-page {
+  background: var(--color-background);
+  color: var(--color-foreground);
+}
+
+.workspace-header {
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-background);
+}
+
+.workspace-surface {
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  color: var(--color-card-foreground);
+}
+
+.page-kicker {
+  font-size: 12px;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-muted-foreground);
+  font-weight: 600;
+}
+
+.page-title {
+  font-size: 1.125rem;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  color: var(--color-foreground);
+  font-weight: 600;
+  margin-top: 2px;
+}
+
+/* ============================================
+   Markdown rendering (AI replies)
+   ============================================ */
+
+.prose-chat {
+  font-size: var(--text-base); /* 16px */
+  line-height: 1.7;
+  word-break: break-word;
+  /* Explicit colour so AI replies never inherit a wrong/low-contrast colour
+     from a parent. card-foreground is high-contrast on the card bubble bg. */
+  color: inherit;
+}
+.prose-chat > *:first-child { margin-top: 0; }
+.prose-chat > *:last-child { margin-bottom: 0; }
+.prose-chat p { margin: 0.5em 0; }
+.prose-chat h1, .prose-chat h2, .prose-chat h3, .prose-chat h4 {
+  font-weight: 600;
+  line-height: 1.3;
+  margin: 1em 0 0.4em;
+  color: inherit;
+}
+.prose-chat h1 { font-size: 1.25rem; }
+.prose-chat h2 { font-size: 1.125rem; }
+.prose-chat h3 { font-size: 1rem; }
+.prose-chat h4 { font-size: 0.9rem; }
+.prose-chat ul, .prose-chat ol { margin: 0.5em 0; padding-left: 1.4em; }
+.prose-chat li { margin: 0.2em 0; }
+.prose-chat ul { list-style: disc; }
+.prose-chat ol { list-style: decimal; }
+.prose-chat blockquote {
+  border-left: 3px solid var(--color-border);
+  padding-left: 0.9em;
+  margin: 0.6em 0;
+  color: var(--color-muted-foreground);
+}
+.prose-chat code {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.85em;
+  background: var(--color-muted);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+}
+/* Inline code inside pre (block) shouldn't have the chip background. */
+.prose-chat pre code { background: transparent; padding: 0; }
+.prose-chat table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.6em 0;
+  font-size: 0.85em;
+}
+.prose-chat th, .prose-chat td {
+  border: 1px solid var(--color-border);
+  padding: 0.4em 0.6em;
+  text-align: left;
+}
+.prose-chat th { background: var(--color-muted); font-weight: 600; }
+.prose-chat hr {
+  border: 0;
+  border-top: 1px solid var(--color-border);
+  margin: 1em 0;
+}
+.prose-chat a { color: var(--color-primary); }

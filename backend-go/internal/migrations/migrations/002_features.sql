@@ -1,0 +1,14 @@
+-- Migration 002 — feature additions (sessions, messages, assignments, …)
+--
+-- HISTORICAL NOTE: this file originally added session_status enum, new session
+-- columns, chat_message feedback columns, session_assignments,
+-- platform_user_sessions, and api_keys. As of the dockerisation pass, all of
+-- those declarations were folded back into 001_init.sql so that a fresh
+-- docker-entrypoint-initdb.d run produces a complete schema in one shot.
+--
+-- This file is now intentionally empty (no-op). It is kept so the migration
+-- runner records it as applied, preserving the migration history of databases
+-- that ran the original 002 before the consolidation.
+--
+-- No statements to execute.
+SELECT 1;

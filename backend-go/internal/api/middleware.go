@@ -1,0 +1,269 @@
+package api
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// requestID assigns a request id (inbound or generated) and echoes it via
+// X-Request-ID.
+func requestID(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rid := r.Header.Get("X-Request-ID")
+		if rid == "" {
+			rid = newUUID()
+		}
+		r = r.WithContext(context.WithValue(r.Context(), ridKey, rid))
+		w.Header().Set("X-Request-ID", rid)
+		next.ServeHTTP(w, r)
+	})
+}
+
+const ridKey ctxKey = 2
+
+// cors enforces the configured origin allowlist (403 for strangers, 204 for
+// OPTIONS, always sets the Allow-* headers) — Go/Rust parity.
+func (a *App) cors(next http.Handler) http.Handler {
+	allowed := make(map[string]bool, len(a.Cfg.AllowedOrigins))
+	for _, o := range a.Cfg.AllowedOrigins {
+		allowed[o] = true
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		isAllowed := origin != "" && allowed[origin]
+		if origin != "" && !isAllowed {
+			WriteJSON(w, http.StatusForbidden, map[string]string{"error": "跨域请求被拒绝"})
+			return
+		}
+		h := w.Header()
+		if isAllowed {
+			h.Set("Access-Control-Allow-Origin", origin)
+			h.Set("Access-Control-Allow-Credentials", "true")
+			h.Add("Vary", "Origin")
+		}
+		h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
+		h.Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, X-Request-ID")
+		h.Set("Access-Control-Expose-Headers", "Content-Length, Content-Disposition, X-Request-ID")
+		h.Set("Access-Control-Max-Age", "600")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// logging writes one structured line per request (level by status).
+func (a *App) logging(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, status: 200}
+		next.ServeHTTP(rec, r)
+		latency := time.Since(start)
+		attrs := []any{
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", rec.status,
+			"latency_ms", latency.Milliseconds(),
+			"ip", clientIP(r),
+		}
+		if u, ok := UserFrom(r); ok {
+			attrs = append(attrs, "user_id", u.UserID)
+		}
+		switch {
+		case rec.status >= 500:
+			a.Logger.Error("request", attrs...)
+		case rec.status >= 400:
+			a.Logger.Warn("request", attrs...)
+		default:
+			a.Logger.Info("request", attrs...)
+		}
+	})
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (s *statusRecorder) WriteHeader(code int) {
+	s.status = code
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func clientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if ip := strings.Split(xff, ",")[0]; strings.TrimSpace(ip) != "" {
+			return strings.TrimSpace(ip)
+		}
+	}
+	return "-"
+}
+
+// auth parses the Bearer credential (JWT or kcs_ API key), verifies the
+// account is active, and attaches CurrentUser.
+func (a *App) authMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		header := r.Header.Get("Authorization")
+		if header == "" {
+			WriteJSON(w, http.StatusUnauthorized, map[string]string{"error": "未提供认证令牌"})
+			return
+		}
+		scheme, token, found := strings.Cut(header, " ")
+		if !found || scheme != "Bearer" || token == "" {
+			WriteJSON(w, http.StatusUnauthorized, map[string]string{"error": "认证格式错误"})
+			return
+		}
+
+		var user *CurrentUser
+		if strings.HasPrefix(token, "kcs_") {
+			resolved, err := a.resolveAPIKey(r.Context(), token)
+			if err != nil {
+				WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "用户查询失败"})
+				return
+			}
+			if resolved == nil {
+				WriteJSON(w, http.StatusUnauthorized, map[string]string{"error": "无效的 API 密钥"})
+				return
+			}
+			user = resolved
+		} else {
+			claims, err := a.JWT.ParseToken(token)
+			if err != nil {
+				WriteJSON(w, http.StatusUnauthorized, map[string]string{"error": "令牌无效或已过期"})
+				return
+			}
+			user = &CurrentUser{UserID: claims.UserID, Username: claims.Username, Role: claims.Role}
+		}
+
+		// Production guard: a disabled tenant is rejected on every request.
+		var isActive bool
+		err := a.DB.QueryRow(r.Context(), "SELECT is_active FROM users WHERE user_id = $1", user.UserID).Scan(&isActive)
+		if err != nil {
+			WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "用户查询失败"})
+			return
+		}
+		if !isActive {
+			WriteJSON(w, http.StatusForbidden, map[string]string{"error": "账户已被禁用"})
+			return
+		}
+
+		r = r.WithContext(context.WithValue(r.Context(), userKey, user))
+		next.ServeHTTP(w, r)
+	})
+}
+
+// resolveAPIKey maps a kcs_ token to its owner (SHA-256 hash lookup; the
+// plaintext is never stored). Nil result = unknown/inactive/expired key.
+func (a *App) resolveAPIKey(ctx context.Context, token string) (*CurrentUser, error) {
+	sum := sha256.Sum256([]byte(token))
+	hash := hex.EncodeToString(sum[:])
+	row := a.DB.QueryRow(ctx,
+		"SELECT k.user_id, u.username, u.role::text, k.is_active, k.expires_at "+
+			"FROM api_keys k JOIN users u ON u.user_id = k.user_id "+
+			"WHERE k.key_hash = $1 AND k.is_active = true", hash)
+	var (
+		userID    int32
+		username  string
+		role      string
+		isActive  bool
+		expiresAt *time.Time
+	)
+	if err := row.Scan(&userID, &username, &role, &isActive, &expiresAt); err != nil {
+		if strings.Contains(err.Error(), "no rows") {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if !isActive || (expiresAt != nil && expiresAt.Before(time.Now())) {
+		return nil, nil
+	}
+	_, _ = a.DB.Exec(ctx, "UPDATE api_keys SET last_used_at = NOW() WHERE key_hash = $1", hash)
+	return &CurrentUser{UserID: userID, Username: username, Role: role}, nil
+}
+
+// adminOnly requires role admin or platform_admin.
+func adminOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, ok := UserFrom(r)
+		if !ok {
+			WriteJSON(w, http.StatusUnauthorized, map[string]string{"error": "未提供认证令牌"})
+			return
+		}
+		if !user.IsAdmin() {
+			WriteJSON(w, http.StatusForbidden, map[string]string{"error": "需要管理员权限"})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// platformAdminOnly requires the platform super-admin role.
+func platformAdminOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, ok := UserFrom(r)
+		if !ok {
+			WriteJSON(w, http.StatusUnauthorized, map[string]string{"error": "未提供认证令牌"})
+			return
+		}
+		if !user.IsPlatformAdmin() {
+			WriteJSON(w, http.StatusForbidden, map[string]string{"error": "需要平台管理员权限"})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// rateLimit applies a Redis fixed window (per user when authenticated, else
+// per client IP). 429 + Retry-After when exceeded; 503 when Redis is down.
+func (a *App) rateLimit(maxRPM uint32) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var key string
+			if user, ok := UserFrom(r); ok {
+				key = fmt.Sprintf("u:%d", user.UserID)
+			} else {
+				key = "ip:" + clientIP(r)
+			}
+			allowed, err := a.Redis.CheckRateLimit(r.Context(), key, maxRPM)
+			if err != nil {
+				WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "限流服务不可用"})
+				return
+			}
+			if !allowed {
+				w.Header().Set("Retry-After", "60")
+				WriteJSON(w, http.StatusTooManyRequests, map[string]any{
+					"error":       "请求过于频繁",
+					"retry_after": 60,
+				})
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+func newUUID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	const hexChars = "0123456789abcdef"
+	out := make([]byte, 0, 36)
+	for i, c := range b {
+		if i == 4 || i == 6 || i == 8 || i == 10 {
+			out = append(out, '-')
+		}
+		out = append(out, hexChars[c>>4], hexChars[c&0x0f])
+	}
+	return string(out)
+}
