@@ -26,3 +26,6 @@ frontend/.next-dev.log
 .codegraph/
 .zcode/
 .git-archives/
+
+# macOS junk
+.DS_Store

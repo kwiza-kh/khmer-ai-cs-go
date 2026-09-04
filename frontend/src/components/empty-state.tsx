@@ -24,13 +24,15 @@ export function EmptyState({
   action,
 }: EmptyStateProps) {
   return (
-    <div className={cn("flex flex-col items-center justify-center text-center py-12", className)}>
-      <Icon className="size-8 text-muted-foreground/40 mb-3" />
-      <p className="text-sm font-medium text-muted-foreground">{title}</p>
+    <div className={cn("flex flex-col items-center justify-center text-center py-14 animate-fade-in", className)}>
+      <div className="mb-4 flex size-14 items-center justify-center rounded-2xl bg-muted/70 ring-1 ring-inset ring-border/60 shadow-[inset_0_1px_0_rgb(255_255_255/0.5)] dark:bg-white/[0.04] dark:ring-white/[0.06] dark:shadow-none">
+        <Icon className="size-6 text-muted-foreground/60" />
+      </div>
+      <p className="text-sm font-semibold text-foreground/80">{title}</p>
       {description != null && (
-        <p className="text-xs text-muted-foreground mt-1 max-w-xs">{description}</p>
+        <p className="text-xs text-muted-foreground mt-1.5 max-w-xs leading-relaxed">{description}</p>
       )}
-      {action != null && <div className="mt-4">{action}</div>}
+      {action != null && <div className="mt-5">{action}</div>}
     </div>
   );
 }

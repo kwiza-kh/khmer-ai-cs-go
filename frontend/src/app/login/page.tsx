@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-client";
 import { Button } from "@/components/ui/button";
@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AnimatePresence, motion } from "motion/react";
 import { Loader2, Eye, EyeOff, ArrowRight } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 type Lang = "km" | "en" | "zh";
 
@@ -40,6 +41,24 @@ export default function LoginPage() {
   const [tab, setTab] = useState("login");
   const [showPassword, setShowPassword] = useState(false);
 
+  // 界面语言: 记忆上次选择, 首次访问按浏览器语言自动匹配; 与设置页共用 "lang" 键
+  useEffect(() => {
+    const saved = localStorage.getItem("lang");
+    if (saved === "km" || saved === "en" || saved === "zh") {
+      setLang(saved);
+    } else {
+      const nav = navigator.language?.toLowerCase() ?? "";
+      const detected: Lang = nav.startsWith("zh") ? "zh" : nav.startsWith("km") ? "km" : "en";
+      setLang(detected);
+    }
+  }, []);
+
+  const switchLang = (l: Lang) => {
+    setLang(l);
+    localStorage.setItem("lang", l);
+    document.documentElement.lang = l;
+  };
+
   const [loginUser, setLoginUser] = useState("");
   const [loginPass, setLoginPass] = useState("");
   const [regUser, setRegUser] = useState("");
@@ -62,18 +81,22 @@ export default function LoginPage() {
 
   return (
     <div className="relative min-h-[100dvh] bg-background flex flex-col items-center justify-center p-6 overflow-hidden">
-      {/* Ambient brand glow */}
-      <div aria-hidden className="pointer-events-none absolute inset-0">
-        <div className="absolute -top-40 left-1/2 -translate-x-1/2 h-[480px] w-[820px] rounded-full bg-primary/10 blur-[120px]" />
-        <div className="absolute bottom-[-180px] right-[-120px] h-[380px] w-[380px] rounded-full bg-info/5 blur-[100px]" />
+      {/* Ambient: 极光 + 细网格 */}
+      <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden">
+        <div className="aurora" />
+        <div className="grid-texture absolute inset-0" />
       </div>
 
-      <div className="absolute top-6 right-6 z-20 flex gap-1">
+      {/* 界面语言切换 — 分段控件 */}
+      <div className="glass absolute top-5 right-5 z-20 flex items-center gap-0.5 rounded-full border border-border/60 p-1 shadow-[0_2px_10px_-4px_rgb(0_0_0/0.15)] dark:bg-white/[0.05]">
         {langs.map((opt) => (
-          <button key={opt.key} onClick={() => setLang(opt.key)}
-            className={`px-2 py-1 rounded-md text-xs font-medium transition-colors ${
-              lang === opt.key ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"
-            }`}
+          <button key={opt.key} onClick={() => switchLang(opt.key)}
+            className={cn(
+              "rounded-full px-3 py-1 text-xs font-medium transition-all",
+              lang === opt.key
+                ? "bg-primary text-primary-foreground shadow-[0_2px_8px_-2px_color-mix(in_oklch,var(--color-primary)_55%,transparent)]"
+                : "text-muted-foreground hover:text-foreground"
+            )}
           >{opt.label}</button>
         ))}
       </div>
@@ -81,7 +104,7 @@ export default function LoginPage() {
       <div className="relative w-full max-w-[400px]">
         {/* Brand */}
         <div className="flex flex-col items-center mb-7">
-          <div className="flex size-11 items-center justify-center rounded-xl bg-gradient-to-br from-primary via-primary to-emerald-800 shadow-[0_4px_18px_-4px] shadow-primary/60">
+          <div className="flex size-11 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-indigo-700 shadow-[0_8px_24px_-6px] shadow-primary/60 ring-1 ring-white/25">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" className="size-5 text-primary-foreground">
               <path d="M12 3l9 4.9-9 4.9-9-4.9L12 3z" />
               <path d="M3 13l9 4.9 9-4.9" opacity="0.55" />
@@ -94,7 +117,7 @@ export default function LoginPage() {
         </div>
 
         {/* Card */}
-        <div className="bg-card border border-border/80 rounded-xl shadow-[0_8px_30px_-12px_rgb(0_0_0/0.35)]">
+        <div className="rounded-2xl border border-border/70 bg-card/85 shadow-[0_24px_64px_-28px_rgb(17_20_45/0.4)] ring-1 ring-white/50 backdrop-blur-xl dark:bg-card/75 dark:ring-white/[0.06]">
           <div className="px-6 pt-6 pb-2">
             <h1 className="text-lg font-semibold tracking-tight">
               {tab === "login" ? t.loginTitle[lang] : t.registerTitle[lang]}

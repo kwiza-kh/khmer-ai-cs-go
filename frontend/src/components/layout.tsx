@@ -11,13 +11,12 @@ import { cn } from "@/lib/utils";
 import {
   BookOpen, Globe, Users, Settings, LogOut, Menu, Search,
   Gauge, HelpCircle, Inbox, UserCheck, ShieldCheck, Coins, Cpu, FlaskConical,
-  ChevronsUpDown, ChevronsDown, ChevronsLeft, type LucideIcon,
+  ChevronsDown, ChevronsLeft, type LucideIcon,
 } from "lucide-react";
 import { useState } from "react";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { NotificationBell } from "@/components/notification-bell";
 
-// NavItem: Qwen Cloud style — active = filled light-gray pill, no rail.
 function NavItem({
   href,
   icon: Icon,
@@ -38,35 +37,36 @@ function NavItem({
       href={href}
       onClick={onNavigate}
       className={cn(
-        "group flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] font-medium transition-colors",
+        "group relative flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] transition-all",
         active
-          ? "bg-muted text-foreground"
-          : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+          ? "bg-primary/[0.09] font-semibold text-primary ring-1 ring-inset ring-primary/20 shadow-[inset_0_1px_0_rgb(255_255_255/0.4)] dark:bg-primary/[0.13] dark:shadow-none"
+          : "font-medium text-sidebar-foreground/85 hover:bg-foreground/[0.045] hover:text-sidebar-foreground"
       )}
     >
-      <Icon className={cn("size-4 shrink-0", active ? "text-foreground" : "text-muted-foreground/70 group-hover:text-foreground")} />
+      <Icon className={cn("size-4 shrink-0", active ? "text-primary" : "text-sidebar-foreground/60 group-hover:text-sidebar-foreground")} />
       <span className="flex-1 truncate">{label}</span>
       {badge && (
-        <span className="rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-semibold text-primary-foreground">{badge}</span>
+        <span className="rounded-full bg-[linear-gradient(115deg,var(--color-primary),hsl(285_85%_58%))] px-1.5 py-0.5 text-[10px] font-semibold text-white shadow-[0_2px_8px_-2px_color-mix(in_oklch,var(--color-primary)_60%,transparent)]">
+          {badge}
+        </span>
       )}
     </Link>
   );
 }
 
-// Collapsible section label with chevron.
 function NavSection({ label, children, defaultOpen = true }: { label: string; children: React.ReactNode; defaultOpen?: boolean }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className="pt-3">
+    <div className="pt-4">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center justify-between rounded-md px-3 py-1.5 text-[13px] font-medium text-foreground hover:bg-muted/60"
+        className="group flex w-full items-center justify-between rounded-md px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/80 transition-colors hover:text-foreground"
       >
         {label}
-        {open ? <ChevronsDown className="size-3.5 text-muted-foreground/60" /> : <ChevronsLeft className="size-3.5 text-muted-foreground/60" />}
+        {open ? <ChevronsDown className="size-3 text-muted-foreground/50 group-hover:text-muted-foreground" /> : <ChevronsLeft className="size-3 text-muted-foreground/50 group-hover:text-muted-foreground" />}
       </button>
-      {open && <div className="mt-0.5 space-y-0.5 pl-3">{children}</div>}
+      {open && <div className="mt-1 space-y-0.5 pl-3">{children}</div>}
     </div>
   );
 }
@@ -89,43 +89,46 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background">
-      {/* ===== Top bar (Qwen Cloud style) ===== */}
-      <header className="flex h-14 shrink-0 items-center gap-4 border-b border-border bg-background px-4">
-        <button type="button" className="lg:hidden" onClick={() => setSidebarOpen(true)}>
+      {/* ===== Top bar — glass + hairline ===== */}
+      <header className="glass hairline-b relative z-30 flex h-14 shrink-0 items-center gap-4 px-4">
+        <button type="button" className="rounded-md p-1.5 hover:bg-foreground/[0.06] lg:hidden" onClick={() => setSidebarOpen(true)}>
           <Menu className="size-4 text-muted-foreground" />
         </button>
         {/* Brand */}
-        <Link href="/inbox" onClick={close} className="flex items-center gap-2">
-          <svg viewBox="0 0 24 24" className="size-6" fill="none" aria-hidden>
-            <path d="M12 2l2.4 7.6L22 12l-7.6 2.4L12 22l-2.4-7.6L2 12l7.6-2.4L12 2z" fill="url(#qg)" />
-            <defs>
-              <linearGradient id="qg" x1="0" y1="0" x2="24" y2="24">
-                <stop offset="0" stopColor="#8b5cf6" /><stop offset="1" stopColor="#6d28d9" />
-              </linearGradient>
-            </defs>
-          </svg>
+        <Link href="/inbox" onClick={close} className="group flex items-center gap-2">
+          <span className="relative flex size-7 items-center justify-center">
+            <span aria-hidden className="absolute inset-0 rounded-lg bg-primary/25 blur-md opacity-60 transition-opacity group-hover:opacity-100" />
+            <svg viewBox="0 0 24 24" className="relative size-6 transition-transform duration-300 group-hover:scale-105 group-hover:rotate-3" fill="none" aria-hidden>
+              <path d="M12 2l2.4 7.6L22 12l-7.6 2.4L12 22l-2.4-7.6L2 12l7.6-2.4L12 2z" fill="url(#qg)" />
+              <defs>
+                <linearGradient id="qg" x1="0" y1="0" x2="24" y2="24">
+                  <stop offset="0" stopColor="#8b5cf6" /><stop offset="1" stopColor="#4f46e5" />
+                </linearGradient>
+              </defs>
+            </svg>
+          </span>
           <span className="text-[15px] font-semibold tracking-tight text-foreground">Khmer AI</span>
         </Link>
         {/* Search (decorative) */}
         <div className="relative hidden md:block w-72">
-          <Search className="absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground/60" />
+          <Search className="absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground/50" />
           <input
             readOnly
             placeholder="Search"
-            className="h-9 w-full rounded-full border border-border bg-card pl-9 pr-12 text-[13px] text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring/40"
+            className="h-9 w-full rounded-full border border-border/80 bg-card/70 pl-9 pr-12 text-[13px] text-foreground shadow-[0_1px_2px_rgb(0_0_0/0.03)] placeholder:text-muted-foreground/50 transition-all focus:outline-none focus:border-ring/50 focus:ring-2 focus:ring-ring/25 dark:bg-white/[0.05]"
           />
-          <span className="absolute right-3 top-1/2 -translate-y-1/2 rounded border border-border bg-muted px-1 text-[10px] text-muted-foreground">⌘K</span>
+          <span className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md border border-border/70 bg-muted/80 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">⌘K</span>
         </div>
         <div className="ml-auto flex items-center gap-4">
-          <Link href="/knowledge" className="hidden sm:block text-[13px] font-medium text-muted-foreground hover:text-foreground">Knowledge</Link>
-          <Link href="/help" className="hidden sm:block text-[13px] font-medium text-muted-foreground hover:text-foreground">Help</Link>
-          <button type="button" className="rounded-full bg-ink px-4 py-1.5 text-[13px] font-semibold text-ink-foreground hover:opacity-90">
+          <Link href="/knowledge" className="hidden sm:block text-[13px] font-medium text-muted-foreground transition-colors hover:text-foreground">Knowledge</Link>
+          <Link href="/help" className="hidden sm:block text-[13px] font-medium text-muted-foreground transition-colors hover:text-foreground">Help</Link>
+          <button type="button" className="rounded-full bg-ink px-4 py-1.5 text-[13px] font-semibold text-ink-foreground shadow-[0_1px_2px_rgb(0_0_0/0.25),inset_0_1px_0_rgb(255_255_255/0.18)] transition-all hover:brightness-110 active:scale-[0.97]">
             Console
           </button>
           <DropdownMenu>
             <DropdownMenuTrigger>
-              <Avatar className="size-8 cursor-pointer rounded-full ring-2 ring-primary/30">
-                <AvatarFallback className="rounded-full bg-gradient-to-br from-primary to-violet-700 text-[12px] font-semibold text-white">
+              <Avatar className="size-8 cursor-pointer rounded-full ring-2 ring-primary/30 transition-all hover:ring-primary/55 hover:shadow-[0_0_0_4px_color-mix(in_oklch,var(--color-primary)_14%,transparent)]">
+                <AvatarFallback className="rounded-full bg-gradient-to-br from-primary to-indigo-700 text-[12px] font-semibold text-white">
                   {user?.username?.charAt(0).toUpperCase()}
                 </AvatarFallback>
               </Avatar>
@@ -144,12 +147,12 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       </header>
 
       <div className="flex flex-1 overflow-hidden">
-        {sidebarOpen && <div className="fixed inset-0 z-40 bg-background/80 backdrop-blur-sm lg:hidden" onClick={close} />}
+        {sidebarOpen && <div className="fixed inset-0 z-40 bg-background/70 backdrop-blur-sm lg:hidden" onClick={close} />}
 
         {/* ===== Sidebar ===== */}
         <aside className={cn(
           "flex flex-col bg-sidebar border-r border-sidebar-border",
-          sidebarOpen ? "fixed inset-y-0 left-0 z-50 w-[220px]" : "hidden lg:flex lg:w-[220px]"
+          sidebarOpen ? "fixed inset-y-0 left-0 z-50 w-[232px] shadow-2xl" : "hidden lg:flex lg:w-[224px]"
         )}>
           <nav className="flex-1 overflow-auto px-3 py-3">
             <div className="space-y-0.5">
@@ -178,14 +181,16 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               <NavItem href="/help" icon={HelpCircle} label="Help" active={isActive("/help")} onNavigate={close} />
             </NavSection>
           </nav>
-          <div className="flex items-center justify-between border-t border-sidebar-border px-3 py-2">
+          <div className="flex items-center justify-between border-t border-sidebar-border/80 px-3 py-2">
             <ThemeToggle />
             <NotificationBell />
           </div>
         </aside>
 
-        {/* ===== Main ===== */}
-        <main className="flex-1 min-h-0 overflow-hidden bg-background">{children}</main>
+        {/* ===== Main — 路由切换时淡入上浮 ===== */}
+        <main className="flex-1 min-h-0 overflow-hidden bg-background">
+          <div key={pathname} className="h-full animate-fade-up">{children}</div>
+        </main>
       </div>
     </div>
   );
