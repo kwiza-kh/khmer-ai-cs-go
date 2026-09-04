@@ -26,9 +26,18 @@ const (
 	// FastModel routes auxiliary calls (rewrite/rerank) to a cheap model.
 	FastModel                = "gemini-2.5-flash"
 	embeddingVectorDimension = 768
-
-	apiBase = "https://generativelanguage.googleapis.com/v1beta"
 )
+
+// apiBase — Gemini REST endpoint. Override with GEMINI_API_BASE to route
+// through a relay in a Google-supported region when the server's egress IP
+// is geo-blocked ("User location is not supported for the API use").
+// Value must include the /v1beta version segment, no trailing slash.
+var apiBase = func() string {
+	if v := strings.TrimSpace(os.Getenv("GEMINI_API_BASE")); v != "" {
+		return strings.TrimRight(v, "/")
+	}
+	return "https://generativelanguage.googleapis.com/v1beta"
+}()
 
 // HistoryItem is one chat turn for prompt construction.
 type HistoryItem struct {
@@ -133,16 +142,16 @@ func ListModels(ctx context.Context, apiKey string) ([]string, error) {
 		return nil, fmt.Errorf("models list HTTP %d", resp.StatusCode)
 	}
 	var v struct {
-		Data []struct {
+		Models []struct {
 			Name        string `json:"name"`
 			DisplayName string `json:"displayName"`
-		} `json:"data"`
+		} `json:"models"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&v); err != nil {
 		return nil, err
 	}
 	names := make([]string, 0)
-	for _, m := range v.Data {
+	for _, m := range v.Models {
 		n := strings.TrimPrefix(m.Name, "models/")
 		if strings.Contains(strings.ToLower(n), "gemini") {
 			names = append(names, n)
