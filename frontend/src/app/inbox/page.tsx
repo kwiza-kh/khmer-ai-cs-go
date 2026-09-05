@@ -6,7 +6,7 @@ import { useSearchParams } from "next/navigation";
 import {
 	InboxItem, SessionStatus, listInbox, listSessionMessages,
 	takeoverSession, updateSessionStatus, assignSession, ChatMessageItem,
-	agentReply, getSessionSummary, setSessionTags, listCannedResponses, CannedResponse,
+	agentReply, getSessionSummary, getPreferences, setSessionTags, listCannedResponses, CannedResponse,
 	sendTestMessage, RAGSource, PlatformMessageKind, PlatformMessagePayload, PlatformReplyButton,
 	listSessionWhatsAppTemplates, WhatsAppTemplate, getInboundPlatformMediaURL, InboundPlatformMedia,
 } from "@/lib/api";
@@ -23,30 +23,32 @@ import {
 	Inbox as InboxIcon, Search, UserCircle2, HandMetal, CheckCircle2, XCircle,
 	Send, Loader2, Sparkles, Zap, FileText, Clock3, CircleAlert, CheckCheck,
 	Image as ImageIcon, ListChecks, FileCode2, Plus, Trash2, Paperclip, MessageSquare, Volume2,
-	AlertTriangle,
+	AlertTriangle, RefreshCw,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { useAuth } from "@/lib/auth-client";
 import { useInboxRealtime } from "@/lib/realtime";
 import { Markdown } from "@/components/markdown";
+import { useI18n } from "@/lib/i18n";
 import {
 	Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
 
-const STATUS_FILTERS: { value: SessionStatus | "all"; label: string }[] = [
-  { value: "all", label: "All" },
-  { value: "active", label: "Active" },
-  { value: "handoff", label: "Awaiting agent" },
-  { value: "resolved", label: "Resolved" },
+// Filter/status/reply-mode labels are i18n keys resolved at render time.
+const STATUS_FILTERS: { value: SessionStatus | "all"; labelKey: string }[] = [
+  { value: "all", labelKey: "inbox.filterAll" },
+  { value: "active", labelKey: "inbox.filterActive" },
+  { value: "handoff", labelKey: "inbox.filterHandoff" },
+  { value: "resolved", labelKey: "inbox.filterResolved" },
 ];
 
-const STATUS_BADGE: Record<SessionStatus, { variant: "default" | "secondary" | "success" | "warning" | "info" | "destructive"; label: string }> = {
-  active: { variant: "info", label: "Active" },
-  pending: { variant: "warning", label: "Pending" },
-  handoff: { variant: "warning", label: "Agent" },
-  resolved: { variant: "success", label: "Resolved" },
-  closed: { variant: "secondary", label: "Closed" },
+const STATUS_BADGE: Record<SessionStatus, { variant: "default" | "secondary" | "success" | "warning" | "info" | "destructive"; labelKey: string }> = {
+  active: { variant: "info", labelKey: "inbox.statusActive" },
+  pending: { variant: "warning", labelKey: "inbox.statusPending" },
+  handoff: { variant: "warning", labelKey: "inbox.statusAgent" },
+  resolved: { variant: "success", labelKey: "inbox.statusResolved" },
+  closed: { variant: "secondary", labelKey: "inbox.statusClosed" },
 };
 
 type PlatformFilter = "all" | "telegram" | "meta" | "instagram" | "whatsapp";
@@ -60,8 +62,8 @@ const PLATFORM_GROUPS: { value: PlatformCategory; label: string; filterLabel: st
   { value: "whatsapp", label: "WhatsApp", filterLabel: "WhatsApp", dotClass: "bg-emerald-400" },
 ];
 
-const PLATFORM_FILTERS: { value: PlatformFilter; filterLabel: string }[] = [
-  { value: "all", filterLabel: "All" },
+const PLATFORM_FILTERS: { value: PlatformFilter; filterLabel: string | null }[] = [
+  { value: "all", filterLabel: null },
   ...PLATFORM_GROUPS,
 ];
 
@@ -75,10 +77,10 @@ const PLATFORM_LABELS: Record<string, string> = {
 const CARE_WINDOW_PLATFORMS = new Set(["meta", "instagram", "whatsapp"]);
 
 const REPLY_MODES = [
-  { kind: "text" as const, label: "Text", icon: MessageSquare },
-  { kind: "media" as const, label: "Media", icon: ImageIcon },
-  { kind: "buttons" as const, label: "Buttons", icon: ListChecks },
-  { kind: "template" as const, label: "Template", icon: FileCode2 },
+  { kind: "text" as const, labelKey: "inbox.modeText", icon: MessageSquare },
+  { kind: "media" as const, labelKey: "inbox.modeMedia", icon: ImageIcon },
+  { kind: "buttons" as const, labelKey: "inbox.modeButtons", icon: ListChecks },
+  { kind: "template" as const, labelKey: "inbox.modeTemplate", icon: FileCode2 },
 ];
 
 function clampRunes(value: string, max: number) {
@@ -136,6 +138,7 @@ function platformCategory(platform?: string): PlatformCategory | null {
 
 export default function InboxPage() {
   const { user, token } = useAuth();
+  const { t, tf } = useI18n();
   const searchParams = useSearchParams();
   const [statusFilter, setStatusFilter] = React.useState<SessionStatus | "all">("all");
   const [platformFilter, setPlatformFilter] = React.useState<PlatformFilter>("all");
@@ -151,8 +154,8 @@ export default function InboxPage() {
   const { data: inboxData, mutate: mutateInbox } = useSWR(
     inboxKey,
     () => listInbox({ status: statusFilter === "all" ? undefined : statusFilter, pageSize: 100 }),
-    // WS 断线 (如令牌过期后重连失败) 时的兜底轮询; WS 正常时事件驱动更快, 此项仅为自愈
-    { refreshInterval: 5_000 },
+    // WS 事件驱动是主通道 (收到即刷新); 此轮询仅为 WS 断线时的自愈兜底.
+    { refreshInterval: 15_000 },
   );
   const items = (inboxData?.data ?? []).filter((item) => {
     const matchesQuery = !query || (item.title || item.user_display_name || item.last_message || "").toLowerCase().includes(query.toLowerCase());
@@ -187,12 +190,12 @@ export default function InboxPage() {
     <div className="flex h-full flex-col">
 		<PageHeader
 			icon={InboxIcon}
-			kicker="Operations"
-			title="Unified Inbox"
-			description="All cross-platform conversations. Take over from the AI when a human touch is needed."
+			kicker={t("inbox.kicker")}
+			title={t("inbox.title")}
+			description={t("inbox.description")}
 			actions={
 				<Button size="sm" variant="outline" onClick={() => setTestChatOpen(true)} className="gap-1.5">
-					<Sparkles className="size-3.5" /> Test AI
+					<Sparkles className="size-3.5" /> {t("inbox.testAi")}
 				</Button>
 			}
 		/>
@@ -204,7 +207,7 @@ export default function InboxPage() {
             <Select value={statusFilter} onValueChange={(v) => setStatusFilter((v || "all") as SessionStatus | "all")}>
               <SelectTrigger className="h-9 rounded-lg text-xs"><SelectValue /></SelectTrigger>
               <SelectContent>
-                {STATUS_FILTERS.map((f) => <SelectItem key={f.value} value={f.value}>{f.label}</SelectItem>)}
+                {STATUS_FILTERS.map((f) => <SelectItem key={f.value} value={f.value}>{t(f.labelKey)}</SelectItem>)}
               </SelectContent>
             </Select>
             <div className="grid grid-cols-3 gap-1" role="group" aria-label="Filter by platform">
@@ -218,20 +221,20 @@ export default function InboxPage() {
                   aria-pressed={platformFilter === filter.value}
                   className="h-8 w-full justify-start rounded-md px-2 text-[11px] font-medium"
                 >
-                  {filter.filterLabel}
+                  {filter.filterLabel ?? t("inbox.platformAll")}
                 </Button>
               ))}
             </div>
             <div className="relative">
               <Search className="absolute left-2 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
-              <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search…" className="h-9 rounded-lg pl-8 text-xs" />
+              <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t("inbox.search")} className="h-9 rounded-lg pl-8 text-xs" />
             </div>
           </div>
 
           <ScrollArea className="flex-1">
             <div className="p-2.5">
               {groupedItems.length === 0 ? (
-                <p className="text-center text-xs text-muted-foreground py-12">No conversations</p>
+                <p className="text-center text-xs text-muted-foreground py-12">{t("inbox.noConversations")}</p>
               ) : groupedItems.map((group) => (
                 <div key={group.value} className="mb-4 last:mb-0">
                   <div className="flex items-center gap-2 px-1.5 pb-1.5">
@@ -277,26 +280,26 @@ export default function InboxPage() {
                         <div className="min-w-0 flex-1">
                           <div className="mb-1 flex items-center justify-between gap-2">
                             <p className="min-w-0 flex-1 truncate text-[13px] font-semibold text-foreground">
-                              {item.user_display_name || item.title || item.platform_user_id || "Anonymous"}
+                              {item.user_display_name || item.title || item.platform_user_id || t("inbox.anonymous")}
                             </p>
                             <div className="flex items-center gap-1.5">
-                              {item.last_message_at && <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{fmtRelTime(item.last_message_at)}</span>}
+                              {item.last_message_at && <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{fmtRelTime(item.last_message_at, t("inbox.timeNow"))}</span>}
                               {item.sentiment === "negative" && (
                                 <Badge variant="destructive" className="h-4 px-1.5 text-[10px] gap-0.5">
-                                  <AlertTriangle className="size-2.5" /> Angry
+                                  <AlertTriangle className="size-2.5" /> {t("inbox.angry")}
                                 </Badge>
                               )}
                               {item.sentiment === "positive" && (
                                 <Badge variant="success" className="h-4 px-1.5 text-[10px]">😊</Badge>
                               )}
                               <Badge variant={STATUS_BADGE[item.status].variant} className="h-4 px-1.5 text-[10px]">
-                                {STATUS_BADGE[item.status].label}
+                                {t(STATUS_BADGE[item.status].labelKey)}
                               </Badge>
                             </div>
                           </div>
-                          <p className="truncate text-xs leading-5 text-muted-foreground">{item.last_message || "(no messages)"}</p>
+                          <p className="truncate text-xs leading-5 text-muted-foreground">{item.last_message || t("inbox.noMessagesPreview")}</p>
                           <p className="mt-1 text-[11px] text-muted-foreground">
-                            {item.user_message_count + item.model_message_count} messages
+                            {tf("inbox.messagesCount", { n: item.user_message_count + item.model_message_count })}
                           </p>
                         </div>
                       </button>
@@ -326,10 +329,9 @@ export default function InboxPage() {
                 <div className="mx-auto size-14 rounded-2xl bg-muted/40 flex items-center justify-center mb-4">
                   <InboxIcon className="size-7 text-muted-foreground/50" />
                 </div>
-                <p className="text-sm font-medium text-foreground mb-1">Select a conversation</p>
+                <p className="text-sm font-medium text-foreground mb-1">{t("inbox.selectConversation")}</p>
                 <p className="text-xs text-muted-foreground leading-relaxed">
-                  Pick a conversation from the left to review the full transcript,
-                  reply to the customer, or take it over from the AI.
+                  {t("inbox.selectConversationDesc")}
                 </p>
               </div>
             </div>
@@ -354,6 +356,7 @@ function TestChatDialog({ open, onOpenChange }: {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 }) {
+	const { t, tf } = useI18n();
 	const [sessionId, setSessionId] = React.useState<string>();
 	const [messages, setMessages] = React.useState<TestChatMessage[]>([]);
 	const [draft, setDraft] = React.useState("");
@@ -406,7 +409,7 @@ function TestChatDialog({ open, onOpenChange }: {
 			)));
 		} catch (error) {
 			setMessages((current) => current.filter((message) => message.id !== pendingID));
-			toast.error((error as Error).message || "Test chat failed");
+			toast.error((error as Error).message || t("testchat.failed"));
 		} finally {
 			setSending(false);
 		}
@@ -418,11 +421,11 @@ function TestChatDialog({ open, onOpenChange }: {
 				<DialogHeader className="border-b border-border px-5 py-4 pr-12">
 					<div className="flex items-center justify-between gap-3">
 						<div>
-							<DialogTitle className="flex items-center gap-2"><Sparkles className="size-4 text-primary" /> Test AI</DialogTitle>
-							<DialogDescription className="mt-1 text-xs">Private test conversation. Replies use your active model and knowledge base, and are never sent to customers.</DialogDescription>
+							<DialogTitle className="flex items-center gap-2"><Sparkles className="size-4 text-primary" /> {t("testchat.title")}</DialogTitle>
+							<DialogDescription className="mt-1 text-xs">{t("testchat.description")}</DialogDescription>
 						</div>
 						<Button type="button" size="sm" variant="ghost" onClick={startNewTest} disabled={sending} className="h-7 px-2 text-xs">
-							New test
+							{t("testchat.newTest")}
 						</Button>
 					</div>
 				</DialogHeader>
@@ -432,8 +435,8 @@ function TestChatDialog({ open, onOpenChange }: {
 						<div className="flex h-full items-center justify-center">
 							<div className="max-w-sm text-center">
 								<Sparkles className="mx-auto mb-3 size-7 text-primary/60" />
-								<p className="text-sm font-medium text-foreground">Start a customer-style conversation</p>
-								<p className="mt-1 text-xs leading-relaxed text-muted-foreground">Ask a question covered by your knowledge base to verify the answer and sources.</p>
+								<p className="text-sm font-medium text-foreground">{t("testchat.emptyTitle")}</p>
+								<p className="mt-1 text-xs leading-relaxed text-muted-foreground">{t("testchat.emptyDesc")}</p>
 							</div>
 						</div>
 					) : (
@@ -444,7 +447,7 @@ function TestChatDialog({ open, onOpenChange }: {
 										"mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-md text-[10px] font-semibold",
 										message.role === "user" ? "bg-accent text-accent-foreground" : "bg-primary/10 text-primary",
 									)}>
-										{message.role === "user" ? "YOU" : "AI"}
+										{message.role === "user" ? t("testchat.you") : "AI"}
 									</div>
 									<div className={cn(
 										"max-w-[85%] rounded-md border px-3 py-2.5 text-sm",
@@ -453,11 +456,11 @@ function TestChatDialog({ open, onOpenChange }: {
 										{message.pending ? <Loader2 className="size-4 animate-spin text-muted-foreground" /> : message.role === "user" ? (
 											<p className="whitespace-pre-wrap leading-relaxed">{message.content}</p>
 										) : <Markdown>{message.content}</Markdown>}
-										{message.usedMock && <Badge variant="warning" className="mt-2 h-4 px-1.5 text-[10px]">mock reply</Badge>}
+										{message.usedMock && <Badge variant="warning" className="mt-2 h-4 px-1.5 text-[10px]">{t("testchat.mockReply")}</Badge>}
 										{message.sources && message.sources.length > 0 && (
 											<div className="mt-3 flex flex-wrap gap-1.5 border-t border-border pt-2">
 												{message.sources.map((source) => (
-													<span key={`${source.doc_id}-${source.title}`} title={`Similarity ${(source.score * 100).toFixed(0)}%`} className="inline-flex max-w-full items-center gap-1 rounded border border-border bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
+													<span key={`${source.doc_id}-${source.title}`} title={tf("testchat.similarity", { score: (source.score * 100).toFixed(0) })} className="inline-flex max-w-full items-center gap-1 rounded border border-border bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
 														<FileText className="size-3 shrink-0" />
 														<span className="truncate">{source.title}</span>
 													</span>
@@ -482,17 +485,17 @@ function TestChatDialog({ open, onOpenChange }: {
 									void sendTest();
 								}
 							}}
-							placeholder="Type a customer message..."
+							placeholder={t("testchat.placeholder")}
 							rows={2}
 							disabled={sending}
 							className="min-h-10 flex-1 resize-none text-sm"
 						/>
 						<Button type="button" size="sm" onClick={() => void sendTest()} disabled={sending || !draft.trim()} className="h-10 gap-1.5">
 							{sending ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
-							Send
+							{t("testchat.send")}
 						</Button>
 					</div>
-					<p className="mt-1.5 text-[11px] text-muted-foreground">Enter to send, Shift+Enter for a new line.</p>
+					<p className="mt-1.5 text-[11px] text-muted-foreground">{t("testchat.hint")}</p>
 				</div>
 			</DialogContent>
 		</Dialog>
@@ -509,23 +512,73 @@ function ConversationDetail({
   onMutate: () => void;
   realtimeVersion: number;
 }) {
-  const { data: messages, mutate: mutateMessages } = useSWR(
-    item.session_id ? `inbox-msg-${item.session_id}` : null,
-    () => listSessionMessages(item.session_id, 200),
-    { refreshInterval: 5_000 }, // WS 兜底轮询
-  );
-  const msgList: ChatMessageItem[] = (messages ?? []) as ChatMessageItem[];
+  // Transcript: newest 200 on mount, then message_id-cursor deltas driven by
+  // realtime events with a 15s fallback poll (WS 断线自愈). The component is
+  // keyed by session_id upstream, so switching conversations remounts it.
+  const { t, tf } = useI18n();
+  const [msgList, setMsgList] = React.useState<ChatMessageItem[]>([]);
+  const maxMessageIdRef = React.useRef(0);
+
+  const pullMessages = React.useCallback(async (after: number) => {
+    try {
+      const rows = await listSessionMessages(item.session_id, 200, after);
+      if (rows.length === 0) return;
+      maxMessageIdRef.current = rows[rows.length - 1].message_id;
+      setMsgList((prev) => {
+        const known = new Set(prev.map((m) => m.message_id));
+        const fresh = rows.filter((m) => !known.has(m.message_id));
+        return fresh.length > 0 ? [...prev, ...fresh] : prev;
+      });
+    } catch {
+      // Transient error — the fallback poll retries.
+    }
+  }, [item.session_id]);
 
   React.useEffect(() => {
-    if (realtimeVersion > 0) void mutateMessages();
-  }, [realtimeVersion, mutateMessages]);
+    let cancelled = false;
+    void listSessionMessages(item.session_id, 200)
+      .then((rows) => {
+        if (cancelled) return;
+        if (rows.length > 0) maxMessageIdRef.current = rows[rows.length - 1].message_id;
+        setMsgList(rows);
+      })
+      .catch(() => undefined);
+    const timer = window.setInterval(() => {
+      void pullMessages(maxMessageIdRef.current);
+    }, 15_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [item.session_id, pullMessages]);
+
+  const lastVersionRef = React.useRef(realtimeVersion);
+  React.useEffect(() => {
+    // Skip the version value present at mount (this pane remounts per session,
+    // so an inherited count must not trigger a redundant fetch).
+    if (realtimeVersion === lastVersionRef.current) return;
+    lastVersionRef.current = realtimeVersion;
+    void pullMessages(maxMessageIdRef.current);
+  }, [realtimeVersion, pullMessages]);
   const isMine = item.assigned_agent_id === currentUserId;
   const canReply = isMine || item.status === "handoff" || item.status === "pending";
 
-  // Lazy conversation summary — only fetched once per session.
-  const { data: summaryData } = useSWR(
-    item.session_id && msgList.length > 0 ? `inbox-summary-${item.session_id}` : null,
-    () => getSessionSummary(item.session_id),
+  // Conversation summary — follows the user's language preference and is
+  // regenerated server-side when the transcript grows. The key includes the
+  // language + refresh counter so changing either re-fetches immediately.
+  const { data: prefs } = useSWR("auth-preferences", getPreferences);
+  const summaryLang = prefs?.language ?? "auto";
+  const [summaryRefresh, setSummaryRefresh] = React.useState(0);
+  const summaryForceRef = React.useRef(false);
+  const { data: summaryData, isValidating: summaryLoading } = useSWR(
+    item.session_id && msgList.length > 0 && prefs
+      ? `inbox-summary-${item.session_id}-${summaryLang}-${summaryRefresh}`
+      : null,
+    async () => {
+      const res = await getSessionSummary(item.session_id, summaryLang, summaryForceRef.current);
+      summaryForceRef.current = false;
+      return res;
+    },
   );
 
   const [reply, setReply] = React.useState("");
@@ -620,8 +673,8 @@ function ConversationDetail({
       setTemplateName("");
       setTemplateParameters("");
       setComposerKind("text");
-      void mutateMessages();
-      toast.success(payload ? "Message queued for delivery" : "Reply sent");
+      void pullMessages(maxMessageIdRef.current);
+      toast.success(payload ? t("inbox.toastQueued") : t("inbox.toastSent"));
     } catch (e) {
       toast.error((e as Error).message);
     } finally {
@@ -653,19 +706,19 @@ function ConversationDetail({
   }, [msgList.length, item.session_id]);
 
   const handleTakeover = async () => {
-    try { await takeoverSession(item.session_id); toast.success("Conversation taken over"); onMutate(); }
+    try { await takeoverSession(item.session_id); toast.success(t("inbox.toastTakenOver")); onMutate(); }
     catch (e) { toast.error((e as Error).message); }
   };
   const handleResolve = async () => {
-    try { await updateSessionStatus(item.session_id, "resolved", notes); toast.success("Marked resolved"); onMutate(); }
+    try { await updateSessionStatus(item.session_id, "resolved", notes); toast.success(t("inbox.toastResolved")); onMutate(); }
     catch (e) { toast.error((e as Error).message); }
   };
   const handleClose = async () => {
-    try { await updateSessionStatus(item.session_id, "closed", notes); toast.success("Closed"); onMutate(); }
+    try { await updateSessionStatus(item.session_id, "closed", notes); toast.success(t("inbox.toastClosed")); onMutate(); }
     catch (e) { toast.error((e as Error).message); }
   };
   const handleAssignToMe = async () => {
-    try { await assignSession(item.session_id, currentUserId, notes); toast.success("Assigned to you"); onMutate(); }
+    try { await assignSession(item.session_id, currentUserId, notes); toast.success(t("inbox.toastAssigned")); onMutate(); }
     catch (e) { toast.error((e as Error).message); }
   };
 
@@ -675,29 +728,29 @@ function ConversationDetail({
       <div className="px-5 py-3 border-b border-border flex items-center justify-between flex-wrap gap-2">
         <div className="min-w-0">
           <p className="text-base font-semibold truncate">
-            {item.user_display_name || item.title || "Untitled"}
+            {item.user_display_name || item.title || t("inbox.anonymous")}
           </p>
           <p className="text-sm text-muted-foreground">
-            {item.platform} · session {item.session_id.slice(0, 8)}
-            {item.assigned_agent_name && ` · agent: ${item.assigned_agent_name}`}
+            {item.platform} · {tf("inbox.sessionLabel", { id: item.session_id.slice(0, 8) })}
+            {item.assigned_agent_name && ` · ${tf("inbox.agentLabel", { name: item.assigned_agent_name })}`}
           </p>
         </div>
         <div className="flex items-center gap-2">
           {!isMine && (
             <Button size="sm" onClick={handleTakeover} className="h-7 text-xs gap-1.5">
-              <HandMetal className="size-3" />Take over
+              <HandMetal className="size-3" />{t("inbox.takeOver")}
             </Button>
           )}
           {isMine && (
             <Button size="sm" variant="outline" onClick={handleAssignToMe} className="h-7 text-xs gap-1.5">
-              <UserCircle2 className="size-3" />Reassign to me
+              <UserCircle2 className="size-3" />{t("inbox.reassignToMe")}
             </Button>
           )}
           <Button size="sm" variant="outline" onClick={handleResolve} className="h-7 text-xs gap-1.5">
-            <CheckCircle2 className="size-3" />Resolve
+            <CheckCircle2 className="size-3" />{t("inbox.resolve")}
           </Button>
           <Button size="sm" variant="ghost" onClick={handleClose} className="h-7 text-xs gap-1.5 text-muted-foreground">
-            <XCircle className="size-3" />Close
+            <XCircle className="size-3" />{t("inbox.close")}
           </Button>
         </div>
       </div>
@@ -711,10 +764,23 @@ function ConversationDetail({
           <Sparkles className="size-3.5 text-info flex-shrink-0 mt-0.5" />
           <div className="flex-1">
             <p className="text-xs font-semibold uppercase tracking-wide text-info mb-0.5">
-              Summary {summaryData.cached ? "(cached)" : ""}
+              {t("inbox.summary")} {summaryData.cached ? t("inbox.summaryCached") : ""}
             </p>
             <p className="text-foreground leading-relaxed">{summaryData.summary}</p>
           </div>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-6 shrink-0"
+            title={t("inbox.summaryRegenTitle")}
+            disabled={summaryLoading}
+            onClick={() => {
+              summaryForceRef.current = true;
+              setSummaryRefresh((v) => v + 1);
+            }}
+          >
+            <RefreshCw className={cn("size-3", summaryLoading && "animate-spin")} />
+          </Button>
         </div>
       )}
 
@@ -724,19 +790,19 @@ function ConversationDetail({
           <div>
             <p className="font-medium">
               {replyWindowExpired
-                ? isWhatsApp ? "WhatsApp template required" : `${platformName} reply window expired`
-                : `${platformName} customer-service window is open`}
+                ? isWhatsApp ? t("inbox.windowTemplateRequired") : tf("inbox.windowExpired", { platform: platformName })
+                : tf("inbox.windowOpen", { platform: platformName })}
             </p>
             <p className="mt-0.5 leading-relaxed opacity-85">
               {replyWindowKnown
                 ? replyWindowExpired
                   ? isWhatsApp
-                    ? "Send an approved template, or wait for a new customer message before sending a normal reply."
-                    : "Wait for a new customer message before replying."
-                  : `Replies remain available until ${new Date(replyWindowExpiry).toLocaleString('en-US')}.`
+                    ? t("inbox.windowWaitTemplate")
+                    : t("inbox.windowWaitReply")
+                  : tf("inbox.windowOpenUntil", { time: new Date(replyWindowExpiry).toLocaleString('en-US') })
                 : isWhatsApp
-                  ? "No customer message window is available. Only an approved template can be sent."
-                  : "No customer message window is available for this conversation."}
+                  ? t("inbox.windowNoneTemplate")
+                  : t("inbox.windowNone")}
             </p>
           </div>
         </div>
@@ -748,7 +814,7 @@ function ConversationDetail({
       <ScrollArea ref={messagesScrollRef} className="min-h-0 flex-1">
         <div className="max-w-3xl mx-auto px-5 py-5 space-y-3">
           {msgList.length === 0 ? (
-            <p className="text-center text-xs text-muted-foreground py-8">No messages</p>
+            <p className="text-center text-xs text-muted-foreground py-8">{t("inbox.noMessages")}</p>
           ) : msgList.map((m) => (
             <div key={m.message_id} className={cn("flex gap-2", m.role === "user" && "flex-row-reverse")}>
               <div className={cn(
@@ -756,7 +822,7 @@ function ConversationDetail({
                 m.role === "user" ? "bg-accent" : m.role === "agent" ? "bg-warning/20" : "bg-primary/10",
               )}>
                 <span className="text-[10px] font-semibold text-muted-foreground">
-                  {m.role === "user" ? "U" : m.role === "model" ? "AI" : m.role === "agent" ? "ME" : "S"}
+                  {m.role === "user" ? t("inbox.roleUser") : m.role === "model" ? t("inbox.roleModel") : m.role === "agent" ? t("inbox.roleAgent") : t("inbox.roleSystem")}
                 </span>
               </div>
               <div className={cn(
@@ -782,7 +848,7 @@ function ConversationDetail({
         <div className="border-t border-border bg-card/40 px-5 py-3">
           <div className="mb-2 flex items-center justify-between gap-3">
             <label className="flex items-center gap-1.5 text-xs font-medium text-foreground">
-              <Send className="size-3" /> Reply to customer
+              <Send className="size-3" /> {t("inbox.replyToCustomer")}
             </label>
             {cannedAll.length > 0 && composerKind !== "template" && (
               <button
@@ -792,10 +858,10 @@ function ConversationDetail({
                   "inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded transition-colors",
                   cannedOpen ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground hover:bg-accent/50",
                 )}
-                title="Insert a saved reply"
+                title={t("inbox.insertSavedTitle")}
               >
                 <Zap className="size-3" />
-                {cannedOpen ? "Hide quick replies" : "Quick reply"}
+                {cannedOpen ? t("inbox.hideQuickReplies") : t("inbox.quickReply")}
               </button>
             )}
           </div>
@@ -821,7 +887,7 @@ function ConversationDetail({
                     )}
                   >
                     <Icon className="size-3" />
-                    {mode.label}
+                    {t(mode.labelKey)}
                   </button>
                 );
               })}
@@ -834,14 +900,14 @@ function ConversationDetail({
                 <Input
                   value={cannedQuery}
                   onChange={(e) => setCannedQuery(e.target.value)}
-                  placeholder={`Search ${cannedAll.length} saved replies…`}
+                  placeholder={tf("inbox.cannedSearch", { n: cannedAll.length })}
                   className="h-7 text-xs"
                 />
               </div>
               <ScrollArea className="max-h-44">
                 <div className="p-1 space-y-0.5">
                   {filteredCanned.length === 0 ? (
-                    <p className="text-center text-xs text-muted-foreground py-4">No matching replies</p>
+                    <p className="text-center text-xs text-muted-foreground py-4">{t("inbox.cannedEmpty")}</p>
                   ) : filteredCanned.slice(0, 30).map((c) => (
                     <button
                       key={c.id}
@@ -868,16 +934,16 @@ function ConversationDetail({
               <Select value={mediaType} onValueChange={(value) => setMediaType(value as NonNullable<PlatformMessagePayload["media_type"]>)}>
                 <SelectTrigger className="h-9 text-xs"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="image">Image</SelectItem>
-                  {item.platform !== "instagram" && <SelectItem value="document">Document</SelectItem>}
-                  {item.platform !== "instagram" && <SelectItem value="audio">Audio</SelectItem>}
-                  <SelectItem value="video">Video</SelectItem>
+                  <SelectItem value="image">{t("inbox.mediaImage")}</SelectItem>
+                  {item.platform !== "instagram" && <SelectItem value="document">{t("inbox.mediaDocument")}</SelectItem>}
+                  {item.platform !== "instagram" && <SelectItem value="audio">{t("inbox.mediaAudio")}</SelectItem>}
+                  <SelectItem value="video">{t("inbox.mediaVideo")}</SelectItem>
                 </SelectContent>
               </Select>
               <Input
                 value={mediaURL}
                 onChange={(event) => setMediaURL(event.target.value)}
-                placeholder="Public HTTPS media URL"
+                placeholder={t("inbox.mediaUrlPlaceholder")}
                 disabled={sending || isReplyBlocked}
                 className="h-9 text-xs"
               />
@@ -886,20 +952,20 @@ function ConversationDetail({
 
           {composerKind === "buttons" && (
             <div className="mb-3 space-y-2 border-l-2 border-primary/30 pl-3">
-              <p className="text-[11px] text-muted-foreground">Customer choices. Up to {buttonLimits.maxButtons} buttons; labels use {buttonLimits.maxTitleRunes} characters and values use {buttonLimits.maxPayloadBytes} bytes.</p>
+              <p className="text-[11px] text-muted-foreground">{tf("inbox.buttonsHint", { max: buttonLimits.maxButtons, chars: buttonLimits.maxTitleRunes, bytes: buttonLimits.maxPayloadBytes })}</p>
               {buttons.map((button, index) => (
                 <div key={index} className="flex gap-2">
                   <Input
                     value={button.title}
                     onChange={(event) => setButtons((current) => current.map((entry, entryIndex) => entryIndex === index ? { ...entry, title: clampRunes(event.target.value, buttonLimits.maxTitleRunes) } : entry))}
-                    placeholder={`Button label (${button.title.length}/${buttonLimits.maxTitleRunes})`}
+                    placeholder={tf("inbox.buttonLabelPlaceholder", { used: button.title.length, max: buttonLimits.maxTitleRunes })}
                     disabled={sending || isReplyBlocked}
                     className="h-8 text-xs"
                   />
                   <Input
                     value={button.payload}
                     onChange={(event) => setButtons((current) => current.map((entry, entryIndex) => entryIndex === index ? { ...entry, payload: clampUTF8(event.target.value, buttonLimits.maxPayloadBytes) } : entry))}
-                    placeholder={`Value (${utf8Bytes(button.payload)}/${buttonLimits.maxPayloadBytes} bytes)`}
+                    placeholder={tf("inbox.buttonValuePlaceholder", { used: utf8Bytes(button.payload), max: buttonLimits.maxPayloadBytes })}
                     disabled={sending || isReplyBlocked}
                     className="h-8 text-xs"
                   />
@@ -910,8 +976,8 @@ function ConversationDetail({
                     disabled={sending || isReplyBlocked || buttons.length === 1}
                     onClick={() => setButtons((current) => current.filter((_, entryIndex) => entryIndex !== index))}
                     className="size-8 shrink-0 text-muted-foreground hover:text-destructive"
-                    title="Remove button"
-                    aria-label="Remove button"
+                    title={t("inbox.removeButton")}
+                    aria-label={t("inbox.removeButton")}
                   >
                     <Trash2 className="size-3.5" />
                   </Button>
@@ -925,14 +991,14 @@ function ConversationDetail({
                 onClick={() => setButtons((current) => [...current, { title: "", payload: "" }])}
                 className="h-7 gap-1 text-[11px]"
               >
-                <Plus className="size-3" /> Add choice
+                <Plus className="size-3" /> {t("inbox.addChoice")}
               </Button>
             </div>
           )}
 
           {composerKind === "template" && (
             <div className="mb-3 space-y-2 border-l-2 border-success/40 pl-3">
-              <p className="text-[11px] text-muted-foreground">Only templates currently approved in this customer&apos;s WhatsApp Business Account can be sent.</p>
+              <p className="text-[11px] text-muted-foreground">{t("inbox.templateHint")}</p>
               <Select
                 value={selectedTemplate ? whatsAppTemplateKey(selectedTemplate) : undefined}
                 onValueChange={(value) => {
@@ -944,7 +1010,7 @@ function ConversationDetail({
                 }}
                 disabled={sending || isLoadingWhatsAppTemplates || whatsAppTemplates.length === 0}
               >
-                <SelectTrigger className="h-8 text-xs"><SelectValue placeholder={isLoadingWhatsAppTemplates ? "Loading approved templates…" : "Select an approved template"} /></SelectTrigger>
+                <SelectTrigger className="h-8 text-xs"><SelectValue placeholder={isLoadingWhatsAppTemplates ? t("inbox.templateLoading") : t("inbox.templateSelect")} /></SelectTrigger>
                 <SelectContent>
                   {whatsAppTemplates.map((template) => (
                     <SelectItem key={whatsAppTemplateKey(template)} value={whatsAppTemplateKey(template)}>
@@ -954,9 +1020,9 @@ function ConversationDetail({
                 </SelectContent>
               </Select>
               {whatsAppTemplateError ? (
-                <p className="text-[11px] text-destructive">Could not load templates. Confirm this token has WhatsApp Business Management access.</p>
+                <p className="text-[11px] text-destructive">{t("inbox.templateError")}</p>
               ) : !isLoadingWhatsAppTemplates && whatsAppTemplates.length === 0 ? (
-                <p className="text-[11px] text-warning">No compatible approved templates were found for this WhatsApp account.</p>
+                <p className="text-[11px] text-warning">{t("inbox.templateNone")}</p>
               ) : selectedTemplate ? (
                 <div className="space-y-2 rounded border border-border bg-muted/30 px-2.5 py-2">
                   {selectedTemplate.body_preview && <p className="text-[11px] text-muted-foreground line-clamp-2">{selectedTemplate.body_preview}</p>}
@@ -964,15 +1030,15 @@ function ConversationDetail({
                     <Input
                       value={templateParameters}
                       onChange={(event) => setTemplateParameters(event.target.value)}
-                      placeholder={`${selectedTemplate.body_parameter_count} body value${selectedTemplate.body_parameter_count === 1 ? "" : "s"}, separated by commas`}
+                      placeholder={tf("inbox.templateParamsPlaceholder", { n: selectedTemplate.body_parameter_count })}
                       disabled={sending}
                       className="h-8 text-xs"
                     />
                   ) : (
-                    <p className="text-[11px] text-success">This template has no body variables.</p>
+                    <p className="text-[11px] text-success">{t("inbox.templateNoVars")}</p>
                   )}
                   {selectedTemplate.body_parameter_count > 0 && templateBodyParams.length !== selectedTemplate.body_parameter_count && (
-                    <p className="text-[11px] text-warning">Enter {selectedTemplate.body_parameter_count} body value{selectedTemplate.body_parameter_count === 1 ? "" : "s"}; {templateBodyParams.length} entered.</p>
+                    <p className="text-[11px] text-warning">{tf("inbox.templateParamsMissing", { need: selectedTemplate.body_parameter_count, have: templateBodyParams.length })}</p>
                   )}
                 </div>
               ) : null}
@@ -980,7 +1046,7 @@ function ConversationDetail({
           )}
 
           {composerKind === "template" && (
-            <p className="mb-2 text-[11px] text-muted-foreground">The approved template defines the customer-facing message body.</p>
+            <p className="mb-2 text-[11px] text-muted-foreground">{t("inbox.templateBodyNote")}</p>
           )}
 
           <div className="flex gap-2">
@@ -993,7 +1059,7 @@ function ConversationDetail({
                   handleSendReply();
                 }
               }}
-              placeholder="Type your reply… (⌘/Ctrl+Enter to send)"
+              placeholder={t("inbox.replyPlaceholder")}
               rows={2}
               disabled={sending || isReplyBlocked || composerKind === "template"}
               className="text-xs resize-none flex-1"
@@ -1005,7 +1071,7 @@ function ConversationDetail({
               className="h-9 text-xs gap-1.5 self-end"
             >
               {sending ? <Loader2 className="size-3 animate-spin" /> : <Send className="size-3" />}
-              {composerKind === "template" ? "Send template" : "Send"}
+              {composerKind === "template" ? t("inbox.sendTemplate") : t("inbox.send")}
             </Button>
           </div>
         </div>
@@ -1013,11 +1079,11 @@ function ConversationDetail({
 
       {/* Internal notes */}
       <div className="px-5 py-3 border-t border-border">
-        <label className="text-xs text-muted-foreground block mb-1">Internal notes (visible to your team only)</label>
+        <label className="text-xs text-muted-foreground block mb-1">{t("inbox.notesLabel")}</label>
         <Textarea
           value={notes}
           onChange={(e) => onNotesChange(e.target.value)}
-          placeholder="Add context for other agents…"
+          placeholder={t("inbox.notesPlaceholder")}
           rows={2}
           className="text-xs resize-none"
         />
@@ -1031,12 +1097,12 @@ function ConversationDetail({
 // ============================================
 
 /** Compact relative time for list rows: now / 5m / 2h / 3d / 9/1. */
-function fmtRelTime(iso: string): string {
+function fmtRelTime(iso: string, nowLabel: string): string {
   const then = new Date(iso).getTime();
   if (Number.isNaN(then)) return "";
   const diffMs = Date.now() - then;
   const mins = Math.floor(diffMs / 60_000);
-  if (mins < 1) return "now";
+  if (mins < 1) return nowLabel;
   if (mins < 60) return `${mins}m`;
   const hours = Math.floor(mins / 60);
   if (hours < 24) return `${hours}h`;
@@ -1062,13 +1128,14 @@ function parseInboundPlatformMedia(metadata?: string | Record<string, unknown> |
 }
 
 function InboundPlatformMediaPreview({ messageID, media }: { messageID: number; media: InboundPlatformMedia }) {
+  const { t, tf } = useI18n();
   const [previewURL, setPreviewURL] = React.useState<string | null>(null);
   const [audioURL, setAudioURL] = React.useState<string | null>(null);
   const [loadingPreview, setLoadingPreview] = React.useState(false);
   const isImage = media.kind === "image" || media.kind === "photo";
   const isAudio = media.kind === "audio" || media.kind === "voice";
   const MediaIcon = isImage ? ImageIcon : isAudio ? Volume2 : FileText;
-  const status = media.processing_status === "unavailable" ? "Unavailable" : media.processing_error ? "Stored with warning" : "Ready";
+  const status = media.processing_status === "unavailable" ? t("inbox.mediaUnavailable") : media.processing_error ? t("inbox.mediaStoredWarning") : t("inbox.mediaReady");
 
   const preview = async () => {
     setLoadingPreview(true);
@@ -1083,7 +1150,7 @@ function InboundPlatformMediaPreview({ messageID, media }: { messageID: number; 
         window.open(response.url, "_blank", "noopener,noreferrer");
       }
     } catch (err) {
-      toast.error((err as Error).message || "Could not open attachment");
+      toast.error((err as Error).message || t("inbox.couldNotOpenAttachment"));
     } finally {
       setLoadingPreview(false);
     }
@@ -1094,13 +1161,13 @@ function InboundPlatformMediaPreview({ messageID, media }: { messageID: number; 
       <div className="flex min-w-0 items-center gap-2">
         <MediaIcon className="size-4 shrink-0 text-muted-foreground" />
         <div className="min-w-0 flex-1">
-          <p className="truncate font-medium text-foreground">{media.filename || (isAudio ? "Voice message" : `${media.kind} attachment`)}</p>
+          <p className="truncate font-medium text-foreground">{media.filename || (isAudio ? t("inbox.voiceMessage") : tf("inbox.attachment", { kind: media.kind }))}</p>
           <p className="mt-0.5 truncate text-[10px] text-muted-foreground">{media.mime_type || media.kind} · {status}</p>
         </div>
         {media.processing_status !== "unavailable" && (
           <Button type="button" size="sm" variant="outline" onClick={() => void preview()} disabled={loadingPreview} className="h-7 shrink-0 gap-1 px-2 text-[11px]">
             {loadingPreview ? <Loader2 className="size-3 animate-spin" /> : <Paperclip className="size-3" />}
-            Preview
+            {t("inbox.preview")}
           </Button>
         )}
       </div>
@@ -1111,13 +1178,13 @@ function InboundPlatformMediaPreview({ messageID, media }: { messageID: number; 
         <a href={previewURL} target="_blank" rel="noreferrer" className="mt-2 block overflow-hidden border border-border bg-muted/30">
           {/* Signed R2 hosts are runtime-only and cannot be safely allowlisted for next/image. */}
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={previewURL} alt={media.filename || "Customer attachment"} className="max-h-64 w-full object-contain" />
+          <img src={previewURL} alt={media.filename || tf("inbox.attachment", { kind: media.kind })} className="max-h-64 w-full object-contain" />
         </a>
       )}
       {media.processing_error && <p className="mt-2 text-[11px] text-warning">{media.processing_error}</p>}
       {media.extracted_text && (
         <details className="mt-2 border-t border-border pt-2 text-[11px] text-muted-foreground">
-          <summary className="cursor-pointer font-medium text-foreground">Extracted text</summary>
+          <summary className="cursor-pointer font-medium text-foreground">{t("inbox.extractedText")}</summary>
           <p className="mt-1 whitespace-pre-wrap leading-relaxed">{media.extracted_text}</p>
         </details>
       )}
@@ -1126,7 +1193,8 @@ function InboundPlatformMediaPreview({ messageID, media }: { messageID: number; 
 }
 
 function MessagePayloadPreview({ messageID, content, metadata, payload }: { messageID: number; content: string; metadata?: string | Record<string, unknown> | null; payload?: PlatformMessagePayload }) {
-  const mediaLabel = payload?.media_type ? `${payload.media_type.slice(0, 1).toUpperCase()}${payload.media_type.slice(1)}` : "Media";
+  const { t, tf } = useI18n();
+  const mediaLabel = payload?.media_type ? `${payload.media_type.slice(0, 1).toUpperCase()}${payload.media_type.slice(1)}` : t("inbox.modeMedia");
   const inboundMedia = parseInboundPlatformMedia(metadata);
   const isStoredPreview = payload && (
     content === "[Buttons sent]"
@@ -1142,7 +1210,7 @@ function MessagePayloadPreview({ messageID, content, metadata, payload }: { mess
         <div className="mt-2">
           <a href={payload.media_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 text-xs font-medium text-primary hover:underline">
             {payload.media_type === "image" ? <ImageIcon className="size-3.5" /> : <Paperclip className="size-3.5" />}
-            Open {mediaLabel.toLowerCase()}
+            {tf("inbox.openAttachment", { kind: mediaLabel.toLowerCase() })}
           </a>
         </div>
       )}
@@ -1157,7 +1225,7 @@ function MessagePayloadPreview({ messageID, content, metadata, payload }: { mess
       )}
       {payload?.kind === "template" && (
         <div className="mt-2 border-l-2 border-success/50 pl-2 text-[11px] text-muted-foreground">
-          <span className="font-medium text-foreground">WhatsApp template</span> {payload.template_name} ({payload.template_language})
+          <span className="font-medium text-foreground">{t("inbox.whatsappTemplate")}</span> {payload.template_name} ({payload.template_language})
           {payload.template_body_params?.length ? ` - ${payload.template_body_params.join(", ")}` : ""}
         </div>
       )}
@@ -1166,21 +1234,25 @@ function MessagePayloadPreview({ messageID, content, metadata, payload }: { mess
 }
 
 function MessageDeliveryState({ delivery }: { delivery: NonNullable<ChatMessageItem["delivery"]> }) {
+  const { t } = useI18n();
+  const isQueued = !(delivery.status === "cancelled" || delivery.status === "failed"
+    || delivery.provider_status === "failed" || delivery.provider_status === "read"
+    || delivery.provider_status === "delivered" || delivery.status === "sent");
   const state = delivery.status === "cancelled"
-    ? { label: "Not sent", detail: delivery.last_error || "This automatic reply was held before channel delivery", icon: CircleAlert, className: "text-warning" }
+    ? { label: t("inbox.deliveryNotSent"), detail: delivery.last_error || t("inbox.deliveryNotSentDetail"), icon: CircleAlert, className: "text-warning" }
     : delivery.status === "failed" || delivery.provider_status === "failed"
-    ? { label: "Failed", detail: delivery.last_error || "The channel rejected this message", icon: CircleAlert, className: "text-destructive" }
+    ? { label: t("inbox.deliveryFailed"), detail: delivery.last_error || t("inbox.deliveryFailedDetail"), icon: CircleAlert, className: "text-destructive" }
     : delivery.provider_status === "read"
-      ? { label: "Read", detail: delivery.read_at ? new Date(delivery.read_at).toLocaleString('en-US') : "Customer read this message", icon: CheckCheck, className: "text-info" }
+      ? { label: t("inbox.deliveryRead"), detail: delivery.read_at ? new Date(delivery.read_at).toLocaleString('en-US') : t("inbox.deliveryReadFallback"), icon: CheckCheck, className: "text-info" }
       : delivery.provider_status === "delivered"
-        ? { label: "Delivered", detail: delivery.delivered_at ? new Date(delivery.delivered_at).toLocaleString('en-US') : "Delivered to the customer", icon: CheckCheck, className: "text-success" }
+        ? { label: t("inbox.deliveryDelivered"), detail: delivery.delivered_at ? new Date(delivery.delivered_at).toLocaleString('en-US') : t("inbox.deliveryDeliveredFallback"), icon: CheckCheck, className: "text-success" }
         : delivery.status === "sent"
-          ? { label: "Accepted", detail: delivery.sent_at ? new Date(delivery.sent_at).toLocaleString('en-US') : "Accepted by the channel", icon: CheckCircle2, className: "text-muted-foreground" }
-          : { label: "Queued", detail: "Waiting for channel delivery", icon: Loader2, className: "text-muted-foreground" };
+          ? { label: t("inbox.deliveryAccepted"), detail: delivery.sent_at ? new Date(delivery.sent_at).toLocaleString('en-US') : t("inbox.deliveryAcceptedFallback"), icon: CheckCircle2, className: "text-muted-foreground" }
+          : { label: t("inbox.deliveryQueued"), detail: t("inbox.deliveryQueuedDetail"), icon: Loader2, className: "text-muted-foreground" };
   const Icon = state.icon;
   return (
     <span title={state.detail} className={cn("mt-2 flex w-fit items-center gap-1 text-[10px] font-medium", state.className)}>
-      <Icon className={cn("size-3", state.label === "Queued" && "animate-spin")} />
+      <Icon className={cn("size-3", isQueued && "animate-spin")} />
       {state.label}
     </span>
   );
@@ -1193,14 +1265,15 @@ function TagsBar({ sessionId, initial, onMutate }: {
   initial: string[];
   onMutate: () => void;
 }) {
+  const { t } = useI18n();
   const [tags, setTags] = React.useState<string[]>(initial);
   const [input, setInput] = React.useState("");
   const [saving, setSaving] = React.useState(false);
 
   const addTag = async (tag: string) => {
-    const t = tag.trim().toLowerCase();
-    if (!t || tags.includes(t)) return;
-    const next = [...tags, t];
+    const normalized = tag.trim().toLowerCase();
+    if (!normalized || tags.includes(normalized)) return;
+    const next = [...tags, normalized];
     setTags(next);
     setInput("");
     setSaving(true);
@@ -1216,7 +1289,7 @@ function TagsBar({ sessionId, initial, onMutate }: {
   };
 
   const removeTag = async (tag: string) => {
-    const next = tags.filter((t) => t !== tag);
+    const next = tags.filter((existing) => existing !== tag);
     setTags(next);
     setSaving(true);
     try {
@@ -1230,17 +1303,17 @@ function TagsBar({ sessionId, initial, onMutate }: {
     }
   };
 
-  const suggestions = COMMON_TAGS.filter((t) => !tags.includes(t)).slice(0, 5);
+  const suggestions = COMMON_TAGS.filter((candidate) => !tags.includes(candidate)).slice(0, 5);
 
   return (
     <div className="mx-5 mt-2 flex flex-wrap items-center gap-1">
-      {tags.map((t) => (
-        <Badge key={t} variant="secondary" className="gap-1 h-5 text-xs pr-1">
-          {t}
+      {tags.map((tag) => (
+        <Badge key={tag} variant="secondary" className="gap-1 h-5 text-xs pr-1">
+          {tag}
           <button
-            onClick={() => removeTag(t)}
+            onClick={() => removeTag(tag)}
             className="text-muted-foreground hover:text-destructive ml-0.5"
-            title="Remove tag"
+            title={t("inbox.tagRemove")}
             disabled={saving}
           >
             <XCircle className="size-3" />
@@ -1256,7 +1329,7 @@ function TagsBar({ sessionId, initial, onMutate }: {
             void addTag(input);
           }
         }}
-        placeholder="+ tag"
+        placeholder={t("inbox.tagPlaceholder")}
         className="bg-transparent text-xs border-b border-border focus:border-primary focus:outline-none w-20 px-0.5 py-0.5"
         disabled={saving}
       />

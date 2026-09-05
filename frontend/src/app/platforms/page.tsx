@@ -11,6 +11,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { PageHeader } from "@/components/page-header";
 import { Globe, MessageCircle, ExternalLink, CheckCircle2, Loader2, Link2, Camera, Plus, RefreshCw, Unplug, CircleAlert, Radio, Clock3, Inbox, Send, RotateCcw, type LucideIcon } from "lucide-react";
 import { toast } from "sonner";
+import { useI18n } from "@/lib/i18n";
 
 type PlatformKey = "meta" | "instagram" | "telegram" | "whatsapp" | "line";
 
@@ -43,19 +44,14 @@ interface PlatformHealth {
   checked_at?: string;
 }
 
+// User-facing text resolves through i18n keys of the form pf.{label}.*
+// (name / desc / inbound / outbound / receipts / limitation / webhookInfo).
 interface PlatformMeta {
   icon: LucideIcon;
   tone: "info" | "warning" | "default" | "success";
-  name: string;
   label: PlatformKey;
-  desc: string;
-  fields: { label: string; key: keyof PlatformConfig; placeholder: string; type?: string }[];
+  fields: { labelKey: string; key: keyof PlatformConfig; placeholder: string; type?: string }[];
   docsUrl: string;
-  webhookInfo: string;
-  inbound: string[];
-  outbound: string[];
-  receipts: string;
-  limitation: string;
 }
 
 interface MetaOAuthPage {
@@ -114,93 +110,58 @@ const PLATFORMS: PlatformMeta[] = [
   {
     icon: Globe,
     tone: "info",
-    name: "Facebook Messenger",
     label: "meta",
-    inbound: ["Text", "Quick-reply selections", "Postbacks", "Private media"],
-    outbound: ["Text", "Image, video, audio, document", "Quick replies"],
-    receipts: "Accepted, delivered, read",
-    limitation: "Customer media is copied to private tenant storage. The 24-hour customer-service window applies.",
-    desc: "Facebook Messenger via Meta Graph API",
     fields: [
-      { label: "Page ID", key: "page_id", placeholder: "123456789" },
-      { label: "Access Token", key: "access_token", placeholder: "EAA...", type: "password" },
-      { label: "App Secret (manual setup only)", key: "webhook_secret", placeholder: "your_meta_app_secret", type: "password" },
+      { labelKey: "pf.field.pageId", key: "page_id", placeholder: "123456789" },
+      { labelKey: "pf.field.accessToken", key: "access_token", placeholder: "EAA...", type: "password" },
+      { labelKey: "pf.field.appSecret", key: "webhook_secret", placeholder: "your_meta_app_secret", type: "password" },
     ],
     docsUrl: "https://developers.facebook.com/docs/messenger-platform",
-    webhookInfo: "Use Meta authorization above for automatic Page subscription. Manual setup: /api/v1/webhook/meta",
   },
   {
     icon: Globe,
     tone: "warning",
-    name: "Instagram Messaging",
     label: "instagram",
-    inbound: ["Text", "Quick-reply selections", "Postbacks", "Private media"],
-    outbound: ["Text", "Image and video"],
-    receipts: "Accepted, delivered, read",
-    limitation: "Outbound buttons are not available. Customer media is copied to private tenant storage.",
-    desc: "Instagram Business Direct Messages",
     fields: [
-      { label: "Business Account ID", key: "instagram_business_id", placeholder: "178414..." },
-      { label: "Access Token", key: "access_token", placeholder: "EAA...", type: "password" },
-      { label: "App Secret (manual setup only)", key: "webhook_secret", placeholder: "your_meta_app_secret", type: "password" },
+      { labelKey: "pf.field.businessAccountId", key: "instagram_business_id", placeholder: "178414..." },
+      { labelKey: "pf.field.accessToken", key: "access_token", placeholder: "EAA...", type: "password" },
+      { labelKey: "pf.field.appSecret", key: "webhook_secret", placeholder: "your_meta_app_secret", type: "password" },
     ],
     docsUrl: "https://developers.facebook.com/docs/messenger-platform",
-    webhookInfo: "Use Meta authorization above for automatic Instagram subscription",
   },
   {
     icon: MessageCircle,
     tone: "info",
-    name: "Telegram Bot",
     label: "telegram",
-    inbound: ["Private chat only", "Button callbacks", "Private media"],
-    outbound: ["Text", "Image, video, audio, document", "Inline buttons"],
-    receipts: "Bot API accepted",
-    limitation: "Telegram Bot API does not provide customer delivery or read receipts. Group chats are ignored.",
-    desc: "Automated messaging via Bot API",
     fields: [
-      { label: "Bot Token", key: "bot_token", placeholder: "123456:ABC-DEF...", type: "password" },
-      { label: "Webhook Secret Token", key: "webhook_secret", placeholder: "telegram_webhook_secret", type: "password" },
+      { labelKey: "pf.field.botToken", key: "bot_token", placeholder: "123456:ABC-DEF...", type: "password" },
+      { labelKey: "pf.field.webhookSecret", key: "webhook_secret", placeholder: "telegram_webhook_secret", type: "password" },
     ],
     docsUrl: "https://core.telegram.org/bots/api",
-    webhookInfo: "Webhook is registered automatically after save and verify",
   },
   {
     icon: MessageCircle,
     tone: "success" as const,
-    name: "WhatsApp Business",
     label: "whatsapp",
-    inbound: ["Text", "Button and list selections", "Private media"],
-    outbound: ["Text inside the 24-hour window", "Image, video, audio, document", "Reply buttons", "Approved templates outside the window"],
-    receipts: "Accepted, delivered, read, failed",
-    limitation: "Approved templates are managed in Meta Business Manager. Attachments are retained in private tenant storage.",
-    desc: "WhatsApp Cloud API with manual business-number setup",
     fields: [
       // WhatsApp Cloud API: Phone Number ID lives in the page_id slot (overloaded
       // backend-side; see platforms.go registerPlatformClient).
-      { label: "Phone Number ID", key: "page_id", placeholder: "108123456789012" },
-      { label: "Access Token", key: "access_token", placeholder: "EAAG...", type: "password" },
-      { label: "App Secret (manual setup only)", key: "webhook_secret", placeholder: "your_meta_app_secret", type: "password" },
+      { labelKey: "pf.field.phoneNumberId", key: "page_id", placeholder: "108123456789012" },
+      { labelKey: "pf.field.accessToken", key: "access_token", placeholder: "EAAG...", type: "password" },
+      { labelKey: "pf.field.appSecret", key: "webhook_secret", placeholder: "your_meta_app_secret", type: "password" },
     ],
     docsUrl: "https://developers.facebook.com/docs/whatsapp/cloud-api",
-    webhookInfo: "Webhook: /api/v1/webhook/whatsapp  ·  Connection becomes live after a signed event arrives",
   },
   {
     icon: MessageCircle,
     tone: "success",
-    name: "LINE Official Account",
     label: "line",
-    inbound: ["Private text messages"],
-    outbound: ["Text via Push API"],
-    receipts: "API accepted",
-    limitation: "Only one-to-one text conversations are handled. Group, room, and media events are ignored.",
-    desc: "LINE Messaging API for customer conversations",
     fields: [
-      { label: "Channel User ID", key: "page_id", placeholder: "U1234567890abcdef..." },
-      { label: "Channel Access Token", key: "access_token", placeholder: "eyJ...", type: "password" },
-      { label: "Channel Secret", key: "webhook_secret", placeholder: "line_channel_secret", type: "password" },
+      { labelKey: "pf.field.channelUserId", key: "page_id", placeholder: "U1234567890abcdef..." },
+      { labelKey: "pf.field.channelAccessToken", key: "access_token", placeholder: "eyJ...", type: "password" },
+      { labelKey: "pf.field.channelSecret", key: "webhook_secret", placeholder: "line_channel_secret", type: "password" },
     ],
     docsUrl: "https://developers.line.biz/en/docs/messaging-api/overview/",
-    webhookInfo: "Webhook: /api/v1/webhook/line - connection becomes live after a signed event arrives",
   },
 ];
 
@@ -212,6 +173,7 @@ const TONE_CLASS: Record<"info" | "warning" | "default" | "success", string> = {
 };
 
 export default function PlatformsPage() {
+  const { t, tf } = useI18n();
   const { data: configs, isLoading } = useSWR<PlatformConfig[]>(
     "platform-configs",
     () => apiFetch<PlatformConfig[]>("/platforms/configs"),
@@ -265,14 +227,14 @@ export default function PlatformsPage() {
 
     window.history.replaceState({}, "", window.location.pathname);
     if (callbackError) {
-      toast.error(callbackError === "cancelled" ? "Meta authorization was cancelled" : "Meta authorization could not be completed");
+      toast.error(callbackError === "cancelled" ? t("pf.metaCancelled") : t("pf.metaFailed"));
       return;
     }
 
     void apiFetch<MetaOAuthSession>(`/platforms/meta/oauth/sessions/${sessionID}`)
       .then(setMetaOAuthSession)
-      .catch((err) => toast.error(err instanceof ApiError ? err.message : "Could not load Meta accounts"));
-  }, []);
+      .catch((err) => toast.error(err instanceof ApiError ? err.message : t("pf.metaLoadFailed")));
+  }, [t]);
 
   const startMetaOAuth = async () => {
     setStartingMetaOAuth(true);
@@ -293,9 +255,9 @@ export default function PlatformsPage() {
       const failed = results.filter((result) => result.status === "rejected").length;
       await globalMutate("platform-configs");
       if (failed > 0) {
-        toast.error(`${failed} connection${failed === 1 ? "" : "s"} need attention`);
+        toast.error(tf("pf.refreshFailed", { n: failed }));
       } else if (active.length > 0) {
-        toast.success("Connection status refreshed");
+        toast.success(t("pf.refreshed"));
       }
     } finally {
       setRefreshing(false);
@@ -306,12 +268,12 @@ export default function PlatformsPage() {
     <div className="flex flex-col h-full">
       <PageHeader
         icon={Globe}
-        kicker="Integrations"
-        title="Platform Integration"
-        description="Each account has tenant routing, a durable delivery queue, and visible connection health."
+        kicker={t("pf.kicker")}
+        title={t("pf.title")}
+        description={t("pf.desc")}
         actions={
           <Button size="sm" variant="outline" onClick={refresh} disabled={refreshing} className="gap-1.5">
-            <RefreshCw className={`size-3.5 ${refreshing ? "animate-spin" : ""}`} /> Refresh status
+            <RefreshCw className={`size-3.5 ${refreshing ? "animate-spin" : ""}`} /> {t("pf.refreshStatus")}
           </Button>
         }
       />
@@ -328,11 +290,11 @@ export default function PlatformsPage() {
             connected={whatsappAccounts.map((c) => ({ name: c.health?.account_name || c.whatsapp_business_account_id || `#${c.config_id}`, healthy: c.health?.status === "connected" }))}
           />
           <div className="grid overflow-hidden border border-border bg-card sm:grid-cols-2 xl:grid-cols-5">
-            <StatusMetric icon={Radio} label="Verified connections" value={operationalSummary.connected} tone="text-success" />
-            <StatusMetric icon={Inbox} label="Inbound queue" value={operationalSummary.inboundPending} tone="text-info" />
-            <StatusMetric icon={Clock3} label="Outbound queue" value={operationalSummary.outboundPending} tone="text-info" />
-            <StatusMetric icon={CircleAlert} label="Failures" value={operationalSummary.failed} tone={operationalSummary.failed > 0 ? "text-destructive" : "text-muted-foreground"} />
-            <StatusMetric icon={CheckCircle2} label="AI replies held" value={operationalSummary.cancelled} tone={operationalSummary.cancelled > 0 ? "text-warning" : "text-muted-foreground"} />
+            <StatusMetric icon={Radio} label={t("pf.verified")} value={operationalSummary.connected} tone="text-success" />
+            <StatusMetric icon={Inbox} label={t("pf.inboundQueue")} value={operationalSummary.inboundPending} tone="text-info" />
+            <StatusMetric icon={Clock3} label={t("pf.outboundQueue")} value={operationalSummary.outboundPending} tone="text-info" />
+            <StatusMetric icon={CircleAlert} label={t("pf.failures")} value={operationalSummary.failed} tone={operationalSummary.failed > 0 ? "text-destructive" : "text-muted-foreground"} />
+            <StatusMetric icon={CheckCircle2} label={t("pf.aiHeld")} value={operationalSummary.cancelled} tone={operationalSummary.cancelled > 0 ? "text-warning" : "text-muted-foreground"} />
           </div>
           {isLoading ? (
             <Card><CardContent className="py-12 flex items-center justify-center">
@@ -353,7 +315,7 @@ export default function PlatformsPage() {
           onClose={() => setMetaOAuthSession(null)}
           onConnected={() => {
             setMetaOAuthSession(null);
-            toast.success("Meta subscription is ready. Waiting for the first signed webhook event.");
+            toast.success(t("pf.metaReady"));
             void globalMutate("platform-configs");
           }}
         />
@@ -375,6 +337,7 @@ function StatusMetric({ icon: Icon, label, value, tone }: { icon: LucideIcon; la
 }
 
 function PlatformGroup({ meta, configs }: { meta: PlatformMeta; configs: PlatformConfig[] }) {
+  const { t, tf } = useI18n();
   const [adding, setAdding] = React.useState(false);
   return (
     <section className="border-t border-border pt-5 first:border-t-0 first:pt-0">
@@ -385,28 +348,28 @@ function PlatformGroup({ meta, configs }: { meta: PlatformMeta; configs: Platfor
           </div>
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-sm font-semibold text-foreground">{meta.name}</h2>
-              <span className="text-xs tabular-nums text-muted-foreground">{configs.length} account{configs.length === 1 ? "" : "s"}</span>
+              <h2 className="text-sm font-semibold text-foreground">{t(`pf.${meta.label}.name`)}</h2>
+              <span className="text-xs tabular-nums text-muted-foreground">{tf("pf.accounts", { n: configs.length })}</span>
               <GroupConnectionBadge configs={configs} />
             </div>
-            <p className="mt-0.5 text-xs text-muted-foreground">{meta.desc}</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">{t(`pf.${meta.label}.desc`)}</p>
             <div className="mt-3 grid gap-2 text-[11px] sm:grid-cols-3">
-              <CapabilityGroup label="Inbound" values={meta.inbound} />
-              <CapabilityGroup label="Outbound" values={meta.outbound} />
-              <CapabilityGroup label="Receipts" values={[meta.receipts]} />
+              <CapabilityGroup label={t("pf.capInbound")} values={t(`pf.${meta.label}.inbound`).split("|")} />
+              <CapabilityGroup label={t("pf.capOutbound")} values={t(`pf.${meta.label}.outbound`).split("|")} />
+              <CapabilityGroup label={t("pf.capReceipts")} values={[t(`pf.${meta.label}.receipts`)]} />
             </div>
-            <p className="mt-1 text-[11px] leading-4 text-muted-foreground">{meta.limitation}</p>
+            <p className="mt-1 text-[11px] leading-4 text-muted-foreground">{t(`pf.${meta.label}.limitation`)}</p>
           </div>
         </div>
         <Button size="sm" variant="outline" onClick={() => setAdding(true)} disabled={adding} className="h-8 gap-1.5 text-xs">
-          <Plus className="size-3.5" /> Add account
+          <Plus className="size-3.5" /> {t("pf.addAccount")}
         </Button>
       </div>
 
       {configs.length === 0 && !adding ? (
         <div className="flex items-center justify-between border border-dashed border-border px-4 py-4 text-xs text-muted-foreground">
-          <span>No account is connected.</span>
-          <span className="hidden text-right sm:block">{meta.webhookInfo}</span>
+          <span>{t("pf.noAccount")}</span>
+          <span className="hidden text-right sm:block">{t(`pf.${meta.label}.webhookInfo`)}</span>
         </div>
       ) : (
         <div className="grid gap-3 lg:grid-cols-2">
@@ -419,11 +382,12 @@ function PlatformGroup({ meta, configs }: { meta: PlatformMeta; configs: Platfor
 }
 
 function GroupConnectionBadge({ configs }: { configs: PlatformConfig[] }) {
+  const { t } = useI18n();
   const active = configs.filter((c) => c.is_active);
   if (active.length === 0) {
     return (
       <Badge variant="outline" className="h-5 gap-1.5 px-1.5 text-[10px] font-normal text-muted-foreground">
-        <span className="size-1.5 rounded-full bg-muted-foreground/40" /> Not connected
+        <span className="size-1.5 rounded-full bg-muted-foreground/40" /> {t("pf.notConnected")}
       </Badge>
     );
   }
@@ -432,20 +396,20 @@ function GroupConnectionBadge({ configs }: { configs: PlatformConfig[] }) {
   if (errored > 0) {
     return (
       <Badge variant="outline" className="h-5 gap-1.5 border-destructive/40 px-1.5 text-[10px] font-medium text-destructive">
-        <span className="size-1.5 rounded-full bg-destructive animate-pulse" /> Needs attention
+        <span className="size-1.5 rounded-full bg-destructive animate-pulse" /> {t("pf.needsAttention")}
       </Badge>
     );
   }
   if (connected === active.length) {
     return (
       <Badge variant="outline" className="h-5 gap-1.5 border-success/40 px-1.5 text-[10px] font-medium text-success">
-        <span className="size-1.5 rounded-full bg-success" /> Connected
+        <span className="size-1.5 rounded-full bg-success" /> {t("pf.connectedBadge")}
       </Badge>
     );
   }
   return (
     <Badge variant="outline" className="h-5 gap-1.5 border-warning/40 px-1.5 text-[10px] font-medium text-warning">
-      <span className="size-1.5 rounded-full bg-warning animate-pulse" /> Awaiting verification
+      <span className="size-1.5 rounded-full bg-warning animate-pulse" /> {t("pf.awaitingVerification")}
     </Badge>
   );
 }
@@ -467,11 +431,12 @@ interface ConnectedAccount {
 }
 
 function ConnectionBadge({ healthy }: { healthy?: boolean }) {
+  const { t } = useI18n();
   if (healthy === undefined) return null;
   return (
     <span className={`inline-flex items-center gap-1 text-[10px] font-medium ${healthy ? "text-success" : "text-warning"}`}>
       <span className={`size-1.5 rounded-full ${healthy ? "bg-success" : "bg-warning animate-pulse"}`} />
-      {healthy ? "Verified" : "Awaiting first webhook"}
+      {healthy ? t("pf.verifiedBadge") : t("pf.awaitingFirstWebhook")}
     </span>
   );
 }
@@ -509,6 +474,7 @@ function MetaOAuthConnectCard({
   connectedMeta: ConnectedAccount[];
   connectedInstagram: ConnectedAccount[];
 }) {
+  const { t } = useI18n();
   const hasConnections = connectedMeta.length > 0 || connectedInstagram.length > 0;
 
   return (
@@ -520,10 +486,10 @@ function MetaOAuthConnectCard({
           </div>
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <p className="text-sm font-medium">Meta Business &amp; Instagram</p>
+              <p className="text-sm font-medium">{t("pf.metaTitle")}</p>
               {hasConnections && (
                 <Badge variant="outline" className="h-5 border-success/40 px-1.5 text-[10px] font-medium text-success">
-                  Connected
+                  {t("pf.connectedBadge")}
                 </Badge>
               )}
             </div>
@@ -537,13 +503,13 @@ function MetaOAuthConnectCard({
                 )}
               </div>
             ) : (
-              <p className="mt-0.5 text-xs text-muted-foreground">Connect Messenger and a linked Instagram professional account with one Meta authorization.</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">{t("pf.metaDesc")}</p>
             )}
           </div>
         </div>
         <Button size="sm" variant={hasConnections ? "outline" : "default"} onClick={onStart} disabled={starting} className="h-8 shrink-0 gap-1.5 text-xs">
           {starting ? <Loader2 className="size-3 animate-spin" /> : <Plus className="size-3" />}
-          {hasConnections ? "Connect another Page" : "Connect Meta"}
+          {hasConnections ? t("pf.connectAnotherPage") : t("pf.connectMeta")}
         </Button>
       </CardContent>
     </Card>
@@ -579,6 +545,7 @@ function loadFacebookSDK(appID: string) {
 }
 
 function WhatsAppEmbeddedSignupCard({ connected }: { connected: ConnectedAccount[] }) {
+  const { t } = useI18n();
   const [starting, setStarting] = React.useState(false);
   const [completing, setCompleting] = React.useState(false);
   const signup = React.useRef({ code: "", phoneNumberID: "", businessAccountID: "" });
@@ -596,15 +563,15 @@ function WhatsAppEmbeddedSignupCard({ connected }: { connected: ConnectedAccount
           business_account_id: current.businessAccountID,
         }),
       });
-      toast.success("WhatsApp is connected. Waiting for the first signed event.");
+      toast.success(t("pf.waConnected"));
       await globalMutate("platform-configs");
     } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : "Could not complete WhatsApp connection");
+      toast.error(err instanceof ApiError ? err.message : t("pf.waConnectFailed"));
     } finally {
       setCompleting(false);
       setStarting(false);
     }
-  }, [completing]);
+  }, [completing, t]);
 
   React.useEffect(() => {
     const receiveSignupEvent = (event: MessageEvent<unknown>) => {
@@ -624,7 +591,7 @@ function WhatsAppEmbeddedSignupCard({ connected }: { connected: ConnectedAccount
       const businessAccountID = data.data?.waba_id?.trim() ?? "";
       if (!phoneNumberID || !businessAccountID) {
         setStarting(false);
-        toast.error("Meta did not return the selected WhatsApp business account.");
+        toast.error(t("pf.waNoAccount"));
         return;
       }
       signup.current.phoneNumberID = phoneNumberID;
@@ -633,7 +600,7 @@ function WhatsAppEmbeddedSignupCard({ connected }: { connected: ConnectedAccount
     };
     window.addEventListener("message", receiveSignupEvent);
     return () => window.removeEventListener("message", receiveSignupEvent);
-  }, [complete]);
+  }, [complete, t]);
 
   const start = async () => {
     setStarting(true);
@@ -645,7 +612,7 @@ function WhatsAppEmbeddedSignupCard({ connected }: { connected: ConnectedAccount
         const code = response.authResponse?.code?.trim() ?? "";
         if (!code) {
           setStarting(false);
-          toast.error("WhatsApp authorization was cancelled or did not return a code.");
+          toast.error(t("pf.waAuthCancelled"));
           return;
         }
         signup.current.code = code;
@@ -658,7 +625,7 @@ function WhatsAppEmbeddedSignupCard({ connected }: { connected: ConnectedAccount
       });
     } catch (err) {
       setStarting(false);
-      toast.error(err instanceof ApiError ? err.message : "WhatsApp Embedded Signup is unavailable");
+      toast.error(err instanceof ApiError ? err.message : t("pf.waUnavailable"));
     }
   };
 
@@ -671,23 +638,23 @@ function WhatsAppEmbeddedSignupCard({ connected }: { connected: ConnectedAccount
           </div>
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <p className="text-sm font-medium">WhatsApp Business</p>
+              <p className="text-sm font-medium">{t("pf.whatsapp.name")}</p>
               {connected.length > 0 && (
                 <Badge variant="outline" className="h-5 border-success/40 px-1.5 text-[10px] font-medium text-success">
-                  Connected
+                  {t("pf.connectedBadge")}
                 </Badge>
               )}
             </div>
             {connected.length > 0 ? (
               <ConnectedAccountRow icon={MessageCircle} label="WhatsApp" names={connected.map((a) => a.name)} items={connected} />
             ) : (
-              <p className="mt-0.5 text-xs text-muted-foreground">Select a business phone number in Meta. Credentials are exchanged and encrypted on the server.</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">{t("pf.waDesc")}</p>
             )}
           </div>
         </div>
         <Button size="sm" variant={connected.length > 0 ? "outline" : "default"} onClick={() => void start()} disabled={starting || completing} className="h-8 shrink-0 gap-1.5 text-xs">
           {starting || completing ? <Loader2 className="size-3 animate-spin" /> : <Plus className="size-3" />}
-          {connected.length > 0 ? "Connect another number" : "Connect WhatsApp"}
+          {connected.length > 0 ? t("pf.connectAnotherNumber") : t("pf.connectWa")}
         </Button>
       </CardContent>
     </Card>
@@ -703,6 +670,7 @@ function MetaOAuthSelectionDialog({
   onClose: () => void;
   onConnected: () => void;
 }) {
+  const { t } = useI18n();
   const [selectedPageID, setSelectedPageID] = React.useState(session.pages[0]?.page_id ?? "");
   const [enableMessenger, setEnableMessenger] = React.useState(true);
   const [enableInstagram, setEnableInstagram] = React.useState(Boolean(session.pages[0]?.instagram_business_id));
@@ -729,7 +697,7 @@ function MetaOAuthSelectionDialog({
       });
       onConnected();
     } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : "Could not connect Meta");
+      toast.error(err instanceof ApiError ? err.message : t("pf.connectMetaFailed"));
       setConnecting(false);
     }
   };
@@ -738,12 +706,12 @@ function MetaOAuthSelectionDialog({
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Choose a Meta account</DialogTitle>
-          <DialogDescription>Select the Facebook Page to receive customer messages.</DialogDescription>
+          <DialogTitle>{t("pf.chooseAccount")}</DialogTitle>
+          <DialogDescription>{t("pf.chooseAccountDesc")}</DialogDescription>
         </DialogHeader>
 
         {session.pages.length === 0 ? (
-          <div className="border-y border-border py-7 text-center text-sm text-muted-foreground">No manageable Facebook Pages were returned by Meta.</div>
+          <div className="border-y border-border py-7 text-center text-sm text-muted-foreground">{t("pf.noPages")}</div>
         ) : (
           <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
             {session.pages.map((page) => {
@@ -775,20 +743,20 @@ function MetaOAuthSelectionDialog({
           <div className="space-y-2 border-t border-border pt-3">
             <label className="flex cursor-pointer items-center gap-2 text-sm">
               <input type="checkbox" checked={enableMessenger} onChange={(event) => setEnableMessenger(event.target.checked)} className="size-4 accent-primary" />
-              <MessageCircle className="size-4 text-info" /> Enable Messenger
+              <MessageCircle className="size-4 text-info" /> {t("pf.enableMessenger")}
             </label>
             <label className={`flex items-center gap-2 text-sm ${selectedPage.instagram_business_id ? "cursor-pointer" : "cursor-not-allowed text-muted-foreground"}`}>
               <input type="checkbox" checked={enableInstagram} disabled={!selectedPage.instagram_business_id} onChange={(event) => setEnableInstagram(event.target.checked)} className="size-4 accent-primary" />
-              <Camera className="size-4 text-warning" /> Enable Instagram {selectedPage.instagram_business_id ? "" : "(not linked to this Page)"}
+              <Camera className="size-4 text-warning" /> {t("pf.enableInstagram")} {selectedPage.instagram_business_id ? "" : t("pf.notLinked")}
             </label>
           </div>
         )}
 
         <DialogFooter>
-          <Button variant="outline" onClick={onClose} disabled={connecting}>Cancel</Button>
+          <Button variant="outline" onClick={onClose} disabled={connecting}>{t("common.cancel")}</Button>
           <Button onClick={completeConnection} disabled={!selectedPageID || (!enableMessenger && !enableInstagram) || connecting} className="gap-1.5">
             {connecting ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
-            Connect selected
+            {t("pf.connectSelected")}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -797,6 +765,8 @@ function MetaOAuthSelectionDialog({
 }
 
 function PlatformCard({ meta, initial, onClose }: { meta: PlatformMeta; initial?: PlatformConfig; onClose?: () => void }) {
+  const { t, tf } = useI18n();
+  const platformName = t(`pf.${meta.label}.name`);
   const [form, setForm] = React.useState<PlatformConfig>(() => ({
     platform: meta.label,
     is_active: initial?.is_active ?? true,
@@ -809,14 +779,14 @@ function PlatformCard({ meta, initial, onClose }: { meta: PlatformMeta; initial?
   const health = initial?.health;
   const isActive = Boolean(initial?.config_id && initial.is_active);
   const status = !isActive
-    ? "Not configured"
+    ? t("pf.notConfigured")
     : health?.status === "connected"
-      ? "Connected"
+      ? t("pf.connectedBadge")
       : health?.status === "error"
-        ? "Needs attention"
+        ? t("pf.needsAttention")
         : health?.checked_at
-          ? "Webhook pending"
-          : "Verification needed";
+          ? t("pf.webhookPending")
+          : t("pf.verificationNeeded");
   const statusVariant = !isActive ? "secondary" : health?.status === "connected" ? "success" : health?.status === "error" ? "destructive" : "warning";
 
   const handleSave = async () => {
@@ -839,15 +809,15 @@ function PlatformCard({ meta, initial, onClose }: { meta: PlatformMeta; initial?
         try {
           const response = await apiFetch<{ health: PlatformHealth }>(`/platforms/configs/${saved.config_id}/verify`, { method: "POST" });
           if (response.health.status === "connected") {
-            toast.success(response.health.account_name ? `Connected as ${response.health.account_name}` : `${meta.name} connection verified`);
+            toast.success(response.health.account_name ? tf("pf.connectedAs", { name: response.health.account_name }) : tf("pf.connectionVerified", { name: platformName }));
           } else {
-            toast.success("Credentials verified. Waiting for a signed webhook event.");
+            toast.success(t("pf.credsVerified"));
           }
         } catch (err) {
-          toast.error(err instanceof ApiError ? `Saved, but verification failed: ${err.message}` : "Saved, but verification failed");
+          toast.error(err instanceof ApiError ? tf("pf.savedVerifyFailed", { msg: err.message }) : t("pf.savedVerifyFailedPlain"));
         }
       } else {
-        toast.success(`${meta.name} config saved`);
+        toast.success(tf("pf.configSaved", { name: platformName }));
       }
       await globalMutate("platform-configs");
       onClose?.();
@@ -860,20 +830,20 @@ function PlatformCard({ meta, initial, onClose }: { meta: PlatformMeta; initial?
 
   const checkConnection = async () => {
     if (!initial?.config_id) {
-      toast.message("Save this account before testing the connection.");
+      toast.message(t("pf.saveBeforeTest"));
       return;
     }
     setChecking(true);
     try {
       const response = await apiFetch<{ health: PlatformHealth }>(`/platforms/configs/${initial.config_id}/verify`, { method: "POST" });
       if (response.health.status === "connected") {
-        toast.success(response.health.account_name ? `Connected as ${response.health.account_name}` : "Connection verified");
+        toast.success(response.health.account_name ? tf("pf.connectedAs", { name: response.health.account_name }) : t("pf.verifiedBadge"));
       } else {
-        toast.success("Credentials verified. Waiting for a signed webhook event.");
+        toast.success(t("pf.credsVerified"));
       }
       await globalMutate("platform-configs");
     } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : "Connection check failed");
+      toast.error(err instanceof ApiError ? err.message : t("pf.connectionCheckFailed"));
       void globalMutate("platform-configs");
     } finally {
       setChecking(false);
@@ -888,10 +858,10 @@ function PlatformCard({ meta, initial, onClose }: { meta: PlatformMeta; initial?
     setDisconnecting(true);
     try {
       await apiFetch(`/platforms/configs/${initial.config_id}`, { method: "DELETE" });
-      toast.success(`${meta.name} account disconnected`);
+      toast.success(tf("pf.disconnected", { name: platformName }));
       await globalMutate("platform-configs");
     } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : "Could not disconnect account");
+      toast.error(err instanceof ApiError ? err.message : t("pf.disconnectFailed"));
     } finally {
       setDisconnecting(false);
     }
@@ -902,9 +872,9 @@ function PlatformCard({ meta, initial, onClose }: { meta: PlatformMeta; initial?
       <CardContent className="p-5">
         <div className="mb-4 flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <p className="truncate text-sm font-semibold text-foreground">{health?.account_name || initial?.page_id || initial?.instagram_business_id || (initial?.config_id ? `Account #${initial.config_id}` : "New account")}</p>
-            <p className="mt-0.5 text-xs text-muted-foreground">{health?.checked_at ? `Last checked ${formatTimestamp(health.checked_at)}` : "Credentials have not been verified"}</p>
-            {initial?.last_inbound_at && <p className="mt-1 text-[11px] text-muted-foreground">Last customer message {formatTimestamp(initial.last_inbound_at)}</p>}
+            <p className="truncate text-sm font-semibold text-foreground">{health?.account_name || initial?.page_id || initial?.instagram_business_id || (initial?.config_id ? tf("pf.accountN", { id: initial.config_id }) : t("pf.newAccount"))}</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">{health?.checked_at ? tf("pf.lastChecked", { time: formatTimestamp(health.checked_at) }) : t("pf.notVerifiedLine")}</p>
+            {initial?.last_inbound_at && <p className="mt-1 text-[11px] text-muted-foreground">{tf("pf.lastCustomerMsg", { time: formatTimestamp(initial.last_inbound_at) })}</p>}
           </div>
           <Badge variant={statusVariant} className="h-5 shrink-0 px-1.5 text-[10px]">
             {status}
@@ -923,7 +893,7 @@ function PlatformCard({ meta, initial, onClose }: { meta: PlatformMeta; initial?
         <div className="space-y-3">
           {meta.fields.map((f) => (
             <div key={String(f.key)}>
-              <label className="text-xs text-muted-foreground mb-1 block">{f.label}</label>
+              <label className="text-xs text-muted-foreground mb-1 block">{t(f.labelKey)}</label>
               <Input
                 type={f.type || "text"}
                 value={String((form[f.key] as string | undefined) ?? "")}
@@ -938,16 +908,16 @@ function PlatformCard({ meta, initial, onClose }: { meta: PlatformMeta; initial?
         {initial?.config_id && (
           <div className="mt-4 space-y-3">
             <div className="grid grid-cols-2 gap-px overflow-hidden border border-border bg-border text-xs sm:grid-cols-5">
-              <WorkMetric label="Inbound queue" value={initial.pending_inbound_events ?? 0} />
-              <WorkMetric label="Inbound failed" value={initial.failed_inbound_events ?? 0} destructive />
-              <WorkMetric label="Outbound queue" value={initial.pending_deliveries ?? 0} />
-              <WorkMetric label="Outbound failed" value={initial.failed_deliveries ?? 0} destructive />
-              <WorkMetric label="AI replies held" value={initial.cancelled_deliveries ?? 0} />
+              <WorkMetric label={t("pf.workInboundQueue")} value={initial.pending_inbound_events ?? 0} />
+              <WorkMetric label={t("pf.workInboundFailed")} value={initial.failed_inbound_events ?? 0} destructive />
+              <WorkMetric label={t("pf.workOutboundQueue")} value={initial.pending_deliveries ?? 0} />
+              <WorkMetric label={t("pf.workOutboundFailed")} value={initial.failed_deliveries ?? 0} destructive />
+              <WorkMetric label={t("pf.workAiHeld")} value={initial.cancelled_deliveries ?? 0} />
             </div>
             <div className="grid grid-cols-3 divide-x divide-border border-y border-border text-xs">
-              <WorkMetric label="Accepted" value={initial.accepted_deliveries ?? 0} />
-              <WorkMetric label="Delivered" value={initial.delivered_deliveries ?? 0} />
-              <WorkMetric label="Read" value={initial.read_deliveries ?? 0} />
+              <WorkMetric label={t("pf.workAccepted")} value={initial.accepted_deliveries ?? 0} />
+              <WorkMetric label={t("pf.workDelivered")} value={initial.delivered_deliveries ?? 0} />
+              <WorkMetric label={t("pf.workRead")} value={initial.read_deliveries ?? 0} />
             </div>
           </div>
         )}
@@ -956,15 +926,15 @@ function PlatformCard({ meta, initial, onClose }: { meta: PlatformMeta; initial?
           <div className="flex flex-wrap gap-2">
             <Button size="sm" onClick={handleSave} disabled={saving} className="h-8 text-xs gap-1.5">
               {saving ? <Loader2 className="size-3 animate-spin" /> : <CheckCircle2 className="size-3" />}
-              Save
+              {t("pf.save")}
             </Button>
             <Button size="sm" variant="outline" onClick={checkConnection} disabled={checking || !initial?.config_id || !initial.is_active} className="h-8 gap-1.5 text-xs">
               {checking ? <Loader2 className="size-3 animate-spin" /> : <Radio className="size-3" />}
-              Verify
+              {t("pf.verify")}
             </Button>
             {((initial?.failed_inbound_events ?? 0) + (initial?.failed_deliveries ?? 0) + (initial?.cancelled_deliveries ?? 0) > 0) && (
               <Button size="sm" variant="outline" onClick={() => setWorkOpen(true)} className="h-8 gap-1.5 text-xs">
-                <CircleAlert className="size-3" /> Review delivery work
+                <CircleAlert className="size-3" /> {t("pf.reviewWork")}
               </Button>
             )}
             <Button
@@ -973,17 +943,17 @@ function PlatformCard({ meta, initial, onClose }: { meta: PlatformMeta; initial?
               onClick={() => window.open(meta.docsUrl, "_blank")}
               className="h-8 text-xs gap-1 text-muted-foreground"
             >
-              <ExternalLink className="size-3" />Docs
+              <ExternalLink className="size-3" />{t("pf.docs")}
             </Button>
             {initial?.config_id && initial.is_active && (
               <Button variant="ghost" size="sm" onClick={disconnect} disabled={disconnecting} className="h-8 gap-1 text-destructive hover:text-destructive">
-                {disconnecting ? <Loader2 className="size-3 animate-spin" /> : <Unplug className="size-3" />} Disconnect
+                {disconnecting ? <Loader2 className="size-3 animate-spin" /> : <Unplug className="size-3" />} {t("pf.disconnect")}
               </Button>
             )}
-            {!initial?.config_id && onClose && <Button variant="ghost" size="sm" onClick={onClose} className="h-8 text-xs">Cancel</Button>}
+            {!initial?.config_id && onClose && <Button variant="ghost" size="sm" onClick={onClose} className="h-8 text-xs">{t("common.cancel")}</Button>}
           </div>
           <span className="hidden max-w-md text-right text-[11px] text-muted-foreground sm:block">
-            {meta.webhookInfo}
+            {t(`pf.${meta.label}.webhookInfo`)}
           </span>
         </div>
       </CardContent>
@@ -993,12 +963,13 @@ function PlatformCard({ meta, initial, onClose }: { meta: PlatformMeta; initial?
 }
 
 function ConnectionReadiness({ health }: { health?: PlatformHealth }) {
+  const { t } = useI18n();
   const credentialsReady = Boolean(health?.checked_at) && health?.status !== "error";
   const webhookReady = health?.status === "connected";
   return (
     <div className="mb-4 grid grid-cols-2 divide-x divide-border border-y border-border text-[11px]">
-      <ReadinessStep label="Credentials" ready={credentialsReady} readyText="Verified" pendingText="Not verified" />
-      <ReadinessStep label="Webhook" ready={webhookReady} readyText="Receiving" pendingText="Waiting" />
+      <ReadinessStep label={t("pf.credentials")} ready={credentialsReady} readyText={t("pf.verifiedText")} pendingText={t("pf.notVerifiedText")} />
+      <ReadinessStep label={t("pf.webhook")} ready={webhookReady} readyText={t("pf.receiving")} pendingText={t("pf.waiting")} />
     </div>
   );
 }
@@ -1022,6 +993,7 @@ function WorkMetric({ label, value, destructive = false }: { label: string; valu
 }
 
 function PlatformFailureDialog({ configID, open, onOpenChange }: { configID: number; open: boolean; onOpenChange: (open: boolean) => void }) {
+  const { t } = useI18n();
   const key = open ? `platform-config-work-${configID}` : null;
   const { data, isLoading, mutate } = useSWR<PlatformWorkResponse>(
     key,
@@ -1034,10 +1006,10 @@ function PlatformFailureDialog({ configID, open, onOpenChange }: { configID: num
     setRetrying(retryKey);
     try {
       await apiFetch(`/platforms/configs/${configID}/${kind}/${id}/retry`, { method: "POST" });
-      toast.success("Work item queued for retry");
+      toast.success(t("pf.workQueued"));
       await Promise.all([mutate(), globalMutate("platform-configs")]);
     } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : "Could not retry this work item");
+      toast.error(err instanceof ApiError ? err.message : t("pf.workRetryFailed"));
     } finally {
       setRetrying(null);
     }
@@ -1047,8 +1019,8 @@ function PlatformFailureDialog({ configID, open, onOpenChange }: { configID: num
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Platform delivery work</DialogTitle>
-          <DialogDescription>Failures can be retried from their durable checkpoint. Held AI replies were intentionally not sent after a handoff or closure.</DialogDescription>
+          <DialogTitle>{t("pf.workTitle")}</DialogTitle>
+          <DialogDescription>{t("pf.workDesc")}</DialogDescription>
         </DialogHeader>
         {isLoading ? (
           <div className="flex h-32 items-center justify-center"><Loader2 className="size-4 animate-spin text-muted-foreground" /></div>
@@ -1056,7 +1028,8 @@ function PlatformFailureDialog({ configID, open, onOpenChange }: { configID: num
           <div className="max-h-[58vh] space-y-5 overflow-y-auto pr-1">
             <FailureSection
               icon={Inbox}
-              title="Inbound processing"
+              kind="inbound-events"
+              title={t("pf.inboundProcessing")}
               items={data?.inbound_events ?? []}
               getID={(item) => item.event_id}
               getContent={(item) => item.content}
@@ -1068,7 +1041,8 @@ function PlatformFailureDialog({ configID, open, onOpenChange }: { configID: num
             />
             <FailureSection
               icon={Send}
-              title="Outbound delivery"
+              kind="deliveries"
+              title={t("pf.outboundDelivery")}
               items={data?.deliveries ?? []}
               getID={(item) => item.delivery_id}
               getContent={(item) => item.content}
@@ -1081,22 +1055,23 @@ function PlatformFailureDialog({ configID, open, onOpenChange }: { configID: num
             <CancelledDeliverySection items={data?.cancelled_deliveries ?? []} />
           </div>
         )}
-        <DialogFooter><Button variant="outline" onClick={() => onOpenChange(false)}>Close</Button></DialogFooter>
+        <DialogFooter><Button variant="outline" onClick={() => onOpenChange(false)}>{t("common.close")}</Button></DialogFooter>
       </DialogContent>
     </Dialog>
   );
 }
 
 function CancelledDeliverySection({ items }: { items: PlatformDelivery[] }) {
+  const { t } = useI18n();
   return (
     <section>
-      <div className="mb-2 flex items-center gap-2 text-xs font-medium text-foreground"><CheckCircle2 className="size-3.5 text-warning" />Held AI replies<Badge variant="secondary">{items.length}</Badge></div>
-      {items.length === 0 ? <p className="border border-dashed border-border px-3 py-3 text-xs text-muted-foreground">No AI replies were held.</p> : (
+      <div className="mb-2 flex items-center gap-2 text-xs font-medium text-foreground"><CheckCircle2 className="size-3.5 text-warning" />{t("pf.heldReplies")}<Badge variant="secondary">{items.length}</Badge></div>
+      {items.length === 0 ? <p className="border border-dashed border-border px-3 py-3 text-xs text-muted-foreground">{t("pf.noHeld")}</p> : (
         <div className="divide-y border border-border">
           {items.map((item) => (
             <div key={item.delivery_id} className="space-y-2 px-3 py-3">
               <p className="break-words text-xs text-foreground">{item.content}</p>
-              <p className="break-words text-[11px] text-muted-foreground">{item.last_error || "This automatic reply was not sent."}</p>
+              <p className="break-words text-[11px] text-muted-foreground">{item.last_error || t("pf.heldDefaultError")}</p>
               <p className="text-[10px] tabular-nums text-muted-foreground">{formatTimestamp(item.created_at)}</p>
             </div>
           ))}
@@ -1108,6 +1083,7 @@ function CancelledDeliverySection({ items }: { items: PlatformDelivery[] }) {
 
 function FailureSection<T extends { attempts: number; created_at: string }>({
   icon: Icon,
+  kind,
   title,
   items,
   getID,
@@ -1119,6 +1095,7 @@ function FailureSection<T extends { attempts: number; created_at: string }>({
   onRetry,
 }: {
   icon: LucideIcon;
+  kind: "inbound-events" | "deliveries";
   title: string;
   items: T[];
   getID: (item: T) => number;
@@ -1129,23 +1106,24 @@ function FailureSection<T extends { attempts: number; created_at: string }>({
   retrying: string | null;
   onRetry: (id: number) => void;
 }) {
+  const { t, tf } = useI18n();
   return (
     <section>
       <div className="mb-2 flex items-center gap-2 text-xs font-medium text-foreground"><Icon className="size-3.5 text-muted-foreground" />{title}<Badge variant="secondary">{items.length}</Badge></div>
-      {items.length === 0 ? <p className="border border-dashed border-border px-3 py-3 text-xs text-muted-foreground">No failed work.</p> : (
+      {items.length === 0 ? <p className="border border-dashed border-border px-3 py-3 text-xs text-muted-foreground">{t("pf.noFailedWork")}</p> : (
         <div className="divide-y border border-border">
           {items.map((item) => {
             const id = getID(item);
-            const retryKey = `${title === "Inbound processing" ? "inbound-events" : "deliveries"}-${id}`;
+            const retryKey = `${kind}-${id}`;
             return <div key={id} className="space-y-2 px-3 py-3">
               <div className="flex items-start justify-between gap-3">
                 <p className="min-w-0 flex-1 break-words text-xs text-foreground">{getContent(item)}</p>
                 <Button size="sm" variant="outline" onClick={() => onRetry(id)} disabled={retrying !== null} className="h-7 shrink-0 gap-1 text-[11px]">
-                  {retrying === retryKey ? <Loader2 className="size-3 animate-spin" /> : <RotateCcw className="size-3" />} Retry
+                  {retrying === retryKey ? <Loader2 className="size-3 animate-spin" /> : <RotateCcw className="size-3" />} {t("pf.retry")}
                 </Button>
               </div>
-              <p className="break-words text-[11px] text-destructive">{getError(item) || "No provider error was recorded"}</p>
-              <p className="text-[10px] tabular-nums text-muted-foreground">{getAttempts(item)} attempts · {formatTimestamp(getCreated(item))}</p>
+              <p className="break-words text-[11px] text-destructive">{getError(item) || t("pf.noProviderError")}</p>
+              <p className="text-[10px] tabular-nums text-muted-foreground">{tf("pf.attempts", { n: getAttempts(item), time: formatTimestamp(getCreated(item)) })}</p>
             </div>;
           })}
         </div>

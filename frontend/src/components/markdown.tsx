@@ -8,6 +8,7 @@ import { CheckIcon, CopyIcon } from "lucide-react";
 
 import "highlight.js/styles/github-dark.css";
 import { cn } from "@/lib/utils";
+import { useI18n } from "@/lib/i18n";
 
 /**
  * Markdown renderer used for AI replies.
@@ -43,6 +44,7 @@ export function Markdown({ children, className }: { children: string; className?
 }
 
 function CodeBlock({ children, ...props }: React.HTMLAttributes<HTMLPreElement>) {
+  const { t } = useI18n();
   const [copied, setCopied] = React.useState(false);
 
   // Extract the raw code text from the rendered <code> child for the copy button.
@@ -73,10 +75,10 @@ function CodeBlock({ children, ...props }: React.HTMLAttributes<HTMLPreElement>)
         type="button"
         onClick={onCopy}
         className="absolute top-2 right-2 z-10 inline-flex items-center gap-1 rounded-md bg-background/80 border border-border px-1.5 py-1 text-[10px] text-muted-foreground opacity-0 group-hover/code:opacity-100 transition-opacity hover:text-foreground"
-        aria-label="Copy code"
+        aria-label={t("md.copyAria")}
       >
         {copied ? <CheckIcon className="size-3" /> : <CopyIcon className="size-3" />}
-        {copied ? "Copied" : "Copy"}
+        {copied ? t("md.copied") : t("md.copy")}
       </button>
       <pre {...props} className="overflow-x-auto rounded-lg bg-zinc-950 p-3 text-xs leading-relaxed">
         {children}

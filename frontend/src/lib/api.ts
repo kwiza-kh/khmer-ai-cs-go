@@ -1,4 +1,5 @@
 import { API_BASE, signalAuthExpired } from "./auth-client";
+import { localizeCurrentLang } from "./api-errors";
 
 export class ApiError extends Error {
   status: number;
@@ -31,11 +32,11 @@ export async function apiFetch<T = unknown>(path: string, options: RequestInit =
   } else {
     // 非 JSON 响应 (HTML 502 网关错误, 纯文本等), 仍要让调用方看到状态码.
     const text = await res.text().catch(() => "");
-    throw new ApiError(text || `请求失败 (HTTP ${res.status})`, res.status);
+    throw new ApiError(localizeCurrentLang(text) || localizeCurrentLang("请求失败") + ` (HTTP ${res.status})`, res.status);
   }
 
   if (!res.ok) {
-    const message = (data as { error?: string } | null)?.error || `请求失败 (HTTP ${res.status})`;
+    const message = localizeCurrentLang((data as { error?: string } | null)?.error || `请求失败 (HTTP ${res.status})`);
     // Token 过期或无效: 清凭据 + 广播登出, AuthGuard 立即跳转登录页.
     if (res.status === 401) {
       signalAuthExpired();
@@ -598,8 +599,10 @@ export async function deleteSession(id: string) {
   return apiFetch<{ message: string }>(`/chat/sessions/${id}`, { method: "DELETE" });
 }
 
-export async function listSessionMessages(id: string, limit = 100) {
-  return apiFetch<ChatMessageItem[]>(`/chat/sessions/${id}/messages?limit=${limit}`);
+export async function listSessionMessages(id: string, limit = 100, after = 0) {
+  const qs = new URLSearchParams({ limit: String(limit) });
+  if (after > 0) qs.set("after", String(after));
+  return apiFetch<ChatMessageItem[]>(`/chat/sessions/${id}/messages?${qs}`);
 }
 
 export interface InboundPlatformMedia {
@@ -818,9 +821,22 @@ export async function listSessionWhatsAppTemplates(sessionId: string) {
   return apiFetch<{ templates: WhatsAppTemplate[] }>(`/inbox/sessions/${sessionId}/whatsapp-templates`);
 }
 
-/** Get (or lazily generate) a 1-line conversation summary for handoff. */
-export async function getSessionSummary(sessionId: string) {
-  return apiFetch<{ summary: string; cached: boolean }>(`/inbox/sessions/${sessionId}/summary`);
+/** Get (or lazily generate) a conversation summary. Language follows the
+ *  user's preference server-side unless overridden; refresh=true forces
+ *  regeneration even when a valid cache exists. */
+export async function getSessionSummary(sessionId: string, language?: string, refresh = false) {
+  const qs = new URLSearchParams();
+  if (language && language !== "auto") qs.set("language", language);
+  if (refresh) qs.set("refresh", "1");
+  const suffix = qs.toString() ? `?${qs}` : "";
+  return apiFetch<{ summary: string; cached: boolean; language: string }>(
+    `/inbox/sessions/${sessionId}/summary${suffix}`,
+  );
+}
+
+/** The caller's saved language ("auto" | "km" | "en" | "zh") + notification preference. */
+export async function getPreferences() {
+  return apiFetch<{ language: string; notification_pref: string }>("/auth/preferences");
 }
 
 // ============================================

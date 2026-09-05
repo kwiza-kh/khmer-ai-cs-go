@@ -9,8 +9,10 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { EmptyState } from "@/components/empty-state";
 import { ThumbsUp, ThumbsDown, MessageSquare } from "lucide-react";
+import { useI18n } from "@/lib/i18n";
 
 export function FeedbackTab() {
+  const { t, tf } = useI18n();
   const [filter, setFilter] = React.useState<"all" | "1" | "-1">("all");
   const key = `feedback-${filter}`;
   const { data, isLoading } = useSWR(key, () =>
@@ -23,32 +25,32 @@ export function FeedbackTab() {
       <CardContent className="pt-5">
         <div className="flex items-center justify-between mb-3">
           <p className="text-xs text-muted-foreground">
-            {data?.total ?? 0} feedback entries
+            {tf("fb.count", { n: data?.total ?? 0 })}
           </p>
           <Select value={filter} onValueChange={(v) => setFilter((v || "all") as "all" | "1" | "-1")}>
             <SelectTrigger className="w-32 h-7 text-xs">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All</SelectItem>
-              <SelectItem value="1">👍 Positive</SelectItem>
-              <SelectItem value="-1">👎 Negative</SelectItem>
+              <SelectItem value="all">{t("inbox.filterAll")}</SelectItem>
+              <SelectItem value="1">{t("fb.positive")}</SelectItem>
+              <SelectItem value="-1">{t("fb.negative")}</SelectItem>
             </SelectContent>
           </Select>
         </div>
 
         {isLoading ? (
-          <div className="py-10 text-center text-xs text-muted-foreground">Loading…</div>
+          <div className="py-10 text-center text-xs text-muted-foreground">{t("settings.loading")}</div>
         ) : messages.length === 0 ? (
-          <EmptyState icon={MessageSquare} title="No feedback yet" description="User thumbs-up / thumbs-down on AI replies will appear here." />
+          <EmptyState icon={MessageSquare} title={t("fb.emptyTitle")} description={t("fb.emptyDesc")} />
         ) : (
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="text-xs w-12">Rating</TableHead>
-                <TableHead className="text-xs">Reply</TableHead>
-                <TableHead className="text-xs">Comment</TableHead>
-                <TableHead className="text-xs w-32">When</TableHead>
+                <TableHead className="text-xs w-12">{t("fb.colRating")}</TableHead>
+                <TableHead className="text-xs">{t("fb.colReply")}</TableHead>
+                <TableHead className="text-xs">{t("fb.colComment")}</TableHead>
+                <TableHead className="text-xs w-32">{t("fb.colWhen")}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>

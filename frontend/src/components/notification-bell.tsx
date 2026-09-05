@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Bell, CheckCheck, MessageSquare, Headset, AlertTriangle, Coins, Info } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useI18n } from "@/lib/i18n";
 
 const KIND_ICON: Record<string, typeof Bell> = {
   session: MessageSquare,
@@ -23,6 +24,7 @@ const KIND_ICON: Record<string, typeof Bell> = {
  * realtime WS hub also triggers a refresh via useInboxRealtime in pages.
  */
 export function NotificationBell() {
+  const { t } = useI18n();
   const [open, setOpen] = React.useState(false);
   const { data: unread, mutate: mutateUnread } = useSWR("notif-unread", notificationsUnread, {
     refreshInterval: 30000,
@@ -58,7 +60,7 @@ export function NotificationBell() {
 
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
-      <DropdownMenuTrigger className="relative h-7 w-7 rounded-md hover:bg-sidebar-accent/50 transition-colors flex items-center justify-center text-sidebar-foreground" title="Notifications">
+      <DropdownMenuTrigger className="relative h-7 w-7 rounded-md hover:bg-sidebar-accent/50 transition-colors flex items-center justify-center text-sidebar-foreground" title={t("notif.title")}>
         <Bell className="size-4" />
         {unreadCount > 0 && (
           <span className="absolute -top-0.5 -right-0.5 min-w-4 h-4 px-1 rounded-full bg-destructive text-[9px] font-bold text-white flex items-center justify-center">
@@ -68,13 +70,13 @@ export function NotificationBell() {
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" side="top" className="w-80 max-h-96 overflow-auto p-0">
         <div className="flex items-center justify-between px-3 py-2 border-b border-border sticky top-0 bg-popover z-10">
-          <p className="text-xs font-semibold">Notifications</p>
+          <p className="text-xs font-semibold">{t("notif.title")}</p>
           <Button variant="ghost" size="sm" className="h-6 text-[11px] gap-1 text-muted-foreground" onClick={markAll}>
-            <CheckCheck className="size-3" /> Mark all read
+            <CheckCheck className="size-3" /> {t("notif.markAllRead")}
           </Button>
         </div>
         {!items || items.length === 0 ? (
-          <p className="text-xs text-muted-foreground text-center py-6">No notifications yet</p>
+          <p className="text-xs text-muted-foreground text-center py-6">{t("notif.empty")}</p>
         ) : (
           <div className="divide-y divide-border">
             {items.map((n) => {

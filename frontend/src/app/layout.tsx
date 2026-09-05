@@ -4,6 +4,7 @@ import { AuthProvider } from "@/lib/auth-client";
 import { AuthGuard } from "@/components/auth-guard";
 import { ThemeProvider } from "@/components/theme-provider";
 import { SWRProvider } from "@/lib/swr-provider";
+import { I18nProvider } from "@/lib/i18n";
 import { Toaster } from "@/components/toaster";
 
 // Inter: 拉丁字符主字体 (清晰、紧凑、专业)
@@ -35,19 +36,21 @@ export default function RootLayout({
 }) {
   return (
     // suppressHydrationWarning: next-themes 在客户端给 <html> 写 class,会与 SSR 不一致.
-    <html lang="km" suppressHydrationWarning className={`${inter.variable} ${notoSansKhmer.variable}`}>
+    <html lang="en" suppressHydrationWarning className={`${inter.variable} ${notoSansKhmer.variable}`}>
       <body className="antialiased">
         <ThemeProvider
           attribute="class"
           defaultTheme="light"
           disableTransitionOnChange
         >
-          <AuthProvider>
-            <SWRProvider>
-              <AuthGuard>{children}</AuthGuard>
-            </SWRProvider>
-          </AuthProvider>
-          <Toaster />
+          <I18nProvider>
+            <AuthProvider>
+              <SWRProvider>
+                <AuthGuard>{children}</AuthGuard>
+              </SWRProvider>
+            </AuthProvider>
+            <Toaster />
+          </I18nProvider>
         </ThemeProvider>
       </body>
     </html>

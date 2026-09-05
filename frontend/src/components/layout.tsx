@@ -16,6 +16,8 @@ import {
 import { useState } from "react";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { NotificationBell } from "@/components/notification-bell";
+import { LanguageSwitcher } from "@/components/language-switcher";
+import { useI18n } from "@/lib/i18n";
 
 function NavItem({
   href,
@@ -71,14 +73,15 @@ function NavSection({ label, children, defaultOpen = true }: { label: string; ch
   );
 }
 
-const ROLE_LABELS: Record<string, string> = {
-  platform_admin: "Platform admin",
-  admin: "Administrator",
-  user: "Member",
+const ROLE_KEYS: Record<string, string> = {
+  platform_admin: "role.platformAdmin",
+  admin: "role.admin",
+  user: "role.member",
 };
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const { user, logout } = useAuth();
+  const { t } = useI18n();
   const pathname = usePathname();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const isAdmin = user?.role === "admin" || user?.role === "platform_admin";
@@ -114,16 +117,16 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           <Search className="absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground/50" />
           <input
             readOnly
-            placeholder="Search"
+            placeholder={t("nav.search")}
             className="h-9 w-full rounded-full border border-border/80 bg-card/70 pl-9 pr-12 text-[13px] text-foreground shadow-[0_1px_2px_rgb(0_0_0/0.03)] placeholder:text-muted-foreground/50 transition-all focus:outline-none focus:border-ring/50 focus:ring-2 focus:ring-ring/25 dark:bg-white/[0.05]"
           />
           <span className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md border border-border/70 bg-muted/80 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">⌘K</span>
         </div>
         <div className="ml-auto flex items-center gap-4">
-          <Link href="/knowledge" className="hidden sm:block text-[13px] font-medium text-muted-foreground transition-colors hover:text-foreground">Knowledge</Link>
-          <Link href="/help" className="hidden sm:block text-[13px] font-medium text-muted-foreground transition-colors hover:text-foreground">Help</Link>
+          <Link href="/knowledge" className="hidden sm:block text-[13px] font-medium text-muted-foreground transition-colors hover:text-foreground">{t("nav.knowledge")}</Link>
+          <Link href="/help" className="hidden sm:block text-[13px] font-medium text-muted-foreground transition-colors hover:text-foreground">{t("nav.help")}</Link>
           <button type="button" className="rounded-full bg-ink px-4 py-1.5 text-[13px] font-semibold text-ink-foreground shadow-[0_1px_2px_rgb(0_0_0/0.25),inset_0_1px_0_rgb(255_255_255/0.18)] transition-all hover:brightness-110 active:scale-[0.97]">
-            Console
+            {t("nav.console")}
           </button>
           <DropdownMenu>
             <DropdownMenuTrigger>
@@ -136,10 +139,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             <DropdownMenuContent align="end" className="w-48">
               <div className="px-2 py-1.5">
                 <p className="text-xs font-medium truncate">{user?.username}</p>
-                <p className="text-[10px] text-muted-foreground">{ROLE_LABELS[user?.role ?? "user"] ?? "Member"}</p>
+                <p className="text-[10px] text-muted-foreground">{t(ROLE_KEYS[user?.role ?? "user"] ?? "role.member")}</p>
               </div>
               <DropdownMenuItem onClick={logout} className="text-destructive cursor-pointer text-xs">
-                <LogOut className="size-3.5 mr-2" />Sign out
+                <LogOut className="size-3.5 mr-2" />{t("nav.signOut")}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -156,34 +159,37 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         )}>
           <nav className="flex-1 overflow-auto px-3 py-3">
             <div className="space-y-0.5">
-              <NavItem href="/inbox" icon={Inbox} label="Inbox" active={isActive("/inbox")} onNavigate={close} />
-              <NavItem href="/handoff-requests" icon={UserCheck} label="Human requests" active={isActive("/handoff-requests")} onNavigate={close} />
-              <NavItem href="/knowledge" icon={BookOpen} label="Knowledge" active={isActive("/knowledge")} onNavigate={close} />
-              <NavItem href="/ai-test" icon={FlaskConical} label="AI 测试" active={isActive("/ai-test")} onNavigate={close} badge="Hot" />
-              <NavItem href="/platforms" icon={Globe} label="Platforms" active={isActive("/platforms")} onNavigate={close} />
+              <NavItem href="/inbox" icon={Inbox} label={t("nav.inbox")} active={isActive("/inbox")} onNavigate={close} />
+              <NavItem href="/handoff-requests" icon={UserCheck} label={t("nav.humanRequests")} active={isActive("/handoff-requests")} onNavigate={close} />
+              <NavItem href="/knowledge" icon={BookOpen} label={t("nav.knowledge")} active={isActive("/knowledge")} onNavigate={close} />
+              <NavItem href="/ai-test" icon={FlaskConical} label={t("nav.aiTest")} active={isActive("/ai-test")} onNavigate={close} badge={t("nav.hot")} />
+              <NavItem href="/platforms" icon={Globe} label={t("nav.platforms")} active={isActive("/platforms")} onNavigate={close} />
             </div>
 
             {isAdmin && (
-              <NavSection label="Administration">
-                <NavItem href="/admin" icon={Gauge} label="Dashboard" active={isActive("/admin")} onNavigate={close} />
-                <NavItem href="/admin/users" icon={Users} label="Users" active={isActive("/admin/users")} onNavigate={close} />
-                <NavItem href="/admin/models" icon={Cpu} label="Models" active={isActive("/admin/models")} onNavigate={close} />
-                <NavItem href="/admin/tokens" icon={Coins} label="Tokens" active={isActive("/admin/tokens")} onNavigate={close} />
+              <NavSection label={t("nav.administration")}>
+                <NavItem href="/admin" icon={Gauge} label={t("nav.dashboard")} active={isActive("/admin")} onNavigate={close} />
+                <NavItem href="/admin/users" icon={Users} label={t("nav.users")} active={isActive("/admin/users")} onNavigate={close} />
+                <NavItem href="/admin/models" icon={Cpu} label={t("nav.models")} active={isActive("/admin/models")} onNavigate={close} />
+                <NavItem href="/admin/tokens" icon={Coins} label={t("nav.tokens")} active={isActive("/admin/tokens")} onNavigate={close} />
               </NavSection>
             )}
             {isPlatformAdmin && (
-              <NavSection label="Super admin">
-                <NavItem href="/platform-admin" icon={ShieldCheck} label="Platform Admin" active={isActive("/platform-admin")} onNavigate={close} />
+              <NavSection label={t("nav.superAdmin")}>
+                <NavItem href="/platform-admin" icon={ShieldCheck} label={t("nav.platformAdmin")} active={isActive("/platform-admin")} onNavigate={close} />
               </NavSection>
             )}
-            <NavSection label="Preferences">
-              <NavItem href="/settings" icon={Settings} label="Settings" active={isActive("/settings")} onNavigate={close} />
-              <NavItem href="/help" icon={HelpCircle} label="Help" active={isActive("/help")} onNavigate={close} />
+            <NavSection label={t("nav.preferences")}>
+              <NavItem href="/settings" icon={Settings} label={t("nav.settings")} active={isActive("/settings")} onNavigate={close} />
+              <NavItem href="/help" icon={HelpCircle} label={t("nav.help")} active={isActive("/help")} onNavigate={close} />
             </NavSection>
           </nav>
           <div className="flex items-center justify-between border-t border-sidebar-border/80 px-3 py-2">
             <ThemeToggle />
-            <NotificationBell />
+            <div className="flex items-center gap-1">
+              <LanguageSwitcher />
+              <NotificationBell />
+            </div>
           </div>
         </aside>
 

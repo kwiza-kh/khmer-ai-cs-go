@@ -13,11 +13,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatCard } from "@/components/stat-card";
 import { EmptyState } from "@/components/empty-state";
 import { Zap, TrendingUp, BarChart3, Users, Clock, Smile, ThumbsUp, ThumbsDown, Activity, ShieldCheck } from "lucide-react";
+import { useI18n } from "@/lib/i18n";
 
 // 6 distinct token-driven colors (cycle through semantic tokens).
 const PIE_COLORS = ["var(--color-primary)", "var(--color-info)", "var(--color-warning)", "var(--color-success)", "var(--color-danger)", "var(--color-muted-foreground)"];
 
 export function AnalyticsPanel({ days = 30 }: { days?: number }) {
+  const { t, tf } = useI18n();
   const { data: overview } = useSWR(`analytics-overview-${days}`, () => getAnalyticsOverview(days));
   const { data: timeline } = useSWR(`analytics-timeline-${days}`, () => getAnalyticsTimeline(days));
   const { data: languages } = useSWR(`analytics-languages-${days}`, () => getLanguageBreakdown(days));
@@ -27,23 +29,23 @@ export function AnalyticsPanel({ days = 30 }: { days?: number }) {
     <div className="space-y-4">
       {/* KPI cards — exactly 8 so the 4-col grid never leaves an orphan row. */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <StatCard icon={Zap} label="Total Tokens" value={(overview?.total_tokens ?? 0).toLocaleString()} tone="success" />
-        <StatCard icon={TrendingUp} label="Cache Hit" value={`${(overview?.cache_hit_rate ?? 0).toFixed(1)}%`} tone="info" />
-        <StatCard icon={BarChart3} label="Est. Cost" value={`$${(overview?.total_cost ?? 0).toFixed(4)}`} tone="warning" />
-        <StatCard icon={Users} label="Sessions" value={(overview?.total_sessions ?? 0).toLocaleString()} tone="default" />
-        <StatCard icon={Clock} label="Avg First Resp." value={fmtMs(overview?.avg_first_response_ms)} tone="info" />
-        <StatCard icon={Activity} label="Avg Resolution" value={fmtMs(overview?.avg_resolution_ms)} tone="warning" />
+        <StatCard icon={Zap} label={t("an.totalTokens")} value={(overview?.total_tokens ?? 0).toLocaleString()} tone="success" />
+        <StatCard icon={TrendingUp} label={t("an.cacheHit")} value={`${(overview?.cache_hit_rate ?? 0).toFixed(1)}%`} tone="info" />
+        <StatCard icon={BarChart3} label={t("an.estCost")} value={`$${(overview?.total_cost ?? 0).toFixed(4)}`} tone="warning" />
+        <StatCard icon={Users} label={t("an.sessions")} value={(overview?.total_sessions ?? 0).toLocaleString()} tone="default" />
+        <StatCard icon={Clock} label={t("an.avgFirstResp")} value={fmtMs(overview?.avg_first_response_ms)} tone="info" />
+        <StatCard icon={Activity} label={t("an.avgResolution")} value={fmtMs(overview?.avg_resolution_ms)} tone="warning" />
         <StatCard icon={Smile} label="CSAT" value={overview?.csat != null ? `${(overview.csat * 100).toFixed(0)}%` : "—"} tone="success" />
-        <StatCard icon={ShieldCheck} label="Deflection Rate" value={`${((overview?.deflection_rate ?? 0) * 100).toFixed(1)}%`} tone="success" />
+        <StatCard icon={ShieldCheck} label={t("an.deflection")} value={`${((overview?.deflection_rate ?? 0) * 100).toFixed(1)}%`} tone="success" />
       </div>
 
       {/* Token usage over time */}
       <Card>
-        <CardHeader className="pb-2"><CardTitle className="text-sm">Token usage (last {days} days)</CardTitle></CardHeader>
+        <CardHeader className="pb-2"><CardTitle className="text-sm">{tf("an.tokenUsage", { days })}</CardTitle></CardHeader>
         <CardContent>
           <div className="h-64">
             {!timeline?.length ? (
-              <EmptyState icon={BarChart3} title="No usage data yet" />
+              <EmptyState icon={BarChart3} title={t("an.noUsage")} />
             ) : (
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={timeline} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
@@ -79,13 +81,13 @@ export function AnalyticsPanel({ days = 30 }: { days?: number }) {
         <CardHeader className="pb-2">
           <CardTitle className="text-sm flex items-center gap-1.5">
             <ShieldCheck className="size-3.5 text-success" />
-            Deflection rate (last {days} days)
+            {tf("an.deflectionTitle", { days })}
           </CardTitle>
         </CardHeader>
         <CardContent>
           <div className="h-56">
             {!timeline?.length || timeline.every((t) => !t.deflection_rate) ? (
-              <EmptyState icon={ShieldCheck} title="No resolution data yet" />
+              <EmptyState icon={ShieldCheck} title={t("an.noResolution")} />
             ) : (
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart
@@ -122,7 +124,7 @@ export function AnalyticsPanel({ days = 30 }: { days?: number }) {
             )}
           </div>
           <p className="text-xs text-muted-foreground mt-1">
-            Share of sessions created each day that were resolved — i.e. handled end-to-end without a live agent.
+            {t("an.deflectionDesc")}
           </p>
         </CardContent>
       </Card>
@@ -130,11 +132,11 @@ export function AnalyticsPanel({ days = 30 }: { days?: number }) {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* Languages pie */}
         <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-sm">Languages</CardTitle></CardHeader>
+          <CardHeader className="pb-2"><CardTitle className="text-sm">{t("an.languages")}</CardTitle></CardHeader>
           <CardContent>
             <div className="h-56">
               {!languages?.length ? (
-                <EmptyState icon={Users} title="No data" />
+                <EmptyState icon={Users} title={t("an.noData")} />
               ) : (
                 <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
@@ -152,16 +154,16 @@ export function AnalyticsPanel({ days = 30 }: { days?: number }) {
 
         {/* Top queries */}
         <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-sm">Top questions</CardTitle></CardHeader>
+          <CardHeader className="pb-2"><CardTitle className="text-sm">{t("an.topQuestions")}</CardTitle></CardHeader>
           <CardContent>
             {!topQueries?.length ? (
-              <EmptyState icon={Activity} title="No questions yet" />
+              <EmptyState icon={Activity} title={t("an.noQuestions")} />
             ) : (
               <ol className="space-y-2">
                 {topQueries.map((q, i) => (
                   <li key={i} className="flex items-start gap-2 text-xs">
                     <span className="flex-shrink-0 size-5 rounded-full bg-accent text-foreground inline-flex items-center justify-center text-xs font-semibold">{i + 1}</span>
-                    <span className="flex-1 truncate text-foreground">{q.query || "(empty)"}</span>
+                    <span className="flex-1 truncate text-foreground">{q.query || t("an.empty")}</span>
                     <span className="text-muted-foreground">×{q.count}</span>
                   </li>
                 ))}

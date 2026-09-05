@@ -15,8 +15,10 @@ import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/empty-state";
 import { Clock, Zap, Plus, Trash2, Loader2, CheckCircle2, XCircle } from "lucide-react";
 import { toast } from "sonner";
+import { useI18n } from "@/lib/i18n";
 
-const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+// Weekday labels resolve through i18n at render time.
+const WEEKDAY_KEYS = ["ops.day0", "ops.day1", "ops.day2", "ops.day3", "ops.day4", "ops.day5", "ops.day6"];
 
 /**
  * Admin "Operations" tab: business hours scheduler + canned responses library.
@@ -36,6 +38,7 @@ export function OperationsTab() {
 // ============================================
 
 export function BusinessHoursCard() {
+  const { t } = useI18n();
   const { data: hours } = useSWR("business-hours", listBusinessHours);
   const { data: open } = useSWR("business-open", () => isBusinessOpen());
 
@@ -45,7 +48,7 @@ export function BusinessHoursCard() {
   const seed = React.useMemo<BusinessHours[]>(() => {
     const byDay = new Map<number, BusinessHours>();
     (hours ?? []).forEach((h) => byDay.set(h.weekday, h));
-    return WEEKDAYS.map((_, i) => byDay.get(i) ?? {
+    return WEEKDAY_KEYS.map((_, i) => byDay.get(i) ?? {
       weekday: i, open_time: "09:00", close_time: "17:00", is_active: i !== 0, // Sun closed by default
     });
   }, [hours]);
@@ -61,7 +64,7 @@ export function BusinessHoursCard() {
     try {
       await upsertBusinessHours(schedule);
       setEdits({});
-      toast.success("Business hours saved");
+      toast.success(t("ops.hoursSaved"));
       void globalMutate("business-hours");
       void globalMutate("business-open");
     } catch (e) {
@@ -76,21 +79,21 @@ export function BusinessHoursCard() {
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between">
           <CardTitle className="text-sm flex items-center gap-2">
-            <Clock className="size-4 text-primary" /> Business hours
+            <Clock className="size-4 text-primary" /> {t("ops.businessHours")}
           </CardTitle>
           <Badge variant={open?.open ? "success" : "secondary"} className="gap-1 text-xs h-5">
-            {open?.open ? <><CheckCircle2 className="size-3" />Open now</> : <><XCircle className="size-3" />Closed</>}
+            {open?.open ? <><CheckCircle2 className="size-3" />{t("ops.openNow")}</> : <><XCircle className="size-3" />{t("ops.closedNow")}</>}
           </Badge>
         </div>
       </CardHeader>
       <CardContent className="space-y-2">
         <p className="text-xs text-muted-foreground">
-          Outside these hours the AI still answers, but with an &quot;after hours&quot; preamble and the session is flagged for review.
+          {t("ops.hoursDesc")}
         </p>
         <div className="space-y-1.5">
           {schedule.map((row, i) => (
             <div key={i} className="grid grid-cols-[100px_1fr_1fr_32px] items-center gap-2">
-              <span className="text-xs">{WEEKDAYS[row.weekday]}</span>
+              <span className="text-xs">{t(WEEKDAY_KEYS[row.weekday])}</span>
               <Input
                 type="time"
                 value={row.open_time || ""}
@@ -109,7 +112,7 @@ export function BusinessHoursCard() {
                 variant="ghost"
                 size="icon-sm"
                 onClick={() => setRow(i, { is_active: !row.is_active })}
-                title={row.is_active ? "Open this day" : "Closed this day"}
+                title={row.is_active ? t("ops.openDay") : t("ops.closedDay")}
               >
                 {row.is_active ? <CheckCircle2 className="size-3.5 text-success" /> : <XCircle className="size-3.5 text-muted-foreground" />}
               </Button>
@@ -117,7 +120,7 @@ export function BusinessHoursCard() {
           ))}
         </div>
         <Button onClick={handleSave} disabled={saving} className="h-8 text-xs gap-1.5">
-          {saving ? <Loader2 className="size-3 animate-spin" /> : <Clock className="size-3" />}Save schedule
+          {saving ? <Loader2 className="size-3 animate-spin" /> : <Clock className="size-3" />}{t("ops.saveSchedule")}
         </Button>
       </CardContent>
     </Card>
@@ -129,6 +132,7 @@ export function BusinessHoursCard() {
 // ============================================
 
 export function CannedResponsesCard() {
+  const { t } = useI18n();
   const { data: responses, mutate } = useSWR("canned-responses", () => listCannedResponses());
   const [title, setTitle] = React.useState("");
   const [body, setBody] = React.useState("");
@@ -142,7 +146,7 @@ export function CannedResponsesCard() {
     try {
       await createCannedResponse({ title, body, category, language: lang });
       setTitle(""); setBody(""); setCategory("");
-      toast.success("Quick reply added");
+      toast.success(t("ops.added"));
       void mutate();
     } catch (e) {
       toast.error((e as Error).message);
@@ -154,7 +158,7 @@ export function CannedResponsesCard() {
   const handleDelete = async (id: number) => {
     try {
       await deleteCannedResponse(id);
-      toast.success("Deleted");
+      toast.success(t("ops.deleted"));
       void mutate();
     } catch (e) {
       toast.error((e as Error).message);
@@ -165,34 +169,34 @@ export function CannedResponsesCard() {
     <Card>
       <CardHeader className="pb-2">
         <CardTitle className="text-sm flex items-center gap-2">
-          <Zap className="size-4 text-warning" /> Quick replies (canned responses)
+          <Zap className="size-4 text-warning" /> {t("ops.quickReplies")}
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
         <p className="text-xs text-muted-foreground">
-          Agents see these in the inbox reply box — saves typing the same answer 50 times a day.
+          {t("ops.quickDesc")}
         </p>
 
         {/* New entry */}
         <div className="rounded-md border border-border p-3 space-y-2 bg-muted/30">
           <div className="grid grid-cols-1 sm:grid-cols-[1fr_120px_80px] gap-2">
-            <Input placeholder="Title (e.g. Greeting)" value={title} onChange={(e) => setTitle(e.target.value)} className="h-8 text-xs" />
-            <Input placeholder="Category" value={category} onChange={(e) => setCategory(e.target.value)} className="h-8 text-xs" />
+            <Input placeholder={t("ops.titlePh")} value={title} onChange={(e) => setTitle(e.target.value)} className="h-8 text-xs" />
+            <Input placeholder={t("ops.categoryPh")} value={category} onChange={(e) => setCategory(e.target.value)} className="h-8 text-xs" />
             <select value={lang} onChange={(e) => setLang(e.target.value)} className="h-8 text-xs rounded-md border border-input bg-transparent px-2">
               <option value="km">km</option>
               <option value="en">en</option>
               <option value="zh">zh</option>
             </select>
           </div>
-          <Textarea placeholder="Reply body (Markdown ok)…" value={body} onChange={(e) => setBody(e.target.value)} rows={2} className="text-xs resize-none" />
+          <Textarea placeholder={t("ops.bodyPh")} value={body} onChange={(e) => setBody(e.target.value)} rows={2} className="text-xs resize-none" />
           <Button onClick={handleAdd} disabled={saving || !title.trim() || !body.trim()} size="sm" className="h-7 text-xs gap-1">
-            <Plus className="size-3" /> Add
+            <Plus className="size-3" /> {t("ops.add")}
           </Button>
         </div>
 
         {/* List */}
         {!responses || responses.length === 0 ? (
-          <EmptyState icon={Zap} title="No quick replies yet" />
+          <EmptyState icon={Zap} title={t("ops.emptyTitle")} />
         ) : (
           <div className="space-y-1.5">
             {responses.map((r) => (
@@ -209,7 +213,7 @@ export function CannedResponsesCard() {
                   <button
                     onClick={() => handleDelete(r.id)}
                     className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive flex-shrink-0"
-                    title="Delete"
+                    title={t("kb.delete")}
                   >
                     <Trash2 className="size-3.5" />
                   </button>

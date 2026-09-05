@@ -13,6 +13,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Loader2, UploadCloud, FileText, FileUp, X, Globe } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import { useI18n } from "@/lib/i18n";
 
 interface Props {
   /** Called after a successful upload so the parent can refresh its list. */
@@ -30,6 +31,7 @@ interface Props {
  * backend extracts text + chunks + embeds it through the same RAG pipeline.
  */
 export function KnowledgeUploadDialog({ onUploaded, trigger }: Props) {
+  const { t, tf } = useI18n();
   const [open, setOpen] = React.useState(false);
   const [tab, setTab] = React.useState<"text" | "file" | "url">("file");
 
@@ -74,14 +76,14 @@ export function KnowledgeUploadDialog({ onUploaded, trigger }: Props) {
       // Accept any extension whose label is set server-side.
       const known = Object.keys(accepted.extensions).includes(ext);
       if (!known) {
-        toast.error(`Unsupported file type: ${ext}`, {
-          description: `Allowed: ${Object.keys(accepted.extensions).join(", ")}`,
+        toast.error(tf("kbup.unsupported", { ext }), {
+          description: tf("kbup.allowed", { list: Object.keys(accepted.extensions).join(", ") }),
         });
         return;
       }
       if (f.size > accepted.max_bytes) {
-        toast.error(`File too large (${(f.size / 1024 / 1024).toFixed(1)} MB)`,
-          { description: `Max: ${accepted.max_megabytes} MB` });
+        toast.error(tf("kbup.tooLarge", { size: (f.size / 1024 / 1024).toFixed(1) }),
+          { description: tf("kbup.maxSize", { max: accepted.max_megabytes }) });
         return;
       }
     }
@@ -100,7 +102,7 @@ export function KnowledgeUploadDialog({ onUploaded, trigger }: Props) {
     setUploading(true);
     try {
       await uploadKnowledge({ title, content });
-      toast.success("Document queued for indexing");
+      toast.success(t("kbup.queued"));
       handleClose(false);
       onUploaded();
     } catch (err) {
@@ -115,7 +117,7 @@ export function KnowledgeUploadDialog({ onUploaded, trigger }: Props) {
     setUploading(true);
     try {
       const doc = await uploadKnowledgeFile(file, { category });
-      toast.success(`"${doc.title}" queued for indexing`);
+      toast.success(tf("kbup.queuedNamed", { title: doc.title }));
       handleClose(false);
       onUploaded();
     } catch (err) {
@@ -130,7 +132,7 @@ export function KnowledgeUploadDialog({ onUploaded, trigger }: Props) {
     if (!trimmed) return;
     // Light client-side validation; the backend does the real fetch + parsing.
     try { new URL(trimmed); } catch {
-      toast.error("Enter a valid URL (e.g. https://example.com/faq)");
+      toast.error(t("kbup.invalidUrl"));
       return;
     }
     setUploading(true);
@@ -139,7 +141,7 @@ export function KnowledgeUploadDialog({ onUploaded, trigger }: Props) {
         url: trimmed, category,
         title: title.trim() || undefined,
       });
-      toast.success(`"${doc.title}" queued for indexing`);
+      toast.success(tf("kbup.queuedNamed", { title: doc.title }));
       handleClose(false);
       onUploaded();
     } catch (err) {
@@ -154,18 +156,18 @@ export function KnowledgeUploadDialog({ onUploaded, trigger }: Props) {
       <DialogTrigger render={
         trigger ?? (
           <Button size="sm" className="gap-1.5">
-            <UploadCloud className="size-3.5" />Upload
+            <UploadCloud className="size-3.5" />{t("kbup.upload")}
           </Button>
         )
       } />
       <DialogContent className="max-w-lg">
-        <DialogHeader><DialogTitle className="text-sm">Add to knowledge base</DialogTitle></DialogHeader>
+        <DialogHeader><DialogTitle className="text-sm">{t("kbup.title")}</DialogTitle></DialogHeader>
 
         <Tabs value={tab} onValueChange={(v) => setTab((v || "file") as "text" | "file" | "url")}>
           <TabsList className="w-full">
-            <TabsTrigger value="file" className="flex-1 text-xs gap-1.5"><FileUp className="size-3" />Upload file</TabsTrigger>
-            <TabsTrigger value="url" className="flex-1 text-xs gap-1.5"><Globe className="size-3" />From URL</TabsTrigger>
-            <TabsTrigger value="text" className="flex-1 text-xs gap-1.5"><FileText className="size-3" />Paste text</TabsTrigger>
+            <TabsTrigger value="file" className="flex-1 text-xs gap-1.5"><FileUp className="size-3" />{t("kbup.tabFile")}</TabsTrigger>
+            <TabsTrigger value="url" className="flex-1 text-xs gap-1.5"><Globe className="size-3" />{t("kbup.tabUrl")}</TabsTrigger>
+            <TabsTrigger value="text" className="flex-1 text-xs gap-1.5"><FileText className="size-3" />{t("kbup.tabText")}</TabsTrigger>
           </TabsList>
 
           {/* ---------- File upload tab ---------- */}
@@ -191,10 +193,10 @@ export function KnowledgeUploadDialog({ onUploaded, trigger }: Props) {
                 )}
               >
                 <FileUp className="mx-auto size-7 text-muted-foreground mb-2" />
-                <p className="text-sm font-medium">Drop a file here or click to browse</p>
+                <p className="text-sm font-medium">{t("kbup.dropHint")}</p>
                 <p className="text-xs text-muted-foreground mt-1">
                   PDF · DOCX · TXT · MD · CSV
-                  {accepted && ` · up to ${accepted.max_megabytes} MB`}
+                  {accepted && ` ${tf("kbup.upTo", { max: accepted.max_megabytes })}`}
                 </p>
               </button>
             ) : (
@@ -211,7 +213,7 @@ export function KnowledgeUploadDialog({ onUploaded, trigger }: Props) {
                   size="icon-sm"
                   onClick={() => setFile(null)}
                   disabled={uploading}
-                  aria-label="Remove file"
+                  aria-label={t("kbup.removeFile")}
                 >
                   <X className="size-3.5" />
                 </Button>
@@ -219,44 +221,44 @@ export function KnowledgeUploadDialog({ onUploaded, trigger }: Props) {
             )}
 
             <div>
-              <label className="text-xs text-muted-foreground block mb-1">Category (optional)</label>
-              <Input value={category} onChange={(e) => setCategory(e.target.value)} placeholder="FAQ, policy…" className="h-8 text-xs" />
+              <label className="text-xs text-muted-foreground block mb-1">{t("kbup.category")}</label>
+              <Input value={category} onChange={(e) => setCategory(e.target.value)} placeholder={t("kbup.categoryPh")} className="h-8 text-xs" />
             </div>
             <p className="text-[11px] text-muted-foreground -mt-1">
-              Language is auto-detected from the document content.
+              {t("kbup.langAuto")}
             </p>
 
             <Button onClick={submitFile} disabled={uploading || !file} className="w-full h-9 text-xs gap-1.5">
               {uploading
-                ? <><Loader2 className="size-3.5 animate-spin" /> Uploading…</>
-                : <><UploadCloud className="size-3.5" /> Upload file</>}
+                ? <><Loader2 className="size-3.5 animate-spin" /> {t("kbup.uploading")}</>
+                : <><UploadCloud className="size-3.5" /> {t("kbup.uploadFileBtn")}</>}
             </Button>
             <p className="text-xs text-muted-foreground text-center">
-              Title is derived from the filename. Indexing starts after upload.
+              {t("kbup.titleFromFilename")}
             </p>
           </TabsContent>
 
           {/* ---------- Paste text tab ---------- */}
           <TabsContent value="text" className="mt-4 space-y-3">
             <div>
-              <label className="text-xs text-muted-foreground block mb-1">Title</label>
-              <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Document title" className="h-9 text-sm" />
+              <label className="text-xs text-muted-foreground block mb-1">{t("kbup.titleLabel")}</label>
+              <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder={t("kbup.titlePh")} className="h-9 text-sm" />
             </div>
             <div>
-              <label className="text-xs text-muted-foreground block mb-1">Content</label>
-              <Textarea value={content} onChange={(e) => setContent(e.target.value)} placeholder="Paste your content here…" rows={6} className="text-sm resize-none" />
+              <label className="text-xs text-muted-foreground block mb-1">{t("kbup.contentLabel")}</label>
+              <Textarea value={content} onChange={(e) => setContent(e.target.value)} placeholder={t("kbup.contentPh")} rows={6} className="text-sm resize-none" />
             </div>
             <Button onClick={submitText} disabled={uploading || !title.trim() || !content.trim()} className="w-full h-9 text-xs gap-1.5">
               {uploading
-                ? <><Loader2 className="size-3.5 animate-spin" /> Uploading…</>
-                : <><UploadCloud className="size-3.5" /> Upload</>}
+                ? <><Loader2 className="size-3.5 animate-spin" /> {t("kbup.uploading")}</>
+                : <><UploadCloud className="size-3.5" /> {t("kbup.upload")}</>}
             </Button>
           </TabsContent>
 
           {/* ---------- URL ingest tab ---------- */}
           <TabsContent value="url" className="mt-4 space-y-3">
             <div>
-              <label className="text-xs text-muted-foreground block mb-1">Page URL</label>
+              <label className="text-xs text-muted-foreground block mb-1">{t("kbup.urlLabel")}</label>
               <Input
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
@@ -266,28 +268,28 @@ export function KnowledgeUploadDialog({ onUploaded, trigger }: Props) {
               />
             </div>
             <div>
-              <label className="text-xs text-muted-foreground block mb-1">Title (optional)</label>
+              <label className="text-xs text-muted-foreground block mb-1">{t("kbup.urlTitleLabel")}</label>
               <Input
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
-                placeholder="Defaults to the page’s <title> tag"
+                placeholder={t("kbup.urlTitlePh")}
                 className="h-9 text-sm"
               />
             </div>
             <div>
-              <label className="text-xs text-muted-foreground block mb-1">Category (optional)</label>
-              <Input value={category} onChange={(e) => setCategory(e.target.value)} placeholder="FAQ, policy…" className="h-8 text-xs" />
+              <label className="text-xs text-muted-foreground block mb-1">{t("kbup.category")}</label>
+              <Input value={category} onChange={(e) => setCategory(e.target.value)} placeholder={t("kbup.categoryPh")} className="h-8 text-xs" />
             </div>
             <p className="text-[11px] text-muted-foreground -mt-1">
-              Language is auto-detected from the page content.
+              {t("kbup.urlLangAuto")}
             </p>
             <Button onClick={submitUrl} disabled={uploading || !url.trim()} className="w-full h-9 text-xs gap-1.5">
               {uploading
-                ? <><Loader2 className="size-3.5 animate-spin" /> Fetching…</>
-                : <><Globe className="size-3.5" /> Ingest page</>}
+                ? <><Loader2 className="size-3.5 animate-spin" /> {t("kbup.fetching")}</>
+                : <><Globe className="size-3.5" /> {t("kbup.ingest")}</>}
             </Button>
             <p className="text-xs text-muted-foreground text-center">
-              The page is fetched and prepared before it is queued for indexing.
+              {t("kbup.ingestNote")}
             </p>
           </TabsContent>
         </Tabs>

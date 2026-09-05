@@ -19,6 +19,8 @@ interface AuthContextType {
   isLoading: boolean;
 }
 
+import { localizeCurrentLang } from "./api-errors";
+
 const AuthContext = createContext<AuthContextType | null>(null);
 
 export const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080/api/v1";
@@ -68,7 +70,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       body: JSON.stringify({ username, password }),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "登录失败");
+    if (!res.ok) throw new Error(localizeCurrentLang(data.error || "登录失败"));
     setToken(data.token);
     setUser(data.user);
     localStorage.setItem("token", data.token);
@@ -82,7 +84,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       body: JSON.stringify({ username, email, password }),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "注册失败");
+    if (!res.ok) throw new Error(localizeCurrentLang(data.error || "注册失败"));
     setToken(data.token);
     setUser(data.user);
     localStorage.setItem("token", data.token);

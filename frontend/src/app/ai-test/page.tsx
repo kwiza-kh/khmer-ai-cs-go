@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { RAGSource, sendTestMessage } from "@/lib/api";
+import { useI18n } from "@/lib/i18n";
 
 type TestMessage = {
   id: number;
@@ -21,6 +22,7 @@ type TestMessage = {
 };
 
 export default function AiTestPage() {
+  const { t, tf } = useI18n();
   const [sessionId, setSessionId] = React.useState<string>();
   const [messages, setMessages] = React.useState<TestMessage[]>([]);
   const [draft, setDraft] = React.useState("");
@@ -66,7 +68,7 @@ export default function AiTestPage() {
       );
     } catch (error) {
       setMessages((cur) => cur.filter((m) => m.id !== pendingId));
-      toast.error((error as Error).message || "发送失败");
+      toast.error((error as Error).message || t("aitest.sendFailed"));
     } finally {
       setSending(false);
     }
@@ -82,13 +84,13 @@ export default function AiTestPage() {
     <div className="flex h-full flex-col">
       <PageHeader
         icon={Sparkles}
-        kicker="AI Testing"
-        title="AI 测试"
-        description="发任意消息, AI 走真实管线 (RAG 知识检索 + Gemini) 直接回复。不会转人工, 也不会触达任何客户。"
+        kicker={t("aitest.kicker")}
+        title={t("aitest.title")}
+        description={t("aitest.description")}
         actions={
           <Button variant="outline" onClick={startNew} disabled={sending} className="gap-2">
             <RotateCcw className="size-4" />
-            新测试
+            {t("aitest.newTest")}
           </Button>
         }
       />
@@ -100,7 +102,7 @@ export default function AiTestPage() {
               <Card className="border-dashed">
                 <CardContent className="flex flex-col items-center gap-2 py-14 text-center text-muted-foreground">
                   <Sparkles className="size-8 opacity-40" />
-                  <p className="text-sm">在下方输入任意消息开始测试 — 客户常问的问题、闲聊、超纲问题都可以。</p>
+                  <p className="text-sm">{t("aitest.emptyHint")}</p>
                 </CardContent>
               </Card>
             )}
@@ -123,17 +125,17 @@ export default function AiTestPage() {
                   <div className="min-w-0 max-w-[85%] space-y-1.5">
                     {m.pending ? (
                       <div className="flex items-center gap-2 rounded-lg rounded-bl-sm bg-muted px-3.5 py-2.5 text-sm text-muted-foreground">
-                        <Loader2 className="size-3.5 animate-spin" /> AI 思考中…
+                        <Loader2 className="size-3.5 animate-spin" /> {t("aitest.thinking")}
                       </div>
                     ) : (
                       <>
                         <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
                           <Badge variant="outline" className="h-4 px-1 text-[10px]">
-                            AI 回复
+                            {t("aitest.aiReply")}
                           </Badge>
                           {m.usedMock && (
                             <Badge variant="destructive" className="h-4 px-1 text-[10px]">
-                              MOCK (未配置 Gemini Key)
+                              {t("aitest.mockBadge")}
                             </Badge>
                           )}
                           {m.elapsedMs != null && <span>{m.elapsedMs} ms</span>}
@@ -144,12 +146,12 @@ export default function AiTestPage() {
                         {m.sources && m.sources.length > 0 && (
                           <details className="text-xs text-muted-foreground">
                             <summary className="cursor-pointer select-none hover:text-foreground">
-                              命中 {m.sources.length} 条知识片段
+                              {tf("aitest.sourcesHit", { n: m.sources.length })}
                             </summary>
                             <ul className="mt-1 space-y-1 pl-4">
                               {m.sources.map((s) => (
                                 <li key={s.doc_id} className="list-disc">
-                                  {s.title} <span className="opacity-60">(score {s.score.toFixed(2)})</span>
+                                  {s.title} <span className="opacity-60">({tf("aitest.score", { score: s.score.toFixed(2) })})</span>
                                 </li>
                               ))}
                             </ul>
@@ -172,7 +174,7 @@ export default function AiTestPage() {
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.nativeEvent.isComposing) send();
               }}
-              placeholder="输入要测试的消息…"
+              placeholder={t("aitest.placeholder")}
               disabled={sending}
             />
             <Button size="icon" onClick={send} disabled={sending || !draft.trim()}>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-client";
 import { Button } from "@/components/ui/button";
@@ -9,55 +9,16 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AnimatePresence, motion } from "motion/react";
 import { Loader2, Eye, EyeOff, ArrowRight } from "lucide-react";
 import { cn } from "@/lib/utils";
-
-type Lang = "km" | "en" | "zh";
-
-const t = {
-  loginTitle:    { km: "ចូលប្រើប្រាស់", en: "Sign In", zh: "登录" },
-  registerTitle: { km: "បង្កើតគណនី", en: "Create Account", zh: "注册" },
-  loginDesc:     { km: "បញ្ចូលព័ត៌មានខាងក្រោមដើម្បីចូល", en: "Enter your credentials to sign in", zh: "输入凭据登录" },
-  registerDesc:  { km: "បំពេញព័ត៌មានដើម្បីបង្កើតគណនី", en: "Fill in the details to create an account", zh: "填写信息创建账户" },
-  loginTab:      { km: "ចូល", en: "Login", zh: "登录" },
-  registerTab:   { km: "ចុះឈ្មោះ", en: "Register", zh: "注册" },
-  username:      { km: "ឈ្មោះអ្នកប្រើ", en: "Username", zh: "用户名" },
-  password:      { km: "ពាក្យសម្ងាត់", en: "Password", zh: "密码" },
-  email:         { km: "អ៊ីមែល", en: "Email", zh: "邮箱" },
-  loginBtn:      { km: "ចូល", en: "Sign In", zh: "登录" },
-  registerBtn:   { km: "បង្កើតគណនី", en: "Create Account", zh: "创建账户" },
-  userPlaceholder: { km: "admin", en: "Enter username", zh: "输入用户名" },
-  emailPlaceholder:{ km: "sophea@example.com", en: "Enter email", zh: "输入邮箱" },
-};
-
-const langs: { key: Lang; label: string }[] = [
-  { key: "km", label: "ខ្មែរ" }, { key: "en", label: "EN" }, { key: "zh", label: "中文" },
-];
+import { LANGS, useI18n } from "@/lib/i18n";
 
 export default function LoginPage() {
   const { login, register } = useAuth();
   const router = useRouter();
-  const [lang, setLang] = useState<Lang>("km");
+  const { lang, setLang, t } = useI18n();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [tab, setTab] = useState("login");
   const [showPassword, setShowPassword] = useState(false);
-
-  // 界面语言: 记忆上次选择, 首次访问按浏览器语言自动匹配; 与设置页共用 "lang" 键
-  useEffect(() => {
-    const saved = localStorage.getItem("lang");
-    if (saved === "km" || saved === "en" || saved === "zh") {
-      setLang(saved);
-    } else {
-      const nav = navigator.language?.toLowerCase() ?? "";
-      const detected: Lang = nav.startsWith("zh") ? "zh" : nav.startsWith("km") ? "km" : "en";
-      setLang(detected);
-    }
-  }, []);
-
-  const switchLang = (l: Lang) => {
-    setLang(l);
-    localStorage.setItem("lang", l);
-    document.documentElement.lang = l;
-  };
 
   const [loginUser, setLoginUser] = useState("");
   const [loginPass, setLoginPass] = useState("");
@@ -87,10 +48,10 @@ export default function LoginPage() {
         <div className="grid-texture absolute inset-0" />
       </div>
 
-      {/* 界面语言切换 — 分段控件 */}
+      {/* 界面语言切换 — 分段控件 (全局, 与设置页/侧边栏联动) */}
       <div className="glass absolute top-5 right-5 z-20 flex items-center gap-0.5 rounded-full border border-border/60 p-1 shadow-[0_2px_10px_-4px_rgb(0_0_0/0.15)] dark:bg-white/[0.05]">
-        {langs.map((opt) => (
-          <button key={opt.key} onClick={() => switchLang(opt.key)}
+        {LANGS.map((opt) => (
+          <button key={opt.key} onClick={() => setLang(opt.key)}
             className={cn(
               "rounded-full px-3 py-1 text-xs font-medium transition-all",
               lang === opt.key
@@ -112,7 +73,7 @@ export default function LoginPage() {
           </div>
           <p className="mt-3 text-[15px] font-semibold tracking-tight text-foreground">Khmer AI</p>
           <p className="mt-1 text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
-            Customer Service Platform
+            {t("login.tagline")}
           </p>
         </div>
 
@@ -120,18 +81,18 @@ export default function LoginPage() {
         <div className="rounded-2xl border border-border/70 bg-card/85 shadow-[0_24px_64px_-28px_rgb(17_20_45/0.4)] ring-1 ring-white/50 backdrop-blur-xl dark:bg-card/75 dark:ring-white/[0.06]">
           <div className="px-6 pt-6 pb-2">
             <h1 className="text-lg font-semibold tracking-tight">
-              {tab === "login" ? t.loginTitle[lang] : t.registerTitle[lang]}
+              {tab === "login" ? t("login.title") : t("login.registerTitle")}
             </h1>
             <p className="text-sm text-muted-foreground mt-1">
-              {tab === "login" ? t.loginDesc[lang] : t.registerDesc[lang]}
+              {tab === "login" ? t("login.desc") : t("login.registerDesc")}
             </p>
           </div>
 
           <div className="px-6 pt-3 pb-1">
             <Tabs value={tab} onValueChange={setTab}>
               <TabsList className="w-full h-9">
-                <TabsTrigger value="login" className="flex-1 text-xs">{t.loginTab[lang]}</TabsTrigger>
-                <TabsTrigger value="register" className="flex-1 text-xs">{t.registerTab[lang]}</TabsTrigger>
+                <TabsTrigger value="login" className="flex-1 text-xs">{t("login.tab")}</TabsTrigger>
+                <TabsTrigger value="register" className="flex-1 text-xs">{t("login.registerTab")}</TabsTrigger>
               </TabsList>
             </Tabs>
           </div>
@@ -150,11 +111,11 @@ export default function LoginPage() {
             <AnimatePresence mode="wait">
               {tab === "login" ? (
                 <motion.form key="login" initial={{ opacity: 0, x: -4 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 4 }} transition={{ duration: 0.15 }} onSubmit={handleLogin} className="space-y-4">
-                  <Field label={t.username[lang]}>
+                  <Field label={t("login.username")}>
                     <Input value={loginUser} onChange={(e) => setLoginUser(e.target.value)}
-                      placeholder={t.userPlaceholder[lang]} required className="h-10" />
+                      placeholder={t("login.userPlaceholder")} required className="h-10" />
                   </Field>
-                  <Field label={t.password[lang]}>
+                  <Field label={t("login.password")}>
                     <div className="relative">
                       <Input type={showPassword ? "text" : "password"} value={loginPass}
                         onChange={(e) => setLoginPass(e.target.value)} placeholder="········" required className="h-10 pr-10" />
@@ -165,25 +126,25 @@ export default function LoginPage() {
                     </div>
                   </Field>
                   <Button type="submit" disabled={loading} className="w-full h-10 text-sm gap-2">
-                    {loading ? <Loader2 className="size-4 animate-spin" /> : <>{t.loginBtn[lang]}<ArrowRight className="size-3.5 opacity-50" /></>}
+                    {loading ? <Loader2 className="size-4 animate-spin" /> : <>{t("login.submit")}<ArrowRight className="size-3.5 opacity-50" /></>}
                   </Button>
                 </motion.form>
               ) : (
                 <motion.form key="register" initial={{ opacity: 0, x: -4 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 4 }} transition={{ duration: 0.15 }} onSubmit={handleRegister} className="space-y-4">
-                  <Field label={t.username[lang]}>
+                  <Field label={t("login.username")}>
                     <Input value={regUser} onChange={(e) => setRegUser(e.target.value)}
-                      placeholder={t.userPlaceholder[lang]} required className="h-10" />
+                      placeholder={t("login.userPlaceholder")} required className="h-10" />
                   </Field>
-                  <Field label={t.email[lang]}>
+                  <Field label={t("login.email")}>
                     <Input type="email" value={regEmail} onChange={(e) => setRegEmail(e.target.value)}
-                      placeholder={t.emailPlaceholder[lang]} required className="h-10" />
+                      placeholder={t("login.emailPlaceholder")} required className="h-10" />
                   </Field>
-                  <Field label={t.password[lang]}>
+                  <Field label={t("login.password")}>
                     <Input type="password" value={regPass} onChange={(e) => setRegPass(e.target.value)}
                       placeholder="········" required className="h-10" />
                   </Field>
                   <Button type="submit" disabled={loading} className="w-full h-10 text-sm gap-2">
-                    {loading ? <Loader2 className="size-4 animate-spin" /> : <>{t.registerBtn[lang]}<ArrowRight className="size-3.5 opacity-50" /></>}
+                    {loading ? <Loader2 className="size-4 animate-spin" /> : <>{t("login.registerSubmit")}<ArrowRight className="size-3.5 opacity-50" /></>}
                   </Button>
                 </motion.form>
               )}
@@ -192,7 +153,7 @@ export default function LoginPage() {
         </div>
 
         <p className="text-center text-xs text-muted-foreground/70 mt-6 tracking-wide">
-          Khmer AI Customer Service · Production
+          {t("login.footer")}
         </p>
       </div>
     </div>

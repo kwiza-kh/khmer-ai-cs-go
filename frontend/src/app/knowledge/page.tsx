@@ -24,6 +24,7 @@ import { EmptyState } from "@/components/empty-state";
 import { KnowledgeUploadDialog } from "@/components/knowledge/upload-dialog";
 import { MarkdownKnowledgeEditor } from "@/components/knowledge/markdown-editor";
 import { cn } from "@/lib/utils";
+import { useI18n } from "@/lib/i18n";
 
 interface SrcItem { title: string; score: number; content: string }
 
@@ -31,19 +32,19 @@ type FileKind = "txt" | "md" | "csv" | "docx" | "pdf" | "other";
 
 interface FileGroup {
   kind: FileKind;
-  label: string;
+  labelKey: string;
   extension?: string;
   icon: LucideIcon;
   iconClass: string;
 }
 
 const FILE_GROUPS: FileGroup[] = [
-  { kind: "txt", label: "Text files", extension: "TXT", icon: FileText, iconClass: "bg-sky-500/10 text-sky-600 dark:text-sky-400" },
-  { kind: "md", label: "Markdown", extension: "MD", icon: FileCode2, iconClass: "bg-violet-500/10 text-violet-600 dark:text-violet-400" },
-  { kind: "csv", label: "Spreadsheets", extension: "CSV", icon: FileSpreadsheet, iconClass: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" },
-  { kind: "docx", label: "Word documents", extension: "DOCX", icon: FileType2, iconClass: "bg-blue-500/10 text-blue-600 dark:text-blue-400" },
-  { kind: "pdf", label: "PDF documents", extension: "PDF", icon: FileText, iconClass: "bg-rose-500/10 text-rose-600 dark:text-rose-400" },
-  { kind: "other", label: "Other entries", icon: File, iconClass: "bg-muted text-muted-foreground" },
+  { kind: "txt", labelKey: "kb.groupTxt", extension: "TXT", icon: FileText, iconClass: "bg-sky-500/10 text-sky-600 dark:text-sky-400" },
+  { kind: "md", labelKey: "kb.groupMd", extension: "MD", icon: FileCode2, iconClass: "bg-violet-500/10 text-violet-600 dark:text-violet-400" },
+  { kind: "csv", labelKey: "kb.groupCsv", extension: "CSV", icon: FileSpreadsheet, iconClass: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" },
+  { kind: "docx", labelKey: "kb.groupDocx", extension: "DOCX", icon: FileType2, iconClass: "bg-blue-500/10 text-blue-600 dark:text-blue-400" },
+  { kind: "pdf", labelKey: "kb.groupPdf", extension: "PDF", icon: FileText, iconClass: "bg-rose-500/10 text-rose-600 dark:text-rose-400" },
+  { kind: "other", labelKey: "kb.groupOther", icon: File, iconClass: "bg-muted text-muted-foreground" },
 ];
 
 function fileKindFromTitle(title: string): FileKind {
@@ -53,10 +54,10 @@ function fileKindFromTitle(title: string): FileKind {
     : "other";
 }
 
-function formatDate(value?: string): string {
-  if (!value) return "Date unavailable";
+function formatDate(value: string | undefined, unavailable: string): string {
+  if (!value) return unavailable;
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "Date unavailable";
+  if (Number.isNaN(date.getTime())) return unavailable;
   // Pin to English so dates render consistently regardless of browser locale
   // (the browser may be localized to 中文, which produced "2026年8月11日").
   return new Intl.DateTimeFormat("en-US", { year: "numeric", month: "short", day: "numeric" }).format(date);
@@ -67,6 +68,7 @@ function isEditableFileKind(kind: FileKind): boolean {
 }
 
 export default function KnowledgePage() {
+  const { t, tf } = useI18n();
   const [documents, setDocuments] = useState<KnowledgeDocument[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -109,11 +111,11 @@ export default function KnowledgePage() {
       setDocuments(response.data || []);
       setTotal(response.total || 0);
     } catch (err: unknown) {
-      toast.error((err as Error).message || "Failed to load documents");
+      toast.error((err as Error).message || t("kb.loadFailed"));
     } finally {
       if (showLoading) setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => { void loadDocs(); }, 0);
@@ -168,28 +170,28 @@ export default function KnowledgePage() {
     setRetryingDocId(docId);
     try {
       await retryKnowledge(docId);
-      toast.success("Document requeued for indexing");
+      toast.success(t("kb.requeued"));
       await loadDocs(false);
     } catch (err: unknown) {
-      toast.error((err as Error).message || "Failed to requeue document");
+      toast.error((err as Error).message || t("kb.requeueFailed"));
     } finally {
       setRetryingDocId(null);
     }
   };
 
   const handleDelete = async (doc: KnowledgeDocument): Promise<boolean> => {
-    if (!window.confirm(`Delete "${doc.title}"? This cannot be undone.`)) return false;
+    if (!window.confirm(tf("kb.deleteConfirm", { title: doc.title }))) return false;
     setDeletingDocId(doc.doc_id);
     try {
       await deleteKnowledge(doc.doc_id);
       setAnswer("");
       setSources([]);
       if (previewDoc?.doc_id === doc.doc_id) closePreview();
-      toast.success("Document deleted");
+      toast.success(t("kb.deleted"));
       await loadDocs(false);
       return true;
     } catch (err: unknown) {
-      toast.error((err as Error).message || "Failed to delete document");
+      toast.error((err as Error).message || t("kb.deleteFailed"));
       return false;
     } finally {
       setDeletingDocId(null);
@@ -207,7 +209,7 @@ export default function KnowledgePage() {
       setPreviewDoc(detail);
       setEditContent(detail.content || "");
     } catch (err: unknown) {
-      toast.error((err as Error).message || "Failed to load document");
+      toast.error((err as Error).message || t("kb.loadDocFailed"));
     } finally {
       setPreviewLoading(false);
     }
@@ -221,10 +223,10 @@ export default function KnowledgePage() {
       setPreviewDoc(updated);
       setEditContent(updated.content || editContent);
       setEditing(false);
-      toast.success("Document saved and queued for re-indexing");
+      toast.success(t("kb.savedReindex"));
       await loadDocs(false);
     } catch (err: unknown) {
-      toast.error((err as Error).message || "Failed to save document");
+      toast.error((err as Error).message || t("kb.saveFailed"));
     } finally {
       setSaving(false);
     }
@@ -243,13 +245,13 @@ export default function KnowledgePage() {
     <div className="flex h-full flex-col">
       <PageHeader
         icon={BookOpen}
-        kicker="Retrieval library"
-        title="Knowledge base"
-        description={`${readyCount} of ${total} documents ready`}
+        kicker={t("kb.kicker")}
+        title={t("kb.title")}
+        description={tf("kb.readyCount", { ready: readyCount, total })}
         actions={
           <>
             <Button size="sm" variant="outline" className="gap-1.5" onClick={openCreateEditor}>
-              <Plus className="size-3.5" />New document
+              <Plus className="size-3.5" />{t("kb.newDoc")}
             </Button>
             <KnowledgeUploadDialog onUploaded={loadDocs} />
           </>
@@ -268,15 +270,15 @@ export default function KnowledgePage() {
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
                   onKeyDown={(event) => event.key === "Enter" && handleSearch()}
-                  placeholder="Search the knowledge base..."
+                  placeholder={t("kb.searchPh")}
                   className="h-10 flex-1 border-0 bg-transparent text-sm shadow-none focus-visible:ring-0"
                 />
                 <Button onClick={handleSearch} disabled={searching || !query.trim()} className="h-10 gap-2 px-3">
                   {searching ? <Loader2 className="size-3.5 animate-spin" /> : <Search className="size-3.5" />}
-                  <span className="hidden sm:inline">Search</span>
+                  <span className="hidden sm:inline">{t("nav.search")}</span>
                 </Button>
               </div>
-              <p className="pt-3 text-xs text-muted-foreground">Ask in Khmer, English, or Chinese across your indexed documents.</p>
+              <p className="pt-3 text-xs text-muted-foreground">{t("kb.searchHint")}</p>
             </CardContent>
           </Card>
 
@@ -290,7 +292,7 @@ export default function KnowledgePage() {
           {answer && !searching && (
             <Card className="border-primary/20">
               <CardHeader className="border-b border-border pb-3">
-                <CardTitle className="text-sm">Grounded answer</CardTitle>
+                <CardTitle className="text-sm">{t("kb.groundedAnswer")}</CardTitle>
               </CardHeader>
               <CardContent className="pt-5"><p className="text-sm leading-7">{answer}</p></CardContent>
             </Card>
@@ -298,7 +300,7 @@ export default function KnowledgePage() {
 
           {sources.length > 0 && !searching && (
             <section className="space-y-2">
-              <p className="text-xs font-bold uppercase tracking-[0.1em] text-muted-foreground">Sources ({sources.length})</p>
+              <p className="text-xs font-bold uppercase tracking-[0.1em] text-muted-foreground">{tf("kb.sources", { n: sources.length })}</p>
               <div className="grid gap-2 md:grid-cols-2">
                 {sources.map((source, index) => (
                   <Card key={`${source.title}-${index}`}>
@@ -318,17 +320,17 @@ export default function KnowledgePage() {
           {!answer && !searching && (
             <div className="flex items-center gap-3 rounded-xl border border-dashed border-border px-4 py-3 text-sm text-muted-foreground">
               <Search className="size-4 shrink-0" />
-              Search returns answers grounded only in the documents below.
+              {t("kb.searchNote")}
             </div>
           )}
 
           <section className="space-y-4 pt-2">
             <div className="flex items-end justify-between gap-3">
               <div>
-                <p className="text-xs font-bold uppercase tracking-[0.1em] text-muted-foreground">Saved knowledge</p>
-                <h2 className="mt-1 text-lg font-semibold tracking-tight">Document library</h2>
+                <p className="text-xs font-bold uppercase tracking-[0.1em] text-muted-foreground">{t("kb.savedKnowledge")}</p>
+                <h2 className="mt-1 text-lg font-semibold tracking-tight">{t("kb.docLibrary")}</h2>
               </div>
-              <Badge variant="secondary" className="h-6 px-2.5 text-xs">{total} documents</Badge>
+              <Badge variant="secondary" className="h-6 px-2.5 text-xs">{tf("kb.docCount", { n: total })}</Badge>
             </div>
 
             {loading ? (
@@ -336,7 +338,7 @@ export default function KnowledgePage() {
                 {[1, 2, 3].map((index) => <Skeleton key={index} className="h-44 rounded-xl" />)}
               </div>
             ) : documentGroups.length === 0 ? (
-              <Card><CardContent className="py-12"><EmptyState icon={FileText} title="No documents yet" description="Upload a file, paste text, or import a public web page." /></CardContent></Card>
+              <Card><CardContent className="py-12"><EmptyState icon={FileText} title={t("kb.emptyTitle")} description={t("kb.emptyDesc")} /></CardContent></Card>
             ) : documentGroups.map((group) => {
               const collapsed = collapsedGroups.has(group.kind);
               const GroupIcon = group.icon;
@@ -348,8 +350,8 @@ export default function KnowledgePage() {
                         <GroupIcon className="size-4" />
                       </div>
                       <div className="min-w-0">
-                        <CardTitle className="text-sm">{group.label}</CardTitle>
-                        <p className="mt-0.5 text-xs text-muted-foreground">{group.documents.length} saved {group.documents.length === 1 ? "document" : "documents"}</p>
+                        <CardTitle className="text-sm">{t(group.labelKey)}</CardTitle>
+                        <p className="mt-0.5 text-xs text-muted-foreground">{tf("kb.groupSaved", { n: group.documents.length })}</p>
                       </div>
                     </div>
                     <Button
@@ -361,7 +363,7 @@ export default function KnowledgePage() {
                       className="h-8 shrink-0 gap-1.5 px-2 text-xs"
                     >
                       {collapsed ? <ChevronDown className="size-3.5" /> : <ChevronUp className="size-3.5" />}
-                      {collapsed ? "Expand" : "Collapse"}
+                      {collapsed ? t("kb.expand") : t("kb.collapse")}
                     </Button>
                   </CardHeader>
                   {!collapsed && (
@@ -385,17 +387,17 @@ export default function KnowledgePage() {
                                   {metadata.extension && <Badge variant="outline" className="h-5 px-1.5 font-mono text-[10px]">{metadata.extension}</Badge>}
                                 </div>
                                 <p className="line-clamp-2 min-h-10 text-sm font-semibold leading-5">{doc.title}</p>
-                                <p className="mt-2 text-xs text-muted-foreground">Created {formatDate(doc.created_at)}</p>
+                                <p className="mt-2 text-xs text-muted-foreground">{tf("kb.created", { date: formatDate(doc.created_at, t("kb.dateUnavailable")) })}</p>
                                 <div className="mt-3 flex flex-wrap items-center gap-1.5">
                                   <IndexStatusBadge status={doc.index_status} />
                                   {doc.category && <Badge variant="secondary" className="h-4 px-1.5 text-[10px]">{doc.category}</Badge>}
-                                  <span className="text-[11px] text-muted-foreground">{doc.chunk_count} chunks</span>
+                                  <span className="text-[11px] text-muted-foreground">{tf("kb.chunks", { n: doc.chunk_count })}</span>
                                 </div>
                               </button>
                               <button
                                 type="button"
-                                title={`Delete ${doc.title}`}
-                                aria-label={`Delete ${doc.title}`}
+                                title={tf("kb.deleteTitle", { title: doc.title })}
+                                aria-label={tf("kb.deleteTitle", { title: doc.title })}
                                 onClick={() => { void handleDelete(doc); }}
                                 disabled={deletingDocId === doc.doc_id}
                                 className="absolute right-2 top-2 flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
@@ -411,7 +413,7 @@ export default function KnowledgePage() {
                                   disabled={retryingDocId === doc.doc_id}
                                 >
                                   {retryingDocId === doc.doc_id ? <Loader2 className="size-3 animate-spin" /> : <RotateCw className="size-3" />}
-                                  Retry
+                                  {t("kb.retry")}
                                 </Button>
                               )}
                             </div>
@@ -435,9 +437,9 @@ export default function KnowledgePage() {
                 <PreviewIcon className="size-4" />
               </div>
               <div className="min-w-0">
-                <DialogTitle className="truncate text-sm">{previewDoc?.title || "Document preview"}</DialogTitle>
+                <DialogTitle className="truncate text-sm">{previewDoc?.title || t("kb.previewTitle")}</DialogTitle>
                 <DialogDescription className="mt-1 text-xs">
-                  {previewCanEdit ? "Edit extracted text and re-index the document." : "Read-only extracted text preview."}
+                  {previewCanEdit ? t("kb.previewEditDesc") : t("kb.previewReadDesc")}
                 </DialogDescription>
               </div>
             </div>
@@ -450,8 +452,8 @@ export default function KnowledgePage() {
               <div className="space-y-4">
                 <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                   {previewGroup.extension && <Badge variant="outline" className="h-5 px-1.5 font-mono text-[10px]">{previewGroup.extension}</Badge>}
-                  <span>Created {formatDate(previewDoc.created_at)}</span>
-                  <span>{previewDoc.chunk_count} chunks</span>
+                  <span>{tf("kb.created", { date: formatDate(previewDoc.created_at, t("kb.dateUnavailable")) })}</span>
+                  <span>{tf("kb.chunks", { n: previewDoc.chunk_count })}</span>
                   <IndexStatusBadge status={previewDoc.index_status} />
                 </div>
                 {editing ? (
@@ -459,10 +461,10 @@ export default function KnowledgePage() {
                     value={editContent}
                     onChange={(event) => setEditContent(event.target.value)}
                     className="min-h-[52vh] resize-y font-mono text-xs leading-6"
-                    aria-label="Document content"
+                    aria-label={t("kb.contentAria")}
                   />
                 ) : (
-                  <pre className="max-h-[52vh] overflow-auto whitespace-pre-wrap rounded-xl border border-border bg-muted/30 p-4 text-xs leading-6 text-foreground">{previewDoc.content || "No extractable text is available for this document."}</pre>
+                  <pre className="max-h-[52vh] overflow-auto whitespace-pre-wrap rounded-xl border border-border bg-muted/30 p-4 text-xs leading-6 text-foreground">{previewDoc.content || t("kb.noExtract")}</pre>
                 )}
               </div>
             ) : null}
@@ -478,23 +480,23 @@ export default function KnowledgePage() {
                 disabled={deletingDocId === previewDoc.doc_id}
               >
                 {deletingDocId === previewDoc.doc_id ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
-                Delete
+                {t("kb.delete")}
               </Button>
               <div className="flex items-center gap-2">
                 {previewCanEdit && !editing && (
                   <>
                     <Button variant="outline" size="sm" onClick={() => { closePreview(); openEditEditor(previewDoc); }}>
-                      <Pencil className="size-3.5" />Edit in editor
+                      <Pencil className="size-3.5" />{t("kb.editInEditor")}
                     </Button>
-                    <Button variant="ghost" size="sm" onClick={() => setEditing(true)}><Pencil className="size-3.5" />Quick edit</Button>
+                    <Button variant="ghost" size="sm" onClick={() => setEditing(true)}><Pencil className="size-3.5" />{t("kb.quickEdit")}</Button>
                   </>
                 )}
                 {previewCanEdit && editing && (
                   <>
-                    <Button variant="ghost" size="sm" onClick={() => { setEditing(false); setEditContent(previewDoc.content || ""); }}>Cancel</Button>
+                    <Button variant="ghost" size="sm" onClick={() => { setEditing(false); setEditContent(previewDoc.content || ""); }}>{t("common.cancel")}</Button>
                     <Button size="sm" onClick={handleSave} disabled={saving || !editContent.trim()}>
                       {saving ? <Loader2 className="size-3.5 animate-spin" /> : <Save className="size-3.5" />}
-                      Save & re-index
+                      {t("kb.saveReindex")}
                     </Button>
                   </>
                 )}
@@ -520,12 +522,13 @@ export default function KnowledgePage() {
 }
 
 function IndexStatusBadge({ status }: { status: KnowledgeDocument["index_status"] }) {
+  const { t } = useI18n();
   const labels: Record<string, readonly [string, "secondary" | "info" | "success" | "destructive"]> = {
-    pending: ["Queued", "secondary"],
-    indexing: ["Indexing", "info"],
-    ready: ["Ready", "success"],
-    failed: ["Failed", "destructive"],
+    pending: ["kb.statusQueued", "secondary"],
+    indexing: ["kb.statusIndexing", "info"],
+    ready: ["kb.statusReady", "success"],
+    failed: ["kb.statusFailed", "destructive"],
   };
-  const [label, variant] = labels[status] ?? ["Unknown", "secondary"];
-  return <Badge variant={variant} className="h-4 px-1.5 text-[10px]">{label}</Badge>;
+  const [labelKey, variant] = labels[status] ?? ["kb.statusUnknown", "secondary"];
+  return <Badge variant={variant} className="h-4 px-1.5 text-[10px]">{t(labelKey)}</Badge>;
 }

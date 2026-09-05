@@ -16,6 +16,7 @@ import { Markdown } from "@/components/markdown";
 import { Loader2, Save, Eye, PenLine, Search, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { useI18n } from "@/lib/i18n";
 
 interface Props {
   open: boolean;
@@ -37,6 +38,7 @@ interface Props {
  * retrieval quality is directly affected by how you structure the document.
  */
 export function MarkdownKnowledgeEditor({ open, onOpenChange, document, onSaved }: Props) {
+  const { t } = useI18n();
   const isEdit = Boolean(document?.doc_id);
 
   // State is initialized lazily from props. The parent passes a changing `key`
@@ -72,10 +74,10 @@ export function MarkdownKnowledgeEditor({ open, onOpenChange, document, onSaved 
           category,
           tags: parsedTags,
         });
-        toast.success("Document saved and queued for re-indexing");
+        toast.success(t("kb.savedReindex"));
       } else {
         await uploadKnowledge({ title, content, category, tags: parsedTags });
-        toast.success("Document created and queued for indexing");
+        toast.success(t("kbe.created"));
       }
       onOpenChange(false);
       onSaved();
@@ -107,7 +109,7 @@ export function MarkdownKnowledgeEditor({ open, onOpenChange, document, onSaved 
       >
         <DialogHeader className="border-b border-border px-5 py-4 pr-14 shrink-0">
           <DialogTitle className="text-sm">
-            {isEdit ? "Edit knowledge document" : "Create knowledge document"}
+            {isEdit ? t("kbe.editTitle") : t("kbe.createTitle")}
           </DialogTitle>
         </DialogHeader>
 
@@ -116,16 +118,16 @@ export function MarkdownKnowledgeEditor({ open, onOpenChange, document, onSaved 
             {/* Metadata */}
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="sm:col-span-2">
-                <label className="text-xs text-muted-foreground block mb-1">Title *</label>
-                <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. Shipping policy" className="h-9 text-sm" />
+                <label className="text-xs text-muted-foreground block mb-1">{t("kbe.titleLabel")}</label>
+                <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder={t("kbe.titlePh")} className="h-9 text-sm" />
               </div>
               <div className="sm:col-span-2">
-                <label className="text-xs text-muted-foreground block mb-1">Category</label>
-                <Input value={category} onChange={(e) => setCategory(e.target.value)} placeholder="FAQ, policy, product…" className="h-9 text-sm" />
+                <label className="text-xs text-muted-foreground block mb-1">{t("kbe.category")}</label>
+                <Input value={category} onChange={(e) => setCategory(e.target.value)} placeholder={t("kbe.categoryPh")} className="h-9 text-sm" />
               </div>
               <div className="sm:col-span-2">
-                <label className="text-xs text-muted-foreground block mb-1">Tags (comma-separated)</label>
-                <Input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="shipping, returns, faq" className="h-9 text-sm" />
+                <label className="text-xs text-muted-foreground block mb-1">{t("kbe.tags")}</label>
+                <Input value={tags} onChange={(e) => setTags(e.target.value)} placeholder={t("kbe.tagsPh")} className="h-9 text-sm" />
                 {parsedTags.length > 0 && (
                   <div className="mt-1.5 flex flex-wrap gap-1.5">
                     {parsedTags.map((t) => <Badge key={t} variant="secondary" className="h-4 px-1.5 text-[10px]">{t}</Badge>)}
@@ -134,13 +136,13 @@ export function MarkdownKnowledgeEditor({ open, onOpenChange, document, onSaved 
               </div>
             </div>
             <p className="text-[11px] text-muted-foreground -mt-1">
-              Language is auto-detected from the document content.
+              {t("kbup.langAuto")}
             </p>
 
             {/* Markdown split-pane */}
             <div>
               <div className="mb-2 flex items-center justify-between">
-                <label className="text-xs text-muted-foreground">Content (Markdown) *</label>
+                <label className="text-xs text-muted-foreground">{t("kbe.contentLabel")}</label>
                 <Button
                   variant="ghost"
                   size="sm"
@@ -148,23 +150,23 @@ export function MarkdownKnowledgeEditor({ open, onOpenChange, document, onSaved 
                   className="h-7 gap-1.5 text-xs"
                 >
                   {showPreview ? <PenLine className="size-3.5" /> : <Eye className="size-3.5" />}
-                  {showPreview ? "Hide preview" : "Show preview"}
+                  {showPreview ? t("kbe.hidePreview") : t("kbe.showPreview")}
                 </Button>
               </div>
               <div className={cn("grid gap-3", showPreview && "lg:grid-cols-2")}>
                 <Textarea
                   value={content}
                   onChange={(e) => setContent(e.target.value)}
-                  placeholder={"# 标题\n\n用 Markdown 编写知识内容…\n\n## 小节\n- 要点 1\n- 要点 2\n\n## 另一小节\n详细说明…"}
+                  placeholder={t("kbe.contentPh")}
                   className="min-h-[40vh] resize-y font-mono text-xs leading-6"
-                  aria-label="Markdown content"
+                  aria-label={t("kbe.contentLabel")}
                 />
                 {showPreview && (
                   <div className="min-h-[40vh] max-h-[60vh] overflow-auto rounded-lg border border-border bg-muted/20 p-4">
                     {content.trim() ? (
                       <Markdown>{content}</Markdown>
                     ) : (
-                      <p className="text-xs text-muted-foreground">预览将显示在这里…</p>
+                      <p className="text-xs text-muted-foreground">{t("kbe.previewEmpty")}</p>
                     )}
                   </div>
                 )}
@@ -174,19 +176,19 @@ export function MarkdownKnowledgeEditor({ open, onOpenChange, document, onSaved 
             {/* Test retrieval */}
             <div className="rounded-lg border border-border bg-muted/20 p-3">
               <div className="mb-2 flex items-center gap-2 text-xs font-medium text-muted-foreground">
-                <Search className="size-3.5" /> Test retrieval
-                <span className="text-[10px] font-normal">（仅对已索引的文档有效，保存前可先存草稿再测）</span>
+                <Search className="size-3.5" /> {t("kbe.testRetrieval")}
+                <span className="text-[10px] font-normal">{t("kbe.testNote")}</span>
               </div>
               <div className="flex gap-2">
                 <Input
                   value={testQuery}
                   onChange={(e) => setTestQuery(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && handleTest()}
-                  placeholder="输入一个问题，测试它能否命中你的知识库…"
+                  placeholder={t("kbe.testPh")}
                   className="h-8 text-xs"
                 />
                 <Button size="sm" onClick={handleTest} disabled={testing || !testQuery.trim()} className="h-8 gap-1.5 text-xs">
-                  {testing ? <Loader2 className="size-3 animate-spin" /> : <Sparkles className="size-3" />}测试
+                  {testing ? <Loader2 className="size-3 animate-spin" /> : <Sparkles className="size-3" />}{t("kbe.testBtn")}
                 </Button>
               </div>
               {testSources.length > 0 && (
@@ -202,16 +204,16 @@ export function MarkdownKnowledgeEditor({ open, onOpenChange, document, onSaved 
                   ))}
                 </div>
               )}
-              {testing && <p className="mt-2 text-xs text-muted-foreground">检索中…</p>}
+              {testing && <p className="mt-2 text-xs text-muted-foreground">{t("kbe.testing")}</p>}
             </div>
           </div>
         </div>
 
         <DialogFooter className="px-5 py-3 shrink-0">
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>取消</Button>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>{t("common.cancel")}</Button>
           <Button onClick={handleSave} disabled={!canSave} className="gap-1.5">
             {saving ? <Loader2 className="size-3.5 animate-spin" /> : <Save className="size-3.5" />}
-            {isEdit ? "保存并重新索引" : "创建并索引"}
+            {isEdit ? t("kbe.saveReindex") : t("kbe.createIndex")}
           </Button>
         </DialogFooter>
       </DialogContent>

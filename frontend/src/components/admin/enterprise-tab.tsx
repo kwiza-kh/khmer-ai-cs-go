@@ -24,6 +24,7 @@ import { toast } from "sonner";
 import {
   AlarmClock, GitBranch, ListChecks, ShieldCheck, Webhook, BarChart3, Plug, Trash2, Plus,
 } from "lucide-react";
+import { useI18n } from "@/lib/i18n";
 
 const PERMISSION_OPTIONS = [
   "inbox.view", "inbox.reply", "inbox.assign", "inbox.status",
@@ -51,6 +52,7 @@ function SectionCard({ title, children, action }: { title: string; children: Rea
 
 // ---------------- SLA ----------------
 function SlaPanel() {
+  const { t, tf } = useI18n();
   const { data, mutate } = useSWR<SlaPolicy[]>("sla-policies", listSlaPolicies);
   const { data: breaches } = useSWR("sla-breaches", () => listSlaBreaches(true));
   const [name, setName] = React.useState("");
@@ -58,30 +60,30 @@ function SlaPanel() {
   const [resolution, setResolution] = React.useState(3600);
 
   const submit = async () => {
-    if (!name.trim()) { toast.error("名称不能为空"); return; }
+    if (!name.trim()) { toast.error(t("ent.nameRequired")); return; }
     try {
       await upsertSlaPolicy({ name, first_response_secs: first, resolution_secs: resolution });
       await mutate();
       setName("");
-      toast.success("SLA 已保存");
+      toast.success(t("ent.slaSaved"));
     } catch (e) { toast.error((e as Error).message); }
   };
 
   const policies = data ?? [];
   return (
     <div className="space-y-4">
-      <SectionCard title="SLA 政策" action={<AlarmClock className="size-4 text-muted-foreground" />}>
+      <SectionCard title={t("ent.slaTitle")} action={<AlarmClock className="size-4 text-muted-foreground" />}>
         <div className="mb-3 grid gap-2 sm:grid-cols-4">
-          <Input placeholder="名称 (如 urgent)" value={name} onChange={(e) => setName(e.target.value)} className="h-8 text-xs" />
-          <Input type="number" placeholder="首响秒数" value={first} onChange={(e) => setFirst(Number(e.target.value))} className="h-8 text-xs" />
-          <Input type="number" placeholder="解决秒数" value={resolution} onChange={(e) => setResolution(Number(e.target.value))} className="h-8 text-xs" />
-          <Button size="sm" onClick={submit} className="h-8 gap-1.5 text-xs"><Plus className="size-3" />添加</Button>
+          <Input placeholder={t("ent.namePh")} value={name} onChange={(e) => setName(e.target.value)} className="h-8 text-xs" />
+          <Input type="number" placeholder={t("ent.firstRespPh")} value={first} onChange={(e) => setFirst(Number(e.target.value))} className="h-8 text-xs" />
+          <Input type="number" placeholder={t("ent.resolutionPh")} value={resolution} onChange={(e) => setResolution(Number(e.target.value))} className="h-8 text-xs" />
+          <Button size="sm" onClick={submit} className="h-8 gap-1.5 text-xs"><Plus className="size-3" />{t("ent.add")}</Button>
         </div>
-        {policies.length === 0 ? <EmptyState icon={AlarmClock} title="暂无 SLA 政策" /> : (
+        {policies.length === 0 ? <EmptyState icon={AlarmClock} title={t("ent.noSla")} /> : (
           <Table>
             <TableHeader><TableRow>
-              <TableHead className="text-xs">名称</TableHead><TableHead className="text-xs">首响</TableHead>
-              <TableHead className="text-xs">解决</TableHead><TableHead className="text-xs">操作</TableHead>
+              <TableHead className="text-xs">{t("ent.colName")}</TableHead><TableHead className="text-xs">{t("ent.colFirst")}</TableHead>
+              <TableHead className="text-xs">{t("ent.colResolution")}</TableHead><TableHead className="text-xs">{t("ent.colActions")}</TableHead>
             </TableRow></TableHeader>
             <TableBody>
               {policies.map((p) => (
@@ -97,7 +99,7 @@ function SlaPanel() {
             </TableBody>
           </Table>
         )}
-        <p className="mt-3 text-xs text-muted-foreground">未解决违约: {(breaches ?? []).length} 条</p>
+        <p className="mt-3 text-xs text-muted-foreground">{tf("ent.unresolvedBreaches", { n: (breaches ?? []).length })}</p>
       </SectionCard>
     </div>
   );
@@ -105,13 +107,14 @@ function SlaPanel() {
 
 // ---------------- Routing ----------------
 function RoutingPanel() {
+  const { t } = useI18n();
   const { data, mutate } = useSWR<RoutingRule[]>("routing-rules", listRoutingRules);
   const [name, setName] = React.useState("");
   const [intent, setIntent] = React.useState("refund");
   const [skills, setSkills] = React.useState("refund");
 
   const submit = async () => {
-    if (!name.trim()) { toast.error("规则名不能为空"); return; }
+    if (!name.trim()) { toast.error(t("ent.ruleNameRequired")); return; }
     try {
       await upsertRoutingRule({
         name,
@@ -121,24 +124,24 @@ function RoutingPanel() {
       });
       await mutate();
       setName("");
-      toast.success("路由规则已保存");
+      toast.success(t("ent.routingSaved"));
     } catch (e) { toast.error((e as Error).message); }
   };
 
   const rules = data ?? [];
   return (
-    <SectionCard title="路由规则" action={<GitBranch className="size-4 text-muted-foreground" />}>
+    <SectionCard title={t("ent.routingTitle")} action={<GitBranch className="size-4 text-muted-foreground" />}>
       <div className="mb-3 grid gap-2 sm:grid-cols-4">
-        <Input placeholder="规则名" value={name} onChange={(e) => setName(e.target.value)} className="h-8 text-xs" />
-        <Input placeholder="意图 (intent)" value={intent} onChange={(e) => setIntent(e.target.value)} className="h-8 text-xs" />
-        <Input placeholder="技能 (逗号分隔)" value={skills} onChange={(e) => setSkills(e.target.value)} className="h-8 text-xs" />
-        <Button size="sm" onClick={submit} className="h-8 gap-1.5 text-xs"><Plus className="size-3" />添加</Button>
+        <Input placeholder={t("ent.ruleNamePh")} value={name} onChange={(e) => setName(e.target.value)} className="h-8 text-xs" />
+        <Input placeholder={t("ent.intentPh")} value={intent} onChange={(e) => setIntent(e.target.value)} className="h-8 text-xs" />
+        <Input placeholder={t("ent.skillsPh")} value={skills} onChange={(e) => setSkills(e.target.value)} className="h-8 text-xs" />
+        <Button size="sm" onClick={submit} className="h-8 gap-1.5 text-xs"><Plus className="size-3" />{t("ent.add")}</Button>
       </div>
-      {rules.length === 0 ? <EmptyState icon={GitBranch} title="暂无路由规则" /> : (
+      {rules.length === 0 ? <EmptyState icon={GitBranch} title={t("ent.noRouting")} /> : (
         <Table>
           <TableHeader><TableRow>
-            <TableHead className="text-xs">名称</TableHead><TableHead className="text-xs">条件</TableHead>
-            <TableHead className="text-xs">目标技能</TableHead><TableHead className="text-xs">操作</TableHead>
+            <TableHead className="text-xs">{t("ent.colName")}</TableHead><TableHead className="text-xs">{t("ent.colConditions")}</TableHead>
+            <TableHead className="text-xs">{t("ent.colSkills")}</TableHead><TableHead className="text-xs">{t("ent.colActions")}</TableHead>
           </TableRow></TableHeader>
           <TableBody>
             {rules.map((r) => (
@@ -160,31 +163,32 @@ function RoutingPanel() {
 
 // ---------------- Macros ----------------
 function MacrosPanel() {
+  const { t } = useI18n();
   const { data, mutate } = useSWR<Macro[]>("macros", listMacros);
   const [title, setTitle] = React.useState("");
   const [steps, setSteps] = React.useState("Hello!\nHow can I help?");
 
   const submit = async () => {
-    if (!title.trim()) { toast.error("宏名称不能为空"); return; }
+    if (!title.trim()) { toast.error(t("ent.macroNameRequired")); return; }
     try {
       await createMacro({ title, steps: steps.split("\n").filter(Boolean).map((content) => ({ content })) });
       await mutate();
       setTitle("");
-      toast.success("宏已创建");
+      toast.success(t("ent.macroCreated"));
     } catch (e) { toast.error((e as Error).message); }
   };
 
   const macros = data ?? [];
   return (
-    <SectionCard title="宏 (多步回复)" action={<ListChecks className="size-4 text-muted-foreground" />}>
+    <SectionCard title={t("ent.macrosTitle")} action={<ListChecks className="size-4 text-muted-foreground" />}>
       <div className="mb-3 space-y-2">
-        <Input placeholder="宏名称" value={title} onChange={(e) => setTitle(e.target.value)} className="h-8 text-xs" />
-        <Textarea placeholder="每行一个回复步骤" value={steps} onChange={(e) => setSteps(e.target.value)} rows={3} className="text-xs" />
-        <Button size="sm" onClick={submit} className="h-8 gap-1.5 text-xs"><Plus className="size-3" />创建</Button>
+        <Input placeholder={t("ent.macroNamePh")} value={title} onChange={(e) => setTitle(e.target.value)} className="h-8 text-xs" />
+        <Textarea placeholder={t("ent.stepsPh")} value={steps} onChange={(e) => setSteps(e.target.value)} rows={3} className="text-xs" />
+        <Button size="sm" onClick={submit} className="h-8 gap-1.5 text-xs"><Plus className="size-3" />{t("ent.create")}</Button>
       </div>
-      {macros.length === 0 ? <EmptyState icon={ListChecks} title="暂无宏" /> : (
+      {macros.length === 0 ? <EmptyState icon={ListChecks} title={t("ent.noMacros")} /> : (
         <Table>
-          <TableHeader><TableRow><TableHead className="text-xs">名称</TableHead><TableHead className="text-xs">步骤数</TableHead><TableHead className="text-xs">操作</TableHead></TableRow></TableHeader>
+          <TableHeader><TableRow><TableHead className="text-xs">{t("ent.colName")}</TableHead><TableHead className="text-xs">{t("ent.colSteps")}</TableHead><TableHead className="text-xs">{t("ent.colActions")}</TableHead></TableRow></TableHeader>
           <TableBody>
             {macros.map((m) => (
               <TableRow key={m.macro_id}>
@@ -204,6 +208,7 @@ function MacrosPanel() {
 
 // ---------------- Roles ----------------
 function RolesPanel() {
+  const { t } = useI18n();
   const { data, mutate } = useSWR<Role[]>("roles", listRoles);
   const [name, setName] = React.useState("");
   const [perms, setPerms] = React.useState<string[]>(["inbox.view", "inbox.reply"]);
@@ -211,30 +216,30 @@ function RolesPanel() {
   const toggle = (p: string) => setPerms((prev) => prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p]);
 
   const submit = async () => {
-    if (!name.trim()) { toast.error("角色名不能为空"); return; }
+    if (!name.trim()) { toast.error(t("ent.roleNameRequired")); return; }
     try {
       await createRole({ name, permissions: perms });
       await mutate();
       setName("");
-      toast.success("角色已保存");
+      toast.success(t("ent.roleSaved"));
     } catch (e) { toast.error((e as Error).message); }
   };
 
   const roles = data ?? [];
   return (
-    <SectionCard title="自定义角色 (RBAC)" action={<ShieldCheck className="size-4 text-muted-foreground" />}>
+    <SectionCard title={t("ent.rolesTitle")} action={<ShieldCheck className="size-4 text-muted-foreground" />}>
       <div className="mb-3 space-y-2">
-        <Input placeholder="角色名 (如 agent)" value={name} onChange={(e) => setName(e.target.value)} className="h-8 text-xs" />
+        <Input placeholder={t("ent.roleNamePh")} value={name} onChange={(e) => setName(e.target.value)} className="h-8 text-xs" />
         <div className="flex flex-wrap gap-1.5">
           {PERMISSION_OPTIONS.map((p) => (
             <Badge key={p} variant={perms.includes(p) ? "info" : "outline"} onClick={() => toggle(p)} className="cursor-pointer text-[10px]">{p}</Badge>
           ))}
         </div>
-        <Button size="sm" onClick={submit} className="h-8 gap-1.5 text-xs"><Plus className="size-3" />创建角色</Button>
+        <Button size="sm" onClick={submit} className="h-8 gap-1.5 text-xs"><Plus className="size-3" />{t("ent.createRole")}</Button>
       </div>
-      {roles.length === 0 ? <EmptyState icon={ShieldCheck} title="暂无自定义角色" /> : (
+      {roles.length === 0 ? <EmptyState icon={ShieldCheck} title={t("ent.noRoles")} /> : (
         <Table>
-          <TableHeader><TableRow><TableHead className="text-xs">名称</TableHead><TableHead className="text-xs">权限</TableHead><TableHead className="text-xs">操作</TableHead></TableRow></TableHeader>
+          <TableHeader><TableRow><TableHead className="text-xs">{t("ent.colName")}</TableHead><TableHead className="text-xs">{t("ent.colPermissions")}</TableHead><TableHead className="text-xs">{t("ent.colActions")}</TableHead></TableRow></TableHeader>
           <TableBody>
             {roles.map((r) => (
               <TableRow key={r.role_id}>
@@ -254,6 +259,7 @@ function RolesPanel() {
 
 // ---------------- Webhooks ----------------
 function WebhooksPanel() {
+  const { t } = useI18n();
   const { data, mutate } = useSWR<WebhookSubscription[]>("webhook-subs", listWebhookSubscriptions);
   const [url, setUrl] = React.useState("");
   const [secret, setSecret] = React.useState("");
@@ -262,31 +268,31 @@ function WebhooksPanel() {
   const toggle = (e: string) => setEvents((prev) => prev.includes(e) ? prev.filter((x) => x !== e) : [...prev, e]);
 
   const submit = async () => {
-    if (!url.trim()) { toast.error("URL 不能为空"); return; }
+    if (!url.trim()) { toast.error(t("ent.urlRequired")); return; }
     try {
       await createWebhookSubscription({ url, secret, events });
       await mutate();
       setUrl(""); setSecret("");
-      toast.success("订阅已创建");
+      toast.success(t("ent.subCreated"));
     } catch (err) { toast.error((err as Error).message); }
   };
 
   const subs = data ?? [];
   return (
-    <SectionCard title="出站 Webhook" action={<Webhook className="size-4 text-muted-foreground" />}>
+    <SectionCard title={t("ent.webhooksTitle")} action={<Webhook className="size-4 text-muted-foreground" />}>
       <div className="mb-3 space-y-2">
         <Input placeholder="https://your-app.com/hook" value={url} onChange={(e) => setUrl(e.target.value)} className="h-8 text-xs" />
-        <Input placeholder="签名密钥 (可选, HMAC-SHA256)" value={secret} onChange={(e) => setSecret(e.target.value)} className="h-8 text-xs" />
+        <Input placeholder={t("ent.secretPh")} value={secret} onChange={(e) => setSecret(e.target.value)} className="h-8 text-xs" />
         <div className="flex flex-wrap gap-1.5">
           {EVENT_OPTIONS.map((e) => (
             <Badge key={e} variant={events.includes(e) ? "info" : "outline"} onClick={() => toggle(e)} className="cursor-pointer text-[10px]">{e}</Badge>
           ))}
         </div>
-        <Button size="sm" onClick={submit} className="h-8 gap-1.5 text-xs"><Plus className="size-3" />创建订阅</Button>
+        <Button size="sm" onClick={submit} className="h-8 gap-1.5 text-xs"><Plus className="size-3" />{t("ent.createSub")}</Button>
       </div>
-      {subs.length === 0 ? <EmptyState icon={Webhook} title="暂无订阅" /> : (
+      {subs.length === 0 ? <EmptyState icon={Webhook} title={t("ent.noSubs")} /> : (
         <Table>
-          <TableHeader><TableRow><TableHead className="text-xs">URL</TableHead><TableHead className="text-xs">事件</TableHead><TableHead className="text-xs">操作</TableHead></TableRow></TableHeader>
+          <TableHeader><TableRow><TableHead className="text-xs">URL</TableHead><TableHead className="text-xs">{t("ent.colEvents")}</TableHead><TableHead className="text-xs">{t("ent.colActions")}</TableHead></TableRow></TableHeader>
           <TableBody>
             {subs.map((s) => (
               <TableRow key={s.subscription_id}>
@@ -306,6 +312,7 @@ function WebhooksPanel() {
 
 // ---------------- Performance / intent / integrations ----------------
 function AnalyticsPanel() {
+  const { t } = useI18n();
   const { data: perf } = useSWR<AgentPerformance[]>("agent-performance", () => getAgentPerformance(30));
   const { data: intents } = useSWR<IntentCount[]>("intent-analytics", () => getIntentAnalytics(30));
   const { data: status } = useSWR<IntegrationStatus>("integrations-status", getIntegrationStatus);
@@ -314,12 +321,12 @@ function AnalyticsPanel() {
   const intentRows = intents ?? [];
   return (
     <div className="space-y-4">
-      <SectionCard title="坐席绩效" action={<BarChart3 className="size-4 text-muted-foreground" />}>
-        {agents.length === 0 ? <EmptyState icon={BarChart3} title="暂无坐席数据" /> : (
+      <SectionCard title={t("ent.perfTitle")} action={<BarChart3 className="size-4 text-muted-foreground" />}>
+        {agents.length === 0 ? <EmptyState icon={BarChart3} title={t("ent.noPerf")} /> : (
           <Table>
             <TableHeader><TableRow>
-              <TableHead className="text-xs">坐席</TableHead><TableHead className="text-xs">已解决</TableHead>
-              <TableHead className="text-xs">处理</TableHead><TableHead className="text-xs">平均处理时长</TableHead>
+              <TableHead className="text-xs">{t("ent.colAgent")}</TableHead><TableHead className="text-xs">{t("ent.colResolved")}</TableHead>
+              <TableHead className="text-xs">{t("ent.colHandled")}</TableHead><TableHead className="text-xs">{t("ent.colAvgHandle")}</TableHead>
               <TableHead className="text-xs">CSAT</TableHead>
             </TableRow></TableHeader>
             <TableBody>
@@ -337,10 +344,10 @@ function AnalyticsPanel() {
         )}
       </SectionCard>
 
-      <SectionCard title="意图分析" action={<BarChart3 className="size-4 text-muted-foreground" />}>
-        {intentRows.length === 0 ? <EmptyState icon={BarChart3} title="暂无意图数据" /> : (
+      <SectionCard title={t("ent.intentTitle")} action={<BarChart3 className="size-4 text-muted-foreground" />}>
+        {intentRows.length === 0 ? <EmptyState icon={BarChart3} title={t("ent.noIntents")} /> : (
           <Table>
-            <TableHeader><TableRow><TableHead className="text-xs">意图</TableHead><TableHead className="text-xs">会话数</TableHead><TableHead className="text-xs">平均置信度</TableHead></TableRow></TableHeader>
+            <TableHeader><TableRow><TableHead className="text-xs">{t("ent.colIntent")}</TableHead><TableHead className="text-xs">{t("ent.colSessions")}</TableHead><TableHead className="text-xs">{t("ent.colConfidence")}</TableHead></TableRow></TableHeader>
             <TableBody>
               {intentRows.map((i) => (
                 <TableRow key={i.intent}>
@@ -354,14 +361,14 @@ function AnalyticsPanel() {
         )}
       </SectionCard>
 
-      <SectionCard title="渠道集成状态" action={<Plug className="size-4 text-muted-foreground" />}>
-        {!status ? <p className="text-xs text-muted-foreground">Loading…</p> : (
+      <SectionCard title={t("ent.integrations")} action={<Plug className="size-4 text-muted-foreground" />}>
+        {!status ? <p className="text-xs text-muted-foreground">{t("settings.loading")}</p> : (
           <div className="grid gap-2 sm:grid-cols-3">
             {([["Email", status.email], ["Voice/SMS", status.voice], ["SSO", status.sso]] as const).map(([label, s]) => (
               <div key={label} className="rounded-lg border border-border p-3">
                 <p className="text-xs font-medium">{label}</p>
                 <Badge variant={s.configured ? "success" : s.enabled ? "secondary" : "outline"} className="mt-1 text-[10px]">
-                  {s.configured ? "已配置" : s.enabled ? "已启用(待配置)" : "未启用"}
+                  {s.configured ? t("ent.configured") : s.enabled ? t("ent.enabledPending") : t("ent.notEnabled")}
                 </Badge>
               </div>
             ))}

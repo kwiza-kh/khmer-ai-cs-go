@@ -20,22 +20,24 @@ import {
   BookOpenCheck, XCircle, CheckCircle2, Send,
 } from "lucide-react";
 import { toast } from "sonner";
+import { useI18n } from "@/lib/i18n";
 
 /**
  * Growth tab: customers 360 (F1/F6), FAQ mining (F3), agent team (F4),
  * marketing campaigns (F5), and billing/quota (F9).
  */
 export function GrowthTab() {
+  const { t } = useI18n();
   const [section, setSection] = React.useState("customers");
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap gap-2">
         {[
-          { key: "customers", label: "Customers", icon: Users },
-          { key: "faq", label: "FAQ mining", icon: Lightbulb },
-          { key: "team", label: "Agent team", icon: Headset },
-          { key: "campaigns", label: "Campaigns", icon: Megaphone },
-          { key: "billing", label: "Billing", icon: CreditCard },
+          { key: "customers", labelKey: "gr.customers", icon: Users },
+          { key: "faq", labelKey: "gr.faq", icon: Lightbulb },
+          { key: "team", labelKey: "gr.team", icon: Headset },
+          { key: "campaigns", labelKey: "gr.campaigns", icon: Megaphone },
+          { key: "billing", labelKey: "gr.billing", icon: CreditCard },
         ].map((s) => (
           <Button
             key={s.key}
@@ -44,7 +46,7 @@ export function GrowthTab() {
             className="gap-1.5 text-xs"
             onClick={() => setSection(s.key)}
           >
-            <s.icon className="size-3" /> {s.label}
+            <s.icon className="size-3" /> {t(s.labelKey)}
           </Button>
         ))}
       </div>
@@ -61,6 +63,7 @@ export function GrowthTab() {
 // Customers 360
 // ============================================
 function CustomersCard() {
+  const { t, tf } = useI18n();
   const [q, setQ] = React.useState("");
   const { data: customers } = useSWR(`customers-${q}`, () => listCustomers(q || undefined));
   const [selected, setSelected] = React.useState<CustomerProfile | null>(null);
@@ -74,7 +77,7 @@ function CustomersCard() {
     if (!selected) return;
     try {
       await updateCustomerNotes(selected.profile_id, notes);
-      toast.success("Notes saved");
+      toast.success(t("gr.notesSaved"));
       void mutate();
     } catch (e) { toast.error((e as Error).message); }
   };
@@ -83,16 +86,16 @@ function CustomersCard() {
     <Card>
       <CardHeader className="pb-2">
         <CardTitle className="text-sm flex items-center gap-2">
-          <Users className="size-4 text-primary" /> Customers <span className="text-[10px] text-muted-foreground">(unified 360 view)</span>
+          <Users className="size-4 text-primary" /> {t("gr.customers")} <span className="text-[10px] text-muted-foreground">{t("gr.customers360")}</span>
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="relative">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
-          <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search name or channel id…" className="h-8 pl-8 text-xs" />
+          <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder={t("gr.searchPh")} className="h-8 pl-8 text-xs" />
         </div>
         {!customers || customers.length === 0 ? (
-          <EmptyState icon={Users} title="No customers yet" description="Customers appear after their first inbound message." />
+          <EmptyState icon={Users} title={t("gr.noCustomers")} description={t("gr.noCustomersDesc")} />
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
             <div className="space-y-1.5">
@@ -106,7 +109,7 @@ function CustomersCard() {
                     <p className="text-xs font-medium truncate">{c.display_name || c.platform_user_id}</p>
                     <Badge variant="outline" className="h-4 px-1 text-[10px] uppercase">{c.platform}</Badge>
                   </div>
-                  <p className="text-[11px] text-muted-foreground mt-0.5">{c.platform_user_id} · {c.total_sessions} sessions</p>
+                  <p className="text-[11px] text-muted-foreground mt-0.5">{c.platform_user_id} · {tf("gr.sessionsCount", { n: c.total_sessions })}</p>
                 </button>
               ))}
             </div>
@@ -116,25 +119,25 @@ function CustomersCard() {
                   <p className="text-xs font-semibold">{detail.profile.display_name || detail.profile.platform_user_id}</p>
                   <Badge variant="outline" className="h-4 px-1 text-[10px] uppercase">{detail.profile.platform}</Badge>
                 </div>
-                <p className="text-[11px] text-muted-foreground">{detail.profile.platform_user_id} · seen {detail.profile.last_seen_at ? new Date(detail.profile.last_seen_at).toLocaleString() : "—"}</p>
+                <p className="text-[11px] text-muted-foreground">{detail.profile.platform_user_id} · {tf("gr.seen", { time: detail.profile.last_seen_at ? new Date(detail.profile.last_seen_at).toLocaleString() : "—" })}</p>
                 <div className="grid grid-cols-3 gap-1.5 text-center">
                   {(["total_sessions", "total_messages"] as const).map((k) => (
                     <div key={k} className="rounded bg-muted/40 py-1.5">
                       <p className="text-sm font-semibold">{detail.profile[k]}</p>
-                      <p className="text-[10px] text-muted-foreground">{k === "total_sessions" ? "Sessions" : "Messages"}</p>
+                      <p className="text-[10px] text-muted-foreground">{k === "total_sessions" ? t("gr.statSessions") : t("gr.statMessages")}</p>
                     </div>
                   ))}
                 </div>
-                <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Customer notes…" rows={2} className="text-xs resize-none" />
-                <Button size="sm" className="h-7 text-xs" onClick={saveNotes}>Save notes</Button>
+                <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder={t("gr.notesPh")} rows={2} className="text-xs resize-none" />
+                <Button size="sm" className="h-7 text-xs" onClick={saveNotes}>{t("gr.saveNotes")}</Button>
                 {detail.sessions.length > 0 && (
                   <div className="space-y-1">
-                    <p className="text-[11px] font-medium text-muted-foreground">Recent sessions</p>
+                    <p className="text-[11px] font-medium text-muted-foreground">{t("gr.recentSessions")}</p>
                     {detail.sessions.slice(0, 5).map((sess) => (
                       <div key={sess.session_id} className="rounded border border-border p-2">
                         <div className="flex items-center gap-1.5">
-                          <p className="text-[11px] font-medium truncate flex-1">{sess.title || "Untitled"}</p>
-                          {sess.sentiment === "negative" && <Badge variant="destructive" className="h-3.5 px-1 text-[9px]">angry</Badge>}
+                          <p className="text-[11px] font-medium truncate flex-1">{sess.title || t("gr.untitled")}</p>
+                          {sess.sentiment === "negative" && <Badge variant="destructive" className="h-3.5 px-1 text-[9px]">{t("inbox.angry")}</Badge>}
                           <Badge variant="outline" className="h-3.5 px-1 text-[9px]">{sess.status}</Badge>
                         </div>
                         {sess.summary && <p className="text-[10px] text-muted-foreground mt-1 line-clamp-2">{sess.summary}</p>}
@@ -155,6 +158,7 @@ function CustomersCard() {
 // FAQ mining
 // ============================================
 function FaqCard() {
+  const { t } = useI18n();
   const { data, mutate } = useSWR("faq-suggestions", () => listFaqSuggestions("pending"));
   const [accepting, setAccepting] = React.useState<number | null>(null);
 
@@ -162,7 +166,7 @@ function FaqCard() {
     setAccepting(id);
     try {
       await acceptFaqSuggestion(id, "");
-      toast.success("Added to knowledge base");
+      toast.success(t("gr.addedToKb"));
       void mutate();
       void globalMutate("knowledge");
     } catch (e) { toast.error((e as Error).message); }
@@ -179,12 +183,12 @@ function FaqCard() {
     <Card>
       <CardHeader className="pb-2">
         <CardTitle className="text-sm flex items-center gap-2">
-          <Lightbulb className="size-4 text-warning" /> FAQ mining <span className="text-[10px] text-muted-foreground">(self-learning knowledge base)</span>
+          <Lightbulb className="size-4 text-warning" /> {t("gr.faq")} <span className="text-[10px] text-muted-foreground">{t("gr.faqNote")}</span>
         </CardTitle>
       </CardHeader>
       <CardContent>
         {!data || data.length === 0 ? (
-          <EmptyState icon={Lightbulb} title="No suggestions yet" description="Repeated unanswered questions appear here for one-click conversion into knowledge docs." />
+          <EmptyState icon={Lightbulb} title={t("gr.noSuggestions")} description={t("gr.noSuggestionsDesc")} />
         ) : (
           <div className="space-y-2">
             {(data as FaqSuggestion[]).map((f) => (
@@ -196,10 +200,10 @@ function FaqCard() {
                 {f.answer && <p className="text-[11px] text-muted-foreground line-clamp-2">{f.answer}</p>}
                 <div className="flex gap-1.5">
                   <Button size="sm" variant="default" className="h-6 text-[11px] gap-1" onClick={() => handleAccept(f.suggestion_id)} disabled={accepting === f.suggestion_id}>
-                    {accepting === f.suggestion_id ? <Loader2 className="size-3 animate-spin" /> : <BookOpenCheck className="size-3" />} Add to KB
+                    {accepting === f.suggestion_id ? <Loader2 className="size-3 animate-spin" /> : <BookOpenCheck className="size-3" />} {t("gr.addToKb")}
                   </Button>
                   <Button size="sm" variant="ghost" className="h-6 text-[11px] gap-1 text-muted-foreground" onClick={() => handleDismiss(f.suggestion_id)}>
-                    <XCircle className="size-3" /> Dismiss
+                    <XCircle className="size-3" /> {t("gr.dismiss")}
                   </Button>
                 </div>
               </div>
@@ -215,6 +219,7 @@ function FaqCard() {
 // Agent team
 // ============================================
 function TeamCard() {
+  const { t } = useI18n();
   const { data: team, mutate } = useSWR("agent-team", listTeam);
   const [agentId, setAgentId] = React.useState("");
   const [name, setName] = React.useState("");
@@ -227,7 +232,7 @@ function TeamCard() {
     try {
       await addAgent(Number(agentId), name, skills.split(",").map((s) => s.trim()).filter(Boolean));
       setAgentId(""); setName(""); setSkills("");
-      toast.success("Agent added");
+      toast.success(t("gr.agentAdded"));
       void mutate();
     } catch (e) { toast.error((e as Error).message); }
     finally { setAdding(false); }
@@ -243,22 +248,22 @@ function TeamCard() {
     <Card>
       <CardHeader className="pb-2">
         <CardTitle className="text-sm flex items-center gap-2">
-          <Headset className="size-4 text-primary" /> Agent team
+          <Headset className="size-4 text-primary" /> {t("gr.team")}
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="rounded-md border border-border p-3 space-y-2 bg-muted/30">
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-            <Input placeholder="Agent user_id" value={agentId} onChange={(e) => setAgentId(e.target.value)} className="h-8 text-xs" />
-            <Input placeholder="Display name" value={name} onChange={(e) => setName(e.target.value)} className="h-8 text-xs" />
-            <Input placeholder="Skills (comma: sales,support)" value={skills} onChange={(e) => setSkills(e.target.value)} className="h-8 text-xs" />
+            <Input placeholder={t("gr.agentIdPh")} value={agentId} onChange={(e) => setAgentId(e.target.value)} className="h-8 text-xs" />
+            <Input placeholder={t("gr.displayNamePh")} value={name} onChange={(e) => setName(e.target.value)} className="h-8 text-xs" />
+            <Input placeholder={t("gr.skillsPh")} value={skills} onChange={(e) => setSkills(e.target.value)} className="h-8 text-xs" />
           </div>
           <Button size="sm" className="h-7 text-xs gap-1" onClick={handleAdd} disabled={adding || !agentId}>
-            {adding ? <Loader2 className="size-3 animate-spin" /> : <Plus className="size-3" />} Add agent
+            {adding ? <Loader2 className="size-3 animate-spin" /> : <Plus className="size-3" />} {t("gr.addAgent")}
           </Button>
         </div>
         {!team || team.length === 0 ? (
-          <EmptyState icon={Headset} title="No agents yet" description="Add team members to distribute handoffs." />
+          <EmptyState icon={Headset} title={t("gr.noAgents")} description={t("gr.noAgentsDesc")} />
         ) : (
           <div className="space-y-1.5">
             {(team as AgentMember[]).map((a) => (
@@ -270,7 +275,7 @@ function TeamCard() {
                     {a.skills.map((sk) => <Badge key={sk} variant="outline" className="h-4 px-1 text-[10px]">{sk}</Badge>)}
                   </div>
                 </div>
-                <button onClick={() => handleRemove(a.team_id)} className="text-muted-foreground hover:text-destructive" title="Remove"><Trash2 className="size-3.5" /></button>
+                <button onClick={() => handleRemove(a.team_id)} className="text-muted-foreground hover:text-destructive" title={t("gr.remove")}><Trash2 className="size-3.5" /></button>
               </div>
             ))}
           </div>
@@ -284,6 +289,7 @@ function TeamCard() {
 // Campaigns
 // ============================================
 function CampaignsCard() {
+  const { t, tf } = useI18n();
   const { data, mutate } = useSWR("campaigns", listCampaigns);
   const [name, setName] = React.useState("");
   const [configId, setConfigId] = React.useState("");
@@ -303,7 +309,7 @@ function CampaignsCard() {
         recipient_filter: "all", scheduled_at: new Date(scheduled).toISOString(),
       });
       setName(""); setConfigId(""); setTemplate(""); setParams(""); setScheduled("");
-      toast.success("Campaign scheduled");
+      toast.success(t("gr.scheduled"));
       void mutate();
     } catch (e) { toast.error((e as Error).message); }
     finally { setCreating(false); }
@@ -316,24 +322,24 @@ function CampaignsCard() {
     <Card>
       <CardHeader className="pb-2">
         <CardTitle className="text-sm flex items-center gap-2">
-          <Megaphone className="size-4 text-primary" /> Marketing campaigns <span className="text-[10px] text-muted-foreground">(WhatsApp templates — 24h window exempt)</span>
+          <Megaphone className="size-4 text-primary" /> {t("gr.campaigns")} <span className="text-[10px] text-muted-foreground">{t("gr.campaignsNote")}</span>
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="rounded-md border border-border p-3 space-y-2 bg-muted/30">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-            <Input placeholder="Campaign name" value={name} onChange={(e) => setName(e.target.value)} className="h-8 text-xs" />
-            <Input placeholder="Config id" value={configId} onChange={(e) => setConfigId(e.target.value)} className="h-8 text-xs" />
-            <Input placeholder="Template name" value={template} onChange={(e) => setTemplate(e.target.value)} className="h-8 text-xs" />
-            <Input placeholder="Body params (comma)" value={params} onChange={(e) => setParams(e.target.value)} className="h-8 text-xs" />
+            <Input placeholder={t("gr.campaignNamePh")} value={name} onChange={(e) => setName(e.target.value)} className="h-8 text-xs" />
+            <Input placeholder={t("gr.configIdPh")} value={configId} onChange={(e) => setConfigId(e.target.value)} className="h-8 text-xs" />
+            <Input placeholder={t("gr.templateNamePh")} value={template} onChange={(e) => setTemplate(e.target.value)} className="h-8 text-xs" />
+            <Input placeholder={t("gr.bodyParamsPh")} value={params} onChange={(e) => setParams(e.target.value)} className="h-8 text-xs" />
           </div>
           <Input type="datetime-local" value={scheduled} onChange={(e) => setScheduled(e.target.value)} className="h-8 text-xs" />
           <Button size="sm" className="h-7 text-xs gap-1" onClick={handleCreate} disabled={creating || !configId || !template || !scheduled}>
-            {creating ? <Loader2 className="size-3 animate-spin" /> : <Send className="size-3" />} Schedule
+            {creating ? <Loader2 className="size-3 animate-spin" /> : <Send className="size-3" />} {t("gr.schedule")}
           </Button>
         </div>
         {!data || data.length === 0 ? (
-          <EmptyState icon={Megaphone} title="No campaigns" />
+          <EmptyState icon={Megaphone} title={t("gr.noCampaigns")} />
         ) : (
           <div className="space-y-1.5">
             {(data as CampaignItem[]).map((c) => (
@@ -344,11 +350,11 @@ function CampaignsCard() {
                     <Badge variant={c.status === "done" ? "success" : c.status === "scheduled" ? "secondary" : "outline"} className="h-4 px-1 text-[10px]">{c.status}</Badge>
                   </div>
                   <p className="text-[11px] text-muted-foreground mt-0.5">
-                    {c.template_name} · {new Date(c.scheduled_at).toLocaleString()} · {c.sent_count} sent
+                    {c.template_name} · {new Date(c.scheduled_at).toLocaleString()} · {tf("gr.sentCount", { n: c.sent_count })}
                   </p>
                 </div>
                 {c.status === "scheduled" && (
-                  <button onClick={() => handleCancel(c.campaign_id)} className="text-muted-foreground hover:text-destructive" title="Cancel"><XCircle className="size-3.5" /></button>
+                  <button onClick={() => handleCancel(c.campaign_id)} className="text-muted-foreground hover:text-destructive" title={t("common.cancel")}><XCircle className="size-3.5" /></button>
                 )}
               </div>
             ))}
@@ -364,6 +370,7 @@ function CampaignsCard() {
 // ============================================
 function BillingCard() {
   const { user } = useAuth();
+  const { t, tf } = useI18n();
   const { data, mutate } = useSWR("billing", getBilling);
   const [planning, setPlanning] = React.useState<string | null>(null);
 
@@ -371,7 +378,7 @@ function BillingCard() {
     setPlanning(p);
     try {
       await setPlan(p);
-      toast.success(`Plan updated to ${p}`);
+      toast.success(tf("gr.planUpdated", { plan: p }));
       void mutate();
     } catch (e) { toast.error((e as Error).message); }
     finally { setPlanning(null); }
@@ -384,7 +391,7 @@ function BillingCard() {
     <Card>
       <CardHeader className="pb-2">
         <CardTitle className="text-sm flex items-center gap-2">
-          <CreditCard className="size-4 text-primary" /> Billing & quota <span className="text-[10px] text-muted-foreground">(tenant: {user?.username})</span>
+          <CreditCard className="size-4 text-primary" /> {t("gr.billing")} <span className="text-[10px] text-muted-foreground">{tf("gr.billingNote", { user: user?.username ?? "" })}</span>
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
@@ -406,14 +413,14 @@ function BillingCard() {
           <div className="space-y-2">
             <div>
               <div className="flex justify-between text-[11px] text-muted-foreground mb-1">
-                <span>Messages</span><span>{info.messages_used} / {info.monthly_message_quota}</span>
+                <span>{t("gr.messagesLabel")}</span><span>{info.messages_used} / {info.monthly_message_quota}</span>
               </div>
               <div className="h-1.5 rounded bg-muted overflow-hidden">
                 <div className="h-full bg-primary transition-all" style={{ width: `${msgPct}%` }} />
               </div>
             </div>
             <div className="text-[11px] text-muted-foreground">
-              Documents: {info.docs_used} / {info.monthly_doc_quota} · Cycle ends {new Date(info.cycle_end).toLocaleDateString()}
+              {tf("gr.docsLine", { used: info.docs_used, quota: info.monthly_doc_quota, date: new Date(info.cycle_end).toLocaleDateString() })}
             </div>
           </div>
         )}

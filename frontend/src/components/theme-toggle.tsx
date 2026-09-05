@@ -4,15 +4,16 @@ import * as React from "react";
 import { useTheme } from "next-themes";
 import { Button } from "@/components/ui/button";
 import { SunIcon, MoonIcon, MonitorIcon } from "lucide-react";
+import { useI18n } from "@/lib/i18n";
 
 type ResolvedTheme = "light" | "dark" | "system";
 
 const ORDER: ResolvedTheme[] = ["light", "dark", "system"];
 
-const LABEL: Record<ResolvedTheme, string> = {
-  light: "Light",
-  dark: "Dark",
-  system: "System",
+const LABEL_KEY: Record<ResolvedTheme, string> = {
+  light: "theme.light",
+  dark: "theme.dark",
+  system: "theme.system",
 };
 
 /**
@@ -21,6 +22,7 @@ const LABEL: Record<ResolvedTheme, string> = {
  */
 export function ThemeToggle() {
   const { theme, setTheme } = useTheme();
+  const { t, tf } = useI18n();
   const [mounted, setMounted] = React.useState(false);
 
   // next-themes only knows the resolved theme after hydration. Rendering the
@@ -45,11 +47,11 @@ export function ThemeToggle() {
       size="sm"
       onClick={() => setTheme(next)}
       className="w-full justify-start gap-2 h-9 text-sm"
-      title={`Theme: ${LABEL[current]} (click for ${LABEL[next]})`}
-      aria-label={`Switch theme. Current: ${LABEL[current]}`}
+      title={tf("theme.title", { cur: t(LABEL_KEY[current]), next: t(LABEL_KEY[next]) })}
+      aria-label={tf("theme.aria", { cur: t(LABEL_KEY[current]) })}
     >
       <Icon className="size-4 flex-shrink-0" />
-      <span className="flex-1 text-left">{LABEL[current]}</span>
+      <span className="flex-1 text-left">{t(LABEL_KEY[current])}</span>
     </Button>
   );
 }

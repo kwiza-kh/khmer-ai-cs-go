@@ -7,11 +7,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Loader2, Download, FileSpreadsheet, MessageSquare, Coins } from "lucide-react";
 import { toast } from "sonner";
+import { useI18n } from "@/lib/i18n";
 
 /**
  * CSV report export (sessions / messages / tokens) for a date range.
  */
 export function ReportsTab() {
+  const { t, tf } = useI18n();
   const [from, setFrom] = React.useState(() => {
     const d = new Date(); d.setDate(d.getDate() - 30); return d.toISOString().slice(0, 10);
   });
@@ -19,19 +21,19 @@ export function ReportsTab() {
   const [busy, setBusy] = React.useState<string | null>(null);
 
   const run = async (kind: "sessions" | "messages" | "tokens") => {
-    if (!from || !to || from > to) { toast.error("Invalid date range"); return; }
+    if (!from || !to || from > to) { toast.error(t("rp.invalidRange")); return; }
     setBusy(kind);
     try {
       await downloadReport(kind, new Date(`${from}T00:00:00Z`).toISOString(), new Date(`${to}T23:59:59Z`).toISOString());
-      toast.success(`${kind} report downloaded`);
+      toast.success(tf("rp.downloaded", { kind: t(`rp.${kind}`) }));
     } catch (e) { toast.error((e as Error).message); }
     finally { setBusy(null); }
   };
 
   const reports = [
-    { kind: "sessions" as const, label: "Sessions", icon: FileSpreadsheet, desc: "会话明细: 平台/状态/情绪/消息数" },
-    { kind: "messages" as const, label: "Messages", icon: MessageSquare, desc: "消息明细: 角色/类型/token/模型" },
-    { kind: "tokens" as const, label: "Token usage", icon: Coins, desc: "Token 用量: 模型/成本/缓存命中" },
+    { kind: "sessions" as const, labelKey: "rp.sessions", icon: FileSpreadsheet, descKey: "rp.sessionsDesc" },
+    { kind: "messages" as const, labelKey: "rp.messages", icon: MessageSquare, descKey: "rp.messagesDesc" },
+    { kind: "tokens" as const, labelKey: "rp.tokenUsage", icon: Coins, descKey: "rp.tokensDesc" },
   ];
 
   return (
@@ -39,17 +41,17 @@ export function ReportsTab() {
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-sm flex items-center gap-2">
-            <Download className="size-4 text-primary" /> CSV reports <span className="text-[10px] text-muted-foreground">(your tenant only)</span>
+            <Download className="size-4 text-primary" /> {t("rp.title")} <span className="text-[10px] text-muted-foreground">{t("rp.yourTenant")}</span>
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
           <div className="grid grid-cols-2 gap-2 max-w-md">
             <div>
-              <label className="text-[11px] text-muted-foreground block mb-1">From</label>
+              <label className="text-[11px] text-muted-foreground block mb-1">{t("rp.from")}</label>
               <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-8 text-xs" />
             </div>
             <div>
-              <label className="text-[11px] text-muted-foreground block mb-1">To</label>
+              <label className="text-[11px] text-muted-foreground block mb-1">{t("rp.to")}</label>
               <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-8 text-xs" />
             </div>
           </div>
@@ -58,12 +60,12 @@ export function ReportsTab() {
               <div key={r.kind} className="rounded-md border border-border p-3 space-y-2">
                 <div className="flex items-center gap-2">
                   <r.icon className="size-4 text-muted-foreground" />
-                  <p className="text-xs font-medium">{r.label}</p>
+                  <p className="text-xs font-medium">{t(r.labelKey)}</p>
                 </div>
-                <p className="text-[11px] text-muted-foreground">{r.desc}</p>
+                <p className="text-[11px] text-muted-foreground">{t(r.descKey)}</p>
                 <Button size="sm" variant="outline" className="h-7 text-xs gap-1 w-full" onClick={() => run(r.kind)} disabled={busy !== null}>
                   {busy === r.kind ? <Loader2 className="size-3 animate-spin" /> : <Download className="size-3" />}
-                  {busy === r.kind ? "Exporting…" : "Export CSV"}
+                  {busy === r.kind ? t("rp.exporting") : t("rp.exportCsv")}
                 </Button>
               </div>
             ))}
