@@ -13,7 +13,9 @@ import (
 	"khmer-ai-cs-go/internal/auth"
 	"khmer-ai-cs-go/internal/config"
 	"khmer-ai-cs-go/internal/gemini"
+	"khmer-ai-cs-go/internal/platform"
 	"khmer-ai-cs-go/internal/rag"
+	"khmer-ai-cs-go/internal/realtime"
 	"khmer-ai-cs-go/internal/redisstore"
 	"khmer-ai-cs-go/internal/security"
 )
@@ -28,6 +30,12 @@ type App struct {
 	RAG    *rag.Service
 	Logger *slog.Logger
 	Sealer *security.Sealer
+
+	// Pipe is the platform pipeline (used to wake outbound workers when an
+	// agent reply or campaign template is enqueued).
+	Pipe *platform.Pipeline
+	// Realtime is the WebSocket inbox hub (may be nil in tests).
+	Realtime *realtime.Hub
 
 	// WebhookHandler serves the platform webhook endpoints (mounted by main).
 	WebhookHandler http.Handler

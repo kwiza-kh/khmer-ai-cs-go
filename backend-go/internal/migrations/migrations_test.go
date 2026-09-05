@@ -10,11 +10,11 @@ func TestMigrationsAreLexicallyOrderedAndComplete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read migrations: %v", err)
 	}
-	if len(files) != 34 {
-		t.Fatalf("expected all 34 migration files, got %d", len(files))
+	if len(files) != 35 {
+		t.Fatalf("expected all 35 migration files, got %d", len(files))
 	}
 	wantFirst := "001_init.sql"
-	wantLast := "034_user_preferences.sql"
+	wantLast := "035_summary_cache_invalidation.sql"
 	if files[0][0] != wantFirst {
 		t.Errorf("first migration = %s, want %s", files[0][0], wantFirst)
 	}

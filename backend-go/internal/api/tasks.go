@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"khmer-ai-cs-go/internal/realtime"
 )
 
 // StartBackgroundTasks launches the periodic jobs that keep the platform
@@ -122,7 +124,17 @@ func (a *App) dispatchOneCampaign(ctx context.Context, c campRow) int {
 			VALUES ($1,$2,$3,$4::platform_type,$5,$6,$7::jsonb,'pending',NOW(),NOW(),NOW()) ON CONFLICT (chat_message_id) DO NOTHING`,
 			c.configID, sessionID, msgID, c.platform, puid, "", pj2); err == nil {
 			sent++
+			realtime.Publish(ctx, a.Redis, realtime.Event{
+				Type:      realtime.EventMessage,
+				UserID:    c.userID,
+				SessionID: sessionID,
+				MessageID: msgID,
+				Role:      "system",
+			})
 		}
+	}
+	if sent > 0 && a.Pipe != nil {
+		a.Pipe.SignalOutbound()
 	}
 	return sent
 }

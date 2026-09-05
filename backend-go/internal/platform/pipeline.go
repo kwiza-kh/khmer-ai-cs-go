@@ -17,6 +17,7 @@ import (
 	"khmer-ai-cs-go/internal/config"
 	"khmer-ai-cs-go/internal/gemini"
 	"khmer-ai-cs-go/internal/rag"
+	"khmer-ai-cs-go/internal/realtime"
 	"khmer-ai-cs-go/internal/redisstore"
 	"khmer-ai-cs-go/internal/security"
 )
@@ -38,8 +39,9 @@ type Pipeline struct {
 	Sealer *security.Sealer
 	Logger *slog.Logger
 
-	notify chan struct{}
-	once   sync.Once
+	notify         chan struct{}
+	notifyOutbound chan struct{}
+	once           sync.Once
 }
 
 // InboundEvent is one queued customer message.
@@ -96,17 +98,35 @@ func (p *Pipeline) EnqueueInboundEvent(ctx context.Context, configID int32, plat
 	return nil
 }
 
+func (p *Pipeline) initNotify() {
+	p.once.Do(func() {
+		p.notify = make(chan struct{}, 64)
+		p.notifyOutbound = make(chan struct{}, 64)
+	})
+}
+
 func (p *Pipeline) signal() {
-	p.once.Do(func() { p.notify = make(chan struct{}, 64) })
+	p.initNotify()
 	select {
 	case p.notify <- struct{}{}:
 	default:
 	}
 }
 
+// SignalOutbound wakes the outbound workers immediately (a new delivery was
+// enqueued — agent reply, campaign template, etc.). Without it deliveries sit
+// in the outbox until the next 1s poll tick.
+func (p *Pipeline) SignalOutbound() {
+	p.initNotify()
+	select {
+	case p.notifyOutbound <- struct{}{}:
+	default:
+	}
+}
+
 // SpawnWorkers starts the inbound + outbound worker pools.
 func (p *Pipeline) SpawnWorkers(ctx context.Context) {
-	p.once.Do(func() { p.notify = make(chan struct{}, 64) })
+	p.initNotify()
 	for i := 0; i < workerCount; i++ {
 		go func() {
 			for {
@@ -124,6 +144,7 @@ func (p *Pipeline) SpawnWorkers(ctx context.Context) {
 				select {
 				case <-ctx.Done():
 					return
+				case <-p.notifyOutbound:
 				case <-time.After(1 * time.Second):
 				}
 				p.processOutboundNext(ctx)
@@ -136,16 +157,20 @@ func (p *Pipeline) SpawnWorkers(ctx context.Context) {
 // Inbound
 // ============================================
 
+// processInboundNext drains every claimable inbound event (the wake signal
+// only has to be approximate; the loop empties the queue in one pass).
 func (p *Pipeline) processInboundNext(ctx context.Context) {
-	ev, err := p.claimInbound(ctx)
-	if err != nil || ev == nil {
-		return
-	}
-	if err := p.processInboundEvent(ctx, ev); err != nil {
-		p.Logger.Warn("inbound event failed", "event_id", ev.EventID, "error", err.Error())
-		p.retryInbound(ctx, ev.EventID)
-	} else {
-		_, _ = p.DB.Exec(ctx, "UPDATE platform_inbound_events SET status='completed', processed_at=$1, locked_at=NULL WHERE event_id=$2", time.Now(), ev.EventID)
+	for {
+		ev, err := p.claimInbound(ctx)
+		if err != nil || ev == nil {
+			return
+		}
+		if err := p.processInboundEvent(ctx, ev); err != nil {
+			p.Logger.Warn("inbound event failed", "event_id", ev.EventID, "error", err.Error())
+			p.retryInbound(ctx, ev.EventID)
+		} else {
+			_, _ = p.DB.Exec(ctx, "UPDATE platform_inbound_events SET status='completed', processed_at=$1, locked_at=NULL WHERE event_id=$2", time.Now(), ev.EventID)
+		}
 	}
 }
 
@@ -323,7 +348,19 @@ func (p *Pipeline) processInboundEvent(ctx context.Context, ev *InboundEvent) er
 		return fmt.Errorf("persist model reply: %w", err)
 	}
 	_, _ = p.DB.Exec(ctx, "UPDATE sessions SET model_message_count = model_message_count + 1, first_response_at = COALESCE(first_response_at, $1) WHERE session_id = $2", time.Now(), sessionID)
+	p.publishMessage(ctx, cfg.UserID, sessionID, modelMessageID, "model")
 	return p.enqueueDelivery(ctx, ev, cfg, sessionID, modelMessageID, reply, nil)
+}
+
+// publishMessage fans out an inbox.message realtime event (best-effort).
+func (p *Pipeline) publishMessage(ctx context.Context, userID int32, sessionID string, messageID int64, role string) {
+	realtime.Publish(ctx, p.Redis, realtime.Event{
+		Type:      realtime.EventMessage,
+		UserID:    userID,
+		SessionID: sessionID,
+		MessageID: messageID,
+		Role:      role,
+	})
 }
 
 func (p *Pipeline) ownerLanguage(ctx context.Context, userID int32) string {
@@ -476,6 +513,7 @@ func (p *Pipeline) enqueueHandoffAck(ctx context.Context, ev *InboundEvent, cfg 
 		sessionID, reply, time.Now()).Scan(&msgID); err != nil {
 		return
 	}
+	p.publishMessage(ctx, cfg.UserID, sessionID, msgID, "system")
 	_ = p.enqueueDelivery(ctx, ev, cfg, sessionID, msgID, reply, nil)
 }
 
@@ -511,7 +549,7 @@ func (p *Pipeline) enqueueDelivery(ctx context.Context, ev *InboundEvent, cfg *c
 		return fmt.Errorf("enqueue delivery: %w", err)
 	}
 	if tag.RowsAffected() > 0 {
-		p.signal()
+		p.SignalOutbound()
 	}
 	return nil
 }
@@ -530,12 +568,15 @@ type outboundDelivery struct {
 	LastMessageID int64
 }
 
+// processOutboundNext drains every claimable delivery in one pass.
 func (p *Pipeline) processOutboundNext(ctx context.Context) {
-	d, err := p.claimOutbound(ctx)
-	if err != nil || d == nil {
-		return
+	for {
+		d, err := p.claimOutbound(ctx)
+		if err != nil || d == nil {
+			return
+		}
+		p.deliver(ctx, d)
 	}
-	p.deliver(ctx, d)
 }
 
 func (p *Pipeline) claimOutbound(ctx context.Context) (*outboundDelivery, error) {

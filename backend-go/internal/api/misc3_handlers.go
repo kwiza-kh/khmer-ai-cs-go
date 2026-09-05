@@ -197,5 +197,6 @@ func (a *App) createHandoffRequest(w http.ResponseWriter, r *http.Request) (any,
 	}
 	// Mark the session as handoff.
 	_, _ = a.DB.Exec(r.Context(), "UPDATE sessions SET status='handoff', escalated_at=COALESCE(escalated_at,NOW()) WHERE session_id = $1", req.SessionID)
+	a.publishSessionEvent(r.Context(), user.UserID, req.SessionID)
 	return map[string]any{"session_id": req.SessionID, "status": "pending", "priority": priority, "trigger": "manual", "reason": reason, "created": true}, nil
 }

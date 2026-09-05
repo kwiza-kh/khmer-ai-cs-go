@@ -185,6 +185,14 @@ func (a *App) Router() http.Handler {
 
 	mux.Handle("/api/v1/", a.authMiddleware(a.audit(a.rateLimit(60)(authed))))
 
+	// Realtime inbox stream. More specific than the "/api/v1/" catch-all so it
+	// bypasses the header-auth chain: the browser cannot send an Authorization
+	// header on a WebSocket handshake, so the hub authenticates the subprotocol
+	// token itself.
+	if a.Realtime != nil {
+		mux.Handle("GET /api/v1/realtime/inbox", a.Realtime)
+	}
+
 	// Platform webhooks (mounted by main; no auth — signature-verified).
 	if a.WebhookHandler != nil {
 		mux.Handle("/api/v1/webhook/", a.WebhookHandler)

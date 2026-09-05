@@ -243,6 +243,11 @@ func (a *App) getSession(w http.ResponseWriter, r *http.Request, sessionID strin
 }
 
 // listSessionMessages — messages for a session (owner-checked).
+//
+// By default it returns the newest `limit` messages in chronological order.
+// Pass ?after=<message_id> to fetch only messages newer than that cursor
+// (oldest-first), which is what the realtime inbox uses to append deltas
+// without re-downloading the whole transcript.
 func (a *App) listSessionMessages(w http.ResponseWriter, r *http.Request, sessionID string) (any, error) {
 	user, _ := UserFrom(r)
 	// Owner check.
@@ -251,9 +256,28 @@ func (a *App) listSessionMessages(w http.ResponseWriter, r *http.Request, sessio
 		return nil, ErrNotFound("会话不存在")
 	}
 	limit := parseIntOr(r.URL.Query().Get("limit"), 100)
-	rows, err := a.DB.Query(r.Context(),
-		"SELECT message_id, role, message_type, content, created_at FROM chat_messages WHERE session_id = $1 ORDER BY created_at ASC LIMIT $2",
-		sessionID, limit)
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	after := parseIntOr(r.URL.Query().Get("after"), 0)
+
+	// Incremental tail: everything after the cursor, oldest-first.
+	// Initial page: the newest `limit` rows, then reversed to chronological.
+	var (
+		query string
+		args  []any
+	)
+	if after > 0 {
+		query = "SELECT message_id, role, message_type, content, created_at FROM chat_messages " +
+			"WHERE session_id = $1 AND message_id > $2 ORDER BY message_id ASC LIMIT $3"
+		args = []any{sessionID, after, limit}
+	} else {
+		query = "SELECT message_id, role, message_type, content, created_at FROM chat_messages " +
+			"WHERE session_id = $1 ORDER BY message_id DESC LIMIT $2"
+		args = []any{sessionID, limit}
+	}
+
+	rows, err := a.DB.Query(r.Context(), query, args...)
 	if err != nil {
 		return nil, ErrInternal("查询失败")
 	}
@@ -261,9 +285,9 @@ func (a *App) listSessionMessages(w http.ResponseWriter, r *http.Request, sessio
 	msgs := make([]map[string]any, 0)
 	for rows.Next() {
 		var (
-			mid                int64
+			mid                  int64
 			role, mtype, content string
-			createdAt          time.Time
+			createdAt            time.Time
 		)
 		if err := rows.Scan(&mid, &role, &mtype, &content, &createdAt); err != nil {
 			continue
@@ -271,6 +295,12 @@ func (a *App) listSessionMessages(w http.ResponseWriter, r *http.Request, sessio
 		msgs = append(msgs, map[string]any{
 			"message_id": mid, "role": role, "message_type": mtype, "content": content, "created_at": createdAt,
 		})
+	}
+	// Initial page came back newest-first; flip to chronological.
+	if after <= 0 {
+		for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
+			msgs[i], msgs[j] = msgs[j], msgs[i]
+		}
 	}
 	return msgs, nil
 }

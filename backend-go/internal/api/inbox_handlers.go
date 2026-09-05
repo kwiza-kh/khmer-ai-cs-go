@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"khmer-ai-cs-go/internal/gemini"
+	"khmer-ai-cs-go/internal/realtime"
 )
 
 // ============================================
@@ -127,6 +129,7 @@ func (a *App) assignSession(w http.ResponseWriter, r *http.Request, sessionID st
 		req.AgentID, sessionID); err != nil {
 		return nil, ErrInternal("分配失败")
 	}
+	a.publishSessionEvent(r.Context(), user.UserID, sessionID)
 	return map[string]string{"message": "已分配"}, nil
 }
 
@@ -141,6 +144,7 @@ func (a *App) takeoverSession(w http.ResponseWriter, r *http.Request, sessionID 
 		user.UserID, sessionID); err != nil {
 		return nil, ErrInternal("接管失败")
 	}
+	a.publishSessionEvent(r.Context(), user.UserID, sessionID)
 	return map[string]string{"message": "已接管"}, nil
 }
 
@@ -185,6 +189,18 @@ func (a *App) agentReply(w http.ResponseWriter, r *http.Request, sessionID strin
 		"INSERT INTO platform_outbox (config_id, session_id, chat_message_id, platform, recipient_id, content, payload, status, next_attempt_at, created_at, updated_at) "+
 			"VALUES ($1,$2,$3,$4::platform_type,$5,$6,$7,'pending',$8,$8,$8) ON CONFLICT (chat_message_id) DO NOTHING",
 		configID, sessionID, msgID, platform, recipientID, req.Content, payloadJSON, time.Now())
+	// Wake the outbound worker (otherwise the reply waits for the next poll
+	// tick) and push the message to the inbox in real time.
+	if a.Pipe != nil {
+		a.Pipe.SignalOutbound()
+	}
+	realtime.Publish(r.Context(), a.Redis, realtime.Event{
+		Type:      realtime.EventMessage,
+		UserID:    user.UserID,
+		SessionID: sessionID,
+		MessageID: msgID,
+		Role:      "agent",
+	})
 	return map[string]any{"message_id": msgID, "message": "已发送"}, nil
 }
 
@@ -214,6 +230,7 @@ func (a *App) updateSessionStatus(w http.ResponseWriter, r *http.Request, sessio
 	default:
 		_, _ = a.DB.Exec(r.Context(), "UPDATE sessions SET status=$1, internal_notes=$2 WHERE session_id=$3", req.Status, req.InternalNote, sessionID)
 	}
+	a.publishSessionEvent(r.Context(), user.UserID, sessionID)
 	return map[string]string{"message": "状态已更新"}, nil
 }
 
@@ -237,6 +254,7 @@ func (a *App) setSessionTags(w http.ResponseWriter, r *http.Request, sessionID s
 	if _, err := a.DB.Exec(r.Context(), "UPDATE sessions SET tags = $1::text[] WHERE session_id = $2", req.Tags, sessionID); err != nil {
 		return nil, ErrInternal("更新标签失败")
 	}
+	a.publishSessionEvent(r.Context(), user.UserID, sessionID)
 	return map[string]string{"message": "标签已更新"}, nil
 }
 
@@ -267,38 +285,91 @@ func (a *App) getInboundMediaURL(w http.ResponseWriter, r *http.Request) (any, e
 	return map[string]any{"url": *mediaURL, "expires_at": time.Now().Add(10 * time.Minute)}, nil
 }
 
-// sessionSummary — AI-generated session summary.
+// sessionSummary — AI-generated session summary (owner-scoped).
+//
+// Language resolution: ?language= wins, then the owner's stored preference,
+// then auto-detect from the transcript. A cached summary is only reused when
+// it matches the resolved language AND no messages arrived after it was
+// generated; ?refresh=1 forces regeneration.
 func (a *App) sessionSummary(w http.ResponseWriter, r *http.Request, sessionID string) (any, error) {
 	user, _ := UserFrom(r)
 	if err := a.ensureSessionOwner(r.Context(), sessionID, user.UserID); err != nil {
 		return nil, err
 	}
-	// Cached summary?
-	var cached *string
-	_ = a.DB.QueryRow(r.Context(), "SELECT summary FROM sessions WHERE session_id = $1", sessionID).Scan(&cached)
-	if cached != nil && *cached != "" {
-		return map[string]any{"summary": *cached, "cached": true}, nil
+	force := r.URL.Query().Get("refresh") == "1"
+
+	// Language: explicit param > owner preference > auto (detected below).
+	language := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("language")))
+	switch language {
+	case "", "auto":
+		language = a.savedLanguage(r.Context(), user.UserID)
+	case "km", "en", "zh":
+	default:
+		return nil, ErrBadRequest("不支持的语言")
 	}
-	// Build a transcript and summarize.
-	rows, err := a.DB.Query(r.Context(), "SELECT role, content FROM chat_messages WHERE session_id = $1 ORDER BY message_id LIMIT 50", sessionID)
+
+	// Transcript: the newest 50 messages in chronological order (the old
+	// ASC LIMIT 50 kept summarizing the beginning of long conversations).
+	type turn struct{ role, content string }
+	turns := make([]turn, 0, 50)
+	rows, err := a.DB.Query(r.Context(),
+		"SELECT role, content FROM chat_messages WHERE session_id = $1 ORDER BY message_id DESC LIMIT 50", sessionID)
 	if err != nil {
 		return nil, ErrInternal("查询失败")
 	}
-	defer rows.Close()
-	var transcript string
-	count := 0
 	for rows.Next() {
-		var role, content string
-		if rows.Scan(&role, &content) == nil {
-			transcript += role + ": " + content + "\n"
-			count++
+		var t turn
+		if rows.Scan(&t.role, &t.content) == nil {
+			turns = append(turns, t)
 		}
 	}
-	if count == 0 {
-		return map[string]any{"summary": "", "cached": false}, nil
+	rows.Close()
+	if len(turns) == 0 {
+		return map[string]any{"summary": "", "cached": false, "language": language}, nil
 	}
-	prompt := "Summarize this customer-service conversation in 2-3 short sentences (same language as the conversation):\n\n" + transcript
-	result, err := a.Gemini.Chat(r.Context(), prompt, nil, "km")
+	for i, j := 0, len(turns)-1; i < j; i, j = i+1, j-1 {
+		turns[i], turns[j] = turns[j], turns[i]
+	}
+	var transcript strings.Builder
+	for _, t := range turns {
+		transcript.WriteString(t.role)
+		transcript.WriteString(": ")
+		transcript.WriteString(t.content)
+		transcript.WriteString("\n")
+	}
+
+	// Auto language: detect from the transcript (the Gemini request builder
+	// would otherwise pin the turn to the Khmer-primary default).
+	if language == "" {
+		if det := gemini.DetectLanguage(transcript.String()); det != "" {
+			language = det
+		} else {
+			language = "km"
+		}
+	}
+
+	// Cached summary — valid only when the language matches and the
+	// transcript has not grown since generation.
+	if !force {
+		var (
+			cached     *string
+			cachedAt   *time.Time
+			cachedLang *string
+		)
+		_ = a.DB.QueryRow(r.Context(),
+			"SELECT summary, summary_at, summary_language FROM sessions WHERE session_id = $1", sessionID).
+			Scan(&cached, &cachedAt, &cachedLang)
+		if cached != nil && *cached != "" && cachedAt != nil && derefStr(cachedLang) == language {
+			var newer int
+			_ = a.DB.QueryRow(r.Context(),
+				"SELECT COUNT(*) FROM chat_messages WHERE session_id = $1 AND created_at > $2", sessionID, *cachedAt).Scan(&newer)
+			if newer == 0 {
+				return map[string]any{"summary": *cached, "cached": true, "language": language}, nil
+			}
+		}
+	}
+
+	result, err := a.Gemini.Chat(r.Context(), summaryPrompt(transcript.String(), language), nil, language)
 	if err != nil {
 		return nil, ErrInternal("生成摘要失败")
 	}
@@ -306,8 +377,27 @@ func (a *App) sessionSummary(w http.ResponseWriter, r *http.Request, sessionID s
 	if !result.UsedMock {
 		summary = gemini.StripSourceMarkers(summary)
 	}
-	_, _ = a.DB.Exec(r.Context(), "UPDATE sessions SET summary = $1 WHERE session_id = $2", summary, sessionID)
-	return map[string]any{"summary": summary, "cached": false}, nil
+	_, _ = a.DB.Exec(r.Context(),
+		"UPDATE sessions SET summary = $1, summary_at = $2, summary_language = $3 WHERE session_id = $4",
+		summary, time.Now(), language, sessionID)
+	return map[string]any{"summary": summary, "cached": false, "language": language}, nil
+}
+
+// summaryPrompt asks for a short summary in the requested language.
+func summaryPrompt(transcript, language string) string {
+	var target string
+	switch language {
+	case "km":
+		target = "Khmer"
+	case "en":
+		target = "English"
+	case "zh":
+		target = "Chinese"
+	}
+	if target != "" {
+		return "Summarize this customer-service conversation in 2-3 short sentences, written in " + target + ":\n\n" + transcript
+	}
+	return "Summarize this customer-service conversation in 2-3 short sentences (same language as the conversation):\n\n" + transcript
 }
 
 // ensureSessionOwner checks the session belongs to the user (or user is admin).
@@ -318,4 +408,14 @@ func (a *App) ensureSessionOwner(ctx context.Context, sessionID string, userID i
 		return ErrNotFound("会话不存在")
 	}
 	return nil
+}
+
+// publishSessionEvent nudges the inbox list for the tenant (status/assign/tag
+// changes). Best-effort, like every realtime publish.
+func (a *App) publishSessionEvent(ctx context.Context, userID int32, sessionID string) {
+	realtime.Publish(ctx, a.Redis, realtime.Event{
+		Type:      realtime.EventSession,
+		UserID:    userID,
+		SessionID: sessionID,
+	})
 }

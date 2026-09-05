@@ -1,11 +1,14 @@
 package api
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -97,6 +100,24 @@ func (s *statusRecorder) WriteHeader(code int) {
 	s.status = code
 	s.ResponseWriter.WriteHeader(code)
 }
+
+// Hijack, Flush and Unwrap pass through so WebSocket upgrades (gorilla) and
+// SSE streaming (chatStream) keep working when the logging/audit middlewares
+// wrap the ResponseWriter. Without these the wrappers hide the interfaces.
+func (s *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if h, ok := s.ResponseWriter.(http.Hijacker); ok {
+		return h.Hijack()
+	}
+	return nil, nil, errors.New("response does not implement http.Hijacker")
+}
+
+func (s *statusRecorder) Flush() {
+	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }
 
 func clientIP(r *http.Request) string {
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {

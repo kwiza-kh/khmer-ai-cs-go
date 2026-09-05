@@ -20,6 +20,7 @@ import (
 	"khmer-ai-cs-go/internal/gemini"
 	"khmer-ai-cs-go/internal/platform"
 	"khmer-ai-cs-go/internal/rag"
+	"khmer-ai-cs-go/internal/realtime"
 	"khmer-ai-cs-go/internal/redisstore"
 	"khmer-ai-cs-go/internal/security"
 )
@@ -91,7 +92,26 @@ func main() {
 		RAG:    ragService,
 		Logger: logger,
 		Sealer: sealer,
+		Pipe:   pipe,
 	}
+
+	// Realtime inbox hub (WebSocket fan-out fed by Redis pub/sub).
+	allowedOrigins := make(map[string]bool, len(cfg.AllowedOrigins))
+	for _, o := range cfg.AllowedOrigins {
+		allowedOrigins[o] = true
+	}
+	hub := realtime.NewHub(app.JWT, redisClient, logger,
+		func(ctx context.Context, userID int32) bool {
+			var active bool
+			if err := pool.QueryRow(ctx, "SELECT is_active FROM users WHERE user_id = $1", userID).Scan(&active); err != nil {
+				return false
+			}
+			return active
+		},
+		func(origin string) bool { return origin == "" || allowedOrigins[origin] },
+	)
+	app.Realtime = hub
+	hub.Start(ctx)
 
 	// Webhook handlers (Meta/WhatsApp/Telegram/LINE).
 	webhooks := &platform.Webhooks{DB: pool, Pipe: pipe, Sealer: sealer, MetaVerifyToken: cfg.MetaVerifyToken}

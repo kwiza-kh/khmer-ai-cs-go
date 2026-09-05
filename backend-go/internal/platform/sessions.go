@@ -62,6 +62,7 @@ func (p *Pipeline) ensureSession(ctx context.Context, ev *InboundEvent, cfg *con
 		return "", 0, false, "", fmt.Errorf("persist user message: %w", err)
 	}
 	_, _ = p.DB.Exec(ctx, "UPDATE sessions SET user_message_count = user_message_count + 1 WHERE session_id = $1", sessionID)
+	p.publishMessage(ctx, cfg.UserID, sessionID, userMessageID, "user")
 
 	var status string
 	_ = p.DB.QueryRow(ctx, "SELECT status::text FROM sessions WHERE session_id = $1", sessionID).Scan(&status)

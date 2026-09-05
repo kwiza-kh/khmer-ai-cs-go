@@ -124,3 +124,14 @@ func (c *Client) GetJSON(ctx context.Context, key string) (json.RawMessage, erro
 func (c *Client) Publish(ctx context.Context, channel, payload string) error {
 	return c.rdb.Publish(ctx, channel, payload).Err()
 }
+
+// Subscribe opens a pub/sub subscription (realtime fan-in between instances).
+// The initial subscription is verified before return; the caller owns Close.
+func (c *Client) Subscribe(ctx context.Context, channels ...string) (*redis.PubSub, error) {
+	ps := c.rdb.Subscribe(ctx, channels...)
+	if _, err := ps.Receive(ctx); err != nil {
+		_ = ps.Close()
+		return nil, err
+	}
+	return ps, nil
+}
