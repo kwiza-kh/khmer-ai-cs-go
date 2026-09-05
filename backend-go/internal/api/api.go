@@ -4,6 +4,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"khmer-ai-cs-go/internal/realtime"
 	"khmer-ai-cs-go/internal/redisstore"
 	"khmer-ai-cs-go/internal/security"
+	"khmer-ai-cs-go/internal/storager2"
 )
 
 // App is the shared request state (DB pool, Redis, JWT, AI, config).
@@ -30,6 +32,7 @@ type App struct {
 	RAG    *rag.Service
 	Logger *slog.Logger
 	Sealer *security.Sealer
+	Media  *storager2.Client
 
 	// Pipe is the platform pipeline (used to wake outbound workers when an
 	// agent reply or campaign template is enqueued).
@@ -39,6 +42,21 @@ type App struct {
 
 	// WebhookHandler serves the platform webhook endpoints (mounted by main).
 	WebhookHandler http.Handler
+}
+
+// notifyUser inserts an in-app notification and nudges the realtime hub
+// (best-effort; mirrors Pipeline.notifyUser for the request-side code paths).
+func (a *App) notifyUser(ctx context.Context, userID int32, kind, title, body, sessionID string) {
+	var sess any
+	if sessionID != "" {
+		sess = sessionID
+	}
+	_, _ = a.DB.Exec(ctx,
+		"INSERT INTO notifications (user_id, kind, title, body, session_id, created_at) VALUES ($1,$2,$3,$4,$5,NOW())",
+		userID, kind, title, body, sess)
+	realtime.Publish(ctx, a.Redis, realtime.Event{
+		Type: realtime.EventNotification, UserID: userID, SessionID: sessionID,
+	})
 }
 
 // stripSourceMarkers removes [Source N] citation leftovers (ragQuery replies).

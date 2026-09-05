@@ -899,4 +899,40 @@ export const en: Dict = {
   "pa.pageN": "Page {page} / {total}",
   "pa.prev": "Prev",
   "pa.next": "Next",
+
+  // Two-factor on login
+  "login.totp": "Verification code",
+  "login.totpPlaceholder": "6-digit code",
+
+  // Two-factor setup helpers (Settings)
+  "settings.totpManualKey": "Manual setup key",
+  "settings.totpCopyHint": "Click to copy",
+  "settings.totpScanOrManual": "Scan the QR with your authenticator app, or enter the key manually.",
+
+  // Handoff triggers
+  "handoff.triggerNoKB": "No knowledge base match",
+  "handoff.loadFailed": "Failed to load the queue",
+
+  // Website chat widget management
+  "nav.widget": "Website Widget",
+  "widget.kicker": "Website chat widget",
+  "widget.title": "Chat Widget",
+  "widget.description": "Create an embed token, then paste the snippet on your site to add the floating support bubble.",
+  "widget.newToken": "New embed token",
+  "widget.notice": "Embed tokens are public by design (they run in visitors' browsers). Each token can be restricted to specific allowed origins.",
+  "widget.createTitle": "Create embed token",
+  "widget.nameLabel": "Name",
+  "widget.namePh": "My shop website",
+  "widget.originsLabel": "Allowed origins (optional)",
+  "widget.originsHint": "Leave empty to allow any origin. e.g. https://shop.example.com",
+  "widget.create": "Create",
+  "widget.empty": "No embed tokens yet. Create one to get the install snippet.",
+  "widget.active": "Active",
+  "widget.delete": "Delete",
+  "widget.tokenLabel": "Token",
+  "widget.copy": "Copy",
+  "widget.embedLabel": "Embed snippet",
+  "widget.createdToast": "Embed token created",
+  "widget.copiedToast": "Copied to clipboard",
+  "widget.allowedFor": "Allowed for: {origins}",
 };

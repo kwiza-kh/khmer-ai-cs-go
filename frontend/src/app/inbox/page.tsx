@@ -51,7 +51,7 @@ const STATUS_BADGE: Record<SessionStatus, { variant: "default" | "secondary" | "
   closed: { variant: "secondary", labelKey: "inbox.statusClosed" },
 };
 
-type PlatformFilter = "all" | "telegram" | "meta" | "instagram" | "whatsapp";
+type PlatformFilter = "all" | "telegram" | "meta" | "instagram" | "whatsapp" | "line" | "web";
 type PlatformCategory = Exclude<PlatformFilter, "all">;
 type ComposerKind = PlatformMessageKind;
 
@@ -60,6 +60,8 @@ const PLATFORM_GROUPS: { value: PlatformCategory; label: string; filterLabel: st
   { value: "meta", label: "Messenger", filterLabel: "Messenger", dotClass: "bg-indigo-400" },
   { value: "instagram", label: "Instagram", filterLabel: "Instagram", dotClass: "bg-pink-400" },
   { value: "whatsapp", label: "WhatsApp", filterLabel: "WhatsApp", dotClass: "bg-emerald-400" },
+  { value: "line", label: "LINE", filterLabel: "LINE", dotClass: "bg-lime-500" },
+  { value: "web", label: "Website", filterLabel: "Website", dotClass: "bg-violet-400" },
 ];
 
 const PLATFORM_FILTERS: { value: PlatformFilter; filterLabel: string | null }[] = [
@@ -72,6 +74,8 @@ const PLATFORM_LABELS: Record<string, string> = {
   instagram: "Instagram",
   telegram: "Telegram",
   whatsapp: "WhatsApp",
+  line: "LINE",
+  web: "Website",
 };
 
 const CARE_WINDOW_PLATFORMS = new Set(["meta", "instagram", "whatsapp"]);
@@ -129,6 +133,8 @@ function platformCategory(platform?: string): PlatformCategory | null {
     case "meta":
     case "instagram":
     case "whatsapp":
+    case "line":
+    case "web":
       return platform;
     default:
       // NULL/未知平台的会话 (旧数据) 不归入任何平台分组, 仅在 "all" 下展示.
@@ -142,7 +148,8 @@ export default function InboxPage() {
   const searchParams = useSearchParams();
   const [statusFilter, setStatusFilter] = React.useState<SessionStatus | "all">("all");
   const [platformFilter, setPlatformFilter] = React.useState<PlatformFilter>("all");
-  const [query, setQuery] = React.useState("");
+  // 全局顶栏搜索跳转到 /inbox?q=... — 预填本地过滤词.
+  const [query, setQuery] = React.useState(() => searchParams.get("q") ?? "");
   const [activeId, setActiveId] = React.useState<string | null>(null);
 	const [notes, setNotes] = React.useState("");
 	const [realtimeVersion, setRealtimeVersion] = React.useState(0);
@@ -756,7 +763,7 @@ function ConversationDetail({
       </div>
 
       {/* Tags editor — quick conversation triage */}
-      <TagsBar sessionId={item.session_id} initial={[]} onMutate={onMutate} />
+      <TagsBar sessionId={item.session_id} initial={item.tags ?? []} onMutate={onMutate} />
 
       {/* AI-generated summary (lazy) */}
       {summaryData?.summary && (

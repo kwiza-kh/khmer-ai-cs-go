@@ -29,8 +29,9 @@ const (
 	ProtocolName = "khmer-ai-cs"
 
 	// Event types understood by the frontend (lib/realtime.ts).
-	EventMessage = "inbox.message"
-	EventSession = "inbox.session"
+	EventMessage      = "inbox.message"
+	EventSession      = "inbox.session"
+	EventNotification = "inbox.notification"
 
 	writeWait       = 10 * time.Second
 	pongWait        = 60 * time.Second

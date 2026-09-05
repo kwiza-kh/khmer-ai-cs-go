@@ -367,21 +367,7 @@ func (a *App) updateUserRole(w http.ResponseWriter, r *http.Request, userID int3
 	return map[string]string{"message": "已更新"}, nil
 }
 
-// analyticsOverview — high-level counts.
-func (a *App) analyticsOverview(w http.ResponseWriter, r *http.Request) (any, error) {
-	user, _ := UserFrom(r)
-	var totalSessions, activeSessions int64
-	_ = a.DB.QueryRow(r.Context(), "SELECT COUNT(*) FROM sessions WHERE user_id = $1", user.UserID).Scan(&totalSessions)
-	_ = a.DB.QueryRow(r.Context(), "SELECT COUNT(*) FROM sessions WHERE user_id = $1 AND status = 'active'", user.UserID).Scan(&activeSessions)
-	var totalMessages int64
-	_ = a.DB.QueryRow(r.Context(),
-		"SELECT COUNT(*) FROM chat_messages cm JOIN sessions s ON s.session_id = cm.session_id WHERE s.user_id = $1", user.UserID).Scan(&totalMessages)
-	return map[string]any{
-		"total_sessions":  totalSessions,
-		"active_sessions": activeSessions,
-		"total_messages":  totalMessages,
-	}, nil
-}
+// analyticsOverview moved to analytics_handlers.go (full KPI set).
 
 // ragGaps — knowledge-gap report.
 func (a *App) ragGaps(w http.ResponseWriter, r *http.Request) (any, error) {

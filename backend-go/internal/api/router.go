@@ -21,6 +21,13 @@ func (a *App) Router() http.Handler {
 	mux.Handle("POST /api/v1/auth/login", a.rateLimit(10)(a.handle(a.login)))
 	mux.Handle("POST /api/v1/auth/register", a.rateLimit(10)(a.handle(a.register)))
 
+	// Website chat widget — public, authenticated by the embed token only
+	// (CORS is opened for /api/v1/widget/* in a.cors).
+	mux.Handle("GET /api/v1/widget/config", a.widgetRateLimit(30)(a.handle(a.widgetBootstrap)))
+	mux.Handle("GET /api/v1/widget/messages", a.widgetRateLimit(60)(a.handle(a.widgetMessages)))
+	mux.Handle("POST /api/v1/widget/chat", a.widgetRateLimit(20)(http.HandlerFunc(a.widgetChat)))
+	mux.Handle("POST /api/v1/widget/feedback", a.widgetRateLimit(30)(a.handle(a.widgetFeedback)))
+
 	// Authenticated group.
 	authed := http.NewServeMux()
 	authed.Handle("PUT /api/v1/auth/password", a.handle(a.changePassword))
@@ -44,6 +51,8 @@ func (a *App) Router() http.Handler {
 	authed.HandleFunc("POST /api/v1/chat/stream", a.chatStream)
 	authed.Handle("POST /api/v1/chat/voice", a.handle(a.chatVoice))
 	authed.Handle("GET /api/v1/chat/sessions", a.handle(a.listSessions))
+	authed.Handle("POST /api/v1/chat/sessions", a.handle(a.createSession))
+	authed.HandleFunc("PATCH /api/v1/chat/sessions/{id}", a.handleSession(a.updateSession))
 	authed.HandleFunc("GET /api/v1/chat/sessions/{id}", a.handleSession(a.getSession))
 	authed.HandleFunc("DELETE /api/v1/chat/sessions/{id}", a.handleSession(a.deleteSession))
 	authed.HandleFunc("GET /api/v1/chat/sessions/{id}/messages", a.handleSession(a.listSessionMessages))
@@ -73,6 +82,27 @@ func (a *App) Router() http.Handler {
 	authed.Handle("PUT /api/v1/admin/users/{id}/role", a.adminOnly(a.handleDoc(a.updateUserRole)))
 	authed.Handle("GET /api/v1/admin/analytics/overview", a.adminOnly(a.handle(a.analyticsOverview)))
 	authed.Handle("GET /api/v1/admin/rag/gaps", a.adminOnly(a.handle(a.ragGaps)))
+
+	// Analytics: timeline, breakdowns, top queries, token stats, feedback list.
+	authed.Handle("GET /api/v1/admin/analytics/timeline", a.adminOnly(a.handle(a.analyticsTimeline)))
+	authed.Handle("GET /api/v1/admin/analytics/top-queries", a.adminOnly(a.handle(a.topQueries)))
+	authed.Handle("GET /api/v1/admin/analytics/languages", a.adminOnly(a.handle(a.languageBreakdown)))
+	authed.Handle("GET /api/v1/admin/tokens/stats", a.adminOnly(a.handle(a.tokenStats)))
+	authed.Handle("GET /api/v1/admin/feedback", a.adminOnly(a.handle(a.feedbackList)))
+	authed.Handle("GET /api/v1/admin/agent-performance", a.adminOnly(a.handle(a.agentPerformance)))
+	authed.Handle("GET /api/v1/admin/intent-analytics", a.adminOnly(a.handle(a.intentAnalytics)))
+	authed.Handle("GET /api/v1/admin/integrations/status", a.adminOnly(a.handle(a.integrationsStatus)))
+
+	// CSV report export.
+	authed.HandleFunc("GET /api/v1/reports/{kind}", a.reportCSV)
+
+	// WhatsApp approved templates for a session.
+	authed.HandleFunc("GET /api/v1/inbox/sessions/{id}/whatsapp-templates", a.handleSession(a.sessionWhatsAppTemplates))
+
+	// Website widget token management (per tenant).
+	authed.Handle("GET /api/v1/widgets", a.handle(a.listWidgetTokens))
+	authed.Handle("POST /api/v1/widgets", a.handle(a.createWidgetToken))
+	authed.HandleFunc("DELETE /api/v1/widgets/{id}", a.handleDoc(a.deleteWidgetToken))
 
 	// TOTP (two-factor auth).
 	authed.Handle("POST /api/v1/auth/totp/setup", a.handle(a.totpSetup))
@@ -128,7 +158,7 @@ func (a *App) Router() http.Handler {
 	// Handoff requests.
 	authed.Handle("GET /api/v1/handoff-requests", a.handle(a.listHandoffs))
 	authed.Handle("POST /api/v1/handoff-requests", a.handle(a.createHandoffRequest))
-	authed.HandleFunc("POST /api/v1/handoff-requests/{id}/resolve", a.handleDoc(a.resolveHandoff))
+	authed.HandleFunc("POST /api/v1/handoff-requests/{id}/resolve", a.handleSession(a.resolveHandoff))
 
 	// Customers.
 	authed.Handle("GET /api/v1/customers", a.handle(a.listCustomers))

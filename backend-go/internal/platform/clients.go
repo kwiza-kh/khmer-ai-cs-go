@@ -224,6 +224,35 @@ func (m *MetaClient) SendMessage(ctx context.Context, req *SendRequest) (string,
 	return "", nil
 }
 
+// SendSenderAction drives the transient typing indicator on Messenger/IG.
+func (m *MetaClient) SendSenderAction(ctx context.Context, platform, recipientID, action string) error {
+	_, err := m.post(ctx, "/"+m.accountID(platform)+"/messages", map[string]any{
+		"recipient":     map[string]any{"id": recipientID},
+		"sender_action": action,
+	})
+	return err
+}
+
+// ListWhatsAppTemplates fetches approved message templates from the WhatsApp
+// Business account behind this config.
+func (m *MetaClient) ListWhatsAppTemplates(ctx context.Context, accountID string) ([]map[string]any, error) {
+	if accountID == "" {
+		return nil, fmt.Errorf("whatsapp account not configured")
+	}
+	v, err := m.get(ctx, "/"+accountID+"/message_templates", url.Values{"limit": []string{"100"}})
+	if err != nil {
+		return nil, err
+	}
+	data, _ := v["data"].([]any)
+	out := make([]map[string]any, 0, len(data))
+	for _, d := range data {
+		if row, ok := d.(map[string]any); ok {
+			out = append(out, row)
+		}
+	}
+	return out, nil
+}
+
 func buildMetaMessageBody(req *SendRequest) map[string]any {
 	switch req.Kind {
 	case "media":
@@ -352,7 +381,39 @@ func (t *TelegramClient) DownloadFile(ctx context.Context, fileID string) ([]byt
 	return downloadBytes(ctx, u)
 }
 
-// GetProfile returns the chat first/last/username for display.
+// SendChatAction shows the transient "bot is typing…" status (no message id).
+func (t *TelegramClient) SendChatAction(ctx context.Context, chatID, action string) error {
+	_, err := t.call(ctx, "sendChatAction", map[string]any{"chat_id": chatID, "action": action})
+	return err
+}
+
+// SendAudio delivers a playable audio message from a URL. Returns message id.
+func (t *TelegramClient) SendAudio(ctx context.Context, chatID, audioURL, caption string) (string, error) {
+	body := map[string]any{"chat_id": chatID, "audio": audioURL}
+	if caption != "" {
+		body["caption"] = caption
+	}
+	v, err := t.call(ctx, "sendAudio", body)
+	if err != nil {
+		return "", err
+	}
+	if result, ok := v["result"].(map[string]any); ok {
+		if mid, ok := result["message_id"].(float64); ok {
+			return fmt.Sprintf("%.0f", mid), nil
+		}
+	}
+	return "", nil
+}
+
+// AnswerCallbackQuery closes an inline-keyboard press (feedback buttons).
+func (t *TelegramClient) AnswerCallback(ctx context.Context, callbackID, text string) error {
+	_, err := t.call(ctx, "answerCallbackQuery", map[string]any{"callback_query_id": callbackID, "text": text})
+	return err
+}
+
+// GetProfile returns (displayName, photoFileID) via getChat. photoFileID is
+// "" when the chat has no avatar. It must be mirrored into R2 before use —
+// Telegram file URLs embed the bot token and must never reach a browser.
 func (t *TelegramClient) GetProfile(ctx context.Context, chatID string) (string, string, error) {
 	v, err := t.call(ctx, "getChat", map[string]any{"chat_id": chatID})
 	if err != nil {
@@ -361,7 +422,18 @@ func (t *TelegramClient) GetProfile(ctx context.Context, chatID string) (string,
 	result, _ := v["result"].(map[string]any)
 	first, _ := result["first_name"].(string)
 	username, _ := result["username"].(string)
-	return first, username, nil
+	name := first
+	if name == "" {
+		name = username
+	}
+	photo := ""
+	if ph, ok := result["photo"].(map[string]any); ok {
+		photo, _ = ph["big_file_id"].(string)
+		if photo == "" {
+			photo, _ = ph["small_file_id"].(string)
+		}
+	}
+	return name, photo, nil
 }
 
 // GetMe validates the bot token and returns (bot_id, username, first_name).
@@ -458,6 +530,27 @@ func (l *LineClient) PushText(ctx context.Context, to, text string) (string, err
 		return "", fmt.Errorf("line push failed (%d)", resp.StatusCode)
 	}
 	return resp.Header.Get("X-Line-Request-Id"), nil
+}
+
+// SendTypingIndicator shows the "typing…" status in a LINE chat (expires
+// after ~10 seconds — exactly what the AI compose window needs).
+func (l *LineClient) SendTypingIndicator(ctx context.Context, chatID string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, lineBase+"/v2/bot/chat/"+url.PathEscape(chatID)+"/typing", strings.NewReader("{}"))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+l.ChannelAccessToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("line typing: %w", err)
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("line typing failed (%d)", resp.StatusCode)
+	}
+	return nil
 }
 
 // GetProfile returns (displayName, pictureURL).

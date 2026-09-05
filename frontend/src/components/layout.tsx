@@ -1,8 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import * as React from "react";
+import { usePathname, useRouter } from "next/navigation";
+import useSWR from "swr";
 import { useAuth } from "@/lib/auth-client";
+import { listHumanHandoffRequests } from "@/lib/api";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
@@ -11,13 +14,14 @@ import { cn } from "@/lib/utils";
 import {
   BookOpen, Globe, Users, Settings, LogOut, Menu, Search,
   Gauge, HelpCircle, Inbox, UserCheck, ShieldCheck, Coins, Cpu, FlaskConical,
-  ChevronsDown, ChevronsLeft, type LucideIcon,
+  ChevronsDown, ChevronsLeft, MessageCircle, type LucideIcon,
 } from "lucide-react";
 import { useState } from "react";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { NotificationBell } from "@/components/notification-bell";
 import { LanguageSwitcher } from "@/components/language-switcher";
 import { useI18n } from "@/lib/i18n";
+import { useInboxRealtime } from "@/lib/realtime";
 
 function NavItem({
   href,
@@ -26,6 +30,7 @@ function NavItem({
   active,
   onNavigate,
   badge,
+  count,
 }: {
   href: string;
   icon: LucideIcon;
@@ -33,6 +38,8 @@ function NavItem({
   active: boolean;
   onNavigate?: () => void;
   badge?: string;
+  /** Unread-style numeric pill (e.g. open human-handoff requests). */
+  count?: number;
 }) {
   return (
     <Link
@@ -47,6 +54,11 @@ function NavItem({
     >
       <Icon className={cn("size-4 shrink-0", active ? "text-primary" : "text-sidebar-foreground/60 group-hover:text-sidebar-foreground")} />
       <span className="flex-1 truncate">{label}</span>
+      {count != null && count > 0 && (
+        <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-bold tabular-nums text-white shadow-[0_2px_8px_-2px_color-mix(in_oklch,var(--color-destructive)_60%,transparent)]">
+          {count > 99 ? "99+" : count}
+        </span>
+      )}
       {badge && (
         <span className="rounded-full bg-[linear-gradient(115deg,var(--color-primary),hsl(285_85%_58%))] px-1.5 py-0.5 text-[10px] font-semibold text-white shadow-[0_2px_8px_-2px_color-mix(in_oklch,var(--color-primary)_60%,transparent)]">
           {badge}
@@ -80,12 +92,49 @@ const ROLE_KEYS: Record<string, string> = {
 };
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
-  const { user, logout } = useAuth();
+  const { user, token, logout } = useAuth();
   const { t } = useI18n();
   const pathname = usePathname();
+  const router = useRouter();
+  const searchRef = React.useRef<HTMLInputElement>(null);
+  const [globalSearch, setGlobalSearch] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const isAdmin = user?.role === "admin" || user?.role === "platform_admin";
   const isPlatformAdmin = user?.role === "platform_admin";
+
+  // ⌘K / Ctrl+K focuses the top-bar search.
+  React.useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        searchRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // inbox.notification realtime events refresh the bell immediately.
+  // Every session mutation (new handoff, takeover, resolve) fans out as an
+  // inbox.session event too — reuse the same socket to keep the sidebar's
+  // pending-human-requests badge live without extra polling bursts.
+  const { data: handoffPending, mutate: mutateHandoffPending } = useSWR(
+    token ? "sidebar-handoff-pending" : null,
+    () => listHumanHandoffRequests({ status: "pending", pageSize: 1 }),
+    { refreshInterval: 20_000 },
+  );
+  // Expose a global refresh (the handoff-requests page calls this after
+  // takeover/resolve/create so the badge updates without waiting for the WS).
+  React.useEffect(() => {
+    (window as unknown as { __refreshHandoffBadge?: () => void }).__refreshHandoffBadge = () => { void mutateHandoffPending(); };
+    return () => { delete (window as unknown as { __refreshHandoffBadge?: () => void }).__refreshHandoffBadge; };
+  }, [mutateHandoffPending]);
+  useInboxRealtime(token, React.useCallback((event) => {
+    if (event.type === "inbox.notification") {
+      (window as unknown as { __refreshNotifs?: () => void }).__refreshNotifs?.();
+    }
+    if (event.type === "inbox.session") void mutateHandoffPending();
+  }, [mutateHandoffPending]));
 
   const isActive = (href: string) => pathname === href.split("?")[0];
   const close = () => setSidebarOpen(false);
@@ -112,11 +161,18 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           </span>
           <span className="text-[15px] font-semibold tracking-tight text-foreground">Khmer AI</span>
         </Link>
-        {/* Search (decorative) */}
+        {/* Search — jumps to the inbox with the query pre-applied */}
         <div className="relative hidden md:block w-72">
           <Search className="absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground/50" />
           <input
-            readOnly
+            ref={searchRef}
+            value={globalSearch}
+            onChange={(e) => setGlobalSearch(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && globalSearch.trim()) {
+                router.push(`/inbox?q=${encodeURIComponent(globalSearch.trim())}`);
+              }
+            }}
             placeholder={t("nav.search")}
             className="h-9 w-full rounded-full border border-border/80 bg-card/70 pl-9 pr-12 text-[13px] text-foreground shadow-[0_1px_2px_rgb(0_0_0/0.03)] placeholder:text-muted-foreground/50 transition-all focus:outline-none focus:border-ring/50 focus:ring-2 focus:ring-ring/25 dark:bg-white/[0.05]"
           />
@@ -160,10 +216,11 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           <nav className="flex-1 overflow-auto px-3 py-3">
             <div className="space-y-0.5">
               <NavItem href="/inbox" icon={Inbox} label={t("nav.inbox")} active={isActive("/inbox")} onNavigate={close} />
-              <NavItem href="/handoff-requests" icon={UserCheck} label={t("nav.humanRequests")} active={isActive("/handoff-requests")} onNavigate={close} />
+              <NavItem href="/handoff-requests" icon={UserCheck} label={t("nav.humanRequests")} active={isActive("/handoff-requests")} onNavigate={close} count={handoffPending?.total ?? 0} />
               <NavItem href="/knowledge" icon={BookOpen} label={t("nav.knowledge")} active={isActive("/knowledge")} onNavigate={close} />
               <NavItem href="/ai-test" icon={FlaskConical} label={t("nav.aiTest")} active={isActive("/ai-test")} onNavigate={close} badge={t("nav.hot")} />
               <NavItem href="/platforms" icon={Globe} label={t("nav.platforms")} active={isActive("/platforms")} onNavigate={close} />
+              <NavItem href="/widget-admin" icon={MessageCircle} label={t("nav.widget")} active={isActive("/widget-admin")} onNavigate={close} />
             </div>
 
             {isAdmin && (

@@ -60,3 +60,26 @@ func TestTruncate(t *testing.T) {
 		t.Fatalf("short string must pass through")
 	}
 }
+
+func TestHumanRequestKeywordMatches(t *testing.T) {
+	hits := []string{
+		"我要人工客服", "转人工", "你好，我想找真人",
+		"can I talk to a human?", "connect me to an agent please",
+		"I need to speak to staff", "speak to a real person",
+		"សុំនិយាយជាមួយមនុស្ស", "សុំភ្នាក់ងារ",
+	}
+	for _, msg := range hits {
+		if _, ok := humanRequestKeyword(msg); !ok {
+			t.Errorf("expected escalation for %q", msg)
+		}
+	}
+	misses := []string{
+		"how is the weather", "I manage a team", "what is the price", "reagent kit shipping",
+		"my order 12345 not delivered yet",
+	}
+	for _, msg := range misses {
+		if _, ok := humanRequestKeyword(msg); ok {
+			t.Errorf("unexpected escalation for %q", msg)
+		}
+	}
+}

@@ -37,6 +37,7 @@ const TRIGGER_KEYS: Record<HumanHandoffRequest["trigger"], string> = {
   customer_request: "handoff.triggerCustomer",
   negative_feedback: "handoff.triggerNegative",
   ai_decision: "handoff.triggerAi",
+  no_knowledge_base: "handoff.triggerNoKB",
   manual: "handoff.triggerManual",
 };
 
@@ -51,6 +52,11 @@ function formatTime(value?: string | null) {
   return new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
 }
 
+/** Nudge the sidebar badge (layout exposes this global after its SWR mounts). */
+function refreshHandoffBadge() {
+  (window as unknown as { __refreshHandoffBadge?: () => void }).__refreshHandoffBadge?.();
+}
+
 export default function HandoffRequestsPage() {
   const router = useRouter();
   const { token } = useAuth();
@@ -58,13 +64,19 @@ export default function HandoffRequestsPage() {
   const [filter, setFilter] = React.useState<RequestFilter>("pending");
   const [workingID, setWorkingID] = React.useState<string | null>(null);
   const [createOpen, setCreateOpen] = React.useState(false);
-  const { data, mutate, isLoading } = useSWR(
+  const { data, mutate, isLoading, error } = useSWR(
     `handoff-requests-${filter}`,
     () => listHumanHandoffRequests({ status: filter === "all" ? undefined : filter, pageSize: 100 }),
   );
   const requests = data?.data ?? [];
 
-  useInboxRealtime(token, React.useCallback(() => { void mutate(); }, [mutate]));
+  // Never fail silently: an error loading the queue would otherwise look
+  // exactly like "no requests".
+  React.useEffect(() => {
+    if (error) toast.error((error as Error).message);
+  }, [error]);
+
+  useInboxRealtime(token, React.useCallback(() => { void mutate(); refreshHandoffBadge(); }, [mutate]));
 
   const customerName = (request: HumanHandoffRequest) =>
     request.user_display_name || request.session_title || request.platform_user_id || t("handoff.customer");
@@ -75,6 +87,7 @@ export default function HandoffRequestsPage() {
       await takeoverSession(request.session_id);
       toast.success(t("handoff.toastTaken"));
       await mutate();
+      refreshHandoffBadge();
     } catch (error) {
       toast.error((error as Error).message || t("handoff.toastTakeFail"));
     } finally {
@@ -88,6 +101,7 @@ export default function HandoffRequestsPage() {
       await updateSessionStatus(request.session_id, "resolved");
       toast.success(t("handoff.toastResolved"));
       await mutate();
+      refreshHandoffBadge();
     } catch (error) {
       toast.error((error as Error).message || t("handoff.toastResolveFail"));
     } finally {
@@ -137,6 +151,11 @@ export default function HandoffRequestsPage() {
 
           {isLoading ? (
             <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground"><Loader2 className="mr-2 size-4 animate-spin" /> {t("handoff.loading")}</div>
+          ) : error ? (
+            <div className="flex flex-1 items-center justify-center border border-dashed border-border">
+              <EmptyState icon={CircleAlert} title={t("handoff.loadFailed")} description={(error as Error).message}
+                action={<Button size="sm" variant="outline" className="gap-1.5" onClick={() => void mutate()}><RefreshCw className="size-3.5" />{t("handoff.refresh")}</Button>} />
+            </div>
           ) : requests.length === 0 ? (
             <div className="flex flex-1 items-center justify-center border border-dashed border-border">
               <EmptyState icon={Headset} title={t("handoff.emptyTitle")} description={t("handoff.emptyDesc")} />
@@ -195,6 +214,7 @@ export default function HandoffRequestsPage() {
         onCreated={() => {
           setFilter("pending");
           void mutate();
+          refreshHandoffBadge();
         }}
       />
     </div>

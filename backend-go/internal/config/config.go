@@ -81,6 +81,12 @@ type SSOConfig struct {
 	OIDCClientSecret string
 }
 
+// TTSConfig gates voice replies (Gemini TTS → R2 → platform audio message).
+// Requires R2 so the synthesized WAV has somewhere providers can download.
+type TTSConfig struct {
+	Enabled bool // TTS_ENABLED — off by default (per-voice replies surprise merchants)
+}
+
 type Config struct {
 	Server                  ServerConfig
 	DatabaseURL             string
@@ -97,6 +103,7 @@ type Config struct {
 	Email                   EmailConfig
 	Voice                   VoiceConfig
 	SSO                     SSOConfig
+	TTS                     TTSConfig
 	AllowRegistration       bool
 	RegistrationInviteCode  string
 }
@@ -169,6 +176,9 @@ func Load() (*Config, error) {
 			OIDCClientID:     env("SSO_OIDC_CLIENT_ID", ""),
 			OIDCClientSecret: env("SSO_OIDC_CLIENT_SECRET", ""),
 		},
+		TTS: TTSConfig{
+			Enabled: envBool("TTS_ENABLED", false),
+		},
 		AllowRegistration:      envBool("ALLOW_REGISTRATION", false),
 		RegistrationInviteCode: env("REGISTRATION_INVITE_CODE", ""),
 	}
@@ -235,6 +245,12 @@ func (c *Config) validateDatabaseURL() error {
 // R2Enabled reports whether all R2 credentials are present.
 func (c *Config) R2Enabled() bool {
 	return c.R2.AccountID != "" && c.R2.AccessKey != "" && c.R2.SecretKey != ""
+}
+
+// TTSActive reports whether voice replies can run: the opt-in flag plus R2
+// storage (the synthesized WAV must be downloadable by the platform).
+func (c *Config) TTSActive() bool {
+	return c.TTS.Enabled && c.R2Enabled()
 }
 
 func env(key, fallback string) string {

@@ -44,7 +44,7 @@ func (a *App) listInbox(w http.ResponseWriter, r *http.Request) (any, error) {
 		"s.status::text, s.language, s.title, s.user_message_count, s.model_message_count, " +
 		"s.assigned_agent_id, s.first_response_at, s.escalated_at, s.created_at, " +
 		"last_message.content AS last_message, last_message.created_at AS last_message_at, " +
-		"u.username AS assigned_agent_name, s.sentiment " +
+		"u.username AS assigned_agent_name, s.sentiment, s.tags, s.intent " +
 		"FROM sessions AS s " +
 		"LEFT JOIN users u ON u.user_id = s.assigned_agent_id " +
 		"LEFT JOIN platform_user_sessions pus ON pus.session_id = s.session_id " +
@@ -71,15 +71,22 @@ func (a *App) listInbox(w http.ResponseWriter, r *http.Request) (any, error) {
 			displayName, avatarURL, title, lastMsg     *string
 			replyWindow, firstResp, escalated, lastMsgAt *time.Time
 			assignedAgent                              *int32
-			agentName, sentiment                        *string
+			agentName, sentiment, intent               *string
+			tags                                       []string
 			uid                                        int32
 			umc, mmc                                   int32
 			createdAt                                  time.Time
 		)
+		if tags == nil {
+			tags = []string{}
+		}
 		if err := rows.Scan(&sid, &uid, &platform, &puid, &displayName, &avatarURL, &replyWindow,
 			&status, &language, &title, &umc, &mmc, &assignedAgent, &firstResp, &escalated,
-			&createdAt, &lastMsg, &lastMsgAt, &agentName, &sentiment); err != nil {
+			&createdAt, &lastMsg, &lastMsgAt, &agentName, &sentiment, &tags, &intent); err != nil {
 			continue
+		}
+		if tags == nil {
+			tags = []string{}
 		}
 		items = append(items, map[string]any{
 			"session_id": sid, "user_id": uid, "platform": platform, "platform_user_id": puid,
@@ -100,6 +107,8 @@ func (a *App) listInbox(w http.ResponseWriter, r *http.Request) (any, error) {
 			"last_message_at":       lastMsgAt,
 			"last_inbound_at":       replyWindow, // approximation: reply window derives from last inbound
 			"sentiment":             derefStr(sentiment),
+			"tags":                  tags,
+			"intent":                derefStr(intent),
 		})
 	}
 	return map[string]any{"data": items, "total": total, "page": page, "page_size": pageSize}, nil
@@ -129,6 +138,7 @@ func (a *App) assignSession(w http.ResponseWriter, r *http.Request, sessionID st
 		req.AgentID, sessionID); err != nil {
 		return nil, ErrInternal("分配失败")
 	}
+	a.markHandoffAssigned(r.Context(), sessionID, req.AgentID)
 	a.publishSessionEvent(r.Context(), user.UserID, sessionID)
 	return map[string]string{"message": "已分配"}, nil
 }
@@ -144,6 +154,7 @@ func (a *App) takeoverSession(w http.ResponseWriter, r *http.Request, sessionID 
 		user.UserID, sessionID); err != nil {
 		return nil, ErrInternal("接管失败")
 	}
+	a.markHandoffAssigned(r.Context(), sessionID, user.UserID)
 	a.publishSessionEvent(r.Context(), user.UserID, sessionID)
 	return map[string]string{"message": "已接管"}, nil
 }
@@ -166,15 +177,18 @@ func (a *App) agentReply(w http.ResponseWriter, r *http.Request, sessionID strin
 	if err := a.ensureSessionOwner(r.Context(), sessionID, user.UserID); err != nil {
 		return nil, err
 	}
-	// Load the session's platform + recipient for delivery.
+	// Load the session's platform + recipient for delivery. Web/NULL-platform
+	// sessions (the website widget) have no provider mapping: the reply is
+	// still persisted and the visitor sees it by polling the transcript.
 	var configID int32
 	var platform, recipientID string
+	mapped := true
 	err := a.DB.QueryRow(r.Context(),
 		"SELECT pus.config_id, s.platform::text, s.platform_user_id FROM sessions s "+
 			"JOIN platform_user_sessions pus ON pus.session_id = s.session_id WHERE s.session_id = $1",
 		sessionID).Scan(&configID, &platform, &recipientID)
 	if err != nil {
-		return nil, ErrInternal("会话平台信息缺失")
+		mapped = false
 	}
 	// Persist the agent message.
 	var msgID int64
@@ -183,17 +197,20 @@ func (a *App) agentReply(w http.ResponseWriter, r *http.Request, sessionID strin
 		sessionID, req.Content, time.Now()).Scan(&msgID); err != nil {
 		return nil, ErrInternal("保存回复失败")
 	}
-	// Enqueue delivery via the platform pipeline.
-	payloadJSON, _ := json.Marshal(req.Payload)
-	_, _ = a.DB.Exec(r.Context(),
-		"INSERT INTO platform_outbox (config_id, session_id, chat_message_id, platform, recipient_id, content, payload, status, next_attempt_at, created_at, updated_at) "+
-			"VALUES ($1,$2,$3,$4::platform_type,$5,$6,$7,'pending',$8,$8,$8) ON CONFLICT (chat_message_id) DO NOTHING",
-		configID, sessionID, msgID, platform, recipientID, req.Content, payloadJSON, time.Now())
-	// Wake the outbound worker (otherwise the reply waits for the next poll
-	// tick) and push the message to the inbox in real time.
-	if a.Pipe != nil {
-		a.Pipe.SignalOutbound()
+	// Enqueue delivery via the platform pipeline (platform sessions only).
+	if mapped {
+		payloadJSON, _ := json.Marshal(req.Payload)
+		_, _ = a.DB.Exec(r.Context(),
+			"INSERT INTO platform_outbox (config_id, session_id, chat_message_id, platform, recipient_id, content, payload, status, next_attempt_at, created_at, updated_at) "+
+				"VALUES ($1,$2,$3,$4::platform_type,$5,$6,$7,'pending',$8,$8,$8) ON CONFLICT (chat_message_id) DO NOTHING",
+			configID, sessionID, msgID, platform, recipientID, req.Content, payloadJSON, time.Now())
+		// Wake the outbound worker (otherwise the reply waits for the next
+		// poll tick).
+		if a.Pipe != nil {
+			a.Pipe.SignalOutbound()
+		}
 	}
+	// Push the message to the inbox in real time.
 	realtime.Publish(r.Context(), a.Redis, realtime.Event{
 		Type:      realtime.EventMessage,
 		UserID:    user.UserID,
@@ -223,8 +240,10 @@ func (a *App) updateSessionStatus(w http.ResponseWriter, r *http.Request, sessio
 	switch req.Status {
 	case "resolved":
 		_, _ = a.DB.Exec(r.Context(), "UPDATE sessions SET status='resolved', resolved_at=$1, internal_notes=$2 WHERE session_id=$3", now, req.InternalNote, sessionID)
+		a.markHandoffResolved(r.Context(), sessionID, req.InternalNote)
 	case "closed":
 		_, _ = a.DB.Exec(r.Context(), "UPDATE sessions SET status='closed', closed_at=$1, internal_notes=$2 WHERE session_id=$3", now, req.InternalNote, sessionID)
+		a.markHandoffResolved(r.Context(), sessionID, req.InternalNote)
 	case "active":
 		_, _ = a.DB.Exec(r.Context(), "UPDATE sessions SET status='active', resolved_at=NULL, closed_at=NULL, internal_notes=$1 WHERE session_id=$2", req.InternalNote, sessionID)
 	default:
@@ -277,10 +296,14 @@ func (a *App) getInboundMediaURL(w http.ResponseWriter, r *http.Request) (any, e
 	if len(*mediaURL) < len(prefix) || (*mediaURL)[:len(prefix)] != prefix {
 		return nil, ErrNotFound("媒体不存在")
 	}
-	// R2 presigned URL requires the R2 client; return the stored key as a
-	// placeholder when R2 is not configured.
-	if !a.Cfg.R2Enabled() {
-		return map[string]any{"url": *mediaURL, "expires_at": time.Now().Add(10 * time.Minute)}, nil
+	// R2 configured → short-lived presigned download URL (what the inbox
+	// player needs). Otherwise fall back to the raw key (legacy behaviour).
+	if a.Media.Enabled() {
+		url, err := a.Media.PresignedGET(*mediaURL, 10*time.Minute)
+		if err == nil {
+			return map[string]any{"url": url, "expires_at": time.Now().Add(10 * time.Minute)}, nil
+		}
+		a.Logger.Warn("r2 presign failed", "error", err.Error())
 	}
 	return map[string]any{"url": *mediaURL, "expires_at": time.Now().Add(10 * time.Minute)}, nil
 }
@@ -418,4 +441,20 @@ func (a *App) publishSessionEvent(ctx context.Context, userID int32, sessionID s
 		UserID:    userID,
 		SessionID: sessionID,
 	})
+}
+
+// markHandoffAssigned flips the session's open handoff request to assigned
+// when a human takes it over (so the queue reflects reality).
+func (a *App) markHandoffAssigned(ctx context.Context, sessionID string, agentID int32) {
+	_, _ = a.DB.Exec(ctx,
+		"UPDATE human_handoff_requests SET status='assigned', assigned_agent_id=$1, assigned_at=NOW() "+
+			"WHERE session_id=$2::uuid AND status='pending'", agentID, sessionID)
+}
+
+// markHandoffResolved closes the session's open handoff requests when the
+// conversation is resolved/closed.
+func (a *App) markHandoffResolved(ctx context.Context, sessionID, note string) {
+	_, _ = a.DB.Exec(ctx,
+		"UPDATE human_handoff_requests SET status='resolved', resolved_at=NOW(), resolution_note=COALESCE(NULLIF($2,''), resolution_note) "+
+			"WHERE session_id=$1::uuid AND status IN ('pending','assigned')", sessionID, note)
 }

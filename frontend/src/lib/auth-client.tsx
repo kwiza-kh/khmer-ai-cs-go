@@ -13,7 +13,10 @@ interface User {
 interface AuthContextType {
   user: User | null;
   token: string | null;
-  login: (username: string, password: string) => Promise<void>;
+  /** Resolves { twoFactorRequired: true } (without throwing) when the account
+   *  has 2FA enabled and no/blank code was sent — the login form then shows
+   *  its TOTP field and retries with the code. */
+  login: (username: string, password: string, totpCode?: string) => Promise<{ twoFactorRequired?: boolean }>;
   register: (username: string, email: string, password: string) => Promise<void>;
   logout: () => void;
   isLoading: boolean;
@@ -63,18 +66,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setIsLoading(false);
   }, []);
 
-  const login = async (username: string, password: string) => {
+  const login = async (username: string, password: string, totpCode?: string): Promise<{ twoFactorRequired?: boolean }> => {
     const res = await fetch(`${API_BASE}/auth/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify({ username, password, ...(totpCode ? { totp_code: totpCode } : {}) }),
     });
-    const data = await res.json();
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 401 && data?.action === "2fa_required") {
+      return { twoFactorRequired: true };
+    }
     if (!res.ok) throw new Error(localizeCurrentLang(data.error || "登录失败"));
     setToken(data.token);
     setUser(data.user);
     localStorage.setItem("token", data.token);
     localStorage.setItem("user", JSON.stringify(data.user));
+    return {};
   };
 
   const register = async (username: string, email: string, password: string) => {

@@ -11,17 +11,20 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
 
+  // Public routes that never require a session (/widget = the chat widget iframe).
+  const isPublic = pathname === "/login" || pathname.startsWith("/widget");
+
   useEffect(() => {
     if (isLoading) return;
-    if (!token && pathname !== "/login") {
+    if (!token && !isPublic) {
       router.replace("/login");
     }
     if (token && pathname === "/login") {
       router.replace("/ai-test");
     }
-  }, [isLoading, token, pathname, router]);
+  }, [isLoading, token, pathname, isPublic, router]);
 
-  if (isLoading) {
+  if (isLoading && !isPublic) {
     return (
       <div className="h-screen bg-background flex items-center justify-center">
         <Loader2 className="size-6 animate-spin text-muted-foreground" />
@@ -29,10 +32,9 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
     );
   }
 
-  if (!token && pathname !== "/login") return null;
-  if (token && pathname === "/login") return null;
-
-  if (pathname === "/login") return <>{children}</>;
+  if (isPublic) return <>{children}</>;
+  if (!token) return null;
+  if (pathname === "/login") return null;
 
   return <AppLayout>{children}</AppLayout>;
 }

@@ -22,13 +22,25 @@ export default function LoginPage() {
 
   const [loginUser, setLoginUser] = useState("");
   const [loginPass, setLoginPass] = useState("");
+  const [loginCode, setLoginCode] = useState("");
+  const [need2fa, setNeed2fa] = useState(false);
   const [regUser, setRegUser] = useState("");
   const [regEmail, setRegEmail] = useState("");
   const [regPass, setRegPass] = useState("");
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault(); setError(""); setLoading(true);
-    try { await login(loginUser, loginPass); router.push("/ai-test"); }
+    try {
+      const result = await login(loginUser, loginPass, need2fa ? loginCode.trim() : undefined);
+      if (result.twoFactorRequired) {
+        // Account has 2FA: reveal the code field and ask the user to complete
+        // the second factor (previously this dead-ended with a raw 401).
+        setNeed2fa(true);
+        setError("");
+      } else {
+        router.push("/ai-test");
+      }
+    }
     catch (err: unknown) { setError((err as Error).message); }
     finally { setLoading(false); }
   };
@@ -125,7 +137,14 @@ export default function LoginPage() {
                       </button>
                     </div>
                   </Field>
-                  <Button type="submit" disabled={loading} className="w-full h-10 text-sm gap-2">
+                  {need2fa && (
+                    <Field label={t("login.totp")}>
+                      <Input value={loginCode} onChange={(e) => setLoginCode(e.target.value)}
+                        placeholder={t("login.totpPlaceholder")} inputMode="numeric" autoComplete="one-time-code"
+                        maxLength={6} required className="h-10 tracking-[0.4em] text-center" autoFocus />
+                    </Field>
+                  )}
+                  <Button type="submit" disabled={loading || (need2fa && loginCode.trim().length !== 6)} className="w-full h-10 text-sm gap-2">
                     {loading ? <Loader2 className="size-4 animate-spin" /> : <>{t("login.submit")}<ArrowRight className="size-3.5 opacity-50" /></>}
                   </Button>
                 </motion.form>

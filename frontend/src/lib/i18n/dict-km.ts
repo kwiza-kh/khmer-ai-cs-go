@@ -878,4 +878,40 @@ export const km: Dict = {
   "pa.pageN": "ទំព័រ {page} / {total}",
   "pa.prev": "មុន",
   "pa.next": "បន្ទាប់",
+
+  // ការបញ្ជាក់ពីរជាន់ពេលចូល
+  "login.totp": "លេខកូដផ្ទៀងផ្ទាត់",
+  "login.totpPlaceholder": "លេខកូដ 6 ខ្ទង់",
+
+  // ជំនួយកំណត់ត្រាពីរជាន់ (ការកំណត់)
+  "settings.totpManualKey": "សោរកំណត់ដោយដៃ",
+  "settings.totpCopyHint": "ចុចដើម្បីចម្លង",
+  "settings.totpScanOrManual": "ស្កេន QR ដោយប្រើកម្មវិធីផ្ទៀងផ្ទាត់ ឬបញ្ចូលសោរដោយដៃ។",
+
+  // មូលហេតុប្ដូរទៅមនុស្ស
+  "handoff.triggerNoKB": "រកមិនឃើញចម្លើយក្នុងប័ណ្ណសារ",
+  "handoff.loadFailed": "បរាជ័យក្នុងការផ្ទុកបន្ទាត់រង់ចាំ",
+
+  // Widget ជជែកលើគេហទំព័រ
+  "nav.widget": "Widget គេហទំព័រ",
+  "widget.kicker": "Widget ជជែកលើគេហទំព័រ",
+  "widget.title": "Widget ជជែក",
+  "widget.description": "បង្កើតថូខិនជាប់ បន្ទាប់មកដាក់កូដនៅលើគេហទំព័ររបស់អ្នក ដើម្បីបង្ហាញប៉ុន្តុំជជែកអតិថិជន។",
+  "widget.newToken": "ថូខិនជាប់ថ្មី",
+  "widget.notice": "ថូខិនជាប់ត្រូវបានរចនាឡើងសម្រាប់ប្រើជាសាធារណៈ (វាដំណើរការក្នុងកម្មវិធីរុករករបស់ភ្ញៀវ)។ គ្រប់ថូខិនអាចកំណត់ប្រភពដែលអនុញ្ញាត។",
+  "widget.createTitle": "បង្កើតថូខិនជាប់",
+  "widget.nameLabel": "ឈ្មោះ",
+  "widget.namePh": "គេហទំព័រហាងរបស់ខ្ញុំ",
+  "widget.originsLabel": "ប្រភពដែលអនុញ្ញាត (ស្រេចចិត្ត)",
+  "widget.originsHint": "ទំនេរ = អនុញ្ញាតគ្រប់ប្រភព។ ឧ. https://shop.example.com",
+  "widget.create": "បង្កើត",
+  "widget.empty": "មិនមានថូខិនជាប់នៅឡើយ។ បង្កើតមួយដើម្បីទទួលកូដដាក់ជាប់។",
+  "widget.active": "សកម្ម",
+  "widget.delete": "លុប",
+  "widget.tokenLabel": "ថូខិន",
+  "widget.copy": "ចម្លង",
+  "widget.embedLabel": "កូដដាក់ជាប់",
+  "widget.createdToast": "បានបង្កើតថូខិនជាប់",
+  "widget.copiedToast": "បានចម្លងទៅក្ដារតម្បៀតខ្ទាស់",
+  "widget.allowedFor": "អនុញ្ញាតសម្រាប់៖ {origins}",
 };

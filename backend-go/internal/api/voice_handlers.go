@@ -35,7 +35,7 @@ func (a *App) chatVoice(w http.ResponseWriter, r *http.Request) (any, error) {
 	if language == "" {
 		language = "km"
 	}
-	transcript, err := a.Gemini.TranscribeAudio(r.Context(), data, normalizeMime(mime))
+	transcript, err := a.Gemini.TranscribeAudio(r.Context(), data, normalizeMime(mime), language)
 	if err != nil {
 		return nil, ErrInternal("语音转写失败")
 	}

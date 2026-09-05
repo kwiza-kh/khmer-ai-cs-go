@@ -198,6 +198,8 @@ function TwoFactorCard() {
   const { t } = useI18n();
   const [enabled, setEnabled] = React.useState<boolean | null>(null);
   const [secret, setSecret] = React.useState("");
+  const [otpauthUri, setOtpauthUri] = React.useState("");
+  const [qrDataUrl, setQrDataUrl] = React.useState("");
   const [code, setCode] = React.useState("");
   const [busy, setBusy] = React.useState(false);
 
@@ -205,11 +207,26 @@ function TwoFactorCard() {
     void totpStatus().then((r) => setEnabled(r.enabled)).catch(() => setEnabled(false));
   }, []);
 
+  // Render the provisioning URI as a QR so authenticator apps can scan it
+  // (previously the card only showed the raw secret → manual entry only).
+  // The QR is derived asynchronously from the external `qrcode` library.
+  React.useEffect(() => {
+    if (!otpauthUri) return;
+    let cancelled = false;
+    void import("qrcode").then((mod) =>
+      mod.default.toDataURL(otpauthUri, { margin: 1, width: 200, errorCorrectionLevel: "M" })
+        .then((url) => { if (!cancelled) setQrDataUrl(url); })
+        .catch(() => undefined),
+    );
+    return () => { cancelled = true; };
+  }, [otpauthUri]);
+
   const setup = async () => {
     setBusy(true);
     try {
       const r = await totpSetup();
       setSecret(r.secret);
+      setOtpauthUri(r.otpauth_uri);
       toast.success(t("settings.totpSetupToast"));
     } catch (e) { toast.error((e as Error).message); } finally { setBusy(false); }
   };
@@ -220,7 +237,7 @@ function TwoFactorCard() {
     try {
       await totpVerify(code);
       setEnabled(true);
-      setSecret(""); setCode("");
+      setSecret(""); setCode(""); setOtpauthUri(""); setQrDataUrl("");
       toast.success(t("settings.totpEnabledToast"));
     } catch (e) { toast.error((e as Error).message); } finally { setBusy(false); }
   };
@@ -254,7 +271,28 @@ function TwoFactorCard() {
         ) : secret ? (
           <>
             <p className="text-xs text-muted-foreground">{t("settings.totpScanHint")}</p>
-            <code className="block rounded bg-muted px-2 py-1 text-xs break-all">{secret}</code>
+            <div className="flex flex-col sm:flex-row items-center gap-4">
+              <div className="rounded-lg border border-border bg-white p-2 shrink-0">
+                {qrDataUrl ? (
+                  /* eslint-disable-next-line @next/next/no-img-element */
+                  <img src={qrDataUrl} alt="TOTP QR" className="size-[200px]" />
+                ) : (
+                  <div className="flex size-[200px] items-center justify-center text-xs text-muted-foreground">{t("settings.loading")}</div>
+                )}
+              </div>
+              <div className="w-full space-y-2">
+                <div>
+                  <Label className="text-xs text-muted-foreground">{t("settings.totpManualKey")}</Label>
+                  <button
+                    type="button"
+                    onClick={() => { void navigator.clipboard.writeText(secret); toast.success(t("settings.totpCopied")); }}
+                    className="mt-1 block w-full text-left rounded bg-muted px-2 py-1 text-xs break-all hover:bg-muted/70"
+                    title={t("settings.totpCopyHint")}
+                  >{secret}</button>
+                </div>
+                <p className="text-[11px] text-muted-foreground">{t("settings.totpScanOrManual")}</p>
+              </div>
+            </div>
             <div>
               <Label className="text-xs text-muted-foreground">{t("settings.totpCode")}</Label>
               <Input value={code} onChange={(e) => setCode(e.target.value)} placeholder={t("settings.totpCodePlaceholder")} className="mt-1 h-9 text-sm" inputMode="numeric" />

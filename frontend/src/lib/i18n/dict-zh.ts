@@ -878,4 +878,40 @@ export const zh: Dict = {
   "pa.pageN": "第 {page} / {total} 页",
   "pa.prev": "上一页",
   "pa.next": "下一页",
+
+  // 登录两步验证
+  "login.totp": "验证码",
+  "login.totpPlaceholder": "6 位验证码",
+
+  // 设置页两步验证辅助
+  "settings.totpManualKey": "手动设置密钥",
+  "settings.totpCopyHint": "点击复制",
+  "settings.totpScanOrManual": "用验证器 App 扫描二维码，或手动输入密钥。",
+
+  // 转人工触发来源
+  "handoff.triggerNoKB": "知识库未命中",
+  "handoff.loadFailed": "加载请求队列失败",
+
+  // 网站聊天组件
+  "nav.widget": "网站组件",
+  "widget.kicker": "网站聊天组件",
+  "widget.title": "聊天组件",
+  "widget.description": "创建嵌入令牌后，把安装代码贴到你的网站，即可显示悬浮客服气泡。",
+  "widget.newToken": "新建嵌入令牌",
+  "widget.notice": "嵌入令牌是公开设计（运行在访客浏览器中）。每个令牌可限制允许的来源域名。",
+  "widget.createTitle": "创建嵌入令牌",
+  "widget.nameLabel": "名称",
+  "widget.namePh": "我的网店官网",
+  "widget.originsLabel": "允许的来源（可选）",
+  "widget.originsHint": "留空则允许任意来源。例如 https://shop.example.com",
+  "widget.create": "创建",
+  "widget.empty": "还没有嵌入令牌。创建一个即可获得安装代码。",
+  "widget.active": "启用中",
+  "widget.delete": "删除",
+  "widget.tokenLabel": "令牌",
+  "widget.copy": "复制",
+  "widget.embedLabel": "嵌入代码",
+  "widget.createdToast": "嵌入令牌已创建",
+  "widget.copiedToast": "已复制到剪贴板",
+  "widget.allowedFor": "允许来源：{origins}",
 };

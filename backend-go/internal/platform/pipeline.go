@@ -20,6 +20,8 @@ import (
 	"khmer-ai-cs-go/internal/realtime"
 	"khmer-ai-cs-go/internal/redisstore"
 	"khmer-ai-cs-go/internal/security"
+	"khmer-ai-cs-go/internal/storager2"
+	"khmer-ai-cs-go/internal/usage"
 )
 
 const (
@@ -37,6 +39,7 @@ type Pipeline struct {
 	Gemini *gemini.Service
 	RAG    *rag.Service
 	Sealer *security.Sealer
+	Media  *storager2.Client
 	Logger *slog.Logger
 
 	notify         chan struct{}
@@ -278,9 +281,18 @@ func (p *Pipeline) processInboundEvent(ctx context.Context, ev *InboundEvent) er
 			ev.UserDisplayName = name
 			avatar = pic
 		}
+	} else if cfg.Platform == "telegram" {
+		if name, photoID, perr := NewTelegramClient(cfg.BotToken).GetProfile(ctx, ev.PlatformUserID); perr == nil {
+			if ev.UserDisplayName == "" {
+				ev.UserDisplayName = name
+			}
+			if photoID != "" && p.customerAvatar(ctx, cfg, ev.PlatformUserID) == "" {
+				avatar = p.storeTelegramAvatar(ctx, cfg, ev.PlatformUserID, photoID)
+			}
+		}
 	}
 
-	// Prepare media: voice → transcribe, images → collect.
+	// Prepare media: voice → transcribe, images → describe (vision), store files.
 	mediaURL := ""
 	var platformMedia map[string]any
 	if ev.Media != nil {
@@ -306,6 +318,18 @@ func (p *Pipeline) processInboundEvent(ctx context.Context, ev *InboundEvent) er
 		return nil
 	}
 
+	// Auto-handoff trigger 1 — the customer explicitly asked for a human. The
+	// AI stays silent; the conversation lands in the handoff queue.
+	if matched, ok := humanRequestKeyword(content); ok {
+		p.Logger.Info("auto handoff: customer requested a human", "session_id", sessionID, "keyword", matched)
+		p.escalateToHuman(ctx, ev, cfg, sessionID, "customer_request",
+			"Customer asked for a human agent (matched: "+matched+")")
+		return nil
+	}
+
+	// Typing indicator while the AI is composing (best-effort, per platform).
+	p.sendTyping(ctx, cfg, ev.PlatformUserID)
+
 	// AI reply (grounded in the knowledge base).
 	ownerLang := p.ownerLanguage(ctx, cfg.UserID)
 	replyLang := ownerLang
@@ -327,6 +351,7 @@ func (p *Pipeline) processInboundEvent(ctx context.Context, ev *InboundEvent) er
 	if err != nil {
 		return fmt.Errorf("AI 响应失败: %w", err)
 	}
+	usage.Record(ctx, p.DB, cfg.UserID, &sessionID, p.Gemini.ModelName(), result.PromptTokens, result.OutputTokens, result.CachedTokens)
 	reply := result.Reply
 	if !result.UsedMock {
 		reply = gemini.StripSourceMarkers(reply)
@@ -337,19 +362,34 @@ func (p *Pipeline) processInboundEvent(ctx context.Context, ev *InboundEvent) er
 		reply = "យើងកំពុងបិទសេវាកម្មនៅពេលនេះ។ ភ្នាក់ងារនឹងឆ្លើយតបនៅពេលម៉ោងធ្វើការ។\n\n" + reply
 	}
 
-	// Persist model reply + enqueue delivery.
+	// Persist model reply + enqueue delivery (👍/👎 buttons ride on Telegram).
 	var modelMessageID int64
 	err = p.DB.QueryRow(ctx,
-		"INSERT INTO chat_messages (session_id, role, message_type, content, tokens_used, model_name, used_mock, created_at) "+
-			"VALUES ($1,'model','text',$2,$3,$4,$5,$6) RETURNING message_id",
-		sessionID, reply, result.PromptTokens+result.OutputTokens, p.Gemini.ModelName(), result.UsedMock, time.Now()).
+		"INSERT INTO chat_messages (session_id, role, message_type, content, tokens_used, model_name, used_mock, sources_json, created_at) "+
+			"VALUES ($1,'model','text',$2,$3,$4,$5,$6,$7) RETURNING message_id",
+		sessionID, reply, result.PromptTokens+result.OutputTokens, p.Gemini.ModelName(), result.UsedMock,
+		sourcesJSON(groundCtx), time.Now()).
 		Scan(&modelMessageID)
 	if err != nil {
 		return fmt.Errorf("persist model reply: %w", err)
 	}
 	_, _ = p.DB.Exec(ctx, "UPDATE sessions SET model_message_count = model_message_count + 1, first_response_at = COALESCE(first_response_at, $1) WHERE session_id = $2", time.Now(), sessionID)
 	p.publishMessage(ctx, cfg.UserID, sessionID, modelMessageID, "model")
-	return p.enqueueDelivery(ctx, ev, cfg, sessionID, modelMessageID, reply, nil)
+	feedbackPayload := map[string]any{"feedback": true}
+	if err := p.enqueueDelivery(ctx, ev, cfg, sessionID, modelMessageID, reply, feedbackPayload); err != nil {
+		return err
+	}
+
+	// Voice reply (opt-in): when the customer sent a voice note and TTS is
+	// active, deliver the same answer as playable audio too.
+	if mediaKind, _ := platformMedia["kind"].(string); p.Cfg.TTSActive() && (mediaKind == "voice" || mediaKind == "audio") {
+		p.enqueueVoiceReply(ctx, ev, cfg, sessionID, reply)
+	}
+
+	// Auto-handoff triggers 2+3 — classify the turn in the background (never
+	// blocks the customer) and escalate on negative sentiment / no-answer.
+	p.classifyTurnAsync(cfg.UserID, sessionID, content, reply, groundCtx.HasMatch)
+	return nil
 }
 
 // publishMessage fans out an inbox.message realtime event (best-effort).
@@ -430,8 +470,40 @@ func (p *Pipeline) fetchMessengerProfile(ctx context.Context, cfg *configCred, p
 	return name, pic
 }
 
-// prepareMedia downloads media, transcribes voice, stores the file, and folds
-// the transcript into the message content. Returns (content, storageKey, platformMedia).
+// customerAvatar returns the stored avatar URL for a customer ("" = none).
+func (p *Pipeline) customerAvatar(ctx context.Context, cfg *configCred, platformUserID string) string {
+	var avatar string
+	_ = p.DB.QueryRow(ctx,
+		"SELECT avatar_url FROM customer_profiles WHERE user_id=$1 AND platform=$2 AND platform_user_id=$3",
+		cfg.UserID, cfg.Platform, platformUserID).Scan(&avatar)
+	return avatar
+}
+
+// storeTelegramAvatar mirrors the chat photo into R2 and returns a
+// browser-safe URL. Telegram file URLs embed the bot token, so the photo is
+// downloaded server-side and re-hosted. Best-effort: "" on any failure
+// (R2 disabled, download error, upload error).
+func (p *Pipeline) storeTelegramAvatar(ctx context.Context, cfg *configCred, platformUserID, photoFileID string) string {
+	if !p.Media.Enabled() || photoFileID == "" {
+		return ""
+	}
+	data, _, err := NewTelegramClient(cfg.BotToken).DownloadFile(ctx, photoFileID)
+	if err != nil || len(data) == 0 {
+		return ""
+	}
+	key := fmt.Sprintf("avatars/telegram/%d/%s.jpg", cfg.UserID, platformUserID)
+	putCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if uerr := p.Media.PutObject(putCtx, key, data, "image/jpeg"); uerr != nil {
+		p.Logger.Warn("telegram avatar upload failed", "error", uerr.Error())
+		return ""
+	}
+	return p.Media.PublicOrPresigned(key, 7*24*time.Hour)
+}
+
+// prepareMedia downloads media, transcribes voice, describes images, stores
+// the file in R2, and folds the extracted text into the message content.
+// Returns (content, storageKey, platformMedia).
 func (p *Pipeline) prepareMedia(ctx context.Context, ev *InboundEvent, cfg *configCred, content string) (string, string, map[string]any) {
 	kind, _ := ev.Media["kind"].(string)
 	providerID, _ := ev.Media["provider_media_id"].(string)
@@ -463,24 +535,56 @@ func (p *Pipeline) prepareMedia(ctx context.Context, ev *InboundEvent, cfg *conf
 		p.Logger.Warn("media download failed", "error", fmt.Sprint(err))
 		return content, "", nil
 	}
-	if mime == "" {
+	// Telegram file downloads often return a generic Content-Type
+	// (application/octet-stream); prefer the mime declared by the webhook
+	// (e.g. voice = audio/ogg) so Gemini can decode the audio.
+	if mime == "" || mime == "application/octet-stream" {
 		mime = declaredMime
 	}
+	isImage := kind == "photo" || kind == "image" || strings.HasPrefix(mime, "image/")
 
-	// Voice → transcribe into the message content.
-	if kind == "audio" || kind == "voice" {
-		transcript, terr := transcribeAudio(ctx, p, data, mime)
-		if terr == nil && transcript != "" {
+	// Voice/audio → transcribe into the message content.
+	// Image    → Gemini vision description so the AI can actually answer.
+	extracted := ""
+	if !isImage && (kind == "audio" || kind == "voice") {
+		transcript, terr := transcribeAudio(ctx, p, data, mime, p.ownerLanguage(ctx, cfg.UserID))
+		switch {
+		case terr != nil:
+			p.Logger.Warn("voice transcription failed", "event_id", ev.EventID, "error", fmt.Sprint(terr))
+		case transcript != "":
 			content = transcript
+			extracted = transcript
+		default:
+			p.Logger.Warn("voice transcription returned empty transcript", "event_id", ev.EventID)
+		}
+	} else if isImage {
+		desc, derr := p.Gemini.DescribeImage(ctx, data, mime)
+		if derr == nil && strings.TrimSpace(desc) != "" {
+			content = desc
+			extracted = desc
+		} else {
+			p.Logger.Warn("image description failed", "error", fmt.Sprint(derr))
 		}
 	}
 
 	// Store for replay (best-effort; requires R2 config).
 	storageKey := ""
-	if p.Cfg.R2Enabled() && p.RAG != nil {
+	if p.Media.Enabled() {
 		storageKey = fmt.Sprintf("platform-media/%d/%d/%s", cfg.UserID, ev.EventID, safeFilename(filename, kind, ev.EventID))
+		uploadCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+		if uerr := p.Media.PutObject(uploadCtx, storageKey, data, mime); uerr != nil {
+			p.Logger.Warn("r2 upload failed", "error", uerr.Error())
+			storageKey = ""
+		}
+		cancel()
 	}
 	pm := map[string]any{"kind": kind, "filename": filename, "mime_type": mime}
+	if storageKey != "" {
+		pm["processing_status"] = "stored"
+	}
+	if extracted != "" {
+		pm["extracted_text"] = extracted
+	}
 	return content, storageKey, pm
 }
 
@@ -492,8 +596,8 @@ func safeFilename(filename, kind string, eventID int64) string {
 }
 
 // transcribeAudio calls Gemini multimodal speech-to-text.
-func transcribeAudio(ctx context.Context, p *Pipeline, audio []byte, mime string) (string, error) {
-	return p.Gemini.TranscribeAudio(ctx, audio, mime)
+func transcribeAudio(ctx context.Context, p *Pipeline, audio []byte, mime, lang string) (string, error) {
+	return p.Gemini.TranscribeAudio(ctx, audio, mime, lang)
 }
 
 // enqueueHandoffAck sends the canned "agent will respond" acknowledgement.
@@ -526,6 +630,327 @@ func handoffAcknowledgement(language string) string {
 	default:
 		return "សូមអរគុណសម្រាប់សាររបស់អ្នក។ ភ្នាក់ងារមនុស្សត្រូវបានជូនដំណឹង ហើយនឹងឆ្លើយតបក្នុងពេលឆាប់ៗនេះ។ ខ្ញុំនឹងប្រគល់ការសន្ទនានេះទៅឱ្យពួកគេ។"
 	}
+}
+
+// ============================================
+// Auto-handoff engine
+// ============================================
+
+// humanRequestKeywords — phrases where the customer explicitly asks for a
+// human (en / km / zh). Matched case-insensitively on the raw message. Short
+// English words are matched on word boundaries separately (see the matcher) to
+// avoid false positives like "management" containing "manage".
+var humanRequestKeywords = []string{
+	// English multi-word
+	"real person", "real human", "human agent", "live agent", "human support",
+	"talk to agent", "talk to a human", "talk to someone", "speak to a person",
+	"speak to a human", "speak to an agent", "connect me to", "transfer me",
+	"customer agent", "staff member", "a representative", "speak to staff",
+	// Khmer (common explicit requests)
+	"មនុស្សពិត", "និយាយជាមួយមនុស្ស", "ភ្នាក់ងារមនុស្ស", "ទាក់ទងមនុស្ស",
+	"សុំភ្នាក់ងារ", "និយាយជាមួយភ្នាក់ងារ", "ចង់និយាយជាមួយ", "បម្រើមនុស្ស",
+	"ភ្នាក់ងារជំនួយ", "មនុស្សបម្រើ", "សុំមនុស្ស",
+	// Chinese
+	"人工", "真人", "转人工", "找客服", "人工客服", "转接客服", "我要客服",
+	"联系人工", "人工服务", "找个人", "接人工",
+}
+
+// humanRequestWordMarkers — single tokens matched on ASCII word boundaries so
+// a bare "agent"/"human" in an English sentence still escalates, but we do not
+// fire on substrings inside unrelated words.
+var humanRequestWordMarkers = []string{
+	"human", "agent", "representative", "staff",
+}
+
+func humanRequestKeyword(content string) (string, bool) {
+	lowered := strings.ToLower(content)
+	for _, kw := range humanRequestKeywords {
+		if strings.Contains(lowered, kw) {
+			return kw, true
+		}
+	}
+	for _, w := range humanRequestWordMarkers {
+		if containsWord(lowered, w) {
+			return w, true
+		}
+	}
+	return "", false
+}
+
+// containsWord reports whether `word` appears in `s` surrounded by non-ASCII
+// letters (so "agent" matches "talk to an agent", not "reagent").
+func containsWord(s, word string) bool {
+	for i := 0; i+len(word) <= len(s); {
+		idx := strings.Index(s[i:], word)
+		if idx < 0 {
+			return false
+		}
+		start := i + idx
+		end := start + len(word)
+		leftOK := start == 0 || !isASCIILetter(s[start-1])
+		rightOK := end >= len(s) || !isASCIILetter(s[end])
+		if leftOK && rightOK {
+			return true
+		}
+		i = end
+	}
+	return false
+}
+
+func isASCIILetter(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+// HumanRequestKeyword is the exported matcher used by the web-chat path so the
+// keyword rule has a single source of truth across pipeline + HTTP.
+func HumanRequestKeyword(content string) (string, bool) { return humanRequestKeyword(content) }
+
+// HandoffAcknowledgement is the exported canned "agent will respond" text.
+func HandoffAcknowledgement(language string) string { return handoffAcknowledgement(language) }
+
+// escalateToHuman moves a session to the handoff queue: creates the request
+// row (unless one is already open), flips the status, and — when an inbound
+// event is given — acks the customer. Every auto trigger funnels through here.
+// Escalation failures never fail the inbound event (the AI already replied or
+// the queue dedupes), so the error is logged, not returned.
+func (p *Pipeline) escalateToHuman(ctx context.Context, ev *InboundEvent, cfg *configCred, sessionID, trigger, reason string) {
+	if err := p.createHandoffRequest(ctx, cfg.UserID, sessionID, trigger, reason); err != nil {
+		p.Logger.Warn("auto handoff request failed", "session_id", sessionID, "error", err.Error())
+		return
+	}
+	if ev != nil {
+		p.enqueueHandoffAck(ctx, ev, cfg, sessionID)
+	}
+}
+
+// createHandoffRequest inserts a queue row + session status + notification.
+// The partial unique index keeps exactly one open request per session, so
+// repeat triggers are silently deduplicated.
+func (p *Pipeline) createHandoffRequest(ctx context.Context, userID int32, sessionID, trigger, reason string) error {
+	priority := highPriorityTriggers[trigger]
+	if priority == "" {
+		priority = "normal"
+	}
+	_, err := p.DB.Exec(ctx,
+		"INSERT INTO human_handoff_requests (session_id, user_id, status, priority, trigger, reason, created_at) "+
+			"VALUES ($1,$2,'pending',$3,$4::human_handoff_trigger,$5,NOW()) ON CONFLICT DO NOTHING",
+		sessionID, userID, priority, trigger, reason)
+	if err != nil {
+		return err
+	}
+	_, _ = p.DB.Exec(ctx,
+		"UPDATE sessions SET status='handoff', escalated_at=COALESCE(escalated_at, NOW()) WHERE session_id=$1 AND status='active'", sessionID)
+	p.notifyUser(ctx, userID, "handoff", "New human-handoff request", trigger+": "+truncateStr(reason, 120), sessionID)
+	realtime.Publish(ctx, p.Redis, realtime.Event{
+		Type: realtime.EventSession, UserID: userID, SessionID: sessionID,
+	})
+	return nil
+}
+
+var highPriorityTriggers = map[string]string{
+	"customer_request":  "high",
+	"negative_feedback": "high",
+	"ai_decision":       "normal",
+	"no_knowledge_base": "normal",
+	"manual":            "normal",
+}
+
+func truncateStr(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
+}
+
+// notifyUser inserts a notification row and fans an inbox.notification event
+// out to the tenant's WebSocket connections (the bell polls too, so this is
+// an acceleration, not a guarantee).
+func (p *Pipeline) notifyUser(ctx context.Context, userID int32, kind, title, body, sessionID string) {
+	_, _ = p.DB.Exec(ctx,
+		"INSERT INTO notifications (user_id, kind, title, body, session_id, created_at) VALUES ($1,$2,$3,$4,$5,NOW())",
+		userID, kind, title, body, nullSession(sessionID))
+	realtime.Publish(ctx, p.Redis, realtime.Event{
+		Type: realtime.EventNotification, UserID: userID, SessionID: sessionID,
+	})
+}
+
+func nullSession(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+// classifyTurnAsync runs the fast-model turn analysis off the request path:
+// persists sentiment/intent/confidence on the session and escalates when the
+// AI should not have owned this message.
+func (p *Pipeline) classifyTurnAsync(userID int32, sessionID, customerMsg, reply string, hasMatch bool) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), 20*time.Second)
+		defer cancel()
+
+		prompt := "You audit one customer-service turn. Reply with ONLY a JSON object:\n" +
+			`{"sentiment":"positive|neutral|negative","intent":"one of: question, complaint, refund, order_status, price, booking, small_talk, other","confidence":0.0-1.0,"escalate":true|false}` + "\n" +
+			"escalate=true when the customer is angry, repeatedly unsatisfied, asks for something only a human can do (refunds beyond policy, complaints, legal threats), or the assistant answer clearly does not resolve the question.\n\n" +
+			"[KB grounded]=" + fmt.Sprintf("%t", hasMatch) + "\n" +
+			"Customer: " + truncateStr(customerMsg, 600) + "\n" +
+			"Assistant: " + truncateStr(reply, 600)
+
+		out, ok := p.Gemini.GenerateFast(ctx, prompt, 10*time.Second)
+		if !ok {
+			return
+		}
+		var cls struct {
+			Sentiment  string  `json:"sentiment"`
+			Intent     string  `json:"intent"`
+			Confidence float64 `json:"confidence"`
+			Escalate   bool    `json:"escalate"`
+		}
+		trimmed := strings.TrimSpace(out)
+		if i := strings.Index(trimmed, "{"); i >= 0 {
+			if j := strings.LastIndex(trimmed, "}"); j > i {
+				trimmed = trimmed[i : j+1]
+			}
+		}
+		if json.Unmarshal([]byte(trimmed), &cls) != nil {
+			return
+		}
+		sentiment := cls.Sentiment
+		switch sentiment {
+		case "positive", "negative":
+		default:
+			sentiment = "neutral"
+		}
+		intent := cls.Intent
+		if intent == "" || len(intent) > 64 {
+			intent = "other"
+		}
+		conf := cls.Confidence
+		if conf < 0 || conf > 1 {
+			conf = 0.5
+		}
+		_, _ = p.DB.Exec(ctx,
+			"UPDATE sessions SET sentiment=$1, sentiment_at=NOW(), intent=$2, confidence=$3 WHERE session_id=$4 AND status='active'",
+			sentiment, intent, conf, sessionID)
+
+		// Still owned by the AI? only escalate active sessions.
+		var status string
+		_ = p.DB.QueryRow(ctx, "SELECT status::text FROM sessions WHERE session_id=$1", sessionID).Scan(&status)
+		if status != "active" {
+			return
+		}
+
+		// Trigger 2 — negative sentiment (angry customer).
+		if sentiment == "negative" {
+			p.escalateToHuman(ctx, nil, &configCred{UserID: userID}, sessionID, "negative_feedback",
+				"Customer sentiment turned negative ("+intent+")")
+			return
+		}
+		// Trigger 3 — the AI answered without any knowledge-base grounding and
+		// the classifier is not confident: the KB cannot cover this.
+		if !hasMatch && !cls.Escalate && conf < 0.35 && p.hasReadyDocs(ctx, userID) && intent != "small_talk" {
+			p.escalateToHuman(ctx, nil, &configCred{UserID: userID}, sessionID, "no_knowledge_base",
+				"Answer not grounded in the knowledge base (intent: "+intent+")")
+			return
+		}
+		if cls.Escalate {
+			p.escalateToHuman(ctx, nil, &configCred{UserID: userID}, sessionID, "ai_decision",
+				"AI classifier recommends human review ("+intent+")")
+		}
+	}()
+}
+
+// hasReadyDocs — whether the tenant has at least one indexed knowledge doc.
+func (p *Pipeline) hasReadyDocs(ctx context.Context, userID int32) bool {
+	var exists bool
+	_ = p.DB.QueryRow(ctx,
+		"SELECT EXISTS(SELECT 1 FROM knowledge_documents WHERE uploaded_by = $1 AND index_status = 'ready')", userID).Scan(&exists)
+	return exists
+}
+
+// sendTyping shows the "typing…" hint while the AI composes (best effort).
+func (p *Pipeline) sendTyping(ctx context.Context, cfg *configCred, recipientID string) {
+	if recipientID == "" {
+		return
+	}
+	switch cfg.Platform {
+	case "telegram":
+		_ = NewTelegramClient(cfg.BotToken).SendChatAction(ctx, recipientID, "typing")
+	case "line":
+		_ = NewLineClient(cfg.AccessToken).SendTypingIndicator(ctx, recipientID)
+	case "meta", "instagram":
+		_ = NewMetaClient(cfg.AccessToken, cfg.PageID, cfg.InstagramBusiness, p.Cfg.Meta.GraphAPIVersion).
+			SendSenderAction(ctx, cfg.Platform, recipientID, "typing_on")
+	}
+}
+
+// enqueueVoiceReply synthesizes the model reply as audio and queues it as a
+// follow-up media delivery. Fully best-effort — any failure is just "no audio".
+func (p *Pipeline) enqueueVoiceReply(ctx context.Context, ev *InboundEvent, cfg *configCred, sessionID, reply string) {
+	text := truncateStr(stripMarkdown(reply), 400)
+	if text == "" {
+		return
+	}
+	synthCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	wav, err := p.Gemini.SynthesizeSpeech(synthCtx, text)
+	cancel()
+	if err != nil || len(wav) == 0 {
+		p.Logger.Warn("tts synthesis failed", "error", fmt.Sprint(err))
+		return
+	}
+	if len(sessionID) < 8 {
+		return
+	}
+	key := fmt.Sprintf("tts/%d/%s/%d.wav", cfg.UserID, sessionID[:8], time.Now().UnixNano())
+	upCtx, cancel2 := context.WithTimeout(ctx, 45*time.Second)
+	if err := p.Media.PutObject(upCtx, key, wav, "audio/wav"); err != nil {
+		cancel2()
+		return
+	}
+	cancel2()
+	audioURL := p.Media.PublicOrPresigned(key, time.Hour)
+	if audioURL == "" {
+		return
+	}
+	var msgID int64
+	err = p.DB.QueryRow(ctx,
+		"INSERT INTO chat_messages (session_id, role, message_type, content, media_url, created_at) VALUES ($1,'model','audio',$2,$3,$4) RETURNING message_id",
+		sessionID, text, key, time.Now()).Scan(&msgID)
+	if err != nil {
+		return
+	}
+	_, _ = p.DB.Exec(ctx, "UPDATE sessions SET model_message_count = model_message_count + 1 WHERE session_id = $1", sessionID)
+	p.publishMessage(ctx, cfg.UserID, sessionID, msgID, "model")
+	payload := map[string]any{"kind": "media", "media_url": audioURL, "media_type": "audio"}
+	_ = p.enqueueDelivery(ctx, ev, cfg, sessionID, msgID, text, payload)
+}
+
+// stripMarkdown — rough markdown → plain text for TTS.
+func stripMarkdown(s string) string {
+	var b strings.Builder
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(line), "#*-•>"))
+		if line == "" {
+			continue
+		}
+		b.WriteString(line)
+		b.WriteString(" ")
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// sourcesJSON renders the grounding sources for persistence (NULL when no
+// grounding happened).
+func sourcesJSON(groundCtx rag.GroundingContext) any {
+	if !groundCtx.HasMatch || len(groundCtx.Sources) == 0 {
+		return nil
+	}
+	data, err := json.Marshal(groundCtx.Sources)
+	if err != nil {
+		return nil
+	}
+	return string(data)
 }
 
 // ============================================
@@ -693,6 +1118,20 @@ func (p *Pipeline) deliverToProvider(ctx context.Context, d *outboundDelivery) (
 	switch d.Platform {
 	case "telegram":
 		client := NewTelegramClient(cfg.BotToken)
+		if kind == "media" && mediaType == "audio" && mediaURL != "" {
+			id, err := client.SendAudio(ctx, d.RecipientID, mediaURL, d.Content)
+			if err != nil {
+				return "", err
+			}
+			return TelegramProviderMessageID(d.RecipientID, id), nil
+		}
+		// AI replies get 👍/👎 inline buttons (customer-side CSAT collection).
+		if fb, _ := d.Payload["feedback"].(bool); fb && len(buttons) == 0 && d.LastMessageID > 0 {
+			buttons = [][2]string{
+				{"👍", fmt.Sprintf("fb:%d:1", d.LastMessageID)},
+				{"👎", fmt.Sprintf("fb:%d:-1", d.LastMessageID)},
+			}
+		}
 		chunks := SplitPlatformText(d.Content, PlatformTextLimit("telegram"))
 		lastID := ""
 		for _, chunk := range chunks {
@@ -703,6 +1142,8 @@ func (p *Pipeline) deliverToProvider(ctx context.Context, d *outboundDelivery) (
 			if id != "" {
 				lastID = TelegramProviderMessageID(d.RecipientID, id)
 			}
+			// Buttons ride on the first chunk only.
+			buttons = nil
 		}
 		return lastID, nil
 	case "line":

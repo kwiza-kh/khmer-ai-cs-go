@@ -172,9 +172,12 @@ func (a *App) scanSLABreaches(ctx context.Context) {
 				for sess.Next() {
 					var sid string
 					if sess.Scan(&sid) == nil {
-						_, _ = a.DB.Exec(ctx,
+						tag, _ := a.DB.Exec(ctx,
 							"INSERT INTO sla_breaches (user_id, session_id, sla_id, breach_type) VALUES ($1,$2,$3,'first_response') ON CONFLICT (session_id, breach_type) DO NOTHING",
 							p.userID, sid, p.slaID)
+						if tag.RowsAffected() > 0 {
+							a.notifyUser(ctx, p.userID, "sentiment", "SLA 违约：首次响应超时", "A session breached the first-response SLA", sid)
+						}
 					}
 				}
 				sess.Close()

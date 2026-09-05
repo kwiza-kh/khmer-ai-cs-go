@@ -89,7 +89,9 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) (any, error) {
 		return nil, ErrForbidden("账户已被禁用")
 	}
 
-	// TOTP gate: when enabled the login must carry a valid 6-digit code.
+	// TOTP gate: when enabled the login must carry a valid 6-digit code. The
+	// missing-code response carries action=2fa_required so the login screen
+	// can reveal its (previously absent) code field instead of dead-ending.
 	var totpSecret *string
 	var secret string
 	err = a.DB.QueryRow(ctx, "SELECT secret FROM user_totp WHERE user_id = $1 AND enabled = true", userID).Scan(&secret)
@@ -104,7 +106,10 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) (any, error) {
 			code = strings.TrimSpace(*req.TOTPCode)
 		}
 		if code == "" {
-			return nil, ErrUnauthorized("需要两步验证码")
+			return WithStatus{Status: http.StatusUnauthorized, Body: map[string]any{
+				"error":  "需要两步验证码",
+				"action": "2fa_required",
+			}}, nil
 		}
 		if !auth.VerifyTOTP(*totpSecret, code) {
 			return nil, ErrUnauthorized("验证码错误")

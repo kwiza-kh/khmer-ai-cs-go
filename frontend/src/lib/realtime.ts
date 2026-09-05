@@ -4,7 +4,7 @@ import { useEffect, useRef } from "react";
 import { API_BASE } from "./auth-client";
 
 export interface InboxRealtimeEvent {
-  type: "inbox.message" | "inbox.session";
+  type: "inbox.message" | "inbox.session" | "inbox.notification";
   session_id: string;
   message_id?: number;
   role?: string;
@@ -52,7 +52,7 @@ export function useInboxRealtime(token: string | null, onEvent: (event: InboxRea
       socket.onmessage = (message) => {
         try {
           const event = JSON.parse(message.data) as InboxRealtimeEvent;
-          if (event.type === "inbox.message" || event.type === "inbox.session") {
+          if (event.type === "inbox.message" || event.type === "inbox.session" || event.type === "inbox.notification") {
             onEventRef.current(event);
           }
         } catch {

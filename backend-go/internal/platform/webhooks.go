@@ -12,11 +12,13 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"khmer-ai-cs-go/internal/realtime"
 	"khmer-ai-cs-go/internal/security"
 )
 
@@ -160,6 +162,30 @@ func (wh *Webhooks) TelegramWebhook(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(io.LimitReader(r.Body, 8*1024*1024))
 	var update map[string]any
 	_ = json.Unmarshal(body, &update)
+
+	cfg := wh.resolveTelegramConfig(r.Context())
+	if cfg == nil {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	// Verify the Telegram bot API secret token (set via setWebhook). Reject
+	// unsigned events when a secret is configured.
+	if cfg.WebhookSecret != "" {
+		got := r.Header.Get("X-Telegram-Bot-Api-Secret-Token")
+		if got != cfg.WebhookSecret {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+	}
+	wh.recordHealth(r.Context(), cfg.ConfigID, "connected", "", "Receiving Telegram webhook events")
+
+	// Inline keyboard presses (👍/👎 on AI replies) before message handling.
+	if callback, ok := update["callback_query"].(map[string]any); ok {
+		wh.handleTelegramCallback(r.Context(), cfg, callback)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
 	message, _ := update["message"].(map[string]any)
 	if message == nil {
 		w.WriteHeader(http.StatusOK)
@@ -176,21 +202,6 @@ func (wh *Webhooks) TelegramWebhook(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	cfg := wh.resolveTelegramConfig(r.Context())
-	if cfg == nil {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-	// Verify the Telegram bot API secret token (set via setWebhook). Reject
-	// unsigned events when a secret is configured.
-	if cfg.WebhookSecret != "" {
-		got := r.Header.Get("X-Telegram-Bot-Api-Secret-Token")
-		if got != cfg.WebhookSecret {
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-	}
-	wh.recordHealth(r.Context(), cfg.ConfigID, "connected", "", "Receiving Telegram webhook events")
 
 	text, _ := message["text"].(string)
 	updateID := ""
@@ -222,6 +233,75 @@ func (wh *Webhooks) TelegramWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = wh.Pipe.EnqueueInboundEvent(r.Context(), cfg.ConfigID, "telegram", updateID, chatID, display, text, media)
 	w.WriteHeader(http.StatusOK)
+}
+
+// handleTelegramCallback processes an inline-keyboard press ("fb:<msgID>:<±1>")
+// on an AI reply: stores the rating on the message, escalates 👎 to the
+// handoff queue, and answers the callback so Telegram clears the button state.
+func (wh *Webhooks) handleTelegramCallback(ctx context.Context, cfg *webhookConfig, callback map[string]any) {
+	cbID, _ := callback["id"].(string)
+	data, _ := callback["data"].(string)
+	chatID := ""
+	if from, ok := callback["from"].(map[string]any); ok {
+		if id, ok := from["id"].(float64); ok {
+			chatID = jsonNumberString(id)
+		}
+	}
+	parts := strings.Split(data, ":")
+	if len(parts) != 3 || parts[0] != "fb" {
+		return
+	}
+	msgID, err1 := strconv.ParseInt(parts[1], 10, 64)
+	rating, err2 := strconv.Atoi(parts[2])
+	if err1 != nil || err2 != nil || (rating != 1 && rating != -1) || chatID == "" {
+		return
+	}
+
+	// Tenant + chat guard: the message must be a model reply on this tenant's
+	// Telegram session for this exact chat.
+	var sessionID string
+	var ownerID int32
+	err := wh.DB.QueryRow(ctx,
+		"SELECT cm.session_id, s.user_id FROM chat_messages cm JOIN sessions s ON s.session_id = cm.session_id "+
+			"WHERE cm.message_id = $1 AND cm.role = 'model' AND s.user_id = $2 AND s.platform = 'telegram'::platform_type AND s.platform_user_id = $3",
+		msgID, cfg.UserID, chatID).Scan(&sessionID, &ownerID)
+	if err != nil {
+		return
+	}
+	_, _ = wh.DB.Exec(ctx,
+		"UPDATE chat_messages SET feedback_rating = $1, feedback_at = NOW() WHERE message_id = $2", rating, msgID)
+
+	if rating == -1 {
+		// 👎 = "the answer was not good enough" → negative_feedback handoff.
+		_ = wh.Pipe.createHandoffRequest(ctx, ownerID, sessionID, "negative_feedback",
+			"Customer rated the AI reply 👎")
+	}
+	realtime.Publish(ctx, wh.Pipe.Redis, realtime.Event{
+		Type: realtime.EventSession, UserID: ownerID, SessionID: sessionID,
+	})
+
+	// Close the button spinner with a thank-you toast.
+	botToken := wh.telegramBotToken(ctx, cfg.ConfigID)
+	if cbID != "" && botToken != "" {
+		thanks := map[string]string{
+			"1":  "សូមអរគុណ! 🙏",
+			"-1": "អរគុណ! យើងនឹងប្រគល់ឱ្យភ្នាក់ងារមនុស្ស។",
+		}[strconv.Itoa(rating)]
+		_ = NewTelegramClient(botToken).AnswerCallback(ctx, cbID, thanks)
+	}
+}
+
+// telegramBotToken decrypts the bot token for answering callbacks.
+func (wh *Webhooks) telegramBotToken(ctx context.Context, configID int32) string {
+	var enc *string
+	if err := wh.DB.QueryRow(ctx, "SELECT bot_token FROM platform_configs WHERE config_id = $1", configID).Scan(&enc); err != nil || enc == nil {
+		return ""
+	}
+	token, err := wh.Sealer.Decrypt(*enc)
+	if err != nil {
+		return ""
+	}
+	return token
 }
 
 func extractTelegramMedia(message map[string]any) map[string]any {

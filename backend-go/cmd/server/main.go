@@ -23,6 +23,7 @@ import (
 	"khmer-ai-cs-go/internal/realtime"
 	"khmer-ai-cs-go/internal/redisstore"
 	"khmer-ai-cs-go/internal/security"
+	"khmer-ai-cs-go/internal/storager2"
 )
 
 func main() {
@@ -79,8 +80,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	// R2 object storage (inbound media replay + TTS audio; inert without creds).
+	media := storager2.New(cfg.R2.AccountID, cfg.R2.AccessKey, cfg.R2.SecretKey, cfg.R2.Bucket, cfg.R2.PublicURL)
+
 	// Platform pipeline (inbound AI replies + outbound delivery).
-	pipe := &platform.Pipeline{DB: pool, Redis: redisClient, Cfg: cfg, Gemini: gem, RAG: ragService, Sealer: sealer, Logger: logger}
+	pipe := &platform.Pipeline{DB: pool, Redis: redisClient, Cfg: cfg, Gemini: gem, RAG: ragService, Sealer: sealer, Media: media, Logger: logger}
 	pipe.SpawnWorkers(ctx)
 
 	app := &api.App{
@@ -92,6 +96,7 @@ func main() {
 		RAG:    ragService,
 		Logger: logger,
 		Sealer: sealer,
+		Media:  media,
 		Pipe:   pipe,
 	}
 

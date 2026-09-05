@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"time"
 
 	"khmer-ai-cs-go/internal/gemini"
@@ -399,45 +400,93 @@ func (a *App) deleteWebhook(w http.ResponseWriter, r *http.Request, id int32) (a
 // Handoff requests
 // ============================================
 
+// listHandoffs — human-handoff queue (request_id is a UUID → string).
 func (a *App) listHandoffs(w http.ResponseWriter, r *http.Request) (any, error) {
 	user, _ := UserFrom(r)
+	statusFilter := r.URL.Query().Get("status")
+	page := parseIntOr(r.URL.Query().Get("page"), 1)
+	pageSize := parseIntOr(r.URL.Query().Get("page_size"), 100)
+	if pageSize > 200 {
+		pageSize = 200
+	}
+	offset := (page - 1) * pageSize
+
+	// Tenant users only see their own queue; the platform super-admin sees
+	// every tenant's open requests (cross-tenant operations view).
+	args := []any{}
+	where := "WHERE 1=1"
+	if !user.IsPlatformAdmin() {
+		where += " AND h.user_id = $" + strconv.Itoa(len(args)+1)
+		args = append(args, user.UserID)
+	}
+	if statusFilter != "" {
+		where += " AND h.status::text = $" + strconv.Itoa(len(args)+1)
+		args = append(args, statusFilter)
+	}
+	var total int64
+	_ = a.DB.QueryRow(r.Context(), "SELECT COUNT(*) FROM human_handoff_requests h "+where, args...).Scan(&total)
+
+	args = append(args, pageSize, offset)
 	rows, err := a.DB.Query(r.Context(),
-		"SELECT request_id, session_id, status::text, priority::text, trigger, reason, assigned_agent_id, created_at "+
-			"FROM human_handoff_requests WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100", user.UserID)
+		"SELECT h.request_id::text, h.session_id::text, h.status::text, h.priority::text, h.trigger::text, h.reason, h.assigned_agent_id, h.created_at, h.assigned_at, h.resolved_at, h.resolution_note, "+
+			"s.platform::text, s.platform_user_id, s.title, pus.user_display_name, u.username, "+
+			"last_message.content AS last_message, last_message.created_at AS last_message_at "+
+			"FROM human_handoff_requests h "+
+			"JOIN sessions s ON s.session_id = h.session_id "+
+			"LEFT JOIN platform_user_sessions pus ON pus.session_id = s.session_id "+
+			"LEFT JOIN users u ON u.user_id = h.assigned_agent_id "+
+			"LEFT JOIN LATERAL (SELECT content, created_at FROM chat_messages WHERE session_id = s.session_id ORDER BY message_id DESC LIMIT 1) last_message ON TRUE "+
+			where+" ORDER BY (h.priority::text='high') DESC, h.created_at DESC LIMIT $"+strconv.Itoa(len(args)-1)+" OFFSET $"+strconv.Itoa(len(args)),
+		args...)
 	if err != nil {
 		return nil, ErrInternal("查询失败")
 	}
 	defer rows.Close()
 	out := make([]map[string]any, 0)
 	for rows.Next() {
-		var id int
-		var sessionID, status, priority, trigger, reason string
-		var assignedAgent *int32
-		var createdAt time.Time
-		if err := rows.Scan(&id, &sessionID, &status, &priority, &trigger, &reason, &assignedAgent, &createdAt); err != nil {
+		var (
+			id, sessionID, status, priority, trigger, reason string
+			assignedAgent                                    *int32
+			createdAt                                        time.Time
+			assignedAt, resolvedAt                           *time.Time
+			resolutionNote                                   *string
+			platform, puid, sessionTitle                     *string
+			displayName, agentName                           *string
+			lastMsg                                          *string
+			lastMsgAt                                        *time.Time
+		)
+		if err := rows.Scan(&id, &sessionID, &status, &priority, &trigger, &reason, &assignedAgent, &createdAt,
+			&assignedAt, &resolvedAt, &resolutionNote, &platform, &puid, &sessionTitle, &displayName, &agentName,
+			&lastMsg, &lastMsgAt); err != nil {
 			continue
 		}
 		out = append(out, map[string]any{
 			"request_id": id, "session_id": sessionID, "status": status, "priority": priority,
-			"trigger": trigger, "reason": reason, "assigned_agent_id": assignedAgent, "created_at": createdAt,
+			"trigger": trigger, "reason": reason, "assigned_agent_id": assignedAgent,
+			"assigned_agent_name": derefStr(agentName), "created_at": createdAt,
+			"assigned_at": assignedAt, "resolved_at": resolvedAt, "resolution_note": derefStr(resolutionNote),
+			"platform": derefStr(platform), "platform_user_id": derefStr(puid),
+			"user_display_name": derefStr(displayName), "session_title": derefStr(sessionTitle),
+			"last_message": derefStr(lastMsg), "last_message_at": lastMsgAt,
 		})
 	}
-	return out, nil
+	return map[string]any{"data": out, "total": total, "page": page, "page_size": pageSize}, nil
 }
 
 type resolveHandoffRequest struct {
 	ResolutionNote string `json:"resolution_note"`
 }
 
-func (a *App) resolveHandoff(w http.ResponseWriter, r *http.Request, id int32) (any, error) {
+// resolveHandoff closes one open request (request_id is a UUID string).
+func (a *App) resolveHandoff(w http.ResponseWriter, r *http.Request, requestID string) (any, error) {
 	user, _ := UserFrom(r)
 	var req resolveHandoffRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		return nil, ErrBadRequest("请求格式错误")
 	}
 	tag, err := a.DB.Exec(r.Context(),
-		"UPDATE human_handoff_requests SET status='resolved', resolved_at=NOW(), resolution_note=$1 WHERE request_id = $2 AND user_id = $3",
-		req.ResolutionNote, id, user.UserID)
+		"UPDATE human_handoff_requests SET status='resolved', resolved_at=NOW(), resolution_note=$1 WHERE request_id = $2::uuid AND user_id = $3",
+		req.ResolutionNote, requestID, user.UserID)
 	if err != nil {
 		return nil, ErrInternal("更新失败")
 	}
@@ -795,15 +844,37 @@ func (a *App) messageFeedback(w http.ResponseWriter, r *http.Request, messageID 
 		return nil, ErrBadRequest("rating 必须是 -1 或 1")
 	}
 	// Only model messages; owner-checked via session join.
-	var mid int64
+	var (
+		mid       int64
+		sessionID string
+	)
 	err := a.DB.QueryRow(r.Context(),
-		"SELECT cm.message_id FROM chat_messages cm JOIN sessions s ON s.session_id = cm.session_id "+
-			"WHERE cm.message_id = $1 AND cm.role = 'model' AND s.user_id = $2", messageID, user.UserID).Scan(&mid)
+		"SELECT cm.message_id, cm.session_id FROM chat_messages cm JOIN sessions s ON s.session_id = cm.session_id "+
+			"WHERE cm.message_id = $1 AND cm.role = 'model' AND s.user_id = $2", messageID, user.UserID).Scan(&mid, &sessionID)
 	if err != nil {
 		return nil, ErrNotFound("消息不存在")
 	}
 	_, _ = a.DB.Exec(r.Context(),
 		"UPDATE chat_messages SET feedback_rating = $1, feedback_comment = $2, feedback_at = NOW() WHERE message_id = $3",
 		req.Rating, req.Comment, messageID)
+	// A 👎 means the AI answer missed the mark → queue the conversation for a
+	// human (deduped by the partial unique index on open requests).
+	if req.Rating == -1 {
+		_, _ = a.DB.Exec(r.Context(),
+			"INSERT INTO human_handoff_requests (session_id, user_id, status, priority, trigger, reason, created_at) "+
+				"VALUES ($1,$2,'pending','high','negative_feedback'::human_handoff_trigger,$3,NOW()) ON CONFLICT DO NOTHING",
+			sessionID, user.UserID, "Customer rated the AI reply 👎"+feedbackSuffix(req.Comment))
+		_, _ = a.DB.Exec(r.Context(),
+			"UPDATE sessions SET status='handoff', escalated_at=COALESCE(escalated_at, NOW()) WHERE session_id=$1 AND status='active'", sessionID)
+		a.notifyUser(r.Context(), user.UserID, "handoff", "New human-handoff request", "negative_feedback: customer rated an AI reply 👎", sessionID)
+		a.publishSessionEvent(r.Context(), user.UserID, sessionID)
+	}
 	return map[string]string{"message": "已记录"}, nil
+}
+
+func feedbackSuffix(comment string) string {
+	if comment == "" {
+		return ""
+	}
+	return ": " + comment
 }

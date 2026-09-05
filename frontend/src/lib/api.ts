@@ -281,11 +281,13 @@ export interface InboxItem {
   escalated_at?: string | null;
   created_at: string;
   sentiment?: "neutral" | "positive" | "negative";
+  tags?: string[];
+  intent?: string;
 }
 
 export type HumanHandoffRequestStatus = "pending" | "assigned" | "resolved";
 export type HumanHandoffPriority = "normal" | "high";
-export type HumanHandoffTrigger = "customer_request" | "negative_feedback" | "ai_decision" | "manual";
+export type HumanHandoffTrigger = "customer_request" | "negative_feedback" | "ai_decision" | "no_knowledge_base" | "manual";
 
 export interface HumanHandoffRequest {
   request_id: string;
@@ -1394,5 +1396,104 @@ export function getIntentAnalytics(days = 30) {
 }
 export function getIntegrationStatus() {
   return apiFetch<IntegrationStatus>("/admin/integrations/status");
+}
+
+// ============================================
+// Website chat widget
+// ============================================
+
+export interface WidgetTokenItem {
+  token_id: number;
+  name: string;
+  token: string;
+  is_active: boolean;
+  allowed_origins: string[];
+  theme: string;
+  primary_color: string;
+  greeting_km: string;
+  greeting_en: string;
+  created_at: string;
+}
+
+export function listWidgetTokens() {
+  return apiFetch<WidgetTokenItem[]>("/widgets");
+}
+
+export function createWidgetToken(input: {
+  name?: string; allowed_origins?: string[]; theme?: string; primary_color?: string; greeting_km?: string; greeting_en?: string;
+}) {
+  return apiFetch<{ token_id: number; token: string; embed_src: string }>("/widgets", {
+    method: "POST", body: JSON.stringify(input),
+  });
+}
+
+export function deleteWidgetToken(id: number) {
+  return apiFetch<{ message: string }>(`/widgets/${id}`, { method: "DELETE" });
+}
+
+/**
+ * streamWidgetChat posts a visitor message to the public widget SSE endpoint.
+ * Token is passed in the body; the callbacks mirror streamChat's wire protocol.
+ */
+export function streamWidgetChat(
+  body: { token: string; session_id?: string; message: string; language?: string },
+  handlers: {
+    onSession?: (sessionId: string) => void;
+    onSources?: (sources: RAGSource[]) => void;
+    onToken?: (chunk: string) => void;
+    onDone?: (final: { reply: string; tokens_used: number; cached_tokens?: number; used_mock?: boolean; escalated?: boolean }) => void;
+    onError?: (message: string) => void;
+  },
+): AbortController {
+  const controller = new AbortController();
+  (async () => {
+    let res: Response;
+    try {
+      res = await fetch(`${API_BASE}/widget/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      if ((err as Error).name !== "AbortError") handlers.onError?.((err as Error).message);
+      return;
+    }
+    if (!res.ok || !res.body) {
+      let msg = `HTTP ${res.status}`;
+      try { msg = (await res.json()).error || msg; } catch { /* ignore */ }
+      handlers.onError?.(msg);
+      return;
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let terminal = false;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let sep: number;
+        while ((sep = buffer.indexOf("\n\n")) !== -1) {
+          const raw = buffer.slice(0, sep);
+          buffer = buffer.slice(sep + 2);
+          const evt = parseSSE(raw);
+          if (!evt) continue;
+          switch (evt.event) {
+            case "session": handlers.onSession?.((evt.data as { session_id: string }).session_id); break;
+            case "sources": handlers.onSources?.(evt.data as RAGSource[]); break;
+            case "token": handlers.onToken?.((evt.data as { text: string }).text); break;
+            case "done": terminal = true; handlers.onDone?.(evt.data as { reply: string; tokens_used: number }); break;
+            case "error": terminal = true; handlers.onError?.((evt.data as { message: string }).message); break;
+          }
+        }
+      }
+      if (!terminal && !controller.signal.aborted) handlers.onError?.("stream ended before completion");
+    } catch (err) {
+      if ((err as Error).name !== "AbortError") handlers.onError?.((err as Error).message);
+    }
+  })();
+  return controller;
 }
 

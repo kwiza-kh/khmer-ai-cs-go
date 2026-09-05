@@ -188,15 +188,41 @@ func (a *App) createHandoffRequest(w http.ResponseWriter, r *http.Request) (any,
 	if isTest {
 		return nil, ErrBadRequest("test sessions cannot be transferred")
 	}
-	// Insert the handoff request.
-	_, err = a.DB.Exec(r.Context(),
-		"INSERT INTO human_handoff_requests (session_id, user_id, status, priority, trigger, reason, created_at) VALUES ($1,$2,'pending',$3,'manual',$4,NOW()) ON CONFLICT DO NOTHING",
-		req.SessionID, user.UserID, priority, reason)
-	if err != nil {
-		return nil, ErrInternal("创建失败")
+	// Insert the handoff request (the partial unique index dedupes an already
+	// open request for the same session).
+	var openExists bool
+	if err := a.DB.QueryRow(r.Context(),
+		"SELECT EXISTS(SELECT 1 FROM human_handoff_requests WHERE session_id = $1 AND status IN ('pending','assigned'))",
+		req.SessionID).Scan(&openExists); err != nil {
+		return nil, ErrInternal("查询失败")
+	}
+	if !openExists {
+		_, err = a.DB.Exec(r.Context(),
+			"INSERT INTO human_handoff_requests (session_id, user_id, status, priority, trigger, reason, created_at) VALUES ($1,$2,'pending',$3,'manual',$4,NOW()) ON CONFLICT DO NOTHING",
+			req.SessionID, user.UserID, priority, reason)
+		if err != nil {
+			return nil, ErrInternal("创建失败")
+		}
+		a.notifyUser(r.Context(), user.UserID, "handoff", "New human-handoff request", "manual: "+reason, req.SessionID)
 	}
 	// Mark the session as handoff.
 	_, _ = a.DB.Exec(r.Context(), "UPDATE sessions SET status='handoff', escalated_at=COALESCE(escalated_at,NOW()) WHERE session_id = $1", req.SessionID)
 	a.publishSessionEvent(r.Context(), user.UserID, req.SessionID)
-	return map[string]any{"session_id": req.SessionID, "status": "pending", "priority": priority, "trigger": "manual", "reason": reason, "created": true}, nil
+
+	// Return the open request row (data + created flag → CreateHumanHandoffRequestResult).
+	data := map[string]any{
+		"session_id": req.SessionID, "status": "pending", "priority": priority,
+		"trigger": "manual", "reason": reason, "created": !openExists,
+	}
+	if !openExists {
+		var rid string
+		var createdAt time.Time
+		if err := a.DB.QueryRow(r.Context(),
+			"SELECT request_id::text, created_at FROM human_handoff_requests WHERE session_id = $1 AND status IN ('pending','assigned') ORDER BY created_at DESC LIMIT 1",
+			req.SessionID).Scan(&rid, &createdAt); err == nil {
+			data["request_id"] = rid
+			data["created_at"] = createdAt
+		}
+	}
+	return map[string]any{"data": data, "created": !openExists}, nil
 }

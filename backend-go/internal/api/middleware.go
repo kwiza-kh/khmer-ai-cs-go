@@ -40,13 +40,25 @@ func (a *App) cors(next http.Handler) http.Handler {
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		isAllowed := origin != "" && allowed[origin]
+		// The website-chat widget is embedded on arbitrary customer domains and
+		// authenticated by its own publishable token — those routes answer any
+		// origin (no credentials; the admin allowlist still guards everything
+		// else).
+		isWidget := strings.HasPrefix(r.URL.Path, "/api/v1/widget/")
+		isAllowed := origin != "" && (allowed[origin] || isWidget)
 		if origin != "" && !isAllowed {
 			WriteJSON(w, http.StatusForbidden, map[string]string{"error": "跨域请求被拒绝"})
 			return
 		}
 		h := w.Header()
-		if isAllowed {
+		if isWidget {
+			if origin != "" {
+				h.Set("Access-Control-Allow-Origin", origin)
+				h.Add("Vary", "Origin")
+			} else {
+				h.Set("Access-Control-Allow-Origin", "*")
+			}
+		} else if isAllowed {
 			h.Set("Access-Control-Allow-Origin", origin)
 			h.Set("Access-Control-Allow-Credentials", "true")
 			h.Add("Vary", "Origin")

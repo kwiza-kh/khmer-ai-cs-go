@@ -4,11 +4,14 @@
 package gemini
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -50,6 +53,7 @@ type ChatResult struct {
 	Reply        string
 	PromptTokens int
 	OutputTokens int
+	CachedTokens int
 	UsedMock     bool
 }
 
@@ -278,16 +282,218 @@ func (s *Service) buildRequestBody(message string, history []HistoryItem, langua
 
 func (s *Service) resultFromValue(v map[string]any) ChatResult {
 	res := ChatResult{Reply: ExtractTextFromValue(v)}
+	res.PromptTokens, res.OutputTokens, res.CachedTokens = usageFromValue(v)
+	return res
+}
+
+// usageFromValue extracts (prompt, completion, cached) token counts from one
+// generateContent / stream chunk response body.
+func usageFromValue(v map[string]any) (int, int, int) {
+	var prompt, completion, cached int
 	usage, _ := v["usageMetadata"].(map[string]any)
 	if usage != nil {
 		if n, ok := usage["promptTokenCount"].(float64); ok {
-			res.PromptTokens = int(n)
+			prompt = int(n)
 		}
 		if n, ok := usage["candidatesTokenCount"].(float64); ok {
-			res.OutputTokens = int(n)
+			completion = int(n)
+		}
+		if n, ok := usage["cachedContentTokenCount"].(float64); ok {
+			cached = int(n)
 		}
 	}
-	return res
+	return prompt, completion, cached
+}
+
+// streamURL builds the SSE streaming endpoint for a model.
+func (s *Service) streamURLFor(model string) string {
+	return fmt.Sprintf("%s/models/%s:streamGenerateContent?alt=sse&key=%s",
+		apiBase, NormalizeModelName(model), url.QueryEscape(s.apiKey))
+}
+
+// ChatStream runs a turn with token-level streaming: onToken is invoked for
+// every text delta as it arrives. On any transport/API failure it degrades to
+// the non-streaming path (the reply is still delivered, just not incrementally).
+func (s *Service) ChatStream(ctx context.Context, message string, history []HistoryItem, language string, onToken func(string)) (ChatResult, error) {
+	if !s.IsConfigured() {
+		res := s.chatMock(message, language)
+		onToken(res.Reply)
+		return res, nil
+	}
+	body := s.buildRequestBody(message, history, language)
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return s.chatWithModel(ctx, message, history, language, "")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.streamURLFor(s.modelName), bytes.NewReader(payload))
+	if err != nil {
+		return s.chatWithModel(ctx, message, history, language, "")
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return s.chatWithModel(ctx, message, history, language, "")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		return s.chatWithModel(ctx, message, history, language, "")
+	}
+
+	var full strings.Builder
+	res := ChatResult{}
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "" || data == "[DONE]" {
+			continue
+		}
+		var chunk map[string]any
+		if json.Unmarshal([]byte(data), &chunk) != nil {
+			continue
+		}
+		if text := ExtractTextFromValue(chunk); text != "" {
+			full.WriteString(text)
+			onToken(text)
+		}
+		if p, c, cached := usageFromValue(chunk); p+c+cached > 0 {
+			res.PromptTokens, res.OutputTokens, res.CachedTokens = p, c, cached
+		}
+	}
+	res.Reply = full.String()
+	if res.Reply == "" {
+		return s.chatWithModel(ctx, message, history, language, "")
+	}
+	return res, nil
+}
+
+// DescribeImage — Gemini multimodal image understanding for customer photos.
+// Returns a concise description of what the image contains (same-script text
+// where legible). Mock mode returns a fixed Khmer notice so the flow is testable.
+func (s *Service) DescribeImage(ctx context.Context, data []byte, mimeType string) (string, error) {
+	if !s.IsConfigured() {
+		return "[图片内容转述] (mock) 客户发送了一张图片，未配置 GEMINI_API_KEY 无法识别。", nil
+	}
+	if mimeType == "" {
+		mimeType = "image/jpeg"
+	}
+	body := map[string]any{
+		"contents": []map[string]any{{
+			"role": "user",
+			"parts": []map[string]any{
+				{"text": "Describe this customer-service photo in 1-2 sentences for an AI assistant that cannot see it: state what is shown, transcribe any clearly visible text (prices, order numbers, error messages) in its original language, and note the likely customer intent. Reply with the description only — no preamble."},
+				{"inlineData": map[string]any{"mimeType": mimeType, "data": base64.StdEncoding.EncodeToString(data)}},
+			},
+		}},
+		"generationConfig": map[string]any{"maxOutputTokens": 512},
+	}
+	status, text, err := s.postWithRetry(ctx, s.generateURLFor(fastModel()), body)
+	if err != nil {
+		return "", fmt.Errorf("describe image request: %w", err)
+	}
+	if status != http.StatusOK {
+		return "", fmt.Errorf("describe image failed (%d): %s", status, truncateRunes(text, 300))
+	}
+	var v map[string]any
+	if json.Unmarshal([]byte(text), &v) != nil {
+		return "", fmt.Errorf("describe image: invalid response")
+	}
+	return strings.TrimSpace(ExtractTextFromValue(v)), nil
+}
+
+// ttsModel / ttsVoice — speech-synthesis settings (env-overridable).
+func TTSModel() string {
+	if v := strings.TrimSpace(os.Getenv("GEMINI_TTS_MODEL")); v != "" {
+		return v
+	}
+	return "gemini-2.5-flash-preview-tts"
+}
+
+func TTSVoice() string {
+	if v := strings.TrimSpace(os.Getenv("TTS_VOICE")); v != "" {
+		return v
+	}
+	return "Kore"
+}
+
+// SynthesizeSpeech renders text to WAV audio via the Gemini TTS model. The
+// model returns raw PCM (24kHz 16-bit mono); we wrap it in a WAV header so
+// Telegram/Messenger can play it from a URL. Returns ("", nil) when TTS is
+// not usable (mock mode or any failure) — callers treat that as "no audio".
+func (s *Service) SynthesizeSpeech(ctx context.Context, text string) ([]byte, error) {
+	if !s.IsConfigured() || strings.TrimSpace(text) == "" {
+		return nil, nil
+	}
+	body := map[string]any{
+		"contents": []map[string]any{{
+			"role":  "user",
+			"parts": []map[string]any{{"text": text}},
+		}},
+		"generationConfig": map[string]any{
+			"responseModalities": []string{"AUDIO"},
+			"speechConfig": map[string]any{
+				"voiceConfig": map[string]any{
+					"prebuiltVoiceConfig": map[string]any{"voiceName": TTSVoice()},
+				},
+			},
+		},
+	}
+	target := fmt.Sprintf("%s/models/%s:generateContent?key=%s", apiBase, NormalizeModelName(TTSModel()), url.QueryEscape(s.apiKey))
+	status, respText, err := s.postWithRetry(ctx, target, body)
+	if err != nil || status != http.StatusOK {
+		return nil, fmt.Errorf("tts failed (%d): %v", status, err)
+	}
+	var v map[string]any
+	if json.Unmarshal([]byte(respText), &v) != nil {
+		return nil, fmt.Errorf("tts: invalid response")
+	}
+	candidates, _ := v["candidates"].([]any)
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("tts: no candidates")
+	}
+	first, _ := candidates[0].(map[string]any)
+	content, _ := first["content"].(map[string]any)
+	parts, _ := content["parts"].([]any)
+	for _, p := range parts {
+		pm, _ := p.(map[string]any)
+		inline, _ := pm["inlineData"].(map[string]any)
+		if inline == nil {
+			continue
+		}
+		b64, _ := inline["data"].(string)
+		pcm, derr := base64.StdEncoding.DecodeString(b64)
+		if derr != nil || len(pcm) == 0 {
+			continue
+		}
+		return wavFromPCM(pcm, 24000), nil
+	}
+	return nil, fmt.Errorf("tts: no audio part")
+}
+
+// wavFromPCM wraps 16-bit mono PCM in a canonical WAV header.
+func wavFromPCM(pcm []byte, sampleRate int) []byte {
+	dataLen := uint32(len(pcm))
+	buf := make([]byte, 44+len(pcm))
+	copy(buf[0:4], "RIFF")
+	binary.LittleEndian.PutUint32(buf[4:8], 36+dataLen)
+	copy(buf[8:12], "WAVE")
+	copy(buf[12:16], "fmt ")
+	binary.LittleEndian.PutUint32(buf[16:20], 16)
+	binary.LittleEndian.PutUint16(buf[20:22], 1) // PCM
+	binary.LittleEndian.PutUint16(buf[22:24], 1) // mono
+	binary.LittleEndian.PutUint32(buf[24:28], uint32(sampleRate))
+	binary.LittleEndian.PutUint32(buf[28:32], uint32(sampleRate*2))
+	binary.LittleEndian.PutUint16(buf[32:34], 2) // block align
+	binary.LittleEndian.PutUint16(buf[34:36], 16)
+	copy(buf[36:40], "data")
+	binary.LittleEndian.PutUint32(buf[40:44], dataLen)
+	copy(buf[44:], pcm)
+	return buf
 }
 
 func (s *Service) chatMock(message, language string) ChatResult {
@@ -464,7 +670,10 @@ func DetectLanguage(message string) string {
 
 // TranscribeAudio — verbatim speech-to-text via Gemini multimodal. Returns the
 // transcript (mock returns a fixed Khmer phrase so the flow is testable).
-func (s *Service) TranscribeAudio(ctx context.Context, audio []byte, mimeType string) (string, error) {
+// langHint is the ISO code of the expected spoken language ("km"/"zh"/"en",
+// "" = unknown) — pinning it stops gemini-3.x from rendering Khmer speech in
+// a wrong script (observed: Amharic).
+func (s *Service) TranscribeAudio(ctx context.Context, audio []byte, mimeType, langHint string) (string, error) {
 	if !s.IsConfigured() {
 		return "ផលិតផលនេះតម្លៃប៉ុន្មាន និងមានសេវាកម្មអ្វីខ្លះ?", nil
 	}
@@ -475,7 +684,7 @@ func (s *Service) TranscribeAudio(ctx context.Context, audio []byte, mimeType st
 		"contents": []map[string]any{{
 			"role": "user",
 			"parts": []map[string]any{
-				{"text": "Transcribe this audio verbatim. Output ONLY the transcribed text in its original script — no labels, no translation, no commentary, no quotes."},
+				{"text": transcribePrompt(langHint)},
 				{"inlineData": map[string]any{"mimeType": mimeType, "data": base64.StdEncoding.EncodeToString(audio)}},
 			},
 		}},
@@ -491,7 +700,62 @@ func (s *Service) TranscribeAudio(ctx context.Context, audio []byte, mimeType st
 	if json.Unmarshal([]byte(text), &v) != nil {
 		return "", fmt.Errorf("transcribe: invalid response")
 	}
-	return strings.TrimSpace(ExtractTextFromValue(v)), nil
+	transcript := strings.TrimSpace(ExtractTextFromValue(v))
+	if isTranscriptionRefusal(transcript) {
+		return "", fmt.Errorf("transcribe: model could not decode audio (mime=%s): %s", mimeType, truncateRunes(transcript, 160))
+	}
+	return transcript, nil
+}
+
+// transcribePrompt builds the speech-to-text instruction. When the spoken
+// language is known it is pinned explicitly — gemini-3.x otherwise sometimes
+// transcribes Khmer speech into a wrong script (e.g. Amharic).
+func transcribePrompt(lang string) string {
+	label := speechLanguageLabel(lang)
+	if label == "" {
+		return "Transcribe this audio verbatim. Output ONLY the transcribed text in its original script — no labels, no translation, no commentary, no quotes."
+	}
+	return "The audio is spoken in " + label + ". Transcribe it verbatim in " + label + " script ONLY — no translation, no labels, no commentary, no quotes."
+}
+
+// speechLanguageLabel maps an ISO-ish language code to its display name
+// ("" = unknown → generic prompt).
+func speechLanguageLabel(lang string) string {
+	switch lang {
+	case "km":
+		return "Khmer (ភាសាខ្មែរ)"
+	case "zh":
+		return "Chinese (中文)"
+	case "en":
+		return "English"
+	default:
+		return ""
+	}
+}
+
+// isTranscriptionRefusal catches "I am unable to decode or process raw binary
+// audio..." style replies so they are never stored as a real transcript.
+func isTranscriptionRefusal(transcript string) bool {
+	t := strings.ToLower(transcript)
+	if t == "" {
+		return false
+	}
+	for _, marker := range []string{
+		"unable to decode",
+		"cannot decode",
+		"can't decode",
+		"unable to process raw binary",
+		"cannot process raw binary",
+		"can't process raw binary",
+		"i can't process audio",
+		"i cannot process audio",
+		"not able to process audio",
+	} {
+		if strings.Contains(t, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // LanguageLabel appends the per-request language preference line.
