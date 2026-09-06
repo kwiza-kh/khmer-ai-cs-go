@@ -538,6 +538,7 @@ func (a *App) listSessionMessages(w http.ResponseWriter, r *http.Request, sessio
 		limit = 100
 	}
 	after := parseIntOr(r.URL.Query().Get("after"), 0)
+	before := parseIntOr(r.URL.Query().Get("before"), 0)
 
 	cols := "cm.message_id, cm.role, cm.message_type, cm.content, cm.created_at, " +
 		"cm.tokens_used, cm.model_name, cm.used_mock, cm.feedback_rating, cm.feedback_comment, cm.feedback_at, " +
@@ -551,6 +552,10 @@ func (a *App) listSessionMessages(w http.ResponseWriter, r *http.Request, sessio
 	if after > 0 {
 		query += " AND cm.message_id > $2 ORDER BY cm.message_id ASC LIMIT $3"
 		args = append(args, after, limit)
+	} else if before > 0 {
+		// History paging: the page immediately older than the cursor.
+		query += " AND cm.message_id < $2 ORDER BY cm.message_id DESC LIMIT $3"
+		args = append(args, before, limit)
 	} else {
 		query += " ORDER BY cm.message_id DESC LIMIT $2"
 		args = append(args, limit)
@@ -630,7 +635,7 @@ func (a *App) listSessionMessages(w http.ResponseWriter, r *http.Request, sessio
 		}
 		msgs = append(msgs, msg)
 	}
-	// Initial page came back newest-first; flip to chronological.
+	// Initial + history pages come back newest-first; flip to chronological.
 	if after <= 0 {
 		for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
 			msgs[i], msgs[j] = msgs[j], msgs[i]

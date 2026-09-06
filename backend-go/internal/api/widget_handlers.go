@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -276,6 +277,15 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusTooManyRequests, map[string]string{"error": "发送太快，请稍候"})
 		return
 	}
+	// Layered abuse guard: the widget token ships publicly inside embed.js,
+	// so per-IP limits alone cannot stop a token-burning bot that rotates
+	// IPs. Cap total messages per token per day and new-session creation per
+	// token per hour — IP rotation cannot bypass either (fail-open).
+	dayKey := fmt.Sprintf("widget-msg-day:%d:%s", t.TokenID, time.Now().UTC().Format("20060102"))
+	if ok, err := a.Redis.IncrWindow(r.Context(), dayKey, 200, 26*time.Hour); err == nil && !ok {
+		WriteJSON(w, http.StatusTooManyRequests, map[string]string{"error": "今日咨询量已达上限，请明日再来或直接致电我们"})
+		return
+	}
 	language := req.Language
 	if language != "km" && language != "en" && language != "zh" {
 		language = "km"
@@ -288,6 +298,13 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 		_ = a.DB.QueryRow(ctx, "SELECT user_id FROM sessions WHERE session_id = $1", req.SessionID).Scan(&owner)
 	}
 	if req.SessionID == "" || owner != t.ownerID {
+		// New-session throttle: scripted abuse without client-side session
+		// persistence would flood the inbox with sessions (fail-open).
+		hourKey := fmt.Sprintf("widget-sess-hour:%d:%s", t.TokenID, time.Now().UTC().Format("2006010215"))
+		if ok, err := a.Redis.IncrWindow(r.Context(), hourKey, 20, 2*time.Hour); err == nil && !ok {
+			WriteJSON(w, http.StatusTooManyRequests, map[string]string{"error": "会话创建过于频繁，请稍后再试"})
+			return
+		}
 		req.SessionID = newUUID()
 		if _, err := a.DB.Exec(ctx,
 			"INSERT INTO sessions (session_id, user_id, platform, language, status, title, is_test, created_at) "+
@@ -325,14 +342,20 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 	a.publishMessageEvent(ctx, t.ownerID, sid, userMsgID, "user")
 
 	// Session state: handoff/resolved → canned ack instead of an AI answer.
+	// A customer cancellation ("不用转人工了") or an all-resolved queue hands
+	// the session back to the AI, mirroring the platform pipeline.
 	var status string
 	_ = a.DB.QueryRow(ctx, "SELECT status::text FROM sessions WHERE session_id = $1", sid).Scan(&status)
 	if status == "handoff" || status == "pending" {
-		ack := platform.HandoffAcknowledgement(language)
-		a.persistSystemReply(ctx, t.ownerID, sid, ack)
-		sendEvent("token", map[string]string{"text": ack})
-		sendEvent("done", map[string]any{"reply": ack, "tokens_used": 0, "cached_tokens": 0, "used_mock": false, "handoff": true})
-		return
+		if a.releaseWebHandoff(ctx, t.ownerID, sid, req.Message) {
+			status = "active"
+		} else {
+			ack := platform.HandoffAcknowledgement(language)
+			a.persistSystemReply(ctx, t.ownerID, sid, ack)
+			sendEvent("token", map[string]string{"text": ack})
+			sendEvent("done", map[string]any{"reply": ack, "tokens_used": 0, "cached_tokens": 0, "used_mock": false, "handoff": true})
+			return
+		}
 	}
 	if status == "resolved" || status == "closed" {
 		_, _ = a.DB.Exec(ctx, "UPDATE sessions SET status='active', resolved_at=NULL, closed_at=NULL WHERE session_id=$1", sid)
@@ -374,10 +397,28 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 	}
 	usage.Record(ctx, a.DB, t.ownerID, &sid, a.Gemini.ModelName(), result.PromptTokens, result.OutputTokens, result.CachedTokens)
 	a.persistChatTurn(ctx, t.ownerID, sid, req.Message, result, reply, &groundCtx, language)
-	a.classifyWebTurnAsync(t.ownerID, sid, req.Message, reply, groundCtx.HasMatch)
+	// The reply announced a handoff ("已为您转接人工…") — create the real
+	// request so an agent is actually notified. No canned ack: the reply
+	// itself already told the customer.
+	escalated := false
+	if platform.ReplyClaimsHandoff(reply) {
+		if _, err := a.DB.Exec(ctx,
+			"INSERT INTO human_handoff_requests (session_id, user_id, status, priority, trigger, reason, created_at) "+
+				"VALUES ($1,$2,'pending','high','ai_decision'::human_handoff_trigger,$3,NOW()) ON CONFLICT DO NOTHING",
+			sid, t.ownerID, "AI reply announced a handoff to the customer"); err == nil {
+			_, _ = a.DB.Exec(ctx, "UPDATE sessions SET status='handoff', escalated_at=COALESCE(escalated_at,NOW()) WHERE session_id=$1 AND status='active'", sid)
+			a.notifyUser(ctx, t.ownerID, "handoff", "New human-handoff request", "ai_decision (widget): AI announced a transfer", sid)
+			a.publishSessionEvent(ctx, t.ownerID, sid)
+			escalated = true
+		}
+	}
+	if !escalated {
+		a.classifyWebTurnAsync(t.ownerID, sid, req.Message, reply, groundCtx.HasMatch)
+	}
 	sendEvent("done", map[string]any{
 		"reply": reply, "tokens_used": result.PromptTokens + result.OutputTokens,
 		"cached_tokens": result.CachedTokens, "used_mock": result.UsedMock,
+		"escalated": escalated,
 	})
 }
 
@@ -417,76 +458,63 @@ func (a *App) widgetFeedback(w http.ResponseWriter, r *http.Request) (any, error
 	return map[string]string{"message": "ok"}, nil
 }
 
-// classifyWebTurnAsync mirrors the platform classifier for widget turns:
-// persists sentiment/intent and escalates angry / un-resolved conversations.
+// releaseWebHandoff mirrors the platform pipeline's maybeReleaseHandoff for
+// website-widget sessions: an explicit customer cancellation ("不用转人工了")
+// or an all-resolved request queue hands the session back to the AI.
+func (a *App) releaseWebHandoff(ctx context.Context, ownerID int32, sessionID, content string) bool {
+	var open int
+	_ = a.DB.QueryRow(ctx,
+		"SELECT COUNT(*) FROM human_handoff_requests WHERE session_id=$1 AND status IN ('pending','assigned')",
+		sessionID).Scan(&open)
+	if open == 0 {
+		_, _ = a.DB.Exec(ctx, "UPDATE sessions SET status='active' WHERE session_id=$1 AND status='handoff'", sessionID)
+		a.publishSessionEvent(ctx, ownerID, sessionID)
+		return true
+	}
+	if _, ok := platform.ReleaseHandoffKeyword(content); !ok {
+		return false
+	}
+	tag, err := a.DB.Exec(ctx,
+		"UPDATE human_handoff_requests SET status='resolved', resolved_at=NOW(), resolution_note='customer cancelled handoff' "+
+			"WHERE session_id=$1 AND status='pending'", sessionID)
+	if err != nil || tag.RowsAffected() == 0 {
+		return false
+	}
+	_, _ = a.DB.Exec(ctx, "UPDATE sessions SET status='active' WHERE session_id=$1 AND status='handoff'", sessionID)
+	a.publishSessionEvent(ctx, ownerID, sessionID)
+	return true
+}
+
+// classifyWebTurnAsync — widget turns go through the SAME shared classifier
+// and escalation decision as platform channels (TurnTrigger), so intent-based
+// handoffs behave identically everywhere.
 func (a *App) classifyWebTurnAsync(userID int32, sessionID, message, reply string, hasMatch bool) {
 	if !a.Gemini.IsConfigured() {
 		return
 	}
-	go func() {
+	platform.SpawnClassifier(func() {
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), 20*time.Second)
 		defer cancel()
-		prompt := "You audit one customer-service turn. Reply with ONLY a JSON object:\n" +
-			`{"sentiment":"positive|neutral|negative","intent":"one of: question, complaint, refund, order_status, price, booking, small_talk, other","confidence":0.0-1.0,"escalate":true|false}` + "\n" +
-			"escalate=true when the customer is angry, repeatedly unsatisfied, asks for something only a human can do, or the assistant answer clearly does not resolve the question.\n\n" +
-			"[KB grounded]=" + fmt.Sprintf("%t", hasMatch) + "\nCustomer: " + truncateForTitle(message, 600) + "\nAssistant: " + truncateForTitle(reply, 600)
-		out, ok := a.Gemini.GenerateFast(ctx, prompt, 10*time.Second)
+		verdict, ok := a.Gemini.JudgeTurn(ctx, message, reply, hasMatch)
 		if !ok {
+			slog.Warn("widget turn classifier failed", "session_id", sessionID)
 			return
-		}
-		var cls struct {
-			Sentiment  string  `json:"sentiment"`
-			Intent     string  `json:"intent"`
-			Confidence float64 `json:"confidence"`
-			Escalate   bool    `json:"escalate"`
-		}
-		s := strings.TrimSpace(out)
-		if i := strings.Index(s, "{"); i >= 0 {
-			if j := strings.LastIndex(s, "}"); j > i {
-				s = s[i : j+1]
-			}
-		}
-		if json.Unmarshal([]byte(s), &cls) != nil {
-			return
-		}
-		sentiment := cls.Sentiment
-		if sentiment != "positive" && sentiment != "negative" {
-			sentiment = "neutral"
-		}
-		intent := cls.Intent
-		if intent == "" || len(intent) > 64 {
-			intent = "other"
-		}
-		conf := cls.Confidence
-		if conf < 0 || conf > 1 {
-			conf = 0.5
 		}
 		_, _ = a.DB.Exec(ctx,
 			"UPDATE sessions SET sentiment=$1, sentiment_at=NOW(), intent=$2, confidence=$3 WHERE session_id=$4 AND status='active'",
-			sentiment, intent, conf, sessionID)
+			verdict.Sentiment, verdict.Intent, verdict.Confidence, sessionID)
 		var status string
 		_ = a.DB.QueryRow(ctx, "SELECT status::text FROM sessions WHERE session_id=$1", sessionID).Scan(&status)
 		if status != "active" {
 			return
 		}
-		trigger := ""
-		switch {
-		case sentiment == "negative":
-			trigger = "negative_feedback"
-		case cls.Escalate:
-			trigger = "ai_decision"
-		case !hasMatch && conf < 0.35 && intent != "small_talk":
-			trigger = "no_knowledge_base"
+		if a.Pipe == nil {
+			return
 		}
+		trigger, reason := platform.TurnTrigger(verdict, hasMatch, a.Pipe.HasReadyDocs(ctx, userID))
 		if trigger == "" {
 			return
 		}
-		_, _ = a.DB.Exec(ctx,
-			"INSERT INTO human_handoff_requests (session_id, user_id, status, priority, trigger, reason, created_at) "+
-				"VALUES ($1,$2,'pending','normal',$3::human_handoff_trigger,$4,NOW()) ON CONFLICT DO NOTHING",
-			sessionID, userID, trigger, "Classifier flagged widget turn ("+intent+")")
-		_, _ = a.DB.Exec(ctx, "UPDATE sessions SET status='handoff', escalated_at=COALESCE(escalated_at,NOW()) WHERE session_id=$1 AND status='active'", sessionID)
-		a.notifyUser(ctx, userID, "handoff", "New human-handoff request", trigger+" (widget): "+intent, sessionID)
-		a.publishSessionEvent(ctx, userID, sessionID)
-	}()
+		a.Pipe.EscalateHuman(ctx, userID, sessionID, trigger, reason+" (widget)")
+	})
 }

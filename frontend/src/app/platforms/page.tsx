@@ -2,18 +2,21 @@
 
 import * as React from "react";
 import useSWR, { mutate as globalMutate } from "swr";
-import { apiFetch, ApiError } from "@/lib/api";
+import {
+  apiFetch, ApiError, getMetaOAuthSession,
+  type MetaOAuthPage, type MetaOAuthSession,
+} from "@/lib/api";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { PageHeader } from "@/components/page-header";
-import { Globe, MessageCircle, ExternalLink, CheckCircle2, Loader2, Link2, Camera, Plus, RefreshCw, Unplug, CircleAlert, Radio, Clock3, Inbox, Send, RotateCcw, type LucideIcon } from "lucide-react";
+import { Globe, MessageCircle, ExternalLink, CheckCircle2, Loader2, Link2, Camera, Plus, RefreshCw, Unplug, CircleAlert, Radio, Clock3, Inbox, Send, RotateCcw, Copy, type LucideIcon } from "lucide-react";
 import { toast } from "sonner";
 import { useI18n } from "@/lib/i18n";
 
-type PlatformKey = "meta" | "instagram" | "telegram" | "whatsapp" | "line";
+type PlatformKey = "meta" | "instagram" | "telegram" | "whatsapp" | "line" | "zalo";
 
 interface PlatformConfig {
   config_id?: number;
@@ -52,20 +55,24 @@ interface PlatformMeta {
   label: PlatformKey;
   fields: { labelKey: string; key: keyof PlatformConfig; placeholder: string; type?: string }[];
   docsUrl: string;
+  // Guided setup: numbered steps shown on the "new account" card (i18n keys).
+  guide?: string[];
+  // "auto" = webhook registered programmatically on verify; "manual" = the
+  // merchant pastes the webhook URL into the provider console.
+  webhookMode?: "auto" | "manual";
+  // Per-field "where do I get this" links (field key → docs URL).
+  fieldHelp?: Record<string, { labelKey: string; url: string }>;
 }
 
-interface MetaOAuthPage {
-  page_id: string;
-  page_name: string;
-  instagram_business_id?: string;
-  instagram_name?: string;
+// Public webhook endpoint for a platform, derived from the baked API base.
+function platformWebhookURL(label: string): string {
+  const api = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080/api/v1").replace(/\/$/, "");
+  const origin = api.replace(/\/api\/v1$/, "");
+  return `${origin}/api/v1/webhook/${label}`;
 }
 
-interface MetaOAuthSession {
-  session_id: string;
-  pages: MetaOAuthPage[];
-  expires_at: string;
-}
+// MetaOAuthPage / MetaOAuthSession types live in lib/api.ts (shared with the
+// API layer's getMetaOAuthSession).
 
 interface PlatformInboundEvent {
   event_id: number;
@@ -138,6 +145,11 @@ const PLATFORMS: PlatformMeta[] = [
       { labelKey: "pf.field.webhookSecret", key: "webhook_secret", placeholder: "telegram_webhook_secret", type: "password" },
     ],
     docsUrl: "https://core.telegram.org/bots/api",
+    guide: ["pf.guide.telegram.s1", "pf.guide.telegram.s2", "pf.guide.telegram.s3"],
+    webhookMode: "auto",
+    fieldHelp: {
+      bot_token: { labelKey: "pf.help.openBotFather", url: "https://t.me/BotFather" },
+    },
   },
   {
     icon: MessageCircle,
@@ -162,6 +174,28 @@ const PLATFORMS: PlatformMeta[] = [
       { labelKey: "pf.field.channelSecret", key: "webhook_secret", placeholder: "line_channel_secret", type: "password" },
     ],
     docsUrl: "https://developers.line.biz/en/docs/messaging-api/overview/",
+    guide: ["pf.guide.line.s1", "pf.guide.line.s2", "pf.guide.line.s3"],
+    webhookMode: "auto",
+    fieldHelp: {
+      access_token: { labelKey: "pf.help.lineConsole", url: "https://developers.line.biz/console/" },
+      webhook_secret: { labelKey: "pf.help.lineConsole", url: "https://developers.line.biz/console/" },
+    },
+  },
+  {
+    icon: MessageCircle,
+    tone: "info",
+    label: "zalo",
+    fields: [
+      { labelKey: "pf.field.accessToken", key: "access_token", placeholder: "Zalo OA access_token", type: "password" },
+      { labelKey: "pf.field.appSecret", key: "webhook_secret", placeholder: "zalo_oa_secret_key", type: "password" },
+    ],
+    docsUrl: "https://developers.zalo.me/docs/",
+    guide: ["pf.guide.zalo.s1", "pf.guide.zalo.s2", "pf.guide.zalo.s3"],
+    webhookMode: "manual",
+    fieldHelp: {
+      access_token: { labelKey: "pf.help.zaloConsole", url: "https://developers.zalo.me/console/" },
+      webhook_secret: { labelKey: "pf.help.zaloConsole", url: "https://developers.zalo.me/console/" },
+    },
   },
 ];
 
@@ -230,10 +264,11 @@ export default function PlatformsPage() {
       toast.error(callbackError === "cancelled" ? t("pf.metaCancelled") : t("pf.metaFailed"));
       return;
     }
-
-    void apiFetch<MetaOAuthSession>(`/platforms/meta/oauth/sessions/${sessionID}`)
+    // sessionID comes from the URL — getMetaOAuthSession allowlists it to a
+    // UUID shape, percent-encodes, and the server re-validates ownership.
+    void getMetaOAuthSession(sessionID ?? "")
       .then(setMetaOAuthSession)
-      .catch((err) => toast.error(err instanceof ApiError ? err.message : t("pf.metaLoadFailed")));
+      .catch((err) => toast.error(err instanceof Error && err.message === "invalid oauth session id" ? t("pf.metaFailed") : err instanceof ApiError ? err.message : t("pf.metaLoadFailed")));
   }, [t]);
 
   const startMetaOAuth = async () => {
@@ -890,10 +925,37 @@ function PlatformCard({ meta, initial, onClose }: { meta: PlatformMeta; initial?
 
         {initial?.config_id && initial.is_active && <ConnectionReadiness health={health} />}
 
+        {/* Guided setup — shown while creating a new account. */}
+        {!initial?.config_id && meta.guide && (
+          <div className="mb-4 rounded-lg border border-info/25 bg-info/5 px-3 py-2.5">
+            <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-info">{t("pf.guideTitle")}</p>
+            <ol className="space-y-1.5">
+              {meta.guide.map((key, index) => (
+                <li key={key} className="flex items-start gap-2 text-xs leading-relaxed text-foreground">
+                  <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full bg-info/15 text-[9px] font-bold text-info">{index + 1}</span>
+                  <span className="min-w-0">{t(key)}</span>
+                </li>
+              ))}
+            </ol>
+          </div>
+        )}
+
         <div className="space-y-3">
           {meta.fields.map((f) => (
             <div key={String(f.key)}>
-              <label className="text-xs text-muted-foreground mb-1 block">{t(f.labelKey)}</label>
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <label className="text-xs text-muted-foreground">{t(f.labelKey)}</label>
+                {meta.fieldHelp?.[String(f.key)] && (
+                  <a
+                    href={meta.fieldHelp[String(f.key)]!.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline"
+                  >
+                    <ExternalLink className="size-3" /> {t(meta.fieldHelp[String(f.key)]!.labelKey)}
+                  </a>
+                )}
+              </div>
               <Input
                 type={f.type || "text"}
                 value={String((form[f.key] as string | undefined) ?? "")}
@@ -904,6 +966,26 @@ function PlatformCard({ meta, initial, onClose }: { meta: PlatformMeta; initial?
             </div>
           ))}
         </div>
+
+        {/* Webhook endpoint — copyable; auto platforms register themselves. */}
+        {!initial?.config_id && (meta.label === "telegram" || meta.label === "line" || meta.label === "zalo" || meta.label === "meta") && (
+          <div className="mt-3 rounded-lg border border-border bg-muted/30 px-2.5 py-2">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-[11px] font-medium text-muted-foreground">{t("pf.webhookUrl")}</p>
+              {meta.webhookMode === "auto" ? (
+                <Badge variant="outline" className="h-4 gap-1 border-success/40 px-1.5 text-[10px] text-success">
+                  <CheckCircle2 className="size-2.5" /> {t("pf.webhookAuto")}
+                </Badge>
+              ) : (
+                <button type="button" onClick={() => { void navigator.clipboard.writeText(platformWebhookURL(meta.label)); toast.success(t("widget.copiedToast")); }} className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline">
+                  <Copy className="size-3" /> {t("pf.copyWebhook")}
+                </button>
+              )}
+            </div>
+            <code className="mt-1 block truncate text-[10px] text-muted-foreground">{platformWebhookURL(meta.label)}</code>
+            {meta.webhookMode === "manual" && <p className="mt-1 text-[10px] leading-relaxed text-warning">{t("pf.webhookManual")}</p>}
+          </div>
+        )}
 
         {initial?.config_id && (
           <div className="mt-4 space-y-3">

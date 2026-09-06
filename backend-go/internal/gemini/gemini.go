@@ -99,17 +99,48 @@ func FromPartsFull(apiKey, modelName, systemPrompt string, maxTokens int) *Servi
 	return s
 }
 
-func (s *Service) IsConfigured() bool { return s.client != nil }
+// The mutable fields below are swapped by HotReload while requests are in
+// flight, so every access must take s.mu (read or write) — see the accessors.
+func (s *Service) IsConfigured() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.client != nil
+}
 
-func (s *Service) ModelName() string { return s.modelName }
+func (s *Service) ModelName() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.modelName
+}
+
+// snapshot returns an immutable copy of the serving config for one request.
+type servingConfig struct {
+	apiKey      string
+	modelName   string
+	systemPrompt string
+	maxTokens   int
+	client      *http.Client
+}
+
+func (s *Service) snapshot() servingConfig {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return servingConfig{apiKey: s.apiKey, modelName: s.modelName, systemPrompt: s.systemPrompt, maxTokens: s.maxTokens, client: s.client}
+}
 
 func (s *Service) SetModelName(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if name != "" {
 		s.modelName = NormalizeModelName(name)
 	}
 }
 
-func (s *Service) SetSystemPrompt(prompt string) { s.systemPrompt = prompt }
+func (s *Service) SetSystemPrompt(prompt string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.systemPrompt = prompt
+}
 
 // HotReload swaps the serving client's credentials/model/prompt in place so
 // admin edits apply without a restart. Empty key leaves the client in place.
@@ -171,12 +202,28 @@ func fastModel() string {
 	return FastModel
 }
 
+// fastModelName — the fast model for THIS service instance. The package
+// constant ages out (retired model names 404), so it defaults to the
+// currently configured serving model, which tracks what actually works.
+// GEMINI_FAST_MODEL still overrides for cost tuning.
+func (s *Service) fastModelName() string {
+	if v := strings.TrimSpace(os.Getenv("GEMINI_FAST_MODEL")); v != "" {
+		return v
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.modelName != "" {
+		return s.modelName
+	}
+	return FastModel
+}
+
 func (s *Service) generateURLFor(model string) string {
-	return fmt.Sprintf("%s/models/%s:generateContent?key=%s", apiBase, NormalizeModelName(model), url.QueryEscape(s.apiKey))
+	return fmt.Sprintf("%s/models/%s:generateContent?key=%s", apiBase, NormalizeModelName(model), url.QueryEscape(s.snapshot().apiKey))
 }
 
 func (s *Service) embedURL() string {
-	return fmt.Sprintf("%s/models/%s:embedContent?key=%s", apiBase, EmbeddingModel, url.QueryEscape(s.apiKey))
+	return fmt.Sprintf("%s/models/%s:embedContent?key=%s", apiBase, EmbeddingModel, url.QueryEscape(s.snapshot().apiKey))
 }
 
 // postWithRetry posts JSON, retrying 5xx/429/transport errors up to 3 times
@@ -226,14 +273,15 @@ func (s *Service) chatWithModel(ctx context.Context, message string, history []H
 	if !s.IsConfigured() {
 		return s.chatMock(message, language), nil
 	}
+	cfg := s.snapshot()
 	if model == "" {
-		model = s.modelName
+		model = cfg.modelName
 	}
 	body := s.buildRequestBody(message, history, language)
 	status, text, err := s.postWithRetry(ctx, s.generateURLFor(model), body)
-	if err == nil && (status >= 500 || status == http.StatusTooManyRequests) && model == s.modelName {
+	if err == nil && (status >= 500 || status == http.StatusTooManyRequests) && model == cfg.modelName {
 		// Degrade to the fast model once on overload.
-		status, text, err = s.postWithRetry(ctx, s.generateURLFor(fastModel()), body)
+		status, text, err = s.postWithRetry(ctx, s.generateURLFor(s.fastModelName()), body)
 	}
 	if err != nil {
 		return s.chatMock(message, language), nil
@@ -249,7 +297,7 @@ func (s *Service) chatWithModel(ctx context.Context, message string, history []H
 }
 
 func (s *Service) buildRequestBody(message string, history []HistoryItem, language string) map[string]any {
-	system := s.systemPrompt
+	system := s.snapshot().systemPrompt
 	if system == "" {
 		system = DefaultSystemPrompt
 	}
@@ -275,7 +323,7 @@ func (s *Service) buildRequestBody(message string, history []HistoryItem, langua
 		},
 		"contents": contents,
 		"generationConfig": map[string]any{
-			"maxOutputTokens": s.maxTokens,
+			"maxOutputTokens": s.snapshot().maxTokens,
 		},
 	}
 }
@@ -308,7 +356,7 @@ func usageFromValue(v map[string]any) (int, int, int) {
 // streamURL builds the SSE streaming endpoint for a model.
 func (s *Service) streamURLFor(model string) string {
 	return fmt.Sprintf("%s/models/%s:streamGenerateContent?alt=sse&key=%s",
-		apiBase, NormalizeModelName(model), url.QueryEscape(s.apiKey))
+		apiBase, NormalizeModelName(model), url.QueryEscape(s.snapshot().apiKey))
 }
 
 // ChatStream runs a turn with token-level streaming: onToken is invoked for
@@ -392,7 +440,7 @@ func (s *Service) DescribeImage(ctx context.Context, data []byte, mimeType strin
 		}},
 		"generationConfig": map[string]any{"maxOutputTokens": 512},
 	}
-	status, text, err := s.postWithRetry(ctx, s.generateURLFor(fastModel()), body)
+	status, text, err := s.postWithRetry(ctx, s.generateURLFor(s.fastModelName()), body)
 	if err != nil {
 		return "", fmt.Errorf("describe image request: %w", err)
 	}
@@ -443,7 +491,7 @@ func (s *Service) SynthesizeSpeech(ctx context.Context, text string) ([]byte, er
 			},
 		},
 	}
-	target := fmt.Sprintf("%s/models/%s:generateContent?key=%s", apiBase, NormalizeModelName(TTSModel()), url.QueryEscape(s.apiKey))
+	target := fmt.Sprintf("%s/models/%s:generateContent?key=%s", apiBase, NormalizeModelName(TTSModel()), url.QueryEscape(s.snapshot().apiKey))
 	status, respText, err := s.postWithRetry(ctx, target, body)
 	if err != nil || status != http.StatusOK {
 		return nil, fmt.Errorf("tts failed (%d): %v", status, err)
@@ -523,7 +571,7 @@ func (s *Service) GenerateFast(ctx context.Context, prompt string, timeout time.
 		}},
 		"generationConfig": map[string]any{"temperature": 0.0, "maxOutputTokens": 2048},
 	}
-	status, text, err := s.postWithRetry(ctx, s.generateURLFor(fastModel()), body)
+	status, text, err := s.postWithRetry(ctx, s.generateURLFor(s.fastModelName()), body)
 	if err != nil || status != http.StatusOK {
 		return "", false
 	}
@@ -566,6 +614,63 @@ func (s *Service) RewriteSearchQuery(ctx context.Context, message string, histor
 	return &reply
 }
 
+// TurnVerdict is the classifier's decision for one customer-service turn.
+type TurnVerdict struct {
+	Sentiment  string  `json:"sentiment"`
+	Intent     string  `json:"intent"`
+	Confidence float64 `json:"confidence"`
+	Escalate   bool    `json:"escalate"`
+}
+
+// JudgeTurn — intent-aware audit of one customer-service turn. The escalation
+// bar is deliberately broad: anything a human must own (complaints, refunds,
+// delivery problems, customization, bulk/negotiation, payment/legal terms,
+// anger, or an answer that clearly missed) sets Escalate=true.
+func (s *Service) JudgeTurn(ctx context.Context, customerMsg, reply string, hasMatch bool) (TurnVerdict, bool) {
+	prompt := "You audit one customer-service turn for a building-materials store. Reply with ONLY a JSON object:\n" +
+		`{"sentiment":"positive|neutral|negative","intent":"one of: question, complaint, refund, order_status, price, booking, customization, bulk_order, delivery, payment, legal, small_talk, other","confidence":0.0-1.0,"escalate":true|false}` + "\n" +
+		"Set escalate=true when ANY of these apply:\n" +
+		"- The customer is angry, rude, or frustrated, or repeats the same complaint.\n" +
+		"- Refund / return / money-back demands, even if the assistant quoted a policy.\n" +
+		"- Delivery problems: late, damaged, wrong items, changing the address after ordering.\n" +
+		"- Custom sizing or special specifications that are not in the catalog (sales must confirm).\n" +
+		"- Bulk / wholesale orders, price negotiation, or asking for a better price.\n" +
+		"- Contract, invoice, payment terms, or legal threats.\n" +
+		"- The answer clearly did not resolve the question, or the customer says it is wrong.\n" +
+		"- The customer explicitly asks for a human.\n" +
+		"escalate=false only for well-answered product questions, greetings, and small talk.\n\n" +
+		"[KB grounded]=" + fmt.Sprintf("%t", hasMatch) + "\n" +
+		"Customer: " + truncateRunes(customerMsg, 600) + "\n" +
+		"Assistant: " + truncateRunes(reply, 600)
+
+	out, ok := s.GenerateFast(ctx, prompt, 10*time.Second)
+	if !ok {
+		return TurnVerdict{}, false
+	}
+	trimmed := strings.TrimSpace(out)
+	if i := strings.Index(trimmed, "{"); i >= 0 {
+		if j := strings.LastIndex(trimmed, "}"); j > i {
+			trimmed = trimmed[i : j+1]
+		}
+	}
+	var v TurnVerdict
+	if json.Unmarshal([]byte(trimmed), &v) != nil {
+		return TurnVerdict{}, false
+	}
+	switch v.Sentiment {
+	case "positive", "negative":
+	default:
+		v.Sentiment = "neutral"
+	}
+	if v.Intent == "" || len(v.Intent) > 64 {
+		v.Intent = "other"
+	}
+	if v.Confidence < 0 || v.Confidence > 1 {
+		v.Confidence = 0.5
+	}
+	return v, true
+}
+
 // RerankChunks scores fused candidates 0-10 for question relevance. Nil on
 // any failure — callers keep the RRF ordering.
 func (s *Service) RerankChunks(ctx context.Context, query string, chunks []string) []float32 {
@@ -590,6 +695,77 @@ func (s *Service) RerankChunks(ctx context.Context, query string, chunks []strin
 // GenerateEmbedding — 768-dim vector for document indexing.
 func (s *Service) GenerateEmbedding(ctx context.Context, text string) ([]float32, error) {
 	return s.embed(ctx, text, "RETRIEVAL_DOCUMENT")
+}
+
+// GenerateEmbeddings — batch document embeddings via batchEmbedContents
+// (up to 100 texts per call; falls back to per-text calls on batch failure).
+func (s *Service) GenerateEmbeddings(ctx context.Context, texts []string) ([][]float32, error) {
+	if !s.IsConfigured() {
+		mock := MockEmbedding()
+		out := make([][]float32, len(texts))
+		for i := range out {
+			out[i] = mock
+		}
+		return out, nil
+	}
+	out := make([][]float32, 0, len(texts))
+	for start := 0; start < len(texts); start += 100 {
+		end := start + 100
+		if end > len(texts) {
+			end = len(texts)
+		}
+		batch := texts[start:end]
+		vecs, err := s.embedBatch(ctx, batch)
+		if err != nil {
+			// Fall back to per-text embedding so one bad batch never blocks
+			// indexing.
+			for _, text := range batch {
+				vec, err := s.embed(ctx, text, "RETRIEVAL_DOCUMENT")
+				if err != nil {
+					return nil, err
+				}
+				vecs = append(vecs, vec)
+			}
+		}
+		out = append(out, vecs...)
+	}
+	return out, nil
+}
+
+func (s *Service) embedBatch(ctx context.Context, texts []string) ([][]float32, error) {
+	requests := make([]map[string]any, len(texts))
+	for i, text := range texts {
+		requests[i] = map[string]any{
+			"model":                "models/" + EmbeddingModel,
+			"content":              map[string]any{"parts": []map[string]any{{"text": text}}},
+			"taskType":             "RETRIEVAL_DOCUMENT",
+			"outputDimensionality": embeddingVectorDimension,
+		}
+	}
+	batchURL := fmt.Sprintf("%s/models/%s:batchEmbedContents?key=%s", apiBase, EmbeddingModel, url.QueryEscape(s.snapshot().apiKey))
+	status, respText, err := s.postWithRetry(ctx, batchURL, map[string]any{"requests": requests})
+	if err != nil {
+		return nil, fmt.Errorf("batchEmbedContents request: %w", err)
+	}
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("batchEmbedContents failed (%d): %s", status, truncateRunes(respText, 300))
+	}
+	var v struct {
+		Embeddings []struct {
+			Values []float32 `json:"values"`
+		} `json:"embeddings"`
+	}
+	if json.Unmarshal([]byte(respText), &v) != nil || len(v.Embeddings) != len(texts) {
+		return nil, fmt.Errorf("batchEmbedContents: invalid response")
+	}
+	out := make([][]float32, len(v.Embeddings))
+	for i, e := range v.Embeddings {
+		if len(e.Values) == 0 {
+			return nil, fmt.Errorf("batchEmbedContents: empty vector at %d", i)
+		}
+		out[i] = e.Values
+	}
+	return out, nil
 }
 
 // GenerateQueryEmbedding — query-time vector, cached 5 minutes.
@@ -793,44 +969,88 @@ func MockEmbedding() []float32 {
 	return out
 }
 
-// StripSourceMarkers removes "[Source N]" citation leftovers from replies.
+// StripSourceMarkers removes citation leftovers like "[Source 1]",
+// "(Source 2)" or "（Source 1、Source 2）" from customer-visible replies.
+// A stripped group leaves no space before punctuation or line end, and
+// exactly one space when text continues after it.
 func StripSourceMarkers(text string) string {
 	var out []rune
 	runes := []rune(text)
+	closers := map[rune]rune{'[': ']', '(': ')', '（': '）', '【': '】'}
 	for i := 0; i < len(runes); {
-		if runes[i] == '[' {
-			j := i + 1
-			for j < len(runes) && (runes[j] == ' ' || runes[j] == '\t') {
-				j++
+		closer, isBracket := closers[runes[i]]
+		if !isBracket {
+			out = append(out, runes[i])
+			i++
+			continue
+		}
+		if end, ok := scanSourceGroup(runes, i, closer); ok {
+			// Trim the spaces the model emitted before the marker.
+			n := 0
+			for len(out) > 0 && (out[len(out)-1] == ' ' || out[len(out)-1] == '\t') {
+				out = out[:len(out)-1]
+				n++
 			}
-			rest := string(runes[j:])
-			if strings.HasPrefix(strings.ToLower(rest), "source") {
-				k := j + len("source")
-				for k < len(runes) && runes[k] == ' ' {
-					k++
-				}
-				digits := 0
-				for k < len(runes) && runes[k] >= '0' && runes[k] <= '9' {
-					k++
-					digits++
-				}
-				for k < len(runes) && (runes[k] == ' ' || runes[k] == '\t') {
-					k++
-				}
-				if digits > 0 && k < len(runes) && runes[k] == ']' {
-					// Confirmed marker — trim spaces emitted before it.
-					for len(out) > 0 && (out[len(out)-1] == ' ' || out[len(out)-1] == '\t') {
-						out = out[:len(out)-1]
-					}
-					i = k + 1
-					continue
-				}
+			// Keep one space when ordinary text continues after the group
+			// (unless the original text already provides that space).
+			if n > 0 && end < len(runes) && runes[end] != ' ' && runes[end] != '\t' && !isCitationBoundary(runes[end]) {
+				out = append(out, ' ')
 			}
+			i = end
+			continue
 		}
 		out = append(out, runes[i])
 		i++
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// isCitationBoundary reports whether the character after a stripped citation
+// group makes a trailing space unnecessary (punctuation or line end).
+func isCitationBoundary(r rune) bool {
+	switch r {
+	case '.', ',', ';', ':', '!', '?', ')', ']', '》', '。', '，', '、', '；', '：', '！', '？', '\n', '\r':
+		return true
+	}
+	return false
+}
+
+// scanSourceGroup parses a citation group starting at the opening bracket —
+// "source N" entries separated by , 、 ， ; — returning the index just past
+// the matching closing bracket.
+func scanSourceGroup(runes []rune, i int, closer rune) (int, bool) {
+	j := i + 1
+	for {
+		for j < len(runes) && (runes[j] == ' ' || runes[j] == '\t') {
+			j++
+		}
+		if !strings.HasPrefix(strings.ToLower(string(runes[j:])), "source") {
+			return 0, false
+		}
+		k := j + len("source")
+		for k < len(runes) && runes[k] == ' ' {
+			k++
+		}
+		digits := 0
+		for k < len(runes) && runes[k] >= '0' && runes[k] <= '9' {
+			k++
+			digits++
+		}
+		if digits == 0 {
+			return 0, false
+		}
+		for k < len(runes) && (runes[k] == ' ' || runes[k] == '\t') {
+			k++
+		}
+		if k < len(runes) && runes[k] == closer {
+			return k + 1, true
+		}
+		if k < len(runes) && (runes[k] == ',' || runes[k] == '、' || runes[k] == '，' || runes[k] == '；' || runes[k] == ';') {
+			j = k + 1
+			continue
+		}
+		return 0, false
+	}
 }
 
 // ExtractTextFromValue concatenates candidate text parts.

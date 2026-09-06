@@ -15,6 +15,10 @@ import (
 // alive: campaign dispatch, SLA breach scanning, knowledge URL freshness, and
 // billing cycle rollover. These run for the lifetime of the process.
 func (a *App) StartBackgroundTasks(ctx context.Context) {
+	// Recover campaigns stranded in 'sending' by a crash/restart — the
+	// scanner only picks up 'scheduled', so without this reset they would be
+	// stuck forever.
+	_, _ = a.DB.Exec(ctx, "UPDATE marketing_campaigns SET status='scheduled' WHERE status='sending' AND updated_at < NOW() - INTERVAL '10 minutes'")
 	go a.loop(ctx, 30*time.Second, a.dispatchDueCampaigns)
 	go a.loop(ctx, 60*time.Second, a.scanSLABreaches)
 	go a.loop(ctx, 6*time.Hour, a.refreshURLDocuments)

@@ -531,6 +531,61 @@ export async function retryKnowledge(docId: number) {
   return apiFetch<{ message: string }>(`/knowledge/${docId}/retry`, { method: "POST" });
 }
 
+export interface MetaOAuthSession {
+  session_id: string;
+  pages: MetaOAuthPage[];
+  expires_at: string;
+}
+
+export interface MetaOAuthPage {
+  page_id: string;
+  page_name: string;
+  instagram_business_id?: string;
+  instagram_name?: string;
+}
+
+// getMetaOAuthSession — fetch the selectable pages of a completed Meta OAuth
+// session. sessionID is a server-issued UUID; it is percent-encoded before
+// joining the path (defense in depth — the server validates ownership).
+export async function getMetaOAuthSession(sessionID: string) {
+  const safe = encodeURIComponent(sessionID.trim());
+  if (!/^[0-9a-fA-F-]{36}$/.test(safe)) {
+    throw new Error("invalid oauth session id");
+  }
+  return apiFetch<MetaOAuthSession>(`/platforms/meta/oauth/sessions/${safe}`);
+}
+
+export interface KnowledgeDocQuality {
+  doc_id: number;
+  title: string;
+  uses: number;
+  thumbs_up: number;
+  thumbs_down: number;
+  index_status: string;
+}
+
+export interface KnowledgeGap {
+  query: string;
+  hits: number;
+  top_score: number | null;
+  last_seen: string;
+}
+
+export async function knowledgeDocQuality() {
+  return apiFetch<{ data: KnowledgeDocQuality[] }>("/knowledge/quality");
+}
+
+export async function knowledgeGaps() {
+  return apiFetch<{ data: KnowledgeGap[] }>("/knowledge/gaps");
+}
+
+export async function knowledgeGapDraft(query: string) {
+  return apiFetch<{ title: string; content: string; language: string }>("/knowledge/gaps/draft", {
+    method: "POST",
+    body: JSON.stringify({ query }),
+  });
+}
+
 export async function deleteKnowledge(docId: number) {
   return apiFetch<{ message: string }>(`/knowledge/${docId}`, { method: "DELETE" });
 }
@@ -601,9 +656,10 @@ export async function deleteSession(id: string) {
   return apiFetch<{ message: string }>(`/chat/sessions/${id}`, { method: "DELETE" });
 }
 
-export async function listSessionMessages(id: string, limit = 100, after = 0) {
+export async function listSessionMessages(id: string, limit = 100, after = 0, before = 0) {
   const qs = new URLSearchParams({ limit: String(limit) });
   if (after > 0) qs.set("after", String(after));
+  if (before > 0) qs.set("before", String(before));
   return apiFetch<ChatMessageItem[]>(`/chat/sessions/${id}/messages?${qs}`);
 }
 

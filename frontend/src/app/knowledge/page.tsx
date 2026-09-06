@@ -2,8 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  deleteKnowledge, getKnowledgeDocument, listKnowledge, ragQuery, retryKnowledge,
-  updateKnowledgeDocument, type KnowledgeDocument,
+  deleteKnowledge, getKnowledgeDocument, knowledgeDocQuality, knowledgeGaps, knowledgeGapDraft,
+  listKnowledge, ragQuery, retryKnowledge, updateKnowledgeDocument,
+  type KnowledgeDocument, type KnowledgeDocQuality, type KnowledgeGap,
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,7 +17,8 @@ import {
 } from "@/components/ui/dialog";
 import {
   BookOpen, ChevronDown, ChevronUp, File, FileCode2, FileSpreadsheet, FileText,
-  FileType2, Loader2, Pencil, RotateCw, Save, Search, Trash2, Plus, type LucideIcon,
+  FileType2, Loader2, Pencil, RotateCw, Save, Search, Sparkles, ThumbsDown, ThumbsUp,
+  Trash2, Plus, type LucideIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/page-header";
@@ -91,11 +93,44 @@ export default function KnowledgePage() {
   const [editorDoc, setEditorDoc] = useState<KnowledgeDocument | null>(null);
   // Incremented on each open to remount the editor and reset its form state.
   const [editorKey, setEditorKey] = useState(0);
+  // Prefills a fresh create form (AI draft generated from a knowledge gap).
+  const [editorDraft, setEditorDraft] = useState<{ title: string; content: string; language: string } | null>(null);
+
+  // Knowledge-quality & gap insights.
+  const [quality, setQuality] = useState<KnowledgeDocQuality[]>([]);
+  const [gaps, setGaps] = useState<KnowledgeGap[]>([]);
+  const [drafting, setDrafting] = useState<string | null>(null);
+
+  const loadInsights = useCallback(async () => {
+    try {
+      const [q, g] = await Promise.all([knowledgeDocQuality(), knowledgeGaps()]);
+      setQuality(q.data || []);
+      setGaps(g.data || []);
+    } catch {
+      // Insights are auxiliary — never break the page over them.
+    }
+  }, []);
 
   const openCreateEditor = () => {
     setEditorDoc(null);
+    setEditorDraft(null);
     setEditorKey((k) => k + 1);
     setEditorOpen(true);
+  };
+
+  const handleDraft = async (gapQuery: string) => {
+    setDrafting(gapQuery);
+    try {
+      const draft = await knowledgeGapDraft(gapQuery);
+      setEditorDraft({ title: draft.title, content: draft.content, language: draft.language });
+      setEditorDoc(null);
+      setEditorKey((k) => k + 1);
+      setEditorOpen(true);
+    } catch (err: unknown) {
+      toast.error((err as Error).message || t("kb.gapDraftFailed"));
+    } finally {
+      setDrafting(null);
+    }
   };
 
   const openEditEditor = (doc: KnowledgeDocument) => {
@@ -118,9 +153,12 @@ export default function KnowledgePage() {
   }, [t]);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => { void loadDocs(); }, 0);
+    const timer = window.setTimeout(() => {
+      void loadDocs();
+      void loadInsights();
+    }, 0);
     return () => window.clearTimeout(timer);
-  }, [loadDocs]);
+  }, [loadDocs, loadInsights]);
 
   const hasActiveIndexing = documents.some((doc) => doc.index_status === "pending" || doc.index_status === "indexing");
   useEffect(() => {
@@ -324,6 +362,69 @@ export default function KnowledgePage() {
             </div>
           )}
 
+          {(quality.some((q) => q.uses > 0 || q.thumbs_up > 0 || q.thumbs_down > 0) || gaps.length > 0) && (
+            <div className="grid gap-4 lg:grid-cols-2">
+              <Card>
+                <CardHeader className="border-b border-border pb-2">
+                  <CardTitle className="flex items-center gap-2 text-sm">
+                    <ThumbsUp className="size-3.5 text-success" />{t("kb.qualityTitle")}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-1.5 pt-4">
+                  {quality.filter((q) => q.uses > 0 || q.thumbs_up > 0 || q.thumbs_down > 0).length === 0 ? (
+                    <p className="text-xs text-muted-foreground">{t("kb.qualityEmpty")}</p>
+                  ) : (
+                    quality
+                      .filter((q) => q.uses > 0 || q.thumbs_up > 0 || q.thumbs_down > 0)
+                      .slice(0, 6)
+                      .map((q) => (
+                        <div key={q.doc_id} className="flex items-center justify-between gap-2 rounded-lg border border-border/60 px-3 py-1.5">
+                          <p className="min-w-0 truncate text-xs font-medium">{q.title}</p>
+                          <div className="flex shrink-0 items-center gap-2 text-[11px] text-muted-foreground">
+                            <span>{tf("kb.qualityUses", { n: q.uses })}</span>
+                            <span className="text-success">👍{q.thumbs_up}</span>
+                            <span className={q.thumbs_down > 0 ? "font-medium text-destructive" : ""}>👎{q.thumbs_down}</span>
+                          </div>
+                        </div>
+                      ))
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="border-b border-border pb-2">
+                  <CardTitle className="flex items-center gap-2 text-sm">
+                    <Sparkles className="size-3.5 text-warning" />{t("kb.gapsTitle")}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-1.5 pt-4">
+                  {gaps.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">{t("kb.gapsEmpty")}</p>
+                  ) : (
+                    gaps.slice(0, 6).map((gap) => (
+                      <div key={gap.query} className="flex items-center justify-between gap-2 rounded-lg border border-border/60 px-3 py-1.5">
+                        <p className="min-w-0 truncate text-xs">{gap.query}</p>
+                        <div className="flex shrink-0 items-center gap-2">
+                          <Badge variant="secondary" className="h-4 px-1.5 text-[10px]">{tf("kb.qualityUses", { n: gap.hits })}</Badge>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-6 gap-1 px-2 text-[11px]"
+                            onClick={() => { void handleDraft(gap.query); }}
+                            disabled={drafting !== null}
+                          >
+                            {drafting === gap.query ? <Loader2 className="size-3 animate-spin" /> : <Sparkles className="size-3" />}
+                            {t("kb.gapDraft")}
+                          </Button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+          )}
+
           <section className="space-y-4 pt-2">
             <div className="flex items-end justify-between gap-3">
               <div>
@@ -515,7 +616,13 @@ export default function KnowledgePage() {
           if (!open) setEditorDoc(null);
         }}
         document={editorDoc}
-        onSaved={() => void loadDocs(false)}
+        initialTitle={editorDraft?.title}
+        initialContent={editorDraft?.content}
+        initialLanguage={editorDraft?.language}
+        onSaved={() => {
+          void loadDocs(false);
+          void loadInsights();
+        }}
       />
     </div>
   );

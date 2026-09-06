@@ -7,9 +7,11 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"khmer-ai-cs-go/internal/gemini"
 	"khmer-ai-cs-go/internal/rag"
 )
 
@@ -117,6 +119,9 @@ func (a *App) uploadKnowledge(w http.ResponseWriter, r *http.Request) (any, erro
 // UploadKnowledgeFile — multipart file upload (file/category/language fields).
 func (a *App) uploadKnowledgeFile(w http.ResponseWriter, r *http.Request) (any, error) {
 	user, _ := UserFrom(r)
+	// Hard cap the whole request before any parsing/reading (DoS guard);
+	// the effective file limit stays MaxUploadBytes, checked after parse.
+	r.Body = http.MaxBytesReader(w, r.Body, 40<<20)
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		return nil, ErrBadRequest(fmt.Sprintf("multipart error: %v", err))
 	}
@@ -342,4 +347,109 @@ func parseInt64(s string) (int64, error) {
 	var n int64
 	_, err := fmt.Sscanf(strings.TrimSpace(s), "%d", &n)
 	return n, err
+}
+
+// ============================================
+// Knowledge quality & gap drafting
+// ============================================
+
+// knowledgeDocQuality — per-document usage and 👍/👎 outcome stats, so
+// operators can spot documents that get cited often but rated poorly.
+func (a *App) knowledgeDocQuality(w http.ResponseWriter, r *http.Request) (any, error) {
+	user, _ := UserFrom(r)
+	rows, err := a.DB.Query(r.Context(), `
+		WITH cited AS (
+			SELECT (s->>'doc_id')::int AS doc_id, COUNT(*)::bigint AS uses
+			FROM chat_messages cm
+			JOIN sessions ses ON ses.session_id = cm.session_id
+			CROSS JOIN LATERAL jsonb_array_elements(cm.sources_json::jsonb) AS s
+			WHERE ses.user_id = $1 AND cm.role = 'model' AND cm.sources_json IS NOT NULL
+			GROUP BY 1
+		), rated AS (
+			SELECT (s->>'doc_id')::int AS doc_id,
+			       COUNT(*) FILTER (WHERE cm.feedback_rating = 1)::bigint  AS up,
+			       COUNT(*) FILTER (WHERE cm.feedback_rating = -1)::bigint AS down
+			FROM chat_messages cm
+			JOIN sessions ses ON ses.session_id = cm.session_id
+			CROSS JOIN LATERAL jsonb_array_elements(cm.sources_json::jsonb) AS s
+			WHERE ses.user_id = $1 AND cm.role = 'model' AND cm.sources_json IS NOT NULL
+			  AND cm.feedback_rating IS NOT NULL
+			GROUP BY 1
+		)
+		SELECT kd.doc_id, kd.title, COALESCE(u.uses, 0), COALESCE(rt.up, 0), COALESCE(rt.down, 0), kd.index_status::text
+		FROM knowledge_documents kd
+		LEFT JOIN cited u ON u.doc_id = kd.doc_id
+		LEFT JOIN rated rt ON rt.doc_id = kd.doc_id
+		WHERE kd.uploaded_by = $1
+		ORDER BY COALESCE(rt.down, 0) DESC, COALESCE(u.uses, 0) DESC
+		LIMIT 50`, user.UserID)
+	if err != nil {
+		return nil, ErrInternal("查询失败")
+	}
+	defer rows.Close()
+	out := make([]map[string]any, 0)
+	for rows.Next() {
+		var docID int32
+		var title string
+		var uses, up, down int64
+		var status string
+		if err := rows.Scan(&docID, &title, &uses, &up, &down, &status); err != nil {
+			continue
+		}
+		out = append(out, map[string]any{
+			"doc_id": docID, "title": title, "uses": uses,
+			"thumbs_up": up, "thumbs_down": down, "index_status": status,
+		})
+	}
+	return map[string]any{"data": out}, rows.Err()
+}
+
+// knowledgeGapDraft — draft a KB article for a customer query the knowledge
+// base could not answer. The draft returns to the operator for review and is
+// published through the normal editor flow; it is never saved automatically.
+func (a *App) knowledgeGapDraft(w http.ResponseWriter, r *http.Request) (any, error) {
+	var req struct {
+		Query string `json:"query"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10)).Decode(&req); err != nil {
+		return nil, ErrBadRequest("请求格式错误")
+	}
+	query := strings.TrimSpace(req.Query)
+	if query == "" || len([]rune(query)) > 300 {
+		return nil, ErrBadRequest("query 不能为空且不超过 300 字")
+	}
+	lang := gemini.DetectLanguage(query)
+	if lang == "" {
+		lang = "en"
+	}
+	languageName := map[string]string{"km": "Khmer", "zh": "Simplified Chinese", "en": "English"}[lang]
+	prompt := "Draft a concise customer-support knowledge-base article that directly answers the " +
+		"customer question below. Write in " + languageName + ". Output Markdown: the FIRST line must be " +
+		"\"# <short title>\", followed by the article body. State facts only — never invent prices, " +
+		"policies or deadlines; where a fact is unknown write a placeholder like [待确认]. Max 200 words.\n\n" +
+		"Customer question: " + query
+	draft, ok := a.Gemini.GenerateFast(r.Context(), prompt, 20*time.Second)
+	if !ok || strings.TrimSpace(draft) == "" {
+		return nil, &ApiError{http.StatusBadGateway, "草稿生成失败，请稍后重试"}
+	}
+	draft = strings.TrimSpace(gemini.StripSourceMarkers(draft))
+	title := query
+	if body, found := strings.CutPrefix(draft, "# "); found {
+		if parts := strings.SplitN(body, "\n", 2); len(parts) == 2 {
+			title = strings.TrimSpace(parts[0])
+			draft = strings.TrimSpace(parts[1])
+		}
+	}
+	return map[string]any{"title": title, "content": draft, "language": lang}, nil
+}
+
+// knowledgeGaps — the tenant's own no-hit queries (KB growth candidates).
+func (a *App) knowledgeGaps(w http.ResponseWriter, r *http.Request) (any, error) {
+	user, _ := UserFrom(r)
+	days := parseIntOr(r.URL.Query().Get("days"), 14)
+	gaps, err := a.RAG.KnowledgeGaps(r.Context(), user.UserID, int64(days))
+	if err != nil {
+		return nil, ErrInternal("查询失败")
+	}
+	return map[string]any{"data": gaps}, nil
 }

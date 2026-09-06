@@ -65,6 +65,22 @@ func (c *Client) CheckRateLimit(ctx context.Context, key string, max uint32) (bo
 	return uint32(count) <= max, nil
 }
 
+// IncrWindow — fixed-window counter with a custom expiry (e.g. daily or
+// hourly caps). Reports whether the incremented count stays within max.
+func (c *Client) IncrWindow(ctx context.Context, key string, max int64, ttl time.Duration) (bool, error) {
+	rk := "ratelimit:" + key
+	count, err := c.rdb.Incr(ctx, rk).Result()
+	if err != nil {
+		return false, err
+	}
+	if count == 1 {
+		if err := c.rdb.Expire(ctx, rk, ttl).Err(); err != nil {
+			return false, err
+		}
+	}
+	return count <= max, nil
+}
+
 // PushWindow appends one JSON message onto the sliding window (RPush + trim to
 // the newest `window` entries + refresh TTL).
 func (c *Client) PushWindow(ctx context.Context, key string, v any, window int64, ttl time.Duration) error {

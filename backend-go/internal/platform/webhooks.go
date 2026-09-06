@@ -58,7 +58,9 @@ func (wh *Webhooks) MetaWebhook(w http.ResponseWriter, r *http.Request) {
 		mode := q.Get("hub.mode")
 		token := q.Get("hub.verify_token")
 		challenge := q.Get("hub.challenge")
-		if mode == "subscribe" && token == wh.MetaVerifyToken {
+		// An unset verify token would accept "subscribe" + empty token —
+		// anyone could pass the challenge check.
+		if wh.MetaVerifyToken != "" && mode == "subscribe" && token == wh.MetaVerifyToken {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(challenge))
 			return
@@ -78,7 +80,7 @@ func (wh *Webhooks) MetaWebhook(w http.ResponseWriter, r *http.Request) {
 		messaging, _ := entry["messaging"].([]any)
 		for _, m := range messaging {
 			msg, _ := m.(map[string]any)
-			cfg := wh.resolveConfig(r.Context(), "meta", entryID)
+			cfg := wh.resolveMetaConfig(r.Context(), entryID)
 			if cfg == nil {
 				continue
 			}
@@ -168,14 +170,12 @@ func (wh *Webhooks) TelegramWebhook(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	// Verify the Telegram bot API secret token (set via setWebhook). Reject
-	// unsigned events when a secret is configured.
-	if cfg.WebhookSecret != "" {
-		got := r.Header.Get("X-Telegram-Bot-Api-Secret-Token")
-		if got != cfg.WebhookSecret {
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
+	// Verify the Telegram bot API secret token (set via setWebhook). A
+	// missing/undecryptable secret means we cannot authenticate the caller —
+	// reject rather than accept unsigned events.
+	if !VerifyTelegramSecret(cfg.WebhookSecret, r.Header.Get("X-Telegram-Bot-Api-Secret-Token")) {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
 	}
 	wh.recordHealth(r.Context(), cfg.ConfigID, "connected", "", "Receiving Telegram webhook events")
 
@@ -360,6 +360,11 @@ func (wh *Webhooks) LineWebhook(w http.ResponseWriter, r *http.Request) {
 		if evType != "message" || userID == "" {
 			continue
 		}
+		// LINE's webhook self-test fires a signed "Hello, world!" event from
+		// the reserved all-zero user id — never treat it as a customer.
+		if userID == "U00000000000000000000000000000000" {
+			continue
+		}
 		text := ""
 		var media map[string]any
 		if msgType == "text" {
@@ -383,11 +388,78 @@ func (wh *Webhooks) LineWebhook(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
 }
 
+// ZaloWebhook handles Zalo OA callback events (X-ZEvent-Signature signed).
+// Event shapes consumed: user_send_text, user_send_image (others ignored).
+func (wh *Webhooks) ZaloWebhook(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(io.LimitReader(r.Body, 8*1024*1024))
+	signature := r.Header.Get("X-ZEvent-Signature")
+
+	cfg := wh.resolveZaloConfig(r.Context())
+	if cfg == nil {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if !ZaloVerifySignature(cfg.WebhookSecret, signature, body) {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	wh.recordHealth(r.Context(), cfg.ConfigID, "connected", "", "Receiving signed Zalo webhook events")
+	var payload map[string]any
+	_ = json.Unmarshal(body, &payload)
+	eventName, _ := payload["event_name"].(string)
+	sender, _ := payload["sender"].(map[string]any)
+	userID := ""
+	if sender != nil {
+		userID, _ = sender["id"].(string)
+	}
+	message, _ := payload["message"].(map[string]any)
+	if userID == "" || message == nil {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+		return
+	}
+	text := ""
+	var media map[string]any
+	switch eventName {
+	case "user_send_text":
+		text, _ = message["text"].(string)
+	case "user_send_image":
+		if atts, ok := message["attachments"].([]any); ok {
+			for _, a := range atts {
+				att, _ := a.(map[string]any)
+				attType, _ := att["type"].(string)
+				p, _ := att["payload"].(map[string]any)
+				u, _ := p["url"].(string)
+				if attType == "image" && u != "" {
+					media = map[string]any{"kind": "photo", "source_url": u, "mime_type": "image/jpeg"}
+					text = "[Customer sent an image]"
+					break
+				}
+			}
+		}
+	default:
+		// Stickers / files / location events are ignored for now.
+	}
+	if text == "" {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+		return
+	}
+	msgID, _ := message["msg_id"].(string)
+	externalID := msgID
+	if externalID == "" {
+		externalID = userID
+	}
+	_ = wh.Pipe.EnqueueInboundEvent(r.Context(), cfg.ConfigID, "zalo", externalID, userID, "", text, media)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"status":"ok"}`))
+}
+
 // WhatsAppWebhook handles GET verification + POST messages.
 func (wh *Webhooks) WhatsAppWebhook(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		q := r.URL.Query()
-		if q.Get("hub.mode") == "subscribe" && q.Get("hub.verify_token") == wh.MetaVerifyToken {
+		if wh.MetaVerifyToken != "" && q.Get("hub.mode") == "subscribe" && q.Get("hub.verify_token") == wh.MetaVerifyToken {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(q.Get("hub.challenge")))
 			return
@@ -396,6 +468,19 @@ func (wh *Webhooks) WhatsAppWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body, _ := io.ReadAll(io.LimitReader(r.Body, 8*1024*1024))
+	// Signature gate: WhatsApp Cloud API signs payloads with the app secret
+	// via X-Hub-Signature-256. Without this check anyone could forge inbound
+	// messages and make the pipeline reply through the tenant's WhatsApp
+	// credentials. Reject unsigned/invalid requests outright.
+	cfg := wh.resolveWhatsAppConfig(r.Context())
+	if cfg == nil || cfg.WebhookSecret == "" {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	if !verifyMetaSignature(cfg.WebhookSecret, r.Header.Get("X-Hub-Signature-256"), body) {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
 	var payload map[string]any
 	_ = json.Unmarshal(body, &payload)
 	entries, _ := payload["entry"].([]any)
@@ -412,10 +497,6 @@ func (wh *Webhooks) WhatsAppWebhook(w http.ResponseWriter, r *http.Request) {
 				msgID, _ := msg["id"].(string)
 				msgType, _ := msg["type"].(string)
 				if from == "" || msgID == "" {
-					continue
-				}
-				cfg := wh.resolveWhatsAppConfig(r.Context())
-				if cfg == nil {
 					continue
 				}
 				wh.recordHealth(r.Context(), cfg.ConfigID, "connected", "", "Receiving signed WhatsApp webhook events")
@@ -448,20 +529,33 @@ func (wh *Webhooks) WhatsAppWebhook(w http.ResponseWriter, r *http.Request) {
 // Config resolution
 // ============================================
 
-func (wh *Webhooks) resolveConfig(ctx context.Context, platform, pageID string) *webhookConfig {
+// resolveMetaConfig routes a Meta webhook entry to its config. Messenger
+// events carry the Page ID as the entry id, Instagram messaging events carry
+// the Instagram professional account ID — match each against its own column.
+// No exact match means the entry does not belong to any configured channel:
+// routing it to an arbitrary fallback config would deliver the event to the
+// wrong tenant (whose secret check then fails) — drop it instead.
+func (wh *Webhooks) resolveMetaConfig(ctx context.Context, entryID string) *webhookConfig {
+	if cfg := wh.metaConfigWhere(ctx,
+		"platform = 'meta'::platform_type AND page_id = $1", entryID); cfg != nil {
+		return cfg
+	}
+	return wh.metaConfigWhere(ctx,
+		"platform = 'instagram'::platform_type AND instagram_business_id = $1", entryID)
+}
+
+func (wh *Webhooks) metaConfigWhere(ctx context.Context, where, id string) *webhookConfig {
+	query := "SELECT config_id, user_id, platform::text, webhook_secret FROM platform_configs WHERE " + where + " AND is_active = true ORDER BY config_id LIMIT 1"
 	var cfg webhookConfig
 	var secretEnc *string
-	err := wh.DB.QueryRow(ctx,
-		"SELECT config_id, user_id, platform::text, webhook_secret FROM platform_configs WHERE platform = $1::platform_type AND page_id = $2 AND is_active = true LIMIT 1",
-		platform, pageID).Scan(&cfg.ConfigID, &cfg.UserID, &cfg.Platform, &secretEnc)
+	var err error
+	if id != "" {
+		err = wh.DB.QueryRow(ctx, query, id).Scan(&cfg.ConfigID, &cfg.UserID, &cfg.Platform, &secretEnc)
+	} else {
+		err = wh.DB.QueryRow(ctx, query).Scan(&cfg.ConfigID, &cfg.UserID, &cfg.Platform, &secretEnc)
+	}
 	if err != nil {
-		// Fall back: any active config of this platform.
-		err = wh.DB.QueryRow(ctx,
-			"SELECT config_id, user_id, platform::text, webhook_secret FROM platform_configs WHERE platform = $1::platform_type AND is_active = true LIMIT 1",
-			platform).Scan(&cfg.ConfigID, &cfg.UserID, &cfg.Platform, &secretEnc)
-		if err != nil {
-			return nil
-		}
+		return nil
 	}
 	if secretEnc != nil {
 		cfg.WebhookSecret, _ = wh.Sealer.Decrypt(*secretEnc)
@@ -499,6 +593,21 @@ func (wh *Webhooks) resolveLineConfig(ctx context.Context) *webhookConfig {
 	return &cfg
 }
 
+func (wh *Webhooks) resolveZaloConfig(ctx context.Context) *webhookConfig {
+	var cfg webhookConfig
+	var secretEnc *string
+	err := wh.DB.QueryRow(ctx,
+		"SELECT config_id, user_id, platform::text, webhook_secret FROM platform_configs WHERE platform = 'zalo'::platform_type AND is_active = true LIMIT 1").
+		Scan(&cfg.ConfigID, &cfg.UserID, &cfg.Platform, &secretEnc)
+	if err != nil {
+		return nil
+	}
+	if secretEnc != nil {
+		cfg.WebhookSecret, _ = wh.Sealer.Decrypt(*secretEnc)
+	}
+	return &cfg
+}
+
 func (wh *Webhooks) resolveWhatsAppConfig(ctx context.Context) *webhookConfig {
 	var cfg webhookConfig
 	var secretEnc *string
@@ -523,10 +632,12 @@ func jsonNumber(f float64) string {
 	return string(b)
 }
 
-// VerifyTelegramSecret — SHA-256 HMAC check for X-Telegram-Bot-Api-Secret-Token.
+// VerifyTelegramSecret — constant-time comparison of the Telegram webhook
+// secret header. An empty configured secret cannot authenticate anyone, so it
+// rejects (fail-closed).
 func VerifyTelegramSecret(secret, provided string) bool {
 	if secret == "" {
-		return true
+		return false
 	}
 	return hmac.Equal([]byte(secret), []byte(provided))
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { API_BASE } from "./auth-client";
 
 export interface InboxRealtimeEvent {
@@ -23,6 +23,7 @@ function inboxWebSocketURL(): string {
 
 export function useInboxRealtime(token: string | null, onEvent: (event: InboxRealtimeEvent) => void) {
   const onEventRef = useRef(onEvent);
+  const [connected, setConnected] = useState(false);
 
   useEffect(() => {
     onEventRef.current = onEvent;
@@ -40,6 +41,7 @@ export function useInboxRealtime(token: string | null, onEvent: (event: InboxRea
       socket = new WebSocket(inboxWebSocketURL(), ["khmer-ai-cs", token]);
       socket.onopen = () => {
         reconnectAttempts = 0;
+        setConnected(true);
         // Catch-up: events missed while the socket was down are gone forever —
         // nudge the page to refetch immediately instead of waiting for the
         // next fallback poll.
@@ -61,6 +63,7 @@ export function useInboxRealtime(token: string | null, onEvent: (event: InboxRea
       };
       socket.onerror = () => socket?.close();
       socket.onclose = () => {
+        setConnected(false);
         if (stopped) return;
         const delay = Math.min(1000 * 2 ** reconnectAttempts, 30000);
         reconnectAttempts += 1;
@@ -75,4 +78,6 @@ export function useInboxRealtime(token: string | null, onEvent: (event: InboxRea
       socket?.close();
     };
   }, [token]);
+
+  return connected;
 }

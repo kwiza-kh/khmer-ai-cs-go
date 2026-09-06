@@ -31,6 +31,13 @@ func (a *App) createCampaign(w http.ResponseWriter, r *http.Request) (any, error
 	if req.ConfigID <= 0 || req.TemplateName == "" {
 		return nil, ErrBadRequest("config_id and template_name are required")
 	}
+	// The campaign dispatches through this platform config — it must be one
+	// of the caller's own, otherwise a tenant could send templates through
+	// another tenant's WhatsApp account.
+	var configOwner int32
+	if err := a.DB.QueryRow(r.Context(), "SELECT user_id FROM platform_configs WHERE config_id = $1", req.ConfigID).Scan(&configOwner); err != nil || configOwner != user.UserID {
+		return nil, ErrBadRequest("无效的 config_id")
+	}
 	platform := "whatsapp"
 	if req.Platform != nil && *req.Platform != "" {
 		platform = *req.Platform

@@ -1,6 +1,6 @@
 // Package platform — reply-window policy (port of platform_policy.go).
-// Telegram/LINE always open; WhatsApp templates exempt; the rest must reply
-// within 24h of the customer's last inbound message.
+// Telegram/LINE/Zalo always open; WhatsApp templates exempt; the rest must
+// reply within 24h of the customer's last inbound message.
 package platform
 
 import (
@@ -21,7 +21,7 @@ func (e *PolicyError) Error() string { return e.Msg }
 // EnsureReplyWindow returns the expiry when a reply is allowed, or a
 // *PolicyError when the window has closed.
 func EnsureReplyWindow(ctx context.Context, db *pgxpool.Pool, platform string, configID int32, sessionID string, isTemplate bool, now time.Time) (time.Time, error) {
-	if platform == "telegram" || platform == "line" || (platform == "whatsapp" && isTemplate) {
+	if platform == "telegram" || platform == "line" || platform == "zalo" || (platform == "whatsapp" && isTemplate) {
 		return now.Add(CustomerCareWindowHours * time.Hour), nil
 	}
 	if platform != "whatsapp" && platform != "meta" && platform != "instagram" {

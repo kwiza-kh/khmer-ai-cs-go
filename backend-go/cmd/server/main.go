@@ -125,8 +125,12 @@ func main() {
 	whMux.HandleFunc("/api/v1/webhook/whatsapp", webhooks.WhatsAppWebhook)
 	whMux.HandleFunc("/api/v1/webhook/telegram", webhooks.TelegramWebhook)
 	whMux.HandleFunc("/api/v1/webhook/line", webhooks.LineWebhook)
-	// Meta OAuth browser callback (public, redirects to frontend).
+	whMux.HandleFunc("/api/v1/webhook/zalo", webhooks.ZaloWebhook)
+	// Meta OAuth browser callback (public, redirects to frontend). The
+	// /platforms path is the one typically configured in the Meta dashboard
+	// and META_OAUTH_REDIRECT_URL; keep both alive so either works.
 	whMux.HandleFunc("/api/v1/webhook/meta/oauth/callback", app.MetaOAuthCallbackRaw())
+	whMux.HandleFunc("/api/v1/platforms/meta/oauth/callback", app.MetaOAuthCallbackRaw())
 	app.WebhookHandler = whMux
 
 	// Background periodic jobs (campaign dispatch, SLA scan, URL refresh, billing).

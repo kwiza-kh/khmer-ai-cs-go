@@ -45,6 +45,10 @@ func (a *App) Router() http.Handler {
 	authed.HandleFunc("PUT /api/v1/knowledge/{id}", a.handleDoc(a.updateKnowledgeDocument))
 	authed.HandleFunc("DELETE /api/v1/knowledge/{id}", a.handleDoc(a.deleteKnowledge))
 	authed.HandleFunc("POST /api/v1/knowledge/{id}/retry", a.handleDoc(a.retryKnowledge))
+	// Literal segments outrank the {id} pattern above.
+	authed.Handle("GET /api/v1/knowledge/quality", a.handle(a.knowledgeDocQuality))
+	authed.Handle("GET /api/v1/knowledge/gaps", a.handle(a.knowledgeGaps))
+	authed.Handle("POST /api/v1/knowledge/gaps/draft", a.handle(a.knowledgeGapDraft))
 
 	// Chat (plain + SSE streaming) + sessions.
 	authed.Handle("POST /api/v1/chat", a.handle(a.chatPlain))
@@ -226,6 +230,9 @@ func (a *App) Router() http.Handler {
 	// Platform webhooks (mounted by main; no auth — signature-verified).
 	if a.WebhookHandler != nil {
 		mux.Handle("/api/v1/webhook/", a.WebhookHandler)
+		// Meta OAuth browser callback: Facebook redirects the user here with
+		// no JWT. Public by design — the handler validates the signed state.
+		mux.Handle("/api/v1/platforms/meta/oauth/callback", a.WebhookHandler)
 	}
 
 	// Outer chain: request-id → CORS → request logging.

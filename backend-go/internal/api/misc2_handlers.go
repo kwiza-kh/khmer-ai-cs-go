@@ -658,9 +658,24 @@ type setPlanRequest struct {
 
 func (a *App) setPlan(w http.ResponseWriter, r *http.Request) (any, error) {
 	user, _ := UserFrom(r)
+	// Plan changes move real money (quota limits): tenant admins upgrading
+	// themselves to enterprise is a billing bypass — platform-side only.
+	if user.Role != "platform_admin" {
+		return nil, ErrForbidden("套餐变更请联系平台管理员")
+	}
 	var req setPlanRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+	var targetID int32
+	var body struct {
+		UserID *int32 `json:"user_id"`
+		setPlanRequest
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
 		return nil, ErrBadRequest("请求格式错误")
+	}
+	req = body.setPlanRequest
+	targetID = user.UserID
+	if body.UserID != nil {
+		targetID = *body.UserID
 	}
 	if req.Plan != "free" && req.Plan != "pro" && req.Plan != "enterprise" {
 		return nil, ErrBadRequest("invalid plan")
@@ -672,10 +687,10 @@ func (a *App) setPlan(w http.ResponseWriter, r *http.Request) (any, error) {
 	case "enterprise":
 		msgQ, docQ = 1<<62, 1<<62
 	}
-	_, _ = a.DB.Exec(r.Context(), "INSERT INTO tenant_billing (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING", user.UserID)
+	_, _ = a.DB.Exec(r.Context(), "INSERT INTO tenant_billing (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING", targetID)
 	_, _ = a.DB.Exec(r.Context(),
 		"UPDATE tenant_billing SET plan = $1, monthly_message_quota = $2, monthly_doc_quota = $3 WHERE user_id = $4",
-		req.Plan, msgQ, docQ, user.UserID)
+		req.Plan, msgQ, docQ, targetID)
 	return map[string]string{"message": "套餐已更新"}, nil
 }
 

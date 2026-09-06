@@ -8,6 +8,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -21,6 +22,7 @@ const (
 	metaGraphBase  = "https://graph.facebook.com"
 	telegramBase   = "https://api.telegram.org"
 	lineBase       = "https://api.line.me"
+	zaloBase       = "https://openapi.zalo.me"
 	httpTimeout    = 15 * time.Second
 	maxDownloadCap = 25 * 1024 * 1024
 )
@@ -124,16 +126,24 @@ func (m *MetaClient) do(req *http.Request, what string) (map[string]any, error) 
 // VerifyConnection confirms the token works and returns the account name.
 func (m *MetaClient) VerifyConnection(ctx context.Context, platform string) (string, error) {
 	var path string
+	params := url.Values{}
 	if platform == "whatsapp" {
-		path = fmt.Sprintf("/%s?fields=id,display_phone_number,verified_name", m.accountID(platform))
+		path = "/" + m.accountID(platform)
+		params.Set("fields", "id,display_phone_number,verified_name")
+	} else if platform == "instagram" && m.InstagramBusiness != "" {
+		// Verify the Instagram professional account itself — /me with a Page
+		// token resolves to the Page, which proves nothing about IG access.
+		path = "/" + m.InstagramBusiness
+		params.Set("fields", "id,name,username")
 	} else {
 		fields := "id,name"
 		if platform == "instagram" {
 			fields = "id,name,username"
 		}
-		path = "/me?fields=" + fields
+		path = "/me"
+		params.Set("fields", fields)
 	}
-	v, err := m.get(ctx, path, nil)
+	v, err := m.get(ctx, path, params)
 	if err != nil {
 		return "", err
 	}
@@ -607,5 +617,192 @@ func LineVerifySignature(secret, signature string, body []byte) bool {
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(body)
 	expected := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+	return hmac.Equal([]byte(expected), []byte(signature))
+}
+
+// WebhookAPIError marks a failure of the webhook-management API (2xx status
+// but LINE reported an error inside the body).
+type WebhookAPIError struct{ Msg string }
+
+func (e *WebhookAPIError) Error() string { return e.Msg }
+
+func (l *LineClient) webhookCall(ctx context.Context, method, path string, body any) (map[string]any, error) {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, method, lineBase+path, strings.NewReader(string(payload)))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+l.ChannelAccessToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("line webhook api: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+	var v map[string]any
+	_ = json.Unmarshal(raw, &v)
+	if resp.StatusCode >= 400 {
+		msg, _ := v["message"].(string)
+		return nil, fmt.Errorf("line webhook api failed (%d): %s", resp.StatusCode, msg)
+	}
+	return v, nil
+}
+
+// SetWebhookEndpoint registers the Messaging API webhook URL programmatically
+// (saves the merchant a trip to the LINE Developers console).
+func (l *LineClient) SetWebhookEndpoint(ctx context.Context, endpoint string) error {
+	if _, err := l.webhookCall(ctx, http.MethodPut, "/v2/bot/channel/webhook/endpoint", map[string]any{"endpoint": endpoint}); err != nil {
+		return err
+	}
+	return nil
+}
+
+// GetWebhookEndpointInfo returns the currently configured webhook URL.
+func (l *LineClient) GetWebhookEndpointInfo(ctx context.Context) (string, error) {
+	v, err := l.webhookCall(ctx, http.MethodGet, "/v2/bot/channel/webhook/info", map[string]any{})
+	if err != nil {
+		return "", err
+	}
+	u, _ := v["endpoint"].(string)
+	return u, nil
+}
+
+// TestWebhookEndpoint asks LINE to fire a test event at the webhook and
+// returns (success, detailMessage).
+func (l *LineClient) TestWebhookEndpoint(ctx context.Context) (bool, string, error) {
+	v, err := l.webhookCall(ctx, http.MethodPost, "/v2/bot/channel/webhook/test", map[string]any{})
+	if err != nil {
+		return false, "", err
+	}
+	success, _ := v["success"].(bool)
+	msg, _ := v["message"].(string)
+	return success, msg, nil
+}
+
+// ============================================
+// Zalo (Vietnam — Zalo Official Account)
+// ============================================
+
+// ZaloClient talks to the Zalo OA OpenAPI (customer-care messaging).
+type ZaloClient struct{ AccessToken string }
+
+func NewZaloClient(accessToken string) *ZaloClient { return &ZaloClient{AccessToken: accessToken} }
+
+// do executes one Zalo API call. Zalo reports application-level failures
+// inside HTTP 200 bodies as {"error": <code>, "message": "..."} — both shapes
+// are surfaced as errors here.
+func (z *ZaloClient) do(ctx context.Context, method, path string, body any) (map[string]any, error) {
+	var rdr io.Reader
+	if body != nil {
+		payload, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+		rdr = strings.NewReader(string(payload))
+	}
+	req, err := http.NewRequestWithContext(ctx, method, zaloBase+path, rdr)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("access_token", z.AccessToken)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("zalo %s: %w", path, err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024))
+	var v map[string]any
+	_ = json.Unmarshal(raw, &v)
+	if resp.StatusCode >= 400 {
+		msg, _ := v["message"].(string)
+		return nil, fmt.Errorf("zalo %s failed (%d): %s", path, resp.StatusCode, msg)
+	}
+	if code, ok := v["error"].(float64); ok && code != 0 {
+		msg, _ := v["message"].(string)
+		return nil, fmt.Errorf("zalo %s error %d: %s", path, int(code), msg)
+	}
+	return v, nil
+}
+
+// SendText sends a customer-care text message (v3.0 CS API). Returns msg_id.
+func (z *ZaloClient) SendText(ctx context.Context, userID, text string) (string, error) {
+	v, err := z.do(ctx, http.MethodPost, "/v3.0/oa/message/cs", map[string]any{
+		"recipient": map[string]any{"user_id": userID},
+		"message":   map[string]any{"text": text},
+	})
+	if err != nil {
+		return "", err
+	}
+	if data, ok := v["data"].(map[string]any); ok {
+		if id, ok := data["msg_id"].(string); ok {
+			return id, nil
+		}
+	}
+	return "", nil
+}
+
+// SendImage sends an image attachment from a public URL (v3.0 CS API).
+func (z *ZaloClient) SendImage(ctx context.Context, userID, imageURL string) (string, error) {
+	v, err := z.do(ctx, http.MethodPost, "/v3.0/oa/message/cs", map[string]any{
+		"recipient": map[string]any{"user_id": userID},
+		"message":   map[string]any{"type": "image", "payload": map[string]any{"url": imageURL}},
+	})
+	if err != nil {
+		return "", err
+	}
+	if data, ok := v["data"].(map[string]any); ok {
+		if id, ok := data["msg_id"].(string); ok {
+			return id, nil
+		}
+	}
+	return "", nil
+}
+
+// GetProfile returns (displayName, avatarURL) for a Zalo user id.
+func (z *ZaloClient) GetProfile(ctx context.Context, userID string) (string, string, error) {
+	data, _ := json.Marshal(map[string]any{"user_id": userID})
+	v, err := z.do(ctx, http.MethodGet, "/v2.0/oa/getprofile?data="+url.QueryEscape(string(data)), nil)
+	if err != nil {
+		return "", "", err
+	}
+	inner, _ := v["data"].(map[string]any)
+	name, _ := inner["display_name"].(string)
+	avatar := ""
+	if avatars, ok := inner["avatars"].(map[string]any); ok {
+		avatar, _ = avatars["large"].(string)
+		if avatar == "" {
+			avatar, _ = avatars["medium"].(string)
+		}
+	}
+	return name, avatar, nil
+}
+
+// VerifyOA validates the OA access token and returns the OA display name.
+func (z *ZaloClient) VerifyOA(ctx context.Context) (string, error) {
+	v, err := z.do(ctx, http.MethodGet, "/v2.0/oa/getoa", nil)
+	if err != nil {
+		return "", err
+	}
+	inner, _ := v["data"].(map[string]any)
+	name, _ := inner["name"].(string)
+	return name, nil
+}
+
+// ZaloVerifySignature — X-ZEvent-Signature HMAC-SHA256 hex check. An empty
+// configured secret cannot authenticate anyone, so it rejects (fail-closed).
+func ZaloVerifySignature(secret, signature string, body []byte) bool {
+	if secret == "" {
+		return false
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(body)
+	expected := hex.EncodeToString(mac.Sum(nil))
 	return hmac.Equal([]byte(expected), []byte(signature))
 }

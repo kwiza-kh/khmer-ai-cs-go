@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"khmer-ai-cs-go/internal/gemini"
+	"khmer-ai-cs-go/internal/platform"
 )
 
 // ============================================
@@ -82,7 +83,7 @@ func (a *App) upsertBusinessHours(w http.ResponseWriter, r *http.Request) (any, 
 // isBusinessOpen — whether the caller is open right now.
 func (a *App) isBusinessOpen(w http.ResponseWriter, r *http.Request) (any, error) {
 	user, _ := UserFrom(r)
-	now := time.Now()
+	now := time.Now().In(platform.PhnomPenhLoc())
 	weekday := int(now.Weekday())
 	hm := now.Format("15:04")
 	var openTime, closeTime string
@@ -347,7 +348,10 @@ func (a *App) listUsers(w http.ResponseWriter, r *http.Request) (any, error) {
 }
 
 // updateUserRole — change a user's role / active state (admin).
+// platform_admin is the cross-tenant super role: a tenant admin must never
+// be able to grant it to themselves or demote a real platform admin.
 func (a *App) updateUserRole(w http.ResponseWriter, r *http.Request, userID int32) (any, error) {
+	caller, _ := UserFrom(r)
 	var req struct {
 		Role     *string `json:"role"`
 		IsActive *bool   `json:"is_active"`
@@ -358,10 +362,32 @@ func (a *App) updateUserRole(w http.ResponseWriter, r *http.Request, userID int3
 	if req.Role == nil && req.IsActive == nil {
 		return nil, ErrBadRequest("无更新字段")
 	}
+	var targetRole string
+	if err := a.DB.QueryRow(r.Context(), "SELECT role::text FROM users WHERE user_id = $1", userID).Scan(&targetRole); err != nil {
+		return nil, ErrNotFound("用户不存在")
+	}
 	if req.Role != nil {
+		switch *req.Role {
+		case "admin", "agent", "viewer":
+			// Tenant roles — grantable by tenant admins.
+		case "platform_admin":
+			// Only an existing platform_admin may grant the super role.
+			if caller.Role != "platform_admin" {
+				return nil, ErrForbidden("无权分配该角色")
+			}
+		default:
+			return nil, ErrBadRequest("未知角色")
+		}
+		// Protect platform_admin accounts from tenant-level changes.
+		if targetRole == "platform_admin" && caller.Role != "platform_admin" {
+			return nil, ErrForbidden("无权修改平台管理员")
+		}
 		_, _ = a.DB.Exec(r.Context(), "UPDATE users SET role = $1::user_role WHERE user_id = $2", *req.Role, userID)
 	}
 	if req.IsActive != nil {
+		if targetRole == "platform_admin" && caller.Role != "platform_admin" {
+			return nil, ErrForbidden("无权修改平台管理员")
+		}
 		_, _ = a.DB.Exec(r.Context(), "UPDATE users SET is_active = $1 WHERE user_id = $2", *req.IsActive, userID)
 	}
 	return map[string]string{"message": "已更新"}, nil

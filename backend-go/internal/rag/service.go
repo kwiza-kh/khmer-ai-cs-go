@@ -4,6 +4,8 @@ package rag
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"os"
@@ -13,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"khmer-ai-cs-go/internal/gemini"
@@ -151,6 +154,12 @@ func (s *Service) SpawnIndexWorkers(ctx context.Context) {
 	go func() {
 		_, _ = s.DB.Exec(ctx,
 			"UPDATE knowledge_documents SET index_status = 'pending', index_error = '' WHERE index_status = 'indexing'")
+		// Vectors from a different embedding model are not comparable with
+		// today's query vectors — re-embed those docs with the current model.
+		_, _ = s.DB.Exec(ctx,
+			"UPDATE knowledge_documents SET index_status = 'pending' "+
+				"WHERE index_status = 'ready' AND embedding_model <> '' AND embedding_model <> $1",
+			gemini.EmbeddingModel)
 	}()
 	for i := 0; i < indexWorkerCount; i++ {
 		go func() {
@@ -242,13 +251,9 @@ func (s *Service) indexNextPending(ctx context.Context) bool {
 
 func (s *Service) indexDocument(ctx context.Context, docID int32, content string) error {
 	chunks := ChunkMarkdown(content)
-	embeddings := make([][]float32, len(chunks))
-	for i, chunk := range chunks {
-		vec, err := s.Gemini.GenerateEmbedding(ctx, chunk)
-		if err != nil {
-			return fmt.Errorf("embed chunk %d: %w", i, err)
-		}
-		embeddings[i] = vec
+	embeddings, err := s.Gemini.GenerateEmbeddings(ctx, chunks)
+	if err != nil {
+		return fmt.Errorf("embed chunks: %w", err)
 	}
 
 	tx, err := s.DB.Begin(ctx)
@@ -261,13 +266,15 @@ func (s *Service) indexDocument(ctx context.Context, docID int32, content string
 		return fmt.Errorf("clear chunks: %w", err)
 	}
 	now := time.Now()
+	// Pipelined batch insert — one network round trip for all chunks.
+	batch := &pgx.Batch{}
 	for i := range chunks {
-		_, err := tx.Exec(ctx,
+		batch.Queue(
 			"INSERT INTO knowledge_chunks (doc_id, chunk_index, content, embedding, created_at) VALUES ($1, $2, $3, $4::vector, $5)",
-			docID, i, chunks[i], gemini.FormatVector(embeddings[i]), now)
-		if err != nil {
-			return fmt.Errorf("insert chunk %d: %w", i, err)
-		}
+			docID, int32(i), chunks[i], gemini.FormatVector(embeddings[i]), now)
+	}
+	if err := tx.SendBatch(ctx, batch).Close(); err != nil {
+		return fmt.Errorf("insert chunks: %w", err)
 	}
 	if _, err := tx.Exec(ctx,
 		"UPDATE knowledge_documents SET chunk_count = $1, embedding_model = $2, index_status = 'ready', index_error = '', last_embedded_at = $3 WHERE doc_id = $4",
@@ -312,7 +319,45 @@ func (s *Service) UploadDocument(ctx context.Context, userID int32, title, conte
 			"VALUES ($1, $2, $3, $4, $5::text[], $6, 'pending', $7, $8) "+
 			"RETURNING doc_id, title, language, category, chunk_count, source, index_status, index_error, created_at, updated_at",
 		title, content, lang, category, tags, userID, source, sourceURL)
-	return scanDocumentRow(row)
+	doc, err := scanDocumentRow(row)
+	if err != nil {
+		return nil, err
+	}
+	// Non-blocking near-duplicate warning so the operator can dedupe instead
+	// of hosting contradictory copies.
+	if similar := s.findSimilarDocs(ctx, userID, title+" "+truncateRunes(content, 1000)); len(similar) > 0 {
+		doc["similar_docs"] = similar
+	}
+	return doc, nil
+}
+
+// findSimilarDocs — dense search with a strict floor, used to warn about
+// near-duplicate uploads before they fragment the knowledge base.
+func (s *Service) findSimilarDocs(ctx context.Context, userID int32, sample string) []Source {
+	vec, err := s.Gemini.GenerateQueryEmbedding(ctx, sample)
+	if err != nil {
+		return nil
+	}
+	rows, err := s.DB.Query(ctx,
+		"SELECT kd.doc_id, kd.title, 1 - (kc.embedding <=> $1::vector) AS similarity "+
+			"FROM knowledge_chunks kc "+
+			"JOIN knowledge_documents kd ON kc.doc_id = kd.doc_id "+
+			"WHERE kd.uploaded_by = $2 AND kd.index_status = 'ready' AND kd.embedding_model = $3 "+
+			"AND 1 - (kc.embedding <=> $1::vector) > 0.88 "+
+			"ORDER BY kc.embedding <=> $1::vector LIMIT 3",
+		gemini.FormatVector(vec), userID, gemini.EmbeddingModel)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := make([]Source, 0)
+	for rows.Next() {
+		var src Source
+		if err := rows.Scan(&src.DocID, &src.Title, &src.Score); err == nil {
+			out = append(out, src)
+		}
+	}
+	return out
 }
 
 // ============================================
@@ -361,6 +406,14 @@ func (s *Service) Search(ctx context.Context, userID int32, query string, topK i
 
 	fused := fuseSearchResults(dense, lexical, trigram)
 
+	// Rerank-skip agreement: when the very same chunk leads BOTH the dense
+	// and the lexical lists, the signals already agree — an extra LLM rerank
+	// would add latency without information.
+	topAgrees := false
+	if len(dense) > 0 && len(lexical) > 0 && dense[0].ChunkID == lexical[0].ChunkID {
+		topAgrees = true
+	}
+
 	// Relative similarity gate: keep lexical/trigram-only hits; drop dense hits
 	// far below the leader.
 	var topDense *float64
@@ -386,8 +439,12 @@ func (s *Service) Search(ctx context.Context, userID int32, query string, topK i
 		fused = kept
 	}
 
-	// LLM rerank unless the dense leader is already a clear match.
-	if topDense == nil || *topDense < th.rerankSkip {
+	// LLM rerank unless the dense leader is already a clear match, or dense
+	// and lexical agree on the same leader with a solid score (agreement
+	// lowers the skip bar from 0.70 to 0.60).
+	leaderClear := topDense != nil && *topDense >= th.rerankSkip
+	signalsAgree := topAgrees && topDense != nil && *topDense >= 0.60
+	if !leaderClear && !signalsAgree {
 		fused = s.rerankCandidates(ctx, query, fused, topK)
 	}
 
@@ -398,6 +455,64 @@ func (s *Service) Search(ctx context.Context, userID int32, query string, topK i
 	return out, nil
 }
 
+// rerankCache memoizes LLM rerank scores per (query, candidate ids) so
+// repeated follow-up questions don't pay for a second rerank call. Entries
+// expire after 30 minutes; a plain map under a mutex (not a reassigned
+// sync.Map) keeps Load/Store race-free.
+type rerankCacheEntry struct {
+	scores    []float32
+	createdAt time.Time
+}
+
+var (
+	rerankCacheMu sync.Mutex
+	rerankCache   = map[string]rerankCacheEntry{}
+)
+
+func rerankCacheKey(query string, chunks []SearchChunk) string {
+	ids := make([]string, len(chunks))
+	for i, c := range chunks {
+		ids[i] = strconv.Itoa(int(c.ChunkID))
+	}
+	sum := sha256.Sum256([]byte(query + "\x00" + strings.Join(ids, ",")))
+	return hex.EncodeToString(sum[:])
+}
+
+const rerankCacheTTL = 30 * time.Minute
+const rerankCacheMax = 400
+
+func rerankCacheGet(key string) ([]float32, bool) {
+	rerankCacheMu.Lock()
+	defer rerankCacheMu.Unlock()
+	e, ok := rerankCache[key]
+	if !ok || time.Since(e.createdAt) >= rerankCacheTTL {
+		if ok {
+			delete(rerankCache, key)
+		}
+		return nil, false
+	}
+	return e.scores, true
+}
+
+func rerankCachePut(key string, scores []float32) {
+	rerankCacheMu.Lock()
+	defer rerankCacheMu.Unlock()
+	if len(rerankCache) >= rerankCacheMax {
+		// Drop expired entries first; if still full, clear the oldest half by
+		// insertion order is not tracked — a full reset keeps the cap simple
+		// and the cost is only cache warmth.
+		for k, e := range rerankCache {
+			if time.Since(e.createdAt) >= rerankCacheTTL {
+				delete(rerankCache, k)
+			}
+		}
+		if len(rerankCache) >= rerankCacheMax {
+			rerankCache = make(map[string]rerankCacheEntry, rerankCacheMax/2)
+		}
+	}
+	rerankCache[key] = rerankCacheEntry{scores: scores, createdAt: time.Now()}
+}
+
 func (s *Service) rerankCandidates(ctx context.Context, query string, chunks []SearchChunk, topK int64) []SearchChunk {
 	if int64(len(chunks)) <= topK {
 		return chunks
@@ -405,6 +520,10 @@ func (s *Service) rerankCandidates(ctx context.Context, query string, chunks []S
 	n := rerankWindow
 	if n > len(chunks) {
 		n = len(chunks)
+	}
+	key := rerankCacheKey(query, chunks[:n])
+	if scores, ok := rerankCacheGet(key); ok {
+		return applyRerankScores(chunks, scores, topK)
 	}
 	texts := make([]string, n)
 	for i := 0; i < n; i++ {
@@ -414,13 +533,20 @@ func (s *Service) rerankCandidates(ctx context.Context, query string, chunks []S
 	if scores == nil {
 		return chunks
 	}
+	rerankCachePut(key, scores)
+	return applyRerankScores(chunks, scores, topK)
+}
+
+// applyRerankScores keeps chunks scoring above rerankMin, best first.
+func applyRerankScores(chunks []SearchChunk, scores []float32, topK int64) []SearchChunk {
+	minScore := currentThresholds().rerankMin
 	type scored struct {
 		chunk SearchChunk
 		score float32
 	}
 	var paired []scored
-	for i := 0; i < n && i < len(scores); i++ {
-		if scores[i] >= currentThresholds().rerankMin {
+	for i := 0; i < len(scores) && i < len(chunks); i++ {
+		if scores[i] >= minScore {
 			paired = append(paired, scored{chunk: chunks[i], score: scores[i]})
 		}
 	}
@@ -438,9 +564,10 @@ func (s *Service) searchDense(ctx context.Context, userID int32, vector string, 
 			"FROM knowledge_chunks kc "+
 			"JOIN knowledge_documents kd ON kc.doc_id = kd.doc_id "+
 			"WHERE kd.uploaded_by = $4 AND kd.index_status = 'ready' "+
+			"AND kd.embedding_model = $5 "+
 			"AND 1 - (kc.embedding <=> $1::vector) > $2 "+
 			"ORDER BY kc.embedding <=> $1::vector LIMIT $3",
-		vector, currentThresholds().floor, limit, userID)
+			vector, currentThresholds().floor, limit, userID, gemini.EmbeddingModel)
 	if err != nil {
 		return nil, fmt.Errorf("vector search: %w", err)
 	}
@@ -583,10 +710,15 @@ func fuseSearchResults(dense, lexical, trigram []SearchChunk) []SearchChunk {
 // Ground retrieves grounding context for a chat message. RAG failures never
 // fail the chat — log and proceed ungrounded.
 func (s *Service) Ground(ctx context.Context, userID int32, sessionID *string, message, language string, history []gemini.HistoryItem, topK int64) GroundingContext {
-	rewritten := s.Gemini.RewriteSearchQuery(ctx, message, history)
+	// Rewrite turns follow-up phrasing into a searchable query; the first
+	// turn has nothing to resolve, so skip the extra LLM call.
 	effectiveQuery := message
-	if rewritten != nil {
-		effectiveQuery = *rewritten
+	var rewritten *string
+	if len(history) > 0 {
+		rewritten = s.Gemini.RewriteSearchQuery(ctx, message, history)
+		if rewritten != nil {
+			effectiveQuery = *rewritten
+		}
 	}
 
 	sources, err := s.Search(ctx, userID, effectiveQuery, topK)
@@ -603,10 +735,21 @@ func (s *Service) Ground(ctx context.Context, userID int32, sessionID *string, m
 	var b strings.Builder
 	b.WriteString("📚 Knowledge base references (ground your answer ONLY in these facts):\nNever mention the sources, scores or markers like [Source 1] in your reply — answer naturally.\n\n")
 	for i, src := range sources {
-		fmt.Fprintf(&b, "--- Source %d: %s (score %.2f) ---\n%s\n\n", i+1, src.Title, src.Score, truncateRunes(src.Content, 800))
+		fmt.Fprintf(&b, "--- Source %d: %s (score %.2f) ---\n%s\n\n", i+1, src.Title, src.Score, truncateRunes(src.Content, groundSourceLimit(src.Content)))
 	}
 	s.logRAGQuery(ctx, userID, sessionID, message, rewritten, len(sources), &topScore, true)
 	return GroundingContext{Sources: sources, ContextStr: b.String(), HasMatch: true}
+}
+
+// groundSourceLimit — price lists and tables need more room than prose
+// (800 runes cuts tables mid-row and the model then hallucinates the rest).
+func groundSourceLimit(content string) int {
+	for _, line := range strings.Split(content, "\n") {
+		if isTableRow(line) {
+			return 2000
+		}
+	}
+	return 800
 }
 
 func (s *Service) logRAGQuery(ctx context.Context, userID int32, sessionID *string, query string, rewritten *string, hitCount int, topScore *float32, usedInReply bool) {
@@ -662,7 +805,8 @@ func AugmentMessage(message string, ctx *GroundingContext) string {
 	}
 	return ctx.ContextStr + "\n---\n📝 User question: " + message +
 		"\n\nAnswer based on the knowledge base above when relevant. If the KB doesn't cover it, say so honestly. " +
-		"Never output citation markers like [Source 1] — write naturally without mentioning sources."
+		"Never output citation markers like [Source 1] or (Source 1), never mention source names or document titles, " +
+		"and never end the reply with a title line — write naturally as customer-facing text."
 }
 
 // NoMatchReply — standalone RAG query fallback when nothing clears the
@@ -685,7 +829,67 @@ func NoMatchReply(language string) string {
 // ChunkText — rune-based sliding window with overlap; when a window would cut
 // mid-sentence, the end is pulled back to the last sentence terminator within
 // the lower half of the window.
+// TableChunkSize — atomic budget for a contiguous table block so prices and
+// rows never get split across chunks.
+const TableChunkSize = 1800
+
+// isTableRow reports whether a line looks like part of a markdown/aligned
+// table ("| a | b |" or "col1 | col2").
+func isTableRow(line string) bool {
+	t := strings.TrimSpace(line)
+	if strings.HasPrefix(t, "|") {
+		return true
+	}
+	return len(t) > 8 && strings.Count(t, "|") >= 2
+}
+
+type textBlock struct {
+	content string
+	table   bool
+}
+
+// splitTableBlocks segments text into contiguous table blocks (kept atomic)
+// and prose blocks.
+func splitTableBlocks(text string) []textBlock {
+	lines := strings.Split(text, "\n")
+	var blocks []textBlock
+	var cur []string
+	curTable := false
+	flush := func() {
+		if len(cur) > 0 {
+			blocks = append(blocks, textBlock{content: strings.Join(cur, "\n"), table: curTable})
+			cur = nil
+		}
+	}
+	for _, line := range lines {
+		if t := isTableRow(line); t != curTable {
+			flush()
+			curTable = t
+		}
+		cur = append(cur, line)
+	}
+	flush()
+	return blocks
+}
+
 func ChunkText(text string) []string {
+	if len([]rune(text)) <= DefaultChunkSize {
+		return []string{text}
+	}
+	var chunks []string
+	for _, blk := range splitTableBlocks(text) {
+		if blk.table && len([]rune(blk.content)) <= TableChunkSize {
+			chunks = append(chunks, blk.content)
+			continue
+		}
+		chunks = append(chunks, chunkProse(blk.content)...)
+	}
+	return chunks
+}
+
+// chunkProse — sliding window with sentence-boundary cuts (the original
+// ChunkText behaviour).
+func chunkProse(text string) []string {
 	runes := []rune(text)
 	if len(runes) <= DefaultChunkSize {
 		return []string{text}
@@ -776,8 +980,19 @@ func ChunkMarkdown(text string) []string {
 	}
 	flush()
 
+	// Merge heading-only sections (e.g. a bare document title) into the next
+	// one so they do not become orphan one-line chunks.
+	var merged []section
+	for i, sec := range sections {
+		if strings.TrimSpace(sec.body) == "" && sec.heading != "" && i+1 < len(sections) {
+			sections[i+1].heading = strings.TrimRight(sec.heading+"\n"+sections[i+1].heading, "\n")
+			continue
+		}
+		merged = append(merged, sec)
+	}
+
 	var chunks []string
-	for _, sec := range sections {
+	for _, sec := range merged {
 		prefix := ""
 		if sec.heading != "" {
 			prefix = sec.heading + "\n"

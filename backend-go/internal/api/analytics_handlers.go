@@ -437,6 +437,18 @@ func (a *App) reportCSV(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s-report.csv\"", kind))
 	cw := csv.NewWriter(w)
+	// csvCell defuses spreadsheet formula injection (=, +, -, @ prefixes
+	// from user-controlled content would execute as formulas in Excel).
+	csvCell := func(s string) string {
+		if s == "" {
+			return s
+		}
+		switch s[0] {
+		case '=', '+', '-', '@', '\t', '\r':
+			return "'" + s
+		}
+		return s
+	}
 
 	switch kind {
 	case "sessions":
@@ -456,7 +468,7 @@ func (a *App) reportCSV(w http.ResponseWriter, r *http.Request) {
 				var created time.Time
 				var firstResp, resolved, escalated *time.Time
 				if rows.Scan(&sid, &plat, &status, &lang, &title, &cust, &umc, &mmc, &sent, &intent, &created, &firstResp, &resolved, &escalated) == nil {
-					_ = cw.Write([]string{sid, plat, status, lang, title, cust,
+					_ = cw.Write([]string{sid, plat, status, lang, csvCell(title), csvCell(cust),
 						strconv.Itoa(int(umc)), strconv.Itoa(int(mmc)), sent, intent,
 						created.Format(time.RFC3339), fmtTime(firstResp), fmtTime(resolved), fmtTime(escalated)})
 				}
@@ -489,8 +501,8 @@ func (a *App) reportCSV(w http.ResponseWriter, r *http.Request) {
 					if rating != nil {
 						r = strconv.Itoa(int(*rating))
 					}
-					_ = cw.Write([]string{strconv.FormatInt(mid, 10), sid, role, mtype, content,
-						strconv.Itoa(int(tokens)), model, strconv.FormatBool(usedMock), r, comment, createdAt.Format(time.RFC3339)})
+					_ = cw.Write([]string{strconv.FormatInt(mid, 10), sid, role, mtype, csvCell(content),
+						strconv.Itoa(int(tokens)), model, strconv.FormatBool(usedMock), r, csvCell(comment), createdAt.Format(time.RFC3339)})
 				}
 			}
 			rows.Close()

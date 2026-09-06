@@ -200,10 +200,15 @@ func (a *App) agentReply(w http.ResponseWriter, r *http.Request, sessionID strin
 	// Enqueue delivery via the platform pipeline (platform sessions only).
 	if mapped {
 		payloadJSON, _ := json.Marshal(req.Payload)
-		_, _ = a.DB.Exec(r.Context(),
+		if _, err := a.DB.Exec(r.Context(),
 			"INSERT INTO platform_outbox (config_id, session_id, chat_message_id, platform, recipient_id, content, payload, status, next_attempt_at, created_at, updated_at) "+
 				"VALUES ($1,$2,$3,$4::platform_type,$5,$6,$7,'pending',$8,$8,$8) ON CONFLICT (chat_message_id) DO NOTHING",
-			configID, sessionID, msgID, platform, recipientID, req.Content, payloadJSON, time.Now())
+			configID, sessionID, msgID, platform, recipientID, req.Content, payloadJSON, time.Now()); err != nil {
+			// The agent message is persisted, but without an outbox row it
+			// will never reach the customer — surface the failure instead of
+			// reporting a fake "sent".
+			return nil, ErrInternal("投递入队失败，请重试")
+		}
 		// Wake the outbound worker (otherwise the reply waits for the next
 		// poll tick).
 		if a.Pipe != nil {
@@ -244,10 +249,10 @@ func (a *App) updateSessionStatus(w http.ResponseWriter, r *http.Request, sessio
 	case "closed":
 		_, _ = a.DB.Exec(r.Context(), "UPDATE sessions SET status='closed', closed_at=$1, internal_notes=$2 WHERE session_id=$3", now, req.InternalNote, sessionID)
 		a.markHandoffResolved(r.Context(), sessionID, req.InternalNote)
-	case "active":
-		_, _ = a.DB.Exec(r.Context(), "UPDATE sessions SET status='active', resolved_at=NULL, closed_at=NULL, internal_notes=$1 WHERE session_id=$2", req.InternalNote, sessionID)
-	default:
+	case "active", "pending", "handoff":
 		_, _ = a.DB.Exec(r.Context(), "UPDATE sessions SET status=$1, internal_notes=$2 WHERE session_id=$3", req.Status, req.InternalNote, sessionID)
+	default:
+		return nil, ErrBadRequest("未知的状态值")
 	}
 	a.publishSessionEvent(r.Context(), user.UserID, sessionID)
 	return map[string]string{"message": "状态已更新"}, nil

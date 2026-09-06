@@ -9,7 +9,9 @@ import (
 // chatVoice — server-side speech-to-text via Gemini (multipart audio).
 // Returns the transcript so the client can feed it into the normal chat flow.
 func (a *App) chatVoice(w http.ResponseWriter, r *http.Request) (any, error) {
-	if err := r.ParseMultipartForm(32 << 20); err != nil {
+	// Hard cap the whole request before parsing (DoS guard).
+	r.Body = http.MaxBytesReader(w, r.Body, 26<<20)
+	if err := r.ParseMultipartForm(25 << 20); err != nil {
 		return nil, ErrBadRequest("请求格式错误")
 	}
 	file, _, err := r.FormFile("audio")

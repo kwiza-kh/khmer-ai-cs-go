@@ -11,8 +11,11 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
 
-  // Public routes that never require a session (/widget = the chat widget iframe).
-  const isPublic = pathname === "/login" || pathname.startsWith("/widget");
+  // Public routes that never require a session (/widget = the chat widget
+  // iframe, /privacy = the Meta app review privacy policy). Exact match only —
+  // /widget-admin is an authenticated admin page that must keep the app shell
+  // (and the auth redirect).
+  const isPublic = pathname === "/login" || pathname === "/widget" || pathname === "/privacy";
 
   useEffect(() => {
     if (isLoading) return;

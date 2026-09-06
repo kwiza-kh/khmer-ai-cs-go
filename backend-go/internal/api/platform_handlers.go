@@ -147,7 +147,7 @@ func (a *App) upsertPlatformConfig(w http.ResponseWriter, r *http.Request) (any,
 		return nil, ErrBadRequest("platform is required")
 	}
 	switch req.Platform {
-	case "whatsapp", "meta", "instagram", "telegram", "line":
+	case "whatsapp", "meta", "instagram", "telegram", "line", "zalo":
 	default:
 		return nil, ErrBadRequest("invalid platform")
 	}
@@ -218,7 +218,7 @@ func (a *App) upsertPlatformConfig(w http.ResponseWriter, r *http.Request) (any,
 		if secret == "" {
 			return nil, ErrBadRequest("启用平台 Webhook 时必须设置签名密钥")
 		}
-		if req.Platform != "telegram" && pageID == "" && derefStr(igID) == "" {
+		if req.Platform != "telegram" && req.Platform != "zalo" && pageID == "" && derefStr(igID) == "" {
 			return nil, ErrBadRequest("该平台需要配置平台集成 ID (page_id 或 instagram_business_id)")
 		}
 		if req.Platform == "telegram" && bot == "" {
@@ -310,17 +310,22 @@ func (a *App) recordHealth(ctx context.Context, configID int32, status, accountN
 	return err
 }
 
-// telegramWebhookURL builds the Telegram webhook URL from PUBLIC_API_URL.
+// telegramWebhookURL builds the provider webhook URL from PUBLIC_API_URL.
 func (a *App) telegramWebhookURL() (string, error) {
+	return a.providerWebhookURL("telegram")
+}
+
+// providerWebhookURL builds the public webhook endpoint for a platform.
+func (a *App) providerWebhookURL(platform string) (string, error) {
 	raw := strings.TrimRight(strings.TrimSpace(a.Cfg.Server.PublicAPIURL), "/")
 	if raw == "" {
-		return "", fmt.Errorf("PUBLIC_API_URL must be set before Telegram can register its webhook")
+		return "", fmt.Errorf("PUBLIC_API_URL must be set before %s can register its webhook", platform)
 	}
 	u, err := url.Parse(raw)
 	if err != nil || u.Scheme != "https" || u.Host == "" {
 		return "", fmt.Errorf("PUBLIC_API_URL must be a public https URL")
 	}
-	return raw + "/api/v1/webhook/telegram", nil
+	return raw + "/api/v1/webhook/" + platform, nil
 }
 
 // verifyPlatformConfig — verify a platform connection.
@@ -393,7 +398,30 @@ func (a *App) verifyPlatformConfig(w http.ResponseWriter, r *http.Request, confi
 		if err != nil {
 			return nil, &ApiError{http.StatusBadGateway, "connection check failed: " + err.Error()}
 		}
-		_ = a.recordHealth(r.Context(), configID, "connected", name, "Connection verified via LINE Messaging API")
+		// Auto-register + self-test the webhook: the merchant never has to
+		// touch the LINE Developers console for webhook configuration.
+		detail := "Connection verified via LINE Messaging API"
+		if webhookURL, werr := a.providerWebhookURL("line"); werr == nil {
+			if rerr := client.SetWebhookEndpoint(r.Context(), webhookURL); rerr != nil {
+				detail = "Connection verified; webhook auto-registration failed: " + rerr.Error()
+			} else if ok, msg, terr := client.TestWebhookEndpoint(r.Context()); terr != nil {
+				detail = "Connection verified; webhook registered (self-test error: " + terr.Error() + ")"
+			} else if ok {
+				detail = "Connection verified; webhook registered and self-test passed via LINE API"
+			} else {
+				detail = "Connection verified; webhook registered (LINE self-test pending: " + msg + ")"
+			}
+		}
+		_ = a.recordHealth(r.Context(), configID, "connected", name, detail)
+		return map[string]any{"config_id": configID, "health": map[string]any{"config_id": configID, "status": "connected", "account_name": name}, "webhook_url": func() string { u, _ := a.providerWebhookURL("line"); return u }()}, nil
+	case "zalo":
+		access, _ := a.Sealer.Decrypt(c.AccessToken)
+		client := platform.NewZaloClient(access)
+		name, err := client.VerifyOA(r.Context())
+		if err != nil {
+			return nil, &ApiError{http.StatusBadGateway, "connection check failed: " + err.Error()}
+		}
+		_ = a.recordHealth(r.Context(), configID, "connected", name, "Connection verified via Zalo OA API")
 		return map[string]any{"config_id": configID, "health": map[string]any{"config_id": configID, "status": "connected", "account_name": name}}, nil
 	default:
 		return nil, ErrBadRequest("unsupported platform: " + c.Platform)
@@ -430,8 +458,18 @@ func (a *App) deactivatePlatformConfig(w http.ResponseWriter, r *http.Request, c
 	return map[string]string{"message": "已停用"}, nil
 }
 
+// ensureConfigOwner reports whether configID belongs to the caller's tenant.
+func (a *App) ensureConfigOwner(ctx context.Context, configID, userID int32) bool {
+	var owner int32
+	return a.DB.QueryRow(ctx, "SELECT user_id FROM platform_configs WHERE config_id = $1", configID).Scan(&owner) == nil && owner == userID
+}
+
 // listPlatformWork — failed inbound/outbound + cancelled for a config.
 func (a *App) listPlatformWork(w http.ResponseWriter, r *http.Request, configID int32) (any, error) {
+	user, _ := UserFrom(r)
+	if !a.ensureConfigOwner(r.Context(), configID, user.UserID) {
+		return nil, ErrNotFound("platform configuration was not found")
+	}
 	inbound := make([]map[string]any, 0)
 	rows, err := a.DB.Query(r.Context(),
 		"SELECT event_id, external_id, platform_user_id, content, status::text, attempts, last_error, created_at FROM platform_inbound_events WHERE config_id = $1 AND status = 'failed' ORDER BY created_at DESC LIMIT 50",
@@ -477,6 +515,10 @@ func (a *App) listPlatformWork(w http.ResponseWriter, r *http.Request, configID 
 // retryPlatformEvent — retry a failed inbound event or delivery.
 // kind is "inbound-events" or "deliveries".
 func (a *App) retryPlatformEvent(w http.ResponseWriter, r *http.Request, configID int32, kind string, id int32) (any, error) {
+	user, _ := UserFrom(r)
+	if !a.ensureConfigOwner(r.Context(), configID, user.UserID) {
+		return nil, ErrNotFound("platform configuration was not found")
+	}
 	if kind == "inbound-events" {
 		tag, err := a.DB.Exec(r.Context(),
 			"UPDATE platform_inbound_events SET status='pending', attempts=0, next_attempt_at=NOW(), locked_at=NULL, processed_at=NULL, last_error='' WHERE event_id = $1 AND config_id = $2 AND status='failed'",

@@ -30,6 +30,14 @@ func TestStripSourceMarkers(t *testing.T) {
 		"no markers here":                 "no markers here",
 		"see [source 3] and [Source 12].": "see and.",
 		"[Source 1]":                      "",
+		// Paren and full-width variants.
+		"**eps-16kg**：15 美元 (Source 2)":            "**eps-16kg**：15 美元",
+		"基础版：99 美元（Source 1）。":                     "基础版：99 美元。",
+		"含高棉语支持 (Source 1, Source 2)。":              "含高棉语支持。",
+		"价格见 (Source 1、Source 2)。":                 "价格见。",
+		"contact us (see brochure)":                 "contact us (see brochure)",
+		"价格表\n\n产品价格表":                              "价格表\n\n产品价格表",
+		"15 美元 (source 3) [Source 4]（Source 5）结束": "15 美元 结束",
 	}
 	for in, want := range cases {
 		if got := StripSourceMarkers(in); got != want {

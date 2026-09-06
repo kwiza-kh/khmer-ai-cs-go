@@ -60,7 +60,19 @@ func (a *App) graphAPIBase() string {
 
 func (a *App) authorizationURL(oauthState string) string {
 	c := a.Cfg.Meta
-	scope := strings.Join([]string{"pages_show_list", "pages_manage_metadata", "pages_messaging"}, ",")
+	scope := strings.TrimSpace(c.OAuthScopes)
+	if scope == "" {
+		// Official permission names for Messenger-API Instagram messaging
+		// (Meta docs: business-messaging/instagram-messaging/get-started).
+		// They are only valid for apps that enabled Instagram in Messenger
+		// settings — until then the dialog hard-fails for developers on
+		// invalid scopes; set META_OAUTH_SCOPES without the instagram_*
+		// entries to unblock Messenger-only connections meanwhile.
+		scope = strings.Join([]string{
+			"pages_show_list", "pages_manage_metadata", "pages_messaging",
+			"instagram_basic", "instagram_manage_messages",
+		}, ",")
+	}
 	return fmt.Sprintf("https://www.facebook.com/%s/dialog/oauth?client_id=%s&redirect_uri=%s&response_type=code&state=%s&scope=%s",
 		a.graphVersion(),
 		url.QueryEscape(c.AppID),
@@ -220,9 +232,15 @@ func (a *App) metaOAuthComplete(w http.ResponseWriter, r *http.Request) (any, er
 		}
 	}
 	if req.EnableInstagram {
-		_, err := a.metaRequest(r.Context(), "POST", "/"+url.QueryEscape(page.InstagramBusiness)+"/subscribed_apps", nil, page.PageAccessToken)
+		subFields := [][2]string{{"subscribed_fields", "messages,messaging_postbacks,message_deliveries,message_reads"}}
+		// Instagram messaging webhooks arrive with the Instagram account ID as
+		// the entry id; subscribe that account, falling back to the Page (which
+		// also delivers Instagram messages) so the connection still goes live.
+		_, err := a.metaRequest(r.Context(), "POST", "/"+url.QueryEscape(page.InstagramBusiness)+"/subscribed_apps", subFields, page.PageAccessToken)
 		if err != nil {
-			return nil, &ApiError{http.StatusBadGateway, err.Error()}
+			if _, pageErr := a.metaRequest(r.Context(), "POST", "/"+url.QueryEscape(page.PageID)+"/subscribed_apps", subFields, page.PageAccessToken); pageErr != nil {
+				return nil, &ApiError{http.StatusBadGateway, err.Error()}
+			}
 		}
 	}
 

@@ -54,6 +54,7 @@ type MetaConfig struct {
 	OAuthFrontendURL                  string
 	GraphAPIVersion                   string
 	WhatsAppEmbeddedSignupConfigID    string
+	OAuthScopes                       string // META_OAUTH_SCOPES — optional override of the Facebook Login scope list
 }
 
 type EmailConfig struct {
@@ -150,6 +151,7 @@ func Load() (*Config, error) {
 			OAuthFrontendURL:               env("META_OAUTH_FRONTEND_URL", ""),
 			GraphAPIVersion:                env("META_GRAPH_API_VERSION", "v24.0"),
 			WhatsAppEmbeddedSignupConfigID: env("META_WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID", ""),
+			OAuthScopes:                    env("META_OAUTH_SCOPES", ""),
 		},
 		MetaVerifyToken:      env("META_VERIFY_TOKEN", ""),
 		TelegramBotToken:     env("TELEGRAM_BOT_TOKEN", ""),
