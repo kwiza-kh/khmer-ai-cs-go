@@ -459,6 +459,23 @@ func (t *TelegramClient) GetMe(ctx context.Context) (int64, string, string, erro
 	return int64(id), username, firstName, nil
 }
 
+// GetUpdates — fetch recent bot chats (used by the notify-setup flow so the
+// owner can pick the chat to receive notifications in).
+func (t *TelegramClient) GetUpdates(ctx context.Context, offset int64) ([]map[string]any, error) {
+	v, err := t.call(ctx, "getUpdates", map[string]any{"offset": offset, "timeout": 0, "limit": 20})
+	if err != nil {
+		return nil, err
+	}
+	updates, _ := v["result"].([]any)
+	out := make([]map[string]any, 0, len(updates))
+	for _, u := range updates {
+		if m, ok := u.(map[string]any); ok {
+			out = append(out, m)
+		}
+	}
+	return out, nil
+}
+
 // GetWebhookInfo returns the currently registered webhook URL.
 func (t *TelegramClient) GetWebhookInfo(ctx context.Context) (string, error) {
 	v, err := t.call(ctx, "getWebhookInfo", map[string]any{})

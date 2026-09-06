@@ -181,13 +181,17 @@ export default function InboxPage() {
     setDrafts((prev) => ({ ...prev, [sessionId]: value }));
   }, []);
 
+  // Deep-link aware: URL ?session= selects that conversation even before the
+  // list resolves (handoff page "open in inbox" relies on this).
+  const selectedSessionID = activeId ?? searchParams.get("session") ?? null;
+
   const handleRealtimeEvent = React.useCallback((event: { session_id: string }) => {
-    if (event.session_id === activeId) {
+    if (event.session_id === selectedSessionID) {
       setRealtimeVersion((version) => version + 1);
     }
     if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
     refreshTimerRef.current = setTimeout(() => { mutateInboxRef.current(); }, 150);
-  }, [activeId]);
+  }, [selectedSessionID]);
 
   const wsConnected = useInboxRealtime(token, handleRealtimeEvent);
 
@@ -211,8 +215,21 @@ export default function InboxPage() {
       .map((group) => ({ ...group, items: items.filter((item) => platformCategory(item.platform) === group.value) }))
       .filter((group) => group.items.length > 0);
   }, [items, platformFilter]);
-  const selectedSessionID = activeId ?? searchParams.get("session");
   const active = items.find((item) => item.session_id === selectedSessionID) ?? null;
+
+  // Adopt a deep-linked ?session= exactly once per param change: the URL wins
+  // over a stale activeId so the conversation opens like a manual click.
+  const adoptedSessionRef = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    const deepLink = searchParams.get("session");
+    if (adoptedSessionRef.current === deepLink) return;
+    adoptedSessionRef.current = deepLink;
+    if (!deepLink) return;
+    setActiveId(deepLink);
+    setNotes("");
+    setMobileView("chat");
+    markSeen(deepLink);
+  }, [searchParams, markSeen]);
 
   // ↑/↓ moves across the filtered conversation list (ignored while typing).
   React.useEffect(() => {

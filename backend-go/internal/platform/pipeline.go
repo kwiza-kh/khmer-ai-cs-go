@@ -342,6 +342,17 @@ func (p *Pipeline) processInboundEvent(ctx context.Context, ev *InboundEvent) er
 		p.Logger.Info("customer replied on a finished session; reopened", "session_id", sessionID)
 	}
 
+	// Telegram notify: ping the owner's bot about a new customer message
+	// (background, throttled per session — must not slow the worker).
+	notifyUser := cfg.UserID
+	notifyPlatform := ev.Platform
+	notifyName := ev.UserDisplayName
+	notifyContent := content
+	notifySession := sessionID
+	SpawnClassifier(func() {
+		p.NotifyNewCustomerMessage(ctx, notifyUser, notifySession, notifyPlatform, notifyName, notifyContent)
+	})
+
 	// Handoff release: the customer cancels ("不需要人工") or every open
 	// request is already resolved → hand the session back to the AI.
 	if sessionStatus == "handoff" && p.maybeReleaseHandoff(ctx, cfg, sessionID, content) {
@@ -1020,7 +1031,8 @@ func truncateStr(s string, n int) string {
 
 // notifyUser inserts a notification row and fans an inbox.notification event
 // out to the tenant's WebSocket connections (the bell polls too, so this is
-// an acceleration, not a guarantee).
+// an acceleration, not a guarantee). Handoff-type notifications also ping the
+// tenant's Telegram notify bot when configured.
 func (p *Pipeline) notifyUser(ctx context.Context, userID int32, kind, title, body, sessionID string) {
 	_, _ = p.DB.Exec(ctx,
 		"INSERT INTO notifications (user_id, kind, title, body, session_id, created_at) VALUES ($1,$2,$3,$4,$5,NOW())",
@@ -1028,6 +1040,13 @@ func (p *Pipeline) notifyUser(ctx context.Context, userID int32, kind, title, bo
 	realtime.Publish(ctx, p.Redis, realtime.Event{
 		Type: realtime.EventNotification, UserID: userID, SessionID: sessionID,
 	})
+	if kind == "handoff" {
+		text := title + " — " + truncateStr(body, 200)
+		if link := p.sessionLink(sessionID); link != "" {
+			text += "\n🔗 " + link
+		}
+		p.NotifyHandoffRequest(ctx, userID, text)
+	}
 }
 
 func nullSession(s string) any {

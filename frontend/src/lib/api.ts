@@ -586,6 +586,46 @@ export async function knowledgeGapDraft(query: string) {
   });
 }
 
+// Telegram notify bot (owner notifications).
+export interface TelegramChat {
+  id: string;
+  title: string;
+}
+
+export async function getTelegramNotify() {
+  return apiFetch<{
+    configured: boolean;
+    chat_id: string;
+    chat_title: string;
+    notify_messages: boolean;
+    notify_handoff: boolean;
+  }>("/settings/telegram-notify");
+}
+
+export async function putTelegramNotify(data: {
+  bot_token?: string;
+  chat_id?: string;
+  chat_title?: string;
+  notify_messages?: boolean;
+  notify_handoff?: boolean;
+}) {
+  return apiFetch<{ message: string; configured: boolean }>("/settings/telegram-notify", {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function postTelegramNotifyUpdates(botToken?: string) {
+  return apiFetch<{ chats: TelegramChat[] }>("/settings/telegram-notify/updates", {
+    method: "POST",
+    body: JSON.stringify({ bot_token: botToken }),
+  });
+}
+
+export async function postTelegramNotifyTest() {
+  return apiFetch<{ message: string }>("/settings/telegram-notify/test", { method: "POST" });
+}
+
 export async function deleteKnowledge(docId: number) {
   return apiFetch<{ message: string }>(`/knowledge/${docId}`, { method: "DELETE" });
 }

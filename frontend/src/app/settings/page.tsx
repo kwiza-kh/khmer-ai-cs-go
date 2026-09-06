@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/select";
 import { Settings as SettingsIcon, Lock, Globe, Loader2, Clock, ShieldCheck } from "lucide-react";
 import { BusinessHoursCard, CannedResponsesCard } from "@/components/admin/operations-tab";
+import { TelegramNotifyCard } from "@/components/settings/telegram-notify-card";
 import { toast } from "sonner";
 import { useI18n, type Lang } from "@/lib/i18n";
 
@@ -88,6 +89,9 @@ export default function SettingsPage() {
 
           {/* Two-factor authentication */}
           <TwoFactorCard />
+
+          {/* Telegram notify bot */}
+          <TelegramNotifyCard />
 
           {/* Language preference */}
           <Card>
