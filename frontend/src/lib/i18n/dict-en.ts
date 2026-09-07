@@ -1017,5 +1017,8 @@ export const en: Dict = {
   "widget.embedLabel": "Embed snippet",
   "widget.createdToast": "Embed token created",
   "widget.copiedToast": "Copied to clipboard",
+  "widget.copyFailed": "Copy failed — your browser blocked clipboard access",
+  "widget.deleteConfirm": "Delete this widget token? Every third-party site using it will stop working immediately.",
+  "widget.deletedToast": "Widget token deleted",
   "widget.allowedFor": "Allowed for: {origins}",
 };

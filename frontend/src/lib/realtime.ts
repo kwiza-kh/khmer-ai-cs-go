@@ -38,8 +38,11 @@ export function useInboxRealtime(token: string | null, onEvent: (event: InboxRea
     let stopped = false;
 
     const connect = () => {
-      socket = new WebSocket(inboxWebSocketURL(), ["khmer-ai-cs", token]);
-      socket.onopen = () => {
+      // Bind handlers to THIS socket instance — a late error from a stale
+      // socket must not close the freshly reconnected one.
+      const s = new WebSocket(inboxWebSocketURL(), ["khmer-ai-cs", token]);
+      socket = s;
+      s.onopen = () => {
         reconnectAttempts = 0;
         setConnected(true);
         // Catch-up: events missed while the socket was down are gone forever —
@@ -51,7 +54,7 @@ export function useInboxRealtime(token: string | null, onEvent: (event: InboxRea
           occurred_at: new Date().toISOString(),
         });
       };
-      socket.onmessage = (message) => {
+      s.onmessage = (message) => {
         try {
           const event = JSON.parse(message.data) as InboxRealtimeEvent;
           if (event.type === "inbox.message" || event.type === "inbox.session" || event.type === "inbox.notification") {
@@ -61,8 +64,8 @@ export function useInboxRealtime(token: string | null, onEvent: (event: InboxRea
           return;
         }
       };
-      socket.onerror = () => socket?.close();
-      socket.onclose = () => {
+      s.onerror = () => s.close();
+      s.onclose = () => {
         setConnected(false);
         if (stopped) return;
         const delay = Math.min(1000 * 2 ** reconnectAttempts, 30000);

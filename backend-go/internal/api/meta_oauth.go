@@ -293,13 +293,17 @@ func (a *App) metaOAuthComplete(w http.ResponseWriter, r *http.Request) (any, er
 func (a *App) saveMetaConfigTx(ctx context.Context, tx pgx.Tx, userID int32, platformType, integrationID, pageToken, appSecret string) (int32, error) {
 	var conflict int64
 	if platformType == "instagram" {
-		_ = tx.QueryRow(ctx,
+		if err := tx.QueryRow(ctx,
 			"SELECT COUNT(*) FROM platform_configs WHERE platform='instagram' AND is_active=true AND user_id <> $1 AND instagram_business_id = $2",
-			userID, integrationID).Scan(&conflict)
+			userID, integrationID).Scan(&conflict); err != nil {
+			return 0, ErrInternal("冲突检查失败")
+		}
 	} else {
-		_ = tx.QueryRow(ctx,
+		if err := tx.QueryRow(ctx,
 			"SELECT COUNT(*) FROM platform_configs WHERE platform='meta' AND is_active=true AND user_id <> $1 AND page_id = $2",
-			userID, integrationID).Scan(&conflict)
+			userID, integrationID).Scan(&conflict); err != nil {
+			return 0, ErrInternal("冲突检查失败")
+		}
 	}
 	if conflict > 0 {
 		return 0, ErrConflict("This Meta account is already connected to another customer")

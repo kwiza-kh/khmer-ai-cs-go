@@ -224,7 +224,10 @@ func (a *App) Router() http.Handler {
 	authed.Handle("GET /api/v1/platform/analytics", a.platformAdminOnly(a.handle(a.platformAnalytics)))
 	authed.Handle("GET /api/v1/platform/audit-logs", a.platformAdminOnly(a.handle(a.listAuditLogs)))
 
-	mux.Handle("/api/v1/", a.authMiddleware(a.audit(a.rateLimit(60)(authed))))
+	// 180/min per user: the admin SPA legitimately aggregates 6-10 pollers
+	// (inbox SWR, handoff badge, notification bell, page loads) — 60 tripped
+	// during normal multi-tab use.
+	mux.Handle("/api/v1/", a.authMiddleware(a.audit(a.rateLimit(180)(authed))))
 
 	// Realtime inbox stream. More specific than the "/api/v1/" catch-all so it
 	// bypasses the header-auth chain: the browser cannot send an Authorization

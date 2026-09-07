@@ -23,7 +23,6 @@ func (a *App) StartBackgroundTasks(ctx context.Context) {
 	_, _ = a.DB.Exec(ctx, "UPDATE marketing_campaigns SET status='scheduled' WHERE status='sending' AND updated_at < NOW() - INTERVAL '10 minutes'")
 	go a.loop(ctx, 30*time.Second, a.dispatchDueCampaigns)
 	go a.loop(ctx, 60*time.Second, a.scanSLABreaches)
-	go a.loop(ctx, 6*time.Hour, a.refreshURLDocuments)
 	go a.loop(ctx, 1*time.Hour, a.resetBillingCycles)
 	// Telegram notify bots: poll inline-button presses (接管/解决) and send
 	// the 08:00 Phnom Penh daily digest.
@@ -236,7 +235,7 @@ func (a *App) scanSLABreaches(ctx context.Context) {
 							"INSERT INTO sla_breaches (user_id, session_id, sla_id, breach_type) VALUES ($1,$2,$3,'first_response') ON CONFLICT (session_id, breach_type) DO NOTHING",
 							p.userID, sid, p.slaID)
 						if tag.RowsAffected() > 0 {
-							a.notifyUser(ctx, p.userID, "sentiment", "SLA 违约：首次响应超时", "A session breached the first-response SLA", sid)
+							a.notifyUser(ctx, p.userID, "sla", "SLA 违约：首次响应超时", "A session breached the first-response SLA", sid)
 						}
 					}
 				}
@@ -261,44 +260,15 @@ func (a *App) scanSLABreaches(ctx context.Context) {
 	}
 }
 
-// refreshURLDocuments re-fetches URL-derived knowledge documents older than
-// 24h; re-index if the content changed, otherwise postpone.
-func (a *App) refreshURLDocuments(ctx context.Context) {
-	rows, err := a.DB.Query(ctx, `SELECT doc_id, COALESCE(source_url,''), COALESCE(content,'') FROM knowledge_documents
-		WHERE source='url' AND source_url IS NOT NULL AND source_url <> '' AND index_status='ready' AND updated_at < NOW() - INTERVAL '24 hours' ORDER BY updated_at ASC LIMIT 20`)
-	if err != nil {
-		return
-	}
-	type doc struct {
-		id       int32
-		url, old string
-	}
-	var docs []doc
-	for rows.Next() {
-		var d doc
-		if rows.Scan(&d.id, &d.url, &d.old) == nil {
-			docs = append(docs, d)
-		}
-	}
-	rows.Close()
-	for _, d := range docs {
-		_, newText, err := fetchURLText(ctx, d.url)
-		if err == nil && newText != "" && newText != d.old {
-			_, _ = a.DB.Exec(ctx, "UPDATE knowledge_documents SET content=$1, index_status='pending', index_error='', updated_at=NOW() WHERE doc_id=$2", newText, d.id)
-		} else {
-			_, _ = a.DB.Exec(ctx, "UPDATE knowledge_documents SET updated_at=NOW() WHERE doc_id=$1", d.id)
-		}
-	}
-}
-
 // resetBillingCycles rolls over lapsed billing cycles (reset usage counters).
+// NOTE: URL freshness for knowledge docs lives in rag.SpawnIndexWorkers
+// (refreshStaleURLDocs) — it uses the SSRF-guarded fetcher; do not duplicate
+// it here with an unguarded client.
 func (a *App) resetBillingCycles(ctx context.Context) {
 	_, _ = a.DB.Exec(ctx,
 		"UPDATE tenant_billing SET messages_used=0, docs_used=0, cycle_start=NOW(), cycle_end=NOW()+INTERVAL '30 days' WHERE cycle_end <= NOW()")
 }
 
-// fetchURLText fetches a URL and extracts its visible text (script/style
-// stripped). Returns (title, text, err).
 func fetchURLText(ctx context.Context, rawURL string) (string, string, error) {
 	client := &http.Client{Timeout: 20 * time.Second}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)

@@ -49,34 +49,33 @@ func (c *Client) Ping(ctx context.Context) bool {
 	return c.rdb.Ping(ctx).Err() == nil
 }
 
-// CheckRateLimit implements the fixed window: INCR on the key, first hit sets
-// a 60s expiry; count over max means "blocked".
+// CheckRateLimit implements the fixed window: the key is created atomically
+// with its 60s TTL (SET NX), then INCR'd — count over max means "blocked".
+// The old INCR-then-EXPIRE pattern could leak a TTL-less key on a crash and
+// block the caller permanently.
 func (c *Client) CheckRateLimit(ctx context.Context, key string, max uint32) (bool, error) {
 	rk := "ratelimit:" + key
+	if err := c.rdb.SetNX(ctx, rk, 0, time.Minute).Err(); err != nil {
+		return false, err
+	}
 	count, err := c.rdb.Incr(ctx, rk).Result()
 	if err != nil {
 		return false, err
-	}
-	if count == 1 {
-		if err := c.rdb.Expire(ctx, rk, time.Minute).Err(); err != nil {
-			return false, err
-		}
 	}
 	return uint32(count) <= max, nil
 }
 
 // IncrWindow — fixed-window counter with a custom expiry (e.g. daily or
 // hourly caps). Reports whether the incremented count stays within max.
+// Key creation and TTL are atomic (SET NX) — no TTL-less leak on crash.
 func (c *Client) IncrWindow(ctx context.Context, key string, max int64, ttl time.Duration) (bool, error) {
 	rk := "ratelimit:" + key
+	if err := c.rdb.SetNX(ctx, rk, 0, ttl).Err(); err != nil {
+		return false, err
+	}
 	count, err := c.rdb.Incr(ctx, rk).Result()
 	if err != nil {
 		return false, err
-	}
-	if count == 1 {
-		if err := c.rdb.Expire(ctx, rk, ttl).Err(); err != nil {
-			return false, err
-		}
 	}
 	return count <= max, nil
 }

@@ -227,16 +227,21 @@ func (a *App) upsertPlatformConfig(w http.ResponseWriter, r *http.Request) (any,
 		if req.Platform != "telegram" && access == "" {
 			return nil, ErrBadRequest("该平台需要配置 access_token")
 		}
-		// Cross-tenant conflict.
+		// Cross-tenant conflict. A failed lookup must fail the save, not
+		// silently pass (the dedupe depends on it).
 		var conflict int64
 		if req.Platform == "instagram" {
-			_ = a.DB.QueryRow(r.Context(),
+			if err := a.DB.QueryRow(r.Context(),
 				"SELECT COUNT(*) FROM platform_configs WHERE platform='instagram' AND is_active=true AND user_id <> $1 AND instagram_business_id = $2",
-				user.UserID, derefStr(igID)).Scan(&conflict)
+				user.UserID, derefStr(igID)).Scan(&conflict); err != nil {
+				return nil, ErrInternal("冲突检查失败")
+			}
 		} else {
-			_ = a.DB.QueryRow(r.Context(),
+			if err := a.DB.QueryRow(r.Context(),
 				"SELECT COUNT(*) FROM platform_configs WHERE platform = $1::platform_type AND is_active=true AND user_id <> $2 AND page_id = $3",
-				req.Platform, user.UserID, pageID).Scan(&conflict)
+				req.Platform, user.UserID, pageID).Scan(&conflict); err != nil {
+				return nil, ErrInternal("冲突检查失败")
+			}
 		}
 		if conflict > 0 {
 			return nil, ErrConflict("该平台账号已连接到其他客户")
@@ -244,8 +249,10 @@ func (a *App) upsertPlatformConfig(w http.ResponseWriter, r *http.Request) (any,
 		if req.Platform == "telegram" && bot != "" {
 			botHash := security.Sha256Hex(bot)
 			var c int64
-			_ = a.DB.QueryRow(r.Context(),
-				"SELECT COUNT(*) FROM platform_configs WHERE platform='telegram' AND is_active=true AND bot_token_hash = $1", botHash).Scan(&c)
+			if err := a.DB.QueryRow(r.Context(),
+				"SELECT COUNT(*) FROM platform_configs WHERE platform='telegram' AND is_active=true AND bot_token_hash = $1", botHash).Scan(&c); err != nil {
+				return nil, ErrInternal("冲突检查失败")
+			}
 			if c > 0 {
 				return nil, ErrConflict("This Telegram bot is already connected to another customer")
 			}

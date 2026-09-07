@@ -5,6 +5,7 @@ package platform
 
 import (
 	"context"
+	"errors"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -12,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"khmer-ai-cs-go/internal/config"
@@ -223,6 +225,9 @@ func (p *Pipeline) claimInbound(ctx context.Context) (*InboundEvent, error) {
 			"RETURNING event_id, config_id, platform::text, platform_user_id, user_display_name, content, media_json",
 		now, now, stale).Scan(&ev.EventID, &ev.ConfigID, &ev.Platform, &ev.PlatformUserID, &ev.UserDisplayName, &ev.Content, &mediaJSON)
 	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			p.Logger.Warn("claim inbound failed", "error", err.Error())
+		}
 		return nil, nil
 	}
 	if len(mediaJSON) > 0 {
@@ -376,6 +381,7 @@ func (p *Pipeline) processInboundEvent(ctx context.Context, ev *InboundEvent) er
 	tgContent := content
 	tgSession := sessionID
 	SpawnClassifier(func() {
+		p.bumpMessagesUsed(ctx, tgUserID)
 		p.NotifyNewCustomerMessage(ctx, tgUserID, tgSession, tgPlatform, tgName, tgContent)
 	})
 
@@ -1254,6 +1260,9 @@ func (p *Pipeline) claimOutbound(ctx context.Context) (*outboundDelivery, error)
 			"RETURNING delivery_id, config_id, session_id, platform::text, recipient_id, content, payload, status, attempts, chat_message_id",
 		now, now, stale).Scan(&d.DeliveryID, &d.ConfigID, &d.SessionID, &d.Platform, &d.RecipientID, &d.Content, &payloadJSON, &d.Status, &d.Attempts, &d.LastMessageID)
 	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			p.Logger.Warn("claim outbound failed", "error", err.Error())
+		}
 		return nil, nil
 	}
 	if len(payloadJSON) > 0 {

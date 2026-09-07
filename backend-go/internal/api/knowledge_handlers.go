@@ -364,6 +364,7 @@ func (a *App) knowledgeDocQuality(w http.ResponseWriter, r *http.Request) (any, 
 			JOIN sessions ses ON ses.session_id = cm.session_id
 			CROSS JOIN LATERAL jsonb_array_elements(cm.sources_json::jsonb) AS s
 			WHERE ses.user_id = $1 AND cm.role = 'model' AND cm.sources_json IS NOT NULL
+			  AND cm.created_at >= NOW() - INTERVAL '90 days'
 			GROUP BY 1
 		), rated AS (
 			SELECT (s->>'doc_id')::int AS doc_id,
@@ -374,6 +375,7 @@ func (a *App) knowledgeDocQuality(w http.ResponseWriter, r *http.Request) (any, 
 			CROSS JOIN LATERAL jsonb_array_elements(cm.sources_json::jsonb) AS s
 			WHERE ses.user_id = $1 AND cm.role = 'model' AND cm.sources_json IS NOT NULL
 			  AND cm.feedback_rating IS NOT NULL
+			  AND cm.created_at >= NOW() - INTERVAL '90 days'
 			GROUP BY 1
 		)
 		SELECT kd.doc_id, kd.title, COALESCE(u.uses, 0), COALESCE(rt.up, 0), COALESCE(rt.down, 0), kd.index_status::text

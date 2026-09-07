@@ -996,5 +996,8 @@ export const zh: Dict = {
   "widget.embedLabel": "嵌入代码",
   "widget.createdToast": "嵌入令牌已创建",
   "widget.copiedToast": "已复制到剪贴板",
+  "widget.copyFailed": "复制失败 — 浏览器阻止了剪贴板访问",
+  "widget.deleteConfirm": "确定删除该 Widget 令牌？所有使用它的第三方网站聊天窗将立即失效。",
+  "widget.deletedToast": "令牌已删除",
   "widget.allowedFor": "允许来源：{origins}",
 };

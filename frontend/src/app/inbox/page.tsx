@@ -155,6 +155,11 @@ export default function InboxPage() {
   const [platformFilter, setPlatformFilter] = React.useState<PlatformFilter>("all");
   // 全局顶栏搜索跳转到 /inbox?q=... — 预填本地过滤词.
   const [query, setQuery] = React.useState(() => searchParams.get("q") ?? "");
+  // Stay in sync when the top-bar search pushes a new ?q= while already here.
+  React.useEffect(() => {
+    const next = searchParams.get("q") ?? "";
+    setQuery((current) => (current === next ? current : next));
+  }, [searchParams]);
   const [activeId, setActiveId] = React.useState<string | null>(null);
 	const [notes, setNotes] = React.useState("");
 	const [realtimeVersion, setRealtimeVersion] = React.useState(0);
@@ -205,10 +210,12 @@ export default function InboxPage() {
     { refreshInterval: wsConnected ? 60_000 : 15_000 },
   );
   React.useEffect(() => { mutateInboxRef.current = () => { void mutateInbox(); }; }, [mutateInbox]);
-  const items = (inboxData?.data ?? []).filter((item) => {
+  // useMemo keeps the array identity stable between renders — the keydown
+  // effect depends on it, so this prevents listener churn on every poll.
+  const items = React.useMemo(() => (inboxData?.data ?? []).filter((item) => {
     const matchesQuery = !query || (item.title || item.user_display_name || item.last_message || "").toLowerCase().includes(query.toLowerCase());
     return matchesQuery && (platformFilter === "all" || platformCategory(item.platform) === platformFilter);
-  });
+  }), [inboxData, query, platformFilter]);
   const groupedItems = React.useMemo(() => {
     const groups = platformFilter === "all"
       ? PLATFORM_GROUPS

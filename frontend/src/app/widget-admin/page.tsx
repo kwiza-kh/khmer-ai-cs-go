@@ -42,12 +42,19 @@ export default function WidgetAdminPage() {
   };
 
   const remove = async (id: number) => {
-    try { await deleteWidgetToken(id); await mutate(); } catch (e) { toast.error((e as Error).message); }
+    // Deleting a token instantly kills every third-party site using it —
+    // require an explicit confirmation.
+    if (!window.confirm(t("widget.deleteConfirm"))) return;
+    try { await deleteWidgetToken(id); toast.success(t("widget.deletedToast")); await mutate(); } catch (e) { toast.error((e as Error).message); }
   };
 
-  const copy = (text: string) => {
-    void navigator.clipboard.writeText(text);
-    toast.success(t("widget.copiedToast"));
+  const copy = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success(t("widget.copiedToast"));
+    } catch {
+      toast.error(t("widget.copyFailed"));
+    }
   };
 
   const embedSnippet = (token: string) =>

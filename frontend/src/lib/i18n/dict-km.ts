@@ -996,5 +996,8 @@ export const km: Dict = {
   "widget.embedLabel": "កូដដាក់ជាប់",
   "widget.createdToast": "បានបង្កើតថូខិនជាប់",
   "widget.copiedToast": "បានចម្លងទៅក្ដារតម្បៀតខ្ទាស់",
+  "widget.copyFailed": "ចម្លងបរាជ័យ — កម្មវិធីរុករកបានទប់ស្កាត់",
+  "widget.deleteConfirm": "លុប token នេះ? គេហទំព័រទាំងអស់ដែលប្រើវានឹងឈប់ដំណើរការភ្លាមៗ។",
+  "widget.deletedToast": "បានលុប token",
   "widget.allowedFor": "អនុញ្ញាតសម្រាប់៖ {origins}",
 };
