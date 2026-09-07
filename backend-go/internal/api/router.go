@@ -54,6 +54,8 @@ func (a *App) Router() http.Handler {
 	authed.Handle("PUT /api/v1/settings/telegram-notify", a.handle(a.putTelegramNotify))
 	authed.Handle("POST /api/v1/settings/telegram-notify/updates", a.handle(a.postTelegramNotifyUpdates))
 	authed.Handle("POST /api/v1/settings/telegram-notify/test", a.handle(a.postTelegramNotifyTest))
+	// Agent copilot: one-shot translation (Khmer ↔ 中文 ↔ English).
+	authed.Handle("POST /api/v1/translate", a.handle(a.translateText))
 
 	// Chat (plain + SSE streaming) + sessions.
 	authed.Handle("POST /api/v1/chat", a.handle(a.chatPlain))

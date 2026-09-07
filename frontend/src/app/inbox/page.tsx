@@ -10,6 +10,7 @@ import {
 	sendTestMessage, RAGSource, PlatformMessageKind, PlatformMessagePayload, PlatformReplyButton,
 	listSessionWhatsAppTemplates, WhatsAppTemplate, getInboundPlatformMediaURL, InboundPlatformMedia,
 	copilotSuggest, getCustomer360, listCustomers, CustomerProfile, updateCustomerNotes,
+	translateText,
 } from "@/lib/api";
 import { PageHeader } from "@/components/page-header";
 import { Input } from "@/components/ui/input";
@@ -25,6 +26,7 @@ import {
 	Send, Loader2, Sparkles, Zap, FileText, Clock3, CircleAlert, CheckCheck,
 	Image as ImageIcon, ListChecks, FileCode2, Plus, Trash2, Paperclip, MessageSquare, Volume2,
 	AlertTriangle, RefreshCw, ChevronDown, ChevronUp, PanelRight, ChevronRight, Phone, Mail, ChevronLeft, Pencil,
+	Languages,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -674,6 +676,37 @@ function ConversationDetail({
   const prependingRef = React.useRef(false);
   const [unreadSeen, setUnreadSeen] = React.useState(0);
 
+  // Copilot translation state: per-message 中文 renderings of Khmer customer
+  // messages, and a one-shot 高棉语 rendering of the reply draft.
+  const [translations, setTranslations] = React.useState<Record<number, string>>({});
+  const [translatingId, setTranslatingId] = React.useState<number | null>(null);
+  const [translatingDraft, setTranslatingDraft] = React.useState(false);
+
+  const handleTranslateMessage = async (messageID: number, content: string) => {
+    setTranslatingId(messageID);
+    try {
+      const res = await translateText(content, "zh");
+      setTranslations((prev) => ({ ...prev, [messageID]: res.translation }));
+    } catch (err: unknown) {
+      toast.error((err as Error).message || t("inbox.translateFailed"));
+    } finally {
+      setTranslatingId(null);
+    }
+  };
+
+  const handleTranslateDraft = async () => {
+    if (!draft.trim()) return;
+    setTranslatingDraft(true);
+    try {
+      const res = await translateText(draft, "km");
+      onDraftChange(res.translation);
+    } catch (err: unknown) {
+      toast.error((err as Error).message || t("inbox.translateFailed"));
+    } finally {
+      setTranslatingDraft(false);
+    }
+  };
+
   const pullMessages = React.useCallback(async (after: number) => {
     try {
       const rows = await listSessionMessages(item.session_id, 200, after);
@@ -1064,6 +1097,25 @@ function ConversationDetail({
                             : "bg-muted text-muted-foreground",
                         )}>
                           <MessagePayloadPreview messageID={m.message_id} content={m.content} metadata={m.metadata} payload={m.delivery?.payload} />
+                          {m.role === "user" && m.content && (
+                            <div className="mt-1">
+                              {translations[m.message_id] ? (
+                                <p className="rounded border border-border/40 bg-background/70 px-1.5 py-1 text-[11px] leading-5 text-foreground/80" title={t("inbox.zhTranslation")}>
+                                  🈶 {translations[m.message_id]}
+                                </p>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => { void handleTranslateMessage(m.message_id, m.content); }}
+                                  disabled={translatingId === m.message_id}
+                                  className="text-[10px] text-accent-foreground/60 hover:text-accent-foreground disabled:opacity-50"
+                                >
+                                  {translatingId === m.message_id ? <Loader2 className="size-3 animate-spin" /> : "🈶 "}
+                                  {t("inbox.translateZh")}
+                                </button>
+                              )}
+                            </div>
+                          )}
                           {m.role === "model" && parseSources(m.sources_json).length > 0 && (
                             <div className="mt-1.5 flex flex-wrap gap-1 border-t border-border/60 pt-1.5">
                               {parseSources(m.sources_json).slice(0, 4).map((src) => (
@@ -1317,6 +1369,17 @@ function ConversationDetail({
               disabled={sending || isReplyBlocked || composerKind === "template"}
               className="text-xs resize-none flex-1"
             />
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => { void handleTranslateDraft(); }}
+              disabled={translatingDraft || !draft.trim() || composerKind === "template"}
+              title={t("inbox.translateKmTitle")}
+              className="h-9 text-xs gap-1.5 self-end"
+            >
+              {translatingDraft ? <Loader2 className="size-3 animate-spin" /> : <Languages className="size-3" />}
+              {t("inbox.translateKm")}
+            </Button>
             <Button
               size="sm"
               onClick={handleSendReply}

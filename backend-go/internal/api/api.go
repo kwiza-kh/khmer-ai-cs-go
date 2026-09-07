@@ -64,7 +64,7 @@ func (a *App) notifyUser(ctx context.Context, userID int32, kind, title, body, s
 		if link := a.Pipe.SessionLink(sessionID); link != "" {
 			text += "\n🔗 " + link
 		}
-		a.Pipe.NotifyHandoffRequest(ctx, userID, text)
+		a.Pipe.NotifyHandoffRequest(ctx, userID, sessionID, text)
 	}
 }
 

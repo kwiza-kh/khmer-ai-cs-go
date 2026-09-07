@@ -421,6 +421,15 @@ func (t *TelegramClient) AnswerCallback(ctx context.Context, callbackID, text st
 	return err
 }
 
+// EditMessageReplyMarkup removes the inline keyboard from a sent message
+// (used after a notify-bot button action so it cannot fire twice).
+func (t *TelegramClient) EditMessageReplyMarkup(ctx context.Context, chatID string, messageID int64) error {
+	_, err := t.call(ctx, "editMessageReplyMarkup", map[string]any{
+		"chat_id": chatID, "message_id": messageID, "inline_keyboard": []any{},
+	})
+	return err
+}
+
 // GetProfile returns (displayName, photoFileID) via getChat. photoFileID is
 // "" when the chat has no avatar. It must be mirrored into R2 before use —
 // Telegram file URLs embed the bot token and must never reach a browser.

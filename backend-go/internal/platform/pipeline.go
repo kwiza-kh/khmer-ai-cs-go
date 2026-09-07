@@ -1049,7 +1049,7 @@ func (p *Pipeline) notifyUser(ctx context.Context, userID int32, kind, title, bo
 		if link := p.sessionLink(sessionID); link != "" {
 			text += "\n🔗 " + link
 		}
-		p.NotifyHandoffRequest(ctx, userID, text)
+		p.NotifyHandoffRequest(ctx, userID, sessionID, text)
 	}
 }
 

@@ -81,6 +81,16 @@ func (c *Client) IncrWindow(ctx context.Context, key string, max int64, ttl time
 	return count <= max, nil
 }
 
+// GetString — raw string read ("" and nil error when the key is missing).
+func (c *Client) GetString(ctx context.Context, key string) (string, error) {
+	return c.rdb.Get(ctx, key).Result()
+}
+
+// SetString — raw string write with TTL.
+func (c *Client) SetString(ctx context.Context, key, value string, ttl time.Duration) error {
+	return c.rdb.Set(ctx, key, value, ttl).Err()
+}
+
 // PushWindow appends one JSON message onto the sliding window (RPush + trim to
 // the newest `window` entries + refresh TTL).
 func (c *Client) PushWindow(ctx context.Context, key string, v any, window int64, ttl time.Duration) error {

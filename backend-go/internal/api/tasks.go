@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
+	"khmer-ai-cs-go/internal/platform"
 	"khmer-ai-cs-go/internal/realtime"
 )
 
@@ -23,6 +25,60 @@ func (a *App) StartBackgroundTasks(ctx context.Context) {
 	go a.loop(ctx, 60*time.Second, a.scanSLABreaches)
 	go a.loop(ctx, 6*time.Hour, a.refreshURLDocuments)
 	go a.loop(ctx, 1*time.Hour, a.resetBillingCycles)
+	// Telegram notify bots: poll inline-button presses (接管/解决) and send
+	// the 08:00 Phnom Penh daily digest.
+	go a.loop(ctx, 12*time.Second, a.pollNotifyBotCallbacks)
+	go a.loop(ctx, 15*time.Minute, a.sendDueDigests)
+}
+
+// pollNotifyBotCallbacks — handle 接管/解决 button presses for every tenant
+// with a configured notify bot (getUpdates; the notify bot has no webhook).
+func (a *App) pollNotifyBotCallbacks(ctx context.Context) {
+	rows, err := a.DB.Query(ctx, "SELECT user_id FROM telegram_notify_settings")
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	var ids []int32
+	for rows.Next() {
+		var id int32
+		if rows.Scan(&id) == nil {
+			ids = append(ids, id)
+		}
+	}
+	for _, id := range ids {
+		a.Pipe.ProcessNotifyCallbacks(ctx, id)
+	}
+}
+
+// sendDueDigests — push the daily digest when Phnom Penh local time first
+// enters the 08:00 hour for each configured tenant (once per day).
+func (a *App) sendDueDigests(ctx context.Context) {
+	now := time.Now().In(platform.PhnomPenhLoc())
+	if now.Hour() != 8 {
+		return
+	}
+	day := now.Format("20060102")
+	rows, err := a.DB.Query(ctx, "SELECT user_id FROM telegram_notify_settings")
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	var ids []int32
+	for rows.Next() {
+		var id int32
+		if rows.Scan(&id) == nil {
+			ids = append(ids, id)
+		}
+	}
+	for _, id := range ids {
+		flag := "tg-digest:" + strconv.FormatInt(int64(id), 10) + ":" + day
+		ok, err := a.Redis.IncrWindow(ctx, flag, 1, 26*time.Hour)
+		if err != nil || !ok {
+			continue
+		}
+		a.Pipe.SendDailyDigest(ctx, id)
+	}
 }
 
 func (a *App) loop(ctx context.Context, every time.Duration, fn func(context.Context)) {

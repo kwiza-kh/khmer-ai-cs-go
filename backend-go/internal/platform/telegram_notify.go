@@ -4,6 +4,8 @@ package platform
 
 import (
 	"context"
+	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -129,11 +131,158 @@ func (p *Pipeline) NotifyNewCustomerMessage(ctx context.Context, userID int32, s
 	p.SendTelegramNotify(ctx, userID, text)
 }
 
-// NotifyHandoffRequest — Telegram ping for one handoff request.
-func (p *Pipeline) NotifyHandoffRequest(ctx context.Context, userID int32, reason string) {
+// NotifyHandoffRequest — Telegram ping for one handoff request, with inline
+// buttons so the owner can take over or resolve right from the phone.
+func (p *Pipeline) NotifyHandoffRequest(ctx context.Context, userID int32, sessionID, reason string) {
 	cfg := p.LoadTelegramNotify(ctx, userID)
 	if cfg == nil || !cfg.NotifyHandoff {
 		return
 	}
-	p.SendTelegramNotify(ctx, userID, "🔔 "+reason)
+	buttons := [][2]string{
+		{"🧑‍💼 接管", "ho:takeover:" + sessionID},
+		{"✅ 解决", "ho:resolve:" + sessionID},
+	}
+	if _, err := NewTelegramClient(cfg.BotToken).SendMessage(
+		context.WithoutCancel(ctx), cfg.ChatID, "🔔 "+reason, buttons); err != nil {
+		p.Logger.Warn("telegram notify send failed", "user_id", userID, "error", err.Error())
+	}
+}
+
+// ProcessNotifyCallbacks — poll the notify bot's getUpdates and handle the
+// inline-button presses (接管 / 解决). Runs on a background ticker; the notify
+// bot has no webhook, so getUpdates is the delivery path. Per-tenant offset
+// lives in Redis.
+func (p *Pipeline) ProcessNotifyCallbacks(ctx context.Context, userID int32) {
+	cfg := p.LoadTelegramNotify(ctx, userID)
+	if cfg == nil {
+		return
+	}
+	offsetKey := "tg-notify-offset:" + strconv.FormatInt(int64(userID), 10)
+	offset := int64(0)
+	if v, err := p.Redis.GetString(ctx, offsetKey); err == nil {
+		offset, _ = strconv.ParseInt(v, 10, 64)
+	}
+	updates, err := NewTelegramClient(cfg.BotToken).GetUpdates(ctx, offset)
+	if err != nil {
+		return
+	}
+	maxUpdate := offset - 1
+	for _, u := range updates {
+		idF, _ := u["update_id"].(float64)
+		updateID := int64(idF)
+		if updateID >= maxUpdate {
+			maxUpdate = updateID
+		}
+		cb, _ := u["callback_query"].(map[string]any)
+		if cb == nil {
+			continue
+		}
+		cbID, _ := cb["id"].(string)
+		data, _ := cb["data"].(string)
+		msg, _ := cb["message"].(map[string]any)
+		chat, _ := msg["chat"].(map[string]any)
+		chatID, _ := chat["id"].(string)
+		if f, ok := chat["id"].(float64); ok {
+			chatID = strconv.FormatFloat(f, 'f', -1, 64)
+		}
+		msgIDF, _ := msg["message_id"].(float64)
+		// Only the owner's configured chat may act on these buttons.
+		if chatID != cfg.ChatID {
+			NewTelegramClient(cfg.BotToken).AnswerCallback(ctx, cbID, "无权操作")
+			continue
+		}
+		parts := strings.Split(data, ":")
+		if len(parts) != 3 || parts[0] != "ho" || (parts[1] != "takeover" && parts[1] != "resolve") {
+			continue
+		}
+		sid := parts[2]
+		action := parts[1]
+		done := p.applyNotifyAction(ctx, userID, action, sid)
+		if done {
+			NewTelegramClient(cfg.BotToken).AnswerCallback(ctx, cbID,
+				map[string]string{"takeover": "已接管 — 会话已分配给你", "resolve": "已解决 ✅"}[action])
+			// Remove the buttons so the action cannot repeat.
+			if msgIDF > 0 {
+				NewTelegramClient(cfg.BotToken).EditMessageReplyMarkup(ctx, cfg.ChatID, int64(msgIDF))
+			}
+		} else {
+			NewTelegramClient(cfg.BotToken).AnswerCallback(ctx, cbID, "请求不存在或已被处理")
+		}
+	}
+	if maxUpdate >= offset {
+		_ = p.Redis.SetString(ctx, offsetKey, strconv.FormatInt(maxUpdate+1, 10), 7*24*time.Hour)
+	}
+}
+
+// applyNotifyAction executes one notify-bot button action. Returns false when
+// the request was not in an actionable state.
+func (p *Pipeline) applyNotifyAction(ctx context.Context, userID int32, action, sessionID string) bool {
+	switch action {
+	case "takeover":
+		tag, err := p.DB.Exec(ctx,
+			"UPDATE human_handoff_requests SET status='assigned', assigned_at=NOW() "+
+				"WHERE session_id=$1 AND user_id=$2 AND status='pending'", sessionID, userID)
+		if err != nil || tag.RowsAffected() == 0 {
+			return false
+		}
+		_, _ = p.DB.Exec(ctx,
+			"UPDATE sessions SET status='handoff', escalated_at=COALESCE(escalated_at, NOW()) WHERE session_id=$1 AND status='active'", sessionID)
+		p.publishSession(ctx, userID, sessionID)
+		return true
+	case "resolve":
+		tag, err := p.DB.Exec(ctx,
+			"UPDATE human_handoff_requests SET status='resolved', resolved_at=NOW(), resolution_note='resolved from Telegram' "+
+				"WHERE session_id=$1 AND user_id=$2 AND status IN ('pending','assigned')", sessionID, userID)
+		if err != nil || tag.RowsAffected() == 0 {
+			return false
+		}
+		_, _ = p.DB.Exec(ctx,
+			"UPDATE sessions SET status='resolved', resolved_at=NOW() WHERE session_id=$1 AND status IN ('active','handoff')", sessionID)
+		p.publishSession(ctx, userID, sessionID)
+		return true
+	}
+	return false
+}
+
+// SendDailyDigest — the 8:00 owner report: last-24h conversation stats and
+// the most-asked customer questions.
+func (p *Pipeline) SendDailyDigest(ctx context.Context, userID int32) {
+	cfg := p.LoadTelegramNotify(ctx, userID)
+	if cfg == nil {
+		return
+	}
+	var newSessions, handoffs, aiResolved int64
+	_ = p.DB.QueryRow(ctx,
+		"SELECT COUNT(*) FROM sessions WHERE user_id=$1 AND created_at >= NOW() - INTERVAL '24 hours'", userID).Scan(&newSessions)
+	_ = p.DB.QueryRow(ctx,
+		"SELECT COUNT(*) FROM human_handoff_requests WHERE user_id=$1 AND created_at >= NOW() - INTERVAL '24 hours'", userID).Scan(&handoffs)
+	_ = p.DB.QueryRow(ctx,
+		"SELECT COUNT(*) FROM sessions WHERE user_id=$1 AND resolved_at >= NOW() - INTERVAL '24 hours' AND escalated_at IS NULL", userID).Scan(&aiResolved)
+
+	rows, err := p.DB.Query(ctx,
+		"SELECT LEFT(cm.content, 80), COUNT(*) FROM chat_messages cm "+
+			"JOIN sessions s ON s.session_id = cm.session_id "+
+			"WHERE s.user_id=$1 AND cm.role='user' AND cm.created_at >= NOW() - INTERVAL '24 hours' "+
+			"GROUP BY 1 ORDER BY 2 DESC LIMIT 3", userID)
+	top := make([]string, 0, 3)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var q string
+			var n int64
+			if rows.Scan(&q, &n) == nil {
+				top = append(top, fmt.Sprintf("%d. %s (×%d)", len(top)+1, strings.ReplaceAll(q, "\n", " "), n))
+			}
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString("📊 过去 24 小时经营摘要\n")
+	b.WriteString(fmt.Sprintf("• 新会话：%d\n", newSessions))
+	b.WriteString(fmt.Sprintf("• 转人工：%d\n", handoffs))
+	b.WriteString(fmt.Sprintf("• AI 独立解决：%d\n", aiResolved))
+	if len(top) > 0 {
+		b.WriteString("客户最常问：\n" + strings.Join(top, "\n"))
+	}
+	p.SendTelegramNotify(ctx, userID, b.String())
 }

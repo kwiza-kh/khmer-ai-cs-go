@@ -626,6 +626,14 @@ export async function postTelegramNotifyTest() {
   return apiFetch<{ message: string }>("/settings/telegram-notify/test", { method: "POST" });
 }
 
+// Agent copilot: one-shot translation (km/zh/en).
+export async function translateText(text: string, target: "km" | "zh" | "en") {
+  return apiFetch<{ translation: string; target: string }>("/translate", {
+    method: "POST",
+    body: JSON.stringify({ text, target }),
+  });
+}
+
 export async function deleteKnowledge(docId: number) {
   return apiFetch<{ message: string }>(`/knowledge/${docId}`, { method: "DELETE" });
 }
