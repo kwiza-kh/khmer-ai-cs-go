@@ -42,6 +42,13 @@ func (p *Pipeline) LoadTelegramNotify(ctx context.Context, userID int32) *Telegr
 	}
 }
 
+// SessionLink — deep link that opens the session in the agent inbox
+// (/inbox?session=...). Exported for the request-side notify path. Empty when
+// PUBLIC_API_URL is unset.
+func (p *Pipeline) SessionLink(sessionID string) string {
+	return p.sessionLink(sessionID)
+}
+
 // sessionLink — deep link that opens the session in the agent inbox
 // (/inbox?session=...). Empty when PUBLIC_API_URL is unset.
 func (p *Pipeline) sessionLink(sessionID string) string {

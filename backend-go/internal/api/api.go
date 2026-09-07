@@ -46,6 +46,8 @@ type App struct {
 
 // notifyUser inserts an in-app notification and nudges the realtime hub
 // (best-effort; mirrors Pipeline.notifyUser for the request-side code paths).
+// Handoff notifications also ping the tenant's Telegram notify bot — parity
+// with the pipeline so widget-originated escalations reach the owner too.
 func (a *App) notifyUser(ctx context.Context, userID int32, kind, title, body, sessionID string) {
 	var sess any
 	if sessionID != "" {
@@ -57,6 +59,13 @@ func (a *App) notifyUser(ctx context.Context, userID int32, kind, title, body, s
 	realtime.Publish(ctx, a.Redis, realtime.Event{
 		Type: realtime.EventNotification, UserID: userID, SessionID: sessionID,
 	})
+	if kind == "handoff" && a.Pipe != nil {
+		text := title + " — " + body
+		if link := a.Pipe.SessionLink(sessionID); link != "" {
+			text += "\n🔗 " + link
+		}
+		a.Pipe.NotifyHandoffRequest(ctx, userID, text)
+	}
 }
 
 // stripSourceMarkers removes [Source N] citation leftovers (ragQuery replies).

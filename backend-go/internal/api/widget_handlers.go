@@ -413,6 +413,15 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !escalated {
+		// Telegram parity with platform channels: ping the owner about the
+		// new customer message (handoff turns are covered by the 🔔 ping
+		// instead; throttled per session; background).
+		if a.Pipe != nil {
+			ownerID, sessID, visitorMsg := t.ownerID, sid, req.Message
+			platform.SpawnClassifier(func() {
+				a.Pipe.NotifyNewCustomerMessage(ctx, ownerID, sessID, "web", "", visitorMsg)
+			})
+		}
 		a.classifyWebTurnAsync(t.ownerID, sid, req.Message, reply, groundCtx.HasMatch)
 	}
 	sendEvent("done", map[string]any{
