@@ -1240,42 +1240,54 @@ function ConversationDetail({
                         <span className="tabular-nums">{fmtRelTime(group[0].created_at, t("inbox.timeNow"))}</span>
                       </div>
                       {group.map((m) => (
-                        <div key={m.message_id} className={cn(
-                          "max-w-[85%] rounded-lg px-2.5 py-1.5",
-                          m.role === "user" ? "bg-accent text-accent-foreground"
-                            : m.role === "agent" ? "bg-warning/15 text-foreground"
-                            : m.role === "model" ? "bg-primary/10 text-foreground"
-                            : "bg-muted text-muted-foreground",
-                        )}>
-                          <MessagePayloadPreview messageID={m.message_id} content={m.content} metadata={m.metadata} payload={m.delivery?.payload} />
+                        <React.Fragment key={m.message_id}>
+                          <div className={cn(
+                            "max-w-[85%] rounded-lg px-2.5 py-1.5",
+                            m.role === "user" ? "bg-accent text-accent-foreground"
+                              : m.role === "agent" ? "bg-warning/15 text-foreground"
+                              : m.role === "model" ? "bg-primary/10 text-foreground"
+                              : "bg-muted text-muted-foreground",
+                          )}>
+                            <MessagePayloadPreview messageID={m.message_id} content={m.content} metadata={m.metadata} payload={m.delivery?.payload} />
+                            {m.role === "model" && parseSources(m.sources_json).length > 0 && (
+                              <div className="mt-1.5 flex flex-wrap gap-1 border-t border-border/60 pt-1.5">
+                                {parseSources(m.sources_json).slice(0, 4).map((src) => (
+                                  <span key={`${src.doc_id}-${src.title}`} title={(src.content || "").slice(0, 140)} className="inline-flex max-w-full items-center gap-1 rounded border border-border bg-muted/50 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                                    <FileText className="size-2.5 shrink-0" />
+                                    <span className="truncate">{src.title}</span>
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                            {(m.feedback_rating != null || m.delivery) && (
+                              <div className="mt-1 flex items-center gap-2">
+                                {m.feedback_rating != null && (
+                                  <Badge variant={m.feedback_rating === 1 ? "success" : "destructive"} className="h-3.5 px-1 text-[10px]">
+                                    {m.feedback_rating === 1 ? "👍" : "👎"}
+                                  </Badge>
+                                )}
+                                {m.delivery && <MessageDeliveryState delivery={m.delivery} />}
+                              </div>
+                            )}
+                          </div>
+                          {/* Translation layer: sits OUTSIDE the customer bubble as a
+                              distinct annotation so it reads as an aid, not as the
+                              message itself. */}
                           {m.role === "user" && autoTranslate && translations[m.message_id] && (
-                            <div className="mt-1 flex items-start gap-1 rounded border border-border/40 bg-background/70 px-1.5 py-1" title={t("inbox.translation")}>
-                              <p className="min-w-0 flex-1 text-[11px] leading-5 text-foreground/80">
-                                {translateLang(translations[m.message_id].target).flag} {translations[m.message_id].text}
+                            <div className={cn(
+                              "max-w-[85%] border-primary/40 py-0.5",
+                              isUser ? "border-r-2 pr-2.5 text-right" : "border-l-2 pl-2.5",
+                            )}>
+                              <p className={cn("mb-0.5 flex items-center gap-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground", isUser && "justify-end")}>
+                                <Languages className="size-2.5" />
+                                {translateLang(translations[m.message_id].target).label}
+                              </p>
+                              <p className="whitespace-pre-wrap text-[13px] leading-6 text-foreground">
+                                {translations[m.message_id].text}
                               </p>
                             </div>
                           )}
-                          {m.role === "model" && parseSources(m.sources_json).length > 0 && (
-                            <div className="mt-1.5 flex flex-wrap gap-1 border-t border-border/60 pt-1.5">
-                              {parseSources(m.sources_json).slice(0, 4).map((src) => (
-                                <span key={`${src.doc_id}-${src.title}`} title={(src.content || "").slice(0, 140)} className="inline-flex max-w-full items-center gap-1 rounded border border-border bg-muted/50 px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                                  <FileText className="size-2.5 shrink-0" />
-                                  <span className="truncate">{src.title}</span>
-                                </span>
-                              ))}
-                            </div>
-                          )}
-                          {(m.feedback_rating != null || m.delivery) && (
-                            <div className="mt-1 flex items-center gap-2">
-                              {m.feedback_rating != null && (
-                                <Badge variant={m.feedback_rating === 1 ? "success" : "destructive"} className="h-3.5 px-1 text-[10px]">
-                                  {m.feedback_rating === 1 ? "👍" : "👎"}
-                                </Badge>
-                              )}
-                              {m.delivery && <MessageDeliveryState delivery={m.delivery} />}
-                            </div>
-                          )}
-                        </div>
+                        </React.Fragment>
                       ))}
                     </div>
                   </React.Fragment>
