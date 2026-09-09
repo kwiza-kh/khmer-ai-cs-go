@@ -439,7 +439,7 @@ export default function KnowledgePage() {
                 {[1, 2, 3].map((index) => <Skeleton key={index} className="h-44 rounded-xl" />)}
               </div>
             ) : documentGroups.length === 0 ? (
-              <Card><CardContent className="py-12"><EmptyState icon={FileText} title={t("kb.emptyTitle")} description={t("kb.emptyDesc")} /></CardContent></Card>
+              <Card><CardContent className="py-12"><EmptyState icon={FileText} title={t("kb.emptyTitle")} description={t("kb.emptyDesc")} action={<KnowledgeUploadDialog onUploaded={loadDocs} />} /></CardContent></Card>
             ) : documentGroups.map((group) => {
               const collapsed = collapsedGroups.has(group.kind);
               const GroupIcon = group.icon;

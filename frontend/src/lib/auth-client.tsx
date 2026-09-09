@@ -28,6 +28,8 @@ import { localizeCurrentLang } from "./api-errors";
 
 const AuthContext = createContext<AuthContextType | null>(null);
 
+import { settle } from "./safe-fetch";
+
 export const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080/api/v1";
 
 /**
@@ -69,11 +71,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const login = async (username: string, password: string, totpCode?: string): Promise<{ twoFactorRequired?: boolean }> => {
-    const res = await fetch(`${API_BASE}/auth/login`, {
+    const res = await settle(fetch(`${API_BASE}/auth/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username, password, ...(totpCode ? { totp_code: totpCode } : {}) }),
-    });
+    }));
     const data = await res.json().catch(() => ({}));
     if (res.status === 401 && data?.action === "2fa_required") {
       return { twoFactorRequired: true };
@@ -87,11 +89,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const register = async (username: string, email: string, password: string) => {
-    const res = await fetch(`${API_BASE}/auth/register`, {
+    const res = await settle(fetch(`${API_BASE}/auth/register`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username, email, password }),
-    });
+    }));
     const data = await res.json();
     if (!res.ok) throw new Error(localizeCurrentLang(data.error || "注册失败"));
     setToken(data.token);
@@ -103,11 +105,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // completeGoogleLogin — the OAuth callback redirects back with a one-time
   // code; swap it for the JWT payload (single use, 2-minute TTL server-side).
   const completeGoogleLogin = async (code: string) => {
-    const res = await fetch(`${API_BASE}/auth/google/exchange`, {
+    const res = await settle(fetch(`${API_BASE}/auth/google/exchange`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ code }),
-    });
+    }));
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(localizeCurrentLang(data.error || "Google 登录失败"));
     setToken(data.token);

@@ -212,7 +212,7 @@ export function CannedResponsesCard() {
                   </div>
                   <button
                     onClick={() => handleDelete(r.id)}
-                    className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive flex-shrink-0"
+                    className="opacity-100 transition-opacity text-muted-foreground hover:text-destructive sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100 flex-shrink-0"
                     title={t("kb.delete")}
                   >
                     <Trash2 className="size-3.5" />

@@ -14,6 +14,7 @@ import {
 	TranslateTarget,
 } from "@/lib/api";
 import { PageHeader } from "@/components/page-header";
+import { EmptyState } from "@/components/empty-state";
 import { Input } from "@/components/ui/input";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -348,7 +349,15 @@ export default function InboxPage() {
         ok += 1;
       } catch { /* keep going through the rest */ }
     }
-    toast.success(`${ok}/${ids.length}`);
+    const failed = ids.length - ok;
+    const doneKey = action === "assign" ? "inbox.bulkAssigned" : "inbox.bulkClosed";
+    if (failed === 0) {
+      toast.success(tf(doneKey, { ok, total: ids.length }));
+    } else {
+      // Partial failure must be visible: the operator needs to know which
+      // conversations still need attention.
+      toast.warning(tf("inbox.bulkPartial", { ok, total: ids.length, failed }));
+    }
     setBulkBusy(false);
     setSelectedIds(new Set());
     void mutateInbox();
@@ -427,7 +436,11 @@ export default function InboxPage() {
           <ScrollArea className="flex-1">
             <div className="p-2.5">
               {groupedItems.length === 0 ? (
-                <p className="text-center text-xs text-muted-foreground py-12">{t("inbox.noConversations")}</p>
+                <EmptyState
+                  icon={query || platformFilter !== "all" ? Search : InboxIcon}
+                  title={query || platformFilter !== "all" ? t("inbox.emptyFiltered") : t("inbox.emptyTitle")}
+                  description={query || platformFilter !== "all" ? t("inbox.emptyFilteredDesc") : t("inbox.emptyDesc")}
+                />
               ) : groupedItems.map((group) => (
                 <div key={group.value} className="mb-4 last:mb-0">
                   <div className="flex items-center gap-2 px-1.5 pb-1.5">

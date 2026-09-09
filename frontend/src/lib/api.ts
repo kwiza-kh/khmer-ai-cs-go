@@ -1,5 +1,6 @@
 import { API_BASE, signalAuthExpired } from "./auth-client";
 import { localizeCurrentLang } from "./api-errors";
+import { settle } from "./safe-fetch";
 
 export class ApiError extends Error {
   status: number;
@@ -18,7 +19,7 @@ export async function apiFetch<T = unknown>(path: string, options: RequestInit =
   };
   if (token) headers["Authorization"] = `Bearer ${token}`;
 
-  const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
+  const res = await settle(fetch(`${API_BASE}${path}`, { ...options, headers }));
 
   // 204 No Content / 空 body 时直接返回, 否则 res.json() 会抛错.
   if (res.status === 204) {
@@ -398,12 +399,12 @@ export async function chatVoice(
   form.append("audio", audio, `voice.${(audio.type.split("/")[1] || "webm").split(";")[0]}`);
   form.append("language", language);
 
-  const res = await fetch(`${API_BASE}/chat/voice`, {
+  const res = await settle(fetch(`${API_BASE}/chat/voice`, {
     method: "POST",
     headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     body: form,
     signal: opts?.signal,
-  });
+  }));
   if (res.status === 401) signalAuthExpired();
 
   const contentType = res.headers.get("content-type") || "";
@@ -457,14 +458,14 @@ export async function uploadKnowledgeFile(
   if (opts?.category) form.append("category", opts.category);
   if (opts?.language) form.append("language", opts.language);
 
-  const res = await fetch(`${API_BASE}/knowledge/upload/file`, {
+  const res = await settle(fetch(`${API_BASE}/knowledge/upload/file`, {
     method: "POST",
     headers: {
       // Do NOT set Content-Type — browser sets it with the boundary for FormData.
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
     body: form,
-  });
+  }));
   if (res.status === 401) signalAuthExpired();
 
   const contentType = res.headers.get("content-type") || "";
@@ -762,7 +763,7 @@ export function streamChat(
   (async () => {
     let res: Response;
     try {
-      res = await fetch(`${API_BASE}/chat/stream`, {
+      res = await settle(fetch(`${API_BASE}/chat/stream`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -770,7 +771,7 @@ export function streamChat(
         },
         body: JSON.stringify({ ...body, language: body.language || "km" }),
         signal: controller.signal,
-      });
+      }));
     } catch (err) {
       if ((err as Error).name !== "AbortError") {
         handlers.onError?.((err as Error).message);
@@ -1284,9 +1285,9 @@ export async function downloadReport(kind: "sessions" | "messages" | "tokens", f
   const token = localStorage.getItem("token");
   // Use the same absolute API_BASE as every other call — the Next.js server has
   // no /api/v1 rewrite, so a relative path would hit the frontend (3000) and 404.
-  const resp = await fetch(`${API_BASE}/reports/${kind}?${qs}`, {
+  const resp = await settle(fetch(`${API_BASE}/reports/${kind}?${qs}`, {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
-  });
+  }));
   if (!resp.ok) {
     let msg = `export failed (${resp.status})`;
     try { const d = await resp.json(); msg = d.error ?? msg; } catch { /* ignore */ }
@@ -1641,11 +1642,11 @@ export async function uploadAvatar(file: File) {
   const token = localStorage.getItem("token");
   const form = new FormData();
   form.append("file", file);
-  const res = await fetch(`${API_BASE}/profile/avatar`, {
+  const res = await settle(fetch(`${API_BASE}/profile/avatar`, {
     method: "POST",
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
     body: form,
-  });
+  }));
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || "头像上传失败");
   return data as UserProfile;

@@ -197,6 +197,8 @@ export function ProfileCard() {
                       value={phone}
                       onChange={(e) => setPhone(e.target.value)}
                       placeholder="+855 …"
+                      type="tel"
+                      inputMode="tel"
                       maxLength={32}
                       className="h-9 pl-8 text-sm"
                     />

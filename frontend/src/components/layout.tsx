@@ -181,9 +181,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         <div className="ml-auto flex items-center gap-4">
           <Link href="/knowledge" className="hidden sm:block text-[13px] font-medium text-muted-foreground transition-colors hover:text-foreground">{t("nav.knowledge")}</Link>
           <Link href="/help" className="hidden sm:block text-[13px] font-medium text-muted-foreground transition-colors hover:text-foreground">{t("nav.help")}</Link>
-          <button type="button" className="rounded-full bg-ink px-4 py-1.5 text-[13px] font-semibold text-ink-foreground shadow-[0_1px_2px_rgb(0_0_0/0.25),inset_0_1px_0_rgb(255_255_255/0.18)] transition-all hover:brightness-110 active:scale-[0.97]">
+          <Link href="/inbox" className="rounded-full bg-ink px-4 py-1.5 text-[13px] font-semibold text-ink-foreground shadow-[0_1px_2px_rgb(0_0_0/0.25),inset_0_1px_0_rgb(255_255_255/0.18)] transition-all hover:brightness-110 active:scale-[0.97]">
             {t("nav.console")}
-          </button>
+          </Link>
           <DropdownMenu>
             <DropdownMenuTrigger>
               <Avatar className="size-8 cursor-pointer rounded-full ring-2 ring-primary/30 transition-all hover:ring-primary/55 hover:shadow-[0_0_0_4px_color-mix(in_oklch,var(--color-primary)_14%,transparent)]">

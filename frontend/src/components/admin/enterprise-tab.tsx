@@ -25,6 +25,7 @@ import {
   AlarmClock, GitBranch, ListChecks, ShieldCheck, Webhook, BarChart3, Plug, Trash2, Plus,
 } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
+import { confirmDelete } from "@/lib/confirm-delete";
 
 const PERMISSION_OPTIONS = [
   "inbox.view", "inbox.reply", "inbox.assign", "inbox.status",
@@ -92,7 +93,7 @@ function SlaPanel() {
                   <TableCell className="text-xs">{p.first_response_secs}s</TableCell>
                   <TableCell className="text-xs">{p.resolution_secs ? `${p.resolution_secs}s` : "—"}</TableCell>
                   <TableCell>
-                    <Button size="sm" variant="ghost" onClick={async () => { await deleteSlaPolicy(p.sla_id); await mutate(); }} className="h-7 text-xs text-destructive"><Trash2 className="size-3" /></Button>
+                    <Button size="sm" variant="ghost" onClick={() => confirmDelete(t("ent.deleteSlaConfirm"), () => deleteSlaPolicy(p.sla_id), mutate)} className="h-7 text-xs text-destructive"><Trash2 className="size-3" /></Button>
                   </TableCell>
                 </TableRow>
               ))}
@@ -150,7 +151,7 @@ function RoutingPanel() {
                 <TableCell className="text-xs">{JSON.stringify(r.conditions)}</TableCell>
                 <TableCell className="text-xs">{(r.target_skills ?? []).join(", ") || "—"}</TableCell>
                 <TableCell>
-                  <Button size="sm" variant="ghost" onClick={async () => { await deleteRoutingRule(r.rule_id); await mutate(); }} className="h-7 text-xs text-destructive"><Trash2 className="size-3" /></Button>
+                  <Button size="sm" variant="ghost" onClick={() => confirmDelete(t("ent.deleteRuleConfirm"), () => deleteRoutingRule(r.rule_id), mutate)} className="h-7 text-xs text-destructive"><Trash2 className="size-3" /></Button>
                 </TableCell>
               </TableRow>
             ))}
@@ -195,7 +196,7 @@ function MacrosPanel() {
                 <TableCell className="text-xs font-medium">{m.title}</TableCell>
                 <TableCell className="text-xs">{m.steps.length}</TableCell>
                 <TableCell>
-                  <Button size="sm" variant="ghost" onClick={async () => { await deleteMacro(m.macro_id); await mutate(); }} className="h-7 text-xs text-destructive"><Trash2 className="size-3" /></Button>
+                  <Button size="sm" variant="ghost" onClick={() => confirmDelete(t("ent.deleteMacroConfirm"), () => deleteMacro(m.macro_id), mutate)} className="h-7 text-xs text-destructive"><Trash2 className="size-3" /></Button>
                 </TableCell>
               </TableRow>
             ))}
@@ -246,7 +247,7 @@ function RolesPanel() {
                 <TableCell className="text-xs font-medium">{r.name}</TableCell>
                 <TableCell className="text-xs">{r.permissions.join(", ")}</TableCell>
                 <TableCell>
-                  <Button size="sm" variant="ghost" onClick={async () => { await deleteRole(r.role_id); await mutate(); }} className="h-7 text-xs text-destructive"><Trash2 className="size-3" /></Button>
+                  <Button size="sm" variant="ghost" onClick={() => confirmDelete(t("ent.deleteRoleConfirm"), () => deleteRole(r.role_id), mutate)} className="h-7 text-xs text-destructive"><Trash2 className="size-3" /></Button>
                 </TableCell>
               </TableRow>
             ))}
@@ -299,7 +300,7 @@ function WebhooksPanel() {
                 <TableCell className="text-xs font-medium truncate max-w-[200px]">{s.url}</TableCell>
                 <TableCell className="text-xs">{s.events.join(", ")}</TableCell>
                 <TableCell>
-                  <Button size="sm" variant="ghost" onClick={async () => { await deleteWebhookSubscription(s.subscription_id); await mutate(); }} className="h-7 text-xs text-destructive"><Trash2 className="size-3" /></Button>
+                  <Button size="sm" variant="ghost" onClick={() => confirmDelete(t("ent.deleteWebhookConfirm"), () => deleteWebhookSubscription(s.subscription_id), mutate)} className="h-7 text-xs text-destructive"><Trash2 className="size-3" /></Button>
                 </TableCell>
               </TableRow>
             ))}

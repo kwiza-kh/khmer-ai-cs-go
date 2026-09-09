@@ -102,8 +102,12 @@ export default function WidgetAdminPage() {
           {isLoading ? (
             <div className="text-center py-12"><Loader2 className="size-5 animate-spin text-muted-foreground mx-auto" /></div>
           ) : (tokens ?? []).length === 0 ? (
-            <Card className="border-dashed"><CardContent className="py-12 text-center text-sm text-muted-foreground">
-              {t("widget.empty")}
+            <Card className="border-dashed"><CardContent className="flex flex-col items-center gap-3 py-12">
+              <p className="text-sm text-muted-foreground">{t("widget.empty")}</p>
+              <Button size="sm" onClick={() => setCreating(true)} disabled={busy} className="h-8 gap-1.5 text-xs">
+                <Plus className="size-3.5" />
+                {t("widget.newToken")}
+              </Button>
             </CardContent></Card>
           ) : (
             (tokens ?? []).map((tk) => (

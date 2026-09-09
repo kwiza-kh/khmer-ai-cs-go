@@ -119,7 +119,7 @@ export function TelegramNotifyCard() {
             <div className="flex items-end gap-2">
               <div className="flex-1 space-y-1">
                 <label className="text-xs font-medium">{t("settings.tgChatId")}</label>
-                <Input value={chatId} onChange={(e) => setChatId(e.target.value)} placeholder="123456789" className="h-9 text-sm" />
+                <Input value={chatId} onChange={(e) => setChatId(e.target.value)} placeholder="123456789" inputMode="numeric" className="h-9 text-sm" />
               </div>
               <Button variant="outline" className="h-9 gap-1.5" onClick={pullChats} disabled={pulling || (!botToken && !configured)}>
                 {pulling ? <Loader2 className="size-3.5 animate-spin" /> : <Bot className="size-3.5" />}

@@ -129,6 +129,8 @@ const PLATFORMS: PlatformMeta[] = [
       { labelKey: "pf.field.appSecret", key: "webhook_secret", placeholder: "your_meta_app_secret", type: "password" },
     ],
     docsUrl: "https://developers.facebook.com/docs/messenger-platform",
+    guide: ["pf.guide.meta.s1", "pf.guide.meta.s2", "pf.guide.meta.s3"],
+    webhookMode: "manual",
   },
   {
     icon: PLATFORM_ICONS.instagram,
@@ -141,6 +143,8 @@ const PLATFORMS: PlatformMeta[] = [
       { labelKey: "pf.field.appSecret", key: "webhook_secret", placeholder: "your_meta_app_secret", type: "password" },
     ],
     docsUrl: "https://developers.facebook.com/docs/messenger-platform",
+    guide: ["pf.guide.instagram.s1", "pf.guide.instagram.s2", "pf.guide.instagram.s3"],
+    webhookMode: "manual",
   },
   {
     icon: PLATFORM_ICONS.telegram,
@@ -171,6 +175,8 @@ const PLATFORMS: PlatformMeta[] = [
       { labelKey: "pf.field.appSecret", key: "webhook_secret", placeholder: "your_meta_app_secret", type: "password" },
     ],
     docsUrl: "https://developers.facebook.com/docs/whatsapp/cloud-api",
+    guide: ["pf.guide.whatsapp.s1", "pf.guide.whatsapp.s2", "pf.guide.whatsapp.s3"],
+    webhookMode: "manual",
   },
   {
     icon: PLATFORM_ICONS.line,
@@ -903,6 +909,8 @@ function PlatformCard({ meta, initial, onClose }: { meta: PlatformMeta; initial?
       onClose?.();
       return;
     }
+    // One tap here stops the bot from answering customers — ask first.
+    if (!window.confirm(tf("pf.disconnectConfirm", { name: platformName }))) return;
     setDisconnecting(true);
     try {
       await apiFetch(`/platforms/configs/${initial.config_id}`, { method: "DELETE" });

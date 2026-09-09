@@ -11,6 +11,8 @@ interface ErrTranslation {
 }
 
 const ERR_MAP: Record<string, ErrTranslation> = {
+  "网络已断开，请检查网络连接后重试": { en: "You are offline — check your connection and retry", km: "អ្នកបានដាច់ពីអ៊ីនធឺណិត — សូមពិនិត្យការតភ្ជាប់ ហើយព្យាយាមម្តងទៀត" },
+  "无法连接服务器，请稍后重试": { en: "Cannot reach the server — please retry shortly", km: "មិនអាចភ្ជាប់ទៅម៉ាស៊ីនបម្រើ — សូមព្យាយាមម្តងទៀត" },
   "2FA 查询失败": { en: "2FA lookup failed", km: "ការស្វែងរក 2FA បរាជ័យ" },
   "Telegram 必须设置 bot_token": { en: "Telegram requires bot_token", km: "Telegram ត្រូវការ bot_token" },
   "rating 必须是 -1 或 1": { en: "rating must be -1 or 1", km: "ការវាយតម្លៃត្រូវតែ -1 ឬ 1" },
