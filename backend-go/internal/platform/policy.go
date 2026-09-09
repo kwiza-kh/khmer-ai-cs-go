@@ -1,6 +1,8 @@
 // Package platform — reply-window policy (port of platform_policy.go).
 // Telegram/LINE/Zalo always open; WhatsApp templates exempt; the rest must
-// reply within 24h of the customer's last inbound message.
+// reply within 24h of the customer's last inbound message. Messenger /
+// Instagram human replies may continue for 7 days via the Meta HUMAN_AGENT
+// message tag; automatic (model) replies stay locked behind the 24h window.
 package platform
 
 import (
@@ -13,19 +15,28 @@ import (
 
 const CustomerCareWindowHours = 24
 
+// HumanAgentWindowDays — Meta allows tagged human-agent replies within 7
+// days of the customer's last inbound message.
+const HumanAgentWindowDays = 7
+
+// HumanAgentTag — the Meta message tag that extends human replies to 7 days.
+const HumanAgentTag = "HUMAN_AGENT"
+
 // PolicyError marks a terminal delivery failure (never retried).
 type PolicyError struct{ Msg string }
 
 func (e *PolicyError) Error() string { return e.Msg }
 
-// EnsureReplyWindow returns the expiry when a reply is allowed, or a
-// *PolicyError when the window has closed.
-func EnsureReplyWindow(ctx context.Context, db *pgxpool.Pool, platform string, configID int32, sessionID string, isTemplate bool, now time.Time) (time.Time, error) {
+// EnsureReplyWindow returns the reply deadline when a reply is allowed —
+// extended=true marks the 24h window as closed but the 7-day human-agent
+// extension in effect (the caller must send with HumanAgentTag) — or a
+// *PolicyError when no reply is possible anymore.
+func EnsureReplyWindow(ctx context.Context, db *pgxpool.Pool, platform string, configID int32, sessionID string, isTemplate, isHuman bool, now time.Time) (time.Time, bool, error) {
 	if platform == "telegram" || platform == "line" || platform == "zalo" || (platform == "whatsapp" && isTemplate) {
-		return now.Add(CustomerCareWindowHours * time.Hour), nil
+		return now.Add(CustomerCareWindowHours * time.Hour), false, nil
 	}
 	if platform != "whatsapp" && platform != "meta" && platform != "instagram" {
-		return time.Time{}, fmt.Errorf("unsupported platform reply policy")
+		return time.Time{}, false, fmt.Errorf("unsupported platform reply policy")
 	}
 	var lastInbound *time.Time
 	var raw *time.Time
@@ -37,16 +48,24 @@ func EnsureReplyWindow(ctx context.Context, db *pgxpool.Pool, platform string, c
 	}
 	if lastInbound == nil {
 		if platform == "whatsapp" {
-			return time.Time{}, &PolicyError{"WhatsApp customer context was not found; an approved template is required"}
+			return time.Time{}, false, &PolicyError{"WhatsApp customer context was not found; an approved template is required"}
 		}
-		return time.Time{}, &PolicyError{"Customer messaging context was not found"}
+		return time.Time{}, false, &PolicyError{"Customer messaging context was not found"}
 	}
 	expires := lastInbound.Add(CustomerCareWindowHours * time.Hour)
-	if !now.Before(expires) {
-		if platform == "whatsapp" {
-			return time.Time{}, &PolicyError{"The WhatsApp 24-hour reply window has expired. Send an approved template instead."}
-		}
-		return time.Time{}, &PolicyError{fmt.Sprintf("The %s 24-hour reply window has expired. Wait for a customer message before replying.", platform)}
+	if now.Before(expires) {
+		return expires, false, nil
 	}
-	return expires, nil
+	humanDeadline := lastInbound.Add(HumanAgentWindowDays * 24 * time.Hour)
+	if platform == "meta" || platform == "instagram" {
+		if now.Before(humanDeadline) {
+			if isHuman {
+				return humanDeadline, true, nil
+			}
+			return time.Time{}, false, &PolicyError{fmt.Sprintf("The %s 24-hour reply window has expired; automatic replies are not allowed. A human agent may still reply within %d days via the %s tag.", platform, HumanAgentWindowDays, HumanAgentTag)}
+		}
+		return time.Time{}, false, &PolicyError{fmt.Sprintf("The %s reply window and its %d-day human-agent extension have expired. Wait for a customer message before replying.", platform, HumanAgentWindowDays)}
+	}
+	// WhatsApp (non-template): hard 24h stop.
+	return time.Time{}, false, &PolicyError{"The WhatsApp 24-hour reply window has expired. Send an approved template instead."}
 }

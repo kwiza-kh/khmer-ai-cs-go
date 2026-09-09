@@ -1300,7 +1300,7 @@ func (p *Pipeline) deliver(ctx context.Context, d *outboundDelivery) {
 		return
 	}
 
-	providerID, err := p.deliverToProvider(ctx, d)
+	providerID, err := p.deliverToProvider(ctx, d, role == "agent")
 	if err == nil {
 		if providerID == "" {
 			_, _ = p.DB.Exec(ctx, "UPDATE platform_outbox SET status='sent', sent_at=$1, locked_at=NULL, last_error='' WHERE delivery_id=$2", time.Now(), d.DeliveryID)
@@ -1319,18 +1319,25 @@ func (p *Pipeline) deliver(ctx context.Context, d *outboundDelivery) {
 }
 
 // deliverToProvider sends via the correct provider client. Returns provider id.
-func (p *Pipeline) deliverToProvider(ctx context.Context, d *outboundDelivery) (string, error) {
+// isHuman marks agent-authored messages: only those may use the Meta
+// HUMAN_AGENT tag to reply within the 7-day extension window.
+func (p *Pipeline) deliverToProvider(ctx context.Context, d *outboundDelivery, isHuman bool) (string, error) {
 	isTemplate := false
 	if d.Payload != nil {
 		if k, _ := d.Payload["kind"].(string); k == "template" {
 			isTemplate = true
 		}
 	}
-	if _, err := EnsureReplyWindow(ctx, p.DB, d.Platform, d.ConfigID, d.SessionID, isTemplate, time.Now()); err != nil {
+	humanTag := ""
+	_, extended, err := EnsureReplyWindow(ctx, p.DB, d.Platform, d.ConfigID, d.SessionID, isTemplate, isHuman, time.Now())
+	if err != nil {
 		if _, ok := err.(*PolicyError); ok {
 			return "", err
 		}
 		return "", err
+	}
+	if extended {
+		humanTag = HumanAgentTag
 	}
 	cfg, err := p.loadConfig(ctx, d.ConfigID)
 	if err != nil {
@@ -1421,7 +1428,7 @@ func (p *Pipeline) deliverToProvider(ctx context.Context, d *outboundDelivery) (
 		return last, nil
 	default: // meta / instagram / whatsapp
 		client := NewMetaClient(cfg.AccessToken, cfg.PageID, cfg.InstagramBusiness, p.Cfg.Meta.GraphAPIVersion)
-		req := &SendRequest{Platform: d.Platform, RecipientID: d.RecipientID, Kind: kind, MediaURL: mediaURL, MediaType: mediaType, Buttons: buttons}
+		req := &SendRequest{Platform: d.Platform, RecipientID: d.RecipientID, Kind: kind, MediaURL: mediaURL, MediaType: mediaType, Buttons: buttons, Tag: humanTag}
 		if d.Payload != nil {
 			req.TemplateName, _ = d.Payload["template_name"].(string)
 			req.TemplateLanguage, _ = d.Payload["template_language"].(string)

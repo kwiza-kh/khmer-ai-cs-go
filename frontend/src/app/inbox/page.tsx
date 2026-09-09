@@ -967,7 +967,13 @@ function ConversationDetail({
   const platformName = PLATFORM_LABELS[item.platform || "web"] || item.platform || "Platform";
   const replyWindowExpiry = item.reply_window_expires_at ? new Date(item.reply_window_expires_at).getTime() : NaN;
   const replyWindowKnown = Number.isFinite(replyWindowExpiry);
-  const replyWindowExpired = hasCustomerCareWindow && (!replyWindowKnown || currentTime >= replyWindowExpiry);
+  // Messenger/Instagram: human replies may continue for 7 days after the
+  // customer's last message via the HUMAN_AGENT tag (WhatsApp is template-only).
+  const humanAgentDeadline = replyWindowExpiry + 6 * 24 * 60 * 60 * 1000;
+  const replyWindowExtended = hasCustomerCareWindow && !isWhatsApp && replyWindowKnown
+    && currentTime > replyWindowExpiry && currentTime < humanAgentDeadline;
+  const replyWindowExpired = hasCustomerCareWindow
+    && (!replyWindowKnown || currentTime >= (isWhatsApp ? replyWindowExpiry : humanAgentDeadline));
   const isTemplateReply = composerKind === "template";
   const isReplyBlocked = replyWindowExpired && !isTemplateReply;
   const supportsRichReplies = item.platform === "meta" || item.platform === "instagram" || item.platform === "telegram" || item.platform === "whatsapp";
@@ -1136,13 +1142,15 @@ function ConversationDetail({
       <TagsBar sessionId={item.session_id} initial={item.tags ?? []} onMutate={onMutate} />
 
       {hasCustomerCareWindow && (
-        <div className={cn("mx-5 mt-2 flex items-start gap-2 border px-3 py-1.5 text-xs", replyWindowExpired ? "border-warning/40 bg-warning/10 text-warning" : "border-success/30 bg-success/10 text-foreground")}>
-          {replyWindowExpired ? <CircleAlert className="mt-0.5 size-3.5 shrink-0" /> : <Clock3 className="mt-0.5 size-3.5 shrink-0 text-success" />}
+        <div className={cn("mx-5 mt-2 flex items-start gap-2 border px-3 py-1.5 text-xs", replyWindowExpired || replyWindowExtended ? "border-warning/40 bg-warning/10 text-warning" : "border-success/30 bg-success/10 text-foreground")}>
+          {replyWindowExpired ? <CircleAlert className="mt-0.5 size-3.5 shrink-0" /> : <Clock3 className="mt-0.5 size-3.5 shrink-0" />}
           <div>
             <p className="font-medium">
               {replyWindowExpired
                 ? isWhatsApp ? t("inbox.windowTemplateRequired") : tf("inbox.windowExpired", { platform: platformName })
-                : tf("inbox.windowOpen", { platform: platformName })}
+                : replyWindowExtended
+                  ? tf("inbox.windowExtended", { platform: platformName })
+                  : tf("inbox.windowOpen", { platform: platformName })}
             </p>
             <p className="mt-0.5 leading-relaxed opacity-85">
               {replyWindowKnown
@@ -1150,7 +1158,9 @@ function ConversationDetail({
                   ? isWhatsApp
                     ? t("inbox.windowWaitTemplate")
                     : t("inbox.windowWaitReply")
-                  : tf("inbox.windowOpenUntil", { time: new Date(replyWindowExpiry).toLocaleString('en-US') })
+                  : replyWindowExtended
+                    ? tf("inbox.windowExtendedUntil", { time: new Date(humanAgentDeadline).toLocaleString('en-US') })
+                    : tf("inbox.windowOpenUntil", { time: new Date(replyWindowExpiry).toLocaleString('en-US') })
                 : isWhatsApp
                   ? t("inbox.windowNoneTemplate")
                   : t("inbox.windowNone")}

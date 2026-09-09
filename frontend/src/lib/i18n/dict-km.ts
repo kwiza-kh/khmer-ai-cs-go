@@ -171,6 +171,8 @@ export const km: Dict = {
   "inbox.panelCancel": "បោះបង់",
   "inbox.windowTemplateRequired": "ត្រូវការពុម្ព WhatsApp",
   "inbox.windowExpired": "វិន់ដូឆ្លើយតប {platform} បានផុតកំណត់",
+  "inbox.windowExtended": "បង្អួច 24 ម៉ោងរបស់ {platform} បានផុតកំណត់ — ការពន្យារពេលឆ្លើយតបរបស់បុគ្គលិកសកម្ម",
+  "inbox.windowExtendedUntil": "អាចឆ្លើយតបបានរហូតដល់ {time} (៧ ថ្ងៃបន្ទាប់ពីសារចុងក្រោយរបស់អតិថិជន)។",
   "inbox.windowOpen": "វិន់ដូសេវាកម្មអតិថិជន {platform} កំពុងបើក",
   "inbox.windowOpenUntil": "អាចឆ្លើយតបបានរហូតដល់ {time}។",
   "inbox.windowWaitTemplate": "ផ្ញើពុម្ពដែលបានអនុម័ត ឬរង់ចាំសារថ្មីពីអតិថិជនមុននឹងផ្ញើការឆ្លើយតបធម្មតា។",

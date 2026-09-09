@@ -171,6 +171,8 @@ export const zh: Dict = {
   "inbox.panelCancel": "取消",
   "inbox.windowTemplateRequired": "需要 WhatsApp 模板",
   "inbox.windowExpired": "{platform} 回复窗口已过期",
+  "inbox.windowExtended": "{platform} 24 小时窗口已过期 — 人工客服延期生效",
+  "inbox.windowExtendedUntil": "可回复至 {time}（客户最后消息后 7 天），回复将携带 HUMAN_AGENT 标签发送。",
   "inbox.windowOpen": "{platform} 客服窗口开放中",
   "inbox.windowOpenUntil": "在 {time} 之前可持续回复。",
   "inbox.windowWaitTemplate": "请发送已审核模板，或等待客户新消息后再发送普通回复。",

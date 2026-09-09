@@ -53,6 +53,9 @@ type SendRequest struct {
 	TemplateName         string
 	TemplateLanguage     string
 	TemplateBodyParams   []string
+	// Tag carries the Meta message tag (e.g. HUMAN_AGENT) that extends the
+	// 24-hour window to 7 days for human-agent replies on Messenger/IG.
+	Tag string
 }
 
 func NewMetaClient(accessToken, pageID, instagramBusiness, version string) *MetaClient {
@@ -264,6 +267,14 @@ func (m *MetaClient) ListWhatsAppTemplates(ctx context.Context, accountID string
 }
 
 func buildMetaMessageBody(req *SendRequest) map[string]any {
+	body := buildMetaMessageBodyInner(req)
+	if tag := metaMessageTag(req); tag != "" {
+		body["tag"] = tag
+	}
+	return body
+}
+
+func buildMetaMessageBodyInner(req *SendRequest) map[string]any {
 	switch req.Kind {
 	case "media":
 		mediaType := req.MediaType
@@ -309,6 +320,15 @@ func buildMetaMessageBody(req *SendRequest) map[string]any {
 			"message":   map[string]any{"text": req.Text},
 		}
 	}
+}
+
+// metaMessageTag — the HUMAN_AGENT tag on Messenger/IG extends the 24h
+// window to 7 days; empty for everything else (field must be omitted).
+func metaMessageTag(req *SendRequest) string {
+	if req.Tag != "" && (req.Platform == "meta" || req.Platform == "instagram") {
+		return req.Tag
+	}
+	return ""
 }
 
 func firstNonEmpty(vals ...string) string {

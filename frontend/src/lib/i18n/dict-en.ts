@@ -175,6 +175,8 @@ export const en: Dict = {
   "inbox.panelCancel": "Cancel",
   "inbox.windowTemplateRequired": "WhatsApp template required",
   "inbox.windowExpired": "{platform} reply window expired",
+  "inbox.windowExtended": "{platform} 24-hour window closed — human-agent extension active",
+  "inbox.windowExtendedUntil": "You can reply until {time} (7 days after the customer's last message); replies are sent with the HUMAN_AGENT tag.",
   "inbox.windowOpen": "{platform} customer-service window is open",
   "inbox.windowOpenUntil": "Replies remain available until {time}.",
   "inbox.windowWaitTemplate": "Send an approved template, or wait for a new customer message before sending a normal reply.",
