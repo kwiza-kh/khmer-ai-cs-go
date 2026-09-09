@@ -368,7 +368,7 @@ func (a *App) updateUserRole(w http.ResponseWriter, r *http.Request, userID int3
 	}
 	if req.Role != nil {
 		switch *req.Role {
-		case "admin", "agent", "viewer":
+		case "user", "admin":
 			// Tenant roles — grantable by tenant admins.
 		case "platform_admin":
 			// Only an existing platform_admin may grant the super role.

@@ -242,11 +242,11 @@ func (a *App) findOrCreateGoogleUser(ctx context.Context, sub, email, name strin
 		}
 		err = a.DB.QueryRow(ctx,
 			"INSERT INTO users (username, email, google_sub, role, is_active) "+
-				"VALUES ($1,$2,$3,'agent',true) RETURNING user_id",
+				"VALUES ($1,$2,$3,'user',true) RETURNING user_id",
 			candidate, email, sub).Scan(&userID)
 		if err == nil {
 			username = candidate
-			return userID, username, "agent", true, nil
+			return userID, username, "user", true, nil
 		}
 		if !strings.Contains(err.Error(), "duplicate") && !strings.Contains(err.Error(), "unique") {
 			return 0, "", "", false, err
