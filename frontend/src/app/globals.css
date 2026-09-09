@@ -147,6 +147,16 @@
 
 /* Motion — 统一动效曲线与命名动画 */
 @theme {
+  /* Social platform brand colors — registered as theme tokens so Tailwind
+     generates bg-brand-x / text-brand-x utilities (arbitrary-value classes
+     with alpha modifiers are not generated reliably). */
+  --color-brand-messenger: #0084ff;
+  --color-brand-instagram: #e1306c;
+  --color-brand-telegram: #229ed9;
+  --color-brand-whatsapp: #25d366;
+  --color-brand-line: #06c755;
+  --color-brand-zalo: #0068ff;
+
   --animate-fade-up: fade-up 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
   --animate-fade-in: fade-in 0.3s ease both;
   --animate-aurora: aurora 16s ease-in-out infinite alternate;

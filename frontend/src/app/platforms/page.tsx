@@ -121,7 +121,7 @@ const PLATFORMS: PlatformMeta[] = [
   {
     icon: PLATFORM_ICONS.meta,
     tone: "info",
-    brandClass: "bg-[#0084FF]/12 text-[#0084FF]",
+    brandClass: "bg-brand-messenger/12 text-brand-messenger",
     label: "meta",
     fields: [
       { labelKey: "pf.field.pageId", key: "page_id", placeholder: "123456789" },
@@ -133,7 +133,7 @@ const PLATFORMS: PlatformMeta[] = [
   {
     icon: PLATFORM_ICONS.instagram,
     tone: "warning",
-    brandClass: "bg-[#E1306C]/12 text-[#E1306C]",
+    brandClass: "bg-brand-instagram/12 text-brand-instagram",
     label: "instagram",
     fields: [
       { labelKey: "pf.field.businessAccountId", key: "instagram_business_id", placeholder: "178414..." },
@@ -145,7 +145,7 @@ const PLATFORMS: PlatformMeta[] = [
   {
     icon: PLATFORM_ICONS.telegram,
     tone: "info",
-    brandClass: "bg-[#229ED9]/12 text-[#229ED9]",
+    brandClass: "bg-brand-telegram/12 text-brand-telegram",
     label: "telegram",
     fields: [
       { labelKey: "pf.field.botToken", key: "bot_token", placeholder: "123456:ABC-DEF...", type: "password" },
@@ -161,7 +161,7 @@ const PLATFORMS: PlatformMeta[] = [
   {
     icon: PLATFORM_ICONS.whatsapp,
     tone: "success" as const,
-    brandClass: "bg-[#25D366]/12 text-[#1FAA52]",
+    brandClass: "bg-brand-whatsapp/12 text-brand-whatsapp",
     label: "whatsapp",
     fields: [
       // WhatsApp Cloud API: Phone Number ID lives in the page_id slot (overloaded
@@ -175,7 +175,7 @@ const PLATFORMS: PlatformMeta[] = [
   {
     icon: PLATFORM_ICONS.line,
     tone: "success",
-    brandClass: "bg-[#06C755]/12 text-[#06A94A]",
+    brandClass: "bg-brand-line/12 text-brand-line",
     label: "line",
     fields: [
       { labelKey: "pf.field.channelUserId", key: "page_id", placeholder: "U1234567890abcdef..." },
@@ -193,7 +193,7 @@ const PLATFORMS: PlatformMeta[] = [
   {
     icon: PLATFORM_ICONS.zalo,
     tone: "info",
-    brandClass: "bg-[#0068FF]/12 text-[#0068FF]",
+    brandClass: "bg-brand-zalo/12 text-brand-zalo",
     label: "zalo",
     fields: [
       { labelKey: "pf.field.accessToken", key: "access_token", placeholder: "Zalo OA access_token", type: "password" },
