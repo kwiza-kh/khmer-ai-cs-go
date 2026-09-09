@@ -182,11 +182,13 @@ export default function LoginPage() {
         </div>
       </header>
 
-      {/* Centered card */}
+      {/* Centered card. This page has its own fixed dark design, so every
+          text colour is set explicitly — inheriting card-foreground would
+          render dark-on-dark when the app theme is light. */}
       <div className="grid h-full w-full place-items-center px-4">
-        <Card className="card-animate w-full max-w-sm border-zinc-800 bg-zinc-900/70 backdrop-blur supports-[backdrop-filter]:bg-zinc-900/60">
+        <Card className="card-animate w-full max-w-sm border-zinc-800 bg-zinc-900/70 text-zinc-50 backdrop-blur supports-[backdrop-filter]:bg-zinc-900/60">
           <CardHeader className="space-y-1">
-            <CardTitle className="text-2xl">
+            <CardTitle className="text-2xl text-zinc-50">
               {tab === "login" ? t("login.title") : t("login.registerTitle")}
             </CardTitle>
             <CardDescription className="text-zinc-400">
@@ -403,7 +405,7 @@ export default function LoginPage() {
                 {tab === "login" ? t("login.registerTab") : t("login.tab")}
               </button>
             </div>
-            <span className="text-[10px] tracking-wide text-zinc-600">{t("login.footer")}</span>
+            <span className="text-[11px] tracking-wide text-zinc-500">{t("login.footer")}</span>
           </CardFooter>
         </Card>
       </div>
