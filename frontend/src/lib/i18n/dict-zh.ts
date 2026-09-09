@@ -47,6 +47,7 @@ export const zh: Dict = {
   "login.userPlaceholder": "输入用户名",
   "login.noAccount": "还没有账户？",
   "login.haveAccount": "已有账户？",
+  "login.or": "或",
   "login.showPassword": "显示密码",
   "login.hidePassword": "隐藏密码",
   "login.emailPlaceholder": "输入邮箱",
