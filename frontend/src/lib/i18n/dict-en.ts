@@ -222,6 +222,8 @@ export const en: Dict = {
   "inbox.translation": "Translation",
   "inbox.translateDraftTitle": "Pick a language to translate the reply (replaces the draft)",
   "inbox.translateFailed": "Translation failed — try again shortly",
+  "inbox.autoTranslate": "Auto-translate",
+  "inbox.autoTranslateTitle": "When on, customer messages are translated into the picked language and cached",
   "inbox.send": "Send",
   "inbox.sendTemplate": "Send template",
   "inbox.notesLabel": "Internal notes (visible to your team only)",

@@ -218,6 +218,8 @@ export const zh: Dict = {
   "inbox.translation": "翻译结果",
   "inbox.translateDraftTitle": "选择语言翻译回复（替换草稿）",
   "inbox.translateFailed": "翻译失败，请稍后重试",
+  "inbox.autoTranslate": "自动翻译",
+  "inbox.autoTranslateTitle": "开启后，客户消息自动翻译成所选语言并缓存",
   "inbox.send": "发送",
   "inbox.sendTemplate": "发送模板",
   "inbox.notesLabel": "内部备注（仅团队可见）",

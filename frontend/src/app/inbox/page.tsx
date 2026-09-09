@@ -151,48 +151,10 @@ function TranslateLangMenu({ current, onPick, label, triggerTitle, triggerClassN
   );
 }
 
-// Per-message translation block: pick-language trigger, or the rendered
-// translation with a small re-pick chevron.
-function TranslateBubble({ busy, result, current, onPick, triggerLabel, pickLabel, resultTitle }: {
-  busy: boolean;
-  result?: { text: string; target: TranslateTarget };
-  current: TranslateTarget;
-  onPick: (code: TranslateTarget) => void;
-  triggerLabel: string;
-  pickLabel: string;
-  resultTitle: string;
-}) {
-  if (busy) {
-    return <p className="text-[10px] text-accent-foreground/60"><Loader2 className="inline size-3 animate-spin" /></p>;
-  }
-  if (!result) {
-    return (
-      <TranslateLangMenu
-        current={current}
-        onPick={onPick}
-        label={pickLabel}
-        triggerClassName="inline-flex items-center gap-0.5 text-[10px] text-accent-foreground/60 hover:text-accent-foreground"
-      >
-        🌐 {triggerLabel} <ChevronDown className="size-2.5" />
-      </TranslateLangMenu>
-    );
-  }
-  const lang = translateLang(result.target);
-  return (
-    <div className="flex items-start gap-1 rounded border border-border/40 bg-background/70 px-1.5 py-1" title={resultTitle}>
-      <p className="min-w-0 flex-1 text-[11px] leading-5 text-foreground/80">{lang.flag} {result.text}</p>
-      <TranslateLangMenu
-        current={result.target}
-        onPick={onPick}
-        label={pickLabel}
-        triggerTitle={pickLabel}
-        triggerClassName="mt-0.5 shrink-0 rounded p-0.5 text-accent-foreground/50 hover:text-accent-foreground"
-      >
-        <ChevronDown className="size-3" />
-      </TranslateLangMenu>
-    </div>
-  );
-}
+// Module-level translation cache: message_id → rendering. Survives component
+// remounts (switching conversations) so the same message is never translated
+// twice in one browser session.
+const translationCache = new Map<number, { text: string; target: TranslateTarget }>();
 
 function clampRunes(value: string, max: number) {
   return Array.from(value).slice(0, max).join("");
@@ -785,31 +747,58 @@ function ConversationDetail({
   const prependingRef = React.useRef(false);
   const [unreadSeen, setUnreadSeen] = React.useState(0);
 
-  // Copilot translation state: per-message renderings in the agent-picked
-  // language, and a one-shot rendering of the reply draft into the customer's
-  // language. Both language picks persist across visits via localStorage.
-  const [translations, setTranslations] = React.useState<Record<number, { text: string; target: TranslateTarget }>>({});
-  const [translatingId, setTranslatingId] = React.useState<number | null>(null);
-  const [translatingDraft, setTranslatingDraft] = React.useState(false);
+  // Copilot translation: ONE global toggle in the header (persisted) turns on
+  // automatic translation of every customer message into the picked language.
+  // Results are cached per message id at module scope, so switching
+  // conversations never re-requests the same message.
+  const [autoTranslate, setAutoTranslate] = React.useState<boolean>(() => lsGetJSON<boolean>("inbox.autoTranslate", false));
   const [readLang, setReadLang] = React.useState<TranslateTarget>(() => lsGetJSON<TranslateTarget>("inbox.readLang", "zh"));
   const [replyLang, setReplyLang] = React.useState<TranslateTarget>(() => lsGetJSON<TranslateTarget>("inbox.replyLang", "km"));
+  const [translations, setTranslations] = React.useState<Record<number, { text: string; target: TranslateTarget }>>({});
+  const [translatingDraft, setTranslatingDraft] = React.useState(false);
+  const inflightRef = React.useRef<Set<number>>(new Set());
 
-  const handleTranslateMessage = async (messageID: number, content: string, target: TranslateTarget) => {
-    setTranslatingId(messageID);
-    try {
-      const res = await translateText(content, target);
-      setTranslations((prev) => ({ ...prev, [messageID]: { text: res.translation, target: res.target } }));
-    } catch (err: unknown) {
-      toast.error((err as Error).message || t("inbox.translateFailed"));
-    } finally {
-      setTranslatingId(null);
+  React.useEffect(() => {
+    lsSetJSON("inbox.autoTranslate", autoTranslate);
+  }, [autoTranslate]);
+
+  const translateOne = React.useCallback((messageID: number, content: string, target: TranslateTarget) => {
+    if (inflightRef.current.has(messageID)) return;
+    inflightRef.current.add(messageID);
+    void translateText(content, target)
+      .then((res) => {
+        const entry = { text: res.translation, target: res.target as TranslateTarget };
+        translationCache.set(messageID, entry);
+        setTranslations((prev) => ({ ...prev, [messageID]: entry }));
+      })
+      .catch(() => { /* silent — toggling the switch retries */ })
+      .finally(() => { inflightRef.current.delete(messageID); });
+  }, []);
+
+  // Auto-translate every customer message (cache-first) while the toggle is on.
+  React.useEffect(() => {
+    if (!autoTranslate) return;
+    for (const m of msgList) {
+      if (m.role !== "user" || !m.content) continue;
+      const cached = translationCache.get(m.message_id);
+      if (cached) {
+        if (cached.target === readLang) {
+          setTranslations((prev) => (prev[m.message_id] === cached ? prev : { ...prev, [m.message_id]: cached }));
+          continue;
+        }
+        if (cached.target !== readLang) {
+          // Language changed — re-translate into the newly picked target.
+          translateOne(m.message_id, m.content, readLang);
+          continue;
+        }
+      }
+      translateOne(m.message_id, m.content, readLang);
     }
-  };
+  }, [autoTranslate, msgList, readLang, translateOne]);
 
-  const pickReadLang = (messageID: number, content: string, target: TranslateTarget) => {
+  const pickReadLang = (target: TranslateTarget) => {
     setReadLang(target);
     lsSetJSON("inbox.readLang", target);
-    void handleTranslateMessage(messageID, content, target);
   };
 
   const handleTranslateDraft = async (target: TranslateTarget) => {
@@ -1111,6 +1100,38 @@ function ConversationDetail({
           </p>
         </div>
         <div className="flex items-center gap-2">
+          {/* Global translation toggle: on → every customer message is
+              translated automatically into the picked language (cached). */}
+          <div className="flex items-center gap-1 rounded-md border border-border bg-card px-1.5 py-1">
+            <button
+              type="button"
+              role="switch"
+              aria-checked={autoTranslate}
+              onClick={() => setAutoTranslate((v) => !v)}
+              title={t("inbox.autoTranslateTitle")}
+              className={cn(
+                "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs transition-colors",
+                autoTranslate ? "bg-primary/15 text-primary" : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              <Languages className="size-3.5" />
+              <span className="hidden sm:inline">{t("inbox.autoTranslate")}</span>
+              <span className={cn("ml-0.5 h-3 w-5 rounded-full transition-colors", autoTranslate ? "bg-primary" : "bg-muted-foreground/30")}>
+                <span className={cn("block size-3 rounded-full bg-background transition-transform", autoTranslate && "translate-x-2")} />
+              </span>
+            </button>
+            {autoTranslate && (
+              <TranslateLangMenu
+                current={readLang}
+                onPick={pickReadLang}
+                label={t("inbox.translatePick")}
+                triggerTitle={t("inbox.translatePick")}
+                triggerClassName="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[11px] text-muted-foreground hover:text-foreground"
+              >
+                {translateLang(readLang).flag} {translateLang(readLang).label} <ChevronDown className="size-3" />
+              </TranslateLangMenu>
+            )}
+          </div>
           <Button size="sm" variant="ghost" onClick={onBackToList} className="h-7 w-7 p-0 lg:hidden" title={t("inbox.backToList")}>
             <ChevronLeft className="size-4" />
           </Button>
@@ -1227,17 +1248,11 @@ function ConversationDetail({
                             : "bg-muted text-muted-foreground",
                         )}>
                           <MessagePayloadPreview messageID={m.message_id} content={m.content} metadata={m.metadata} payload={m.delivery?.payload} />
-                          {m.role === "user" && m.content && (
-                            <div className="mt-1">
-                              <TranslateBubble
-                                busy={translatingId === m.message_id}
-                                result={translations[m.message_id]}
-                                current={readLang}
-                                onPick={(code) => { pickReadLang(m.message_id, m.content, code); }}
-                                triggerLabel={translateLang(readLang).label}
-                                pickLabel={t("inbox.translatePick")}
-                                resultTitle={t("inbox.translation")}
-                              />
+                          {m.role === "user" && autoTranslate && translations[m.message_id] && (
+                            <div className="mt-1 flex items-start gap-1 rounded border border-border/40 bg-background/70 px-1.5 py-1" title={t("inbox.translation")}>
+                              <p className="min-w-0 flex-1 text-[11px] leading-5 text-foreground/80">
+                                {translateLang(translations[m.message_id].target).flag} {translations[m.message_id].text}
+                              </p>
                             </div>
                           )}
                           {m.role === "model" && parseSources(m.sources_json).length > 0 && (

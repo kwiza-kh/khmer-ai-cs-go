@@ -218,6 +218,8 @@ export const km: Dict = {
   "inbox.translation": "ការបកប្រែ",
   "inbox.translateDraftTitle": "ជ្រើសភាសាដើម្បីបកប្រែការឆ្លើយតប (ជំនួសសារព្រាង)",
   "inbox.translateFailed": "ការបកប្រែបរាជ័យ — សូមព្យាយាមម្តងទៀត",
+  "inbox.autoTranslate": "បកប្រែស្វ័យប្រវត្តិ",
+  "inbox.autoTranslateTitle": "នៅពេលបើក សារអតិថិជនត្រូវបានបកប្រែដោយស្វ័យប្រវត្តិ និងរក្សាទុក",
   "inbox.send": "ផ្ញើ",
   "inbox.sendTemplate": "ផ្ញើពុម្ព",
   "inbox.notesLabel": "កំណត់ចំណាំផ្ទៃក្នុង (មើលឃើញតែក្រុមរបស់អ្នក)",
