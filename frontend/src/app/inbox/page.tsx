@@ -11,10 +11,11 @@ import {
 	listSessionWhatsAppTemplates, WhatsAppTemplate, getInboundPlatformMediaURL, InboundPlatformMedia,
 	copilotSuggest, getCustomer360, listCustomers, CustomerProfile, updateCustomerNotes,
 	translateText,
+	TranslateTarget,
 } from "@/lib/api";
 import { PageHeader } from "@/components/page-header";
 import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -26,7 +27,7 @@ import {
 	Send, Loader2, Sparkles, Zap, FileText, Clock3, CircleAlert, CheckCheck,
 	Image as ImageIcon, ListChecks, FileCode2, Plus, Trash2, Paperclip, MessageSquare, Volume2,
 	AlertTriangle, RefreshCw, ChevronDown, ChevronUp, PanelRight, ChevronRight, Phone, Mail, ChevronLeft, Pencil,
-	Languages,
+	Languages, Check,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -37,6 +38,9 @@ import { useI18n } from "@/lib/i18n";
 import {
 	Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
+import {
+	DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 // Filter/status/reply-mode labels are i18n keys resolved at render time.
 const STATUS_FILTERS: { value: SessionStatus | "all"; labelKey: string }[] = [
@@ -91,6 +95,104 @@ const REPLY_MODES = [
   { kind: "buttons" as const, labelKey: "inbox.modeButtons", icon: ListChecks },
   { kind: "template" as const, labelKey: "inbox.modeTemplate", icon: FileCode2 },
 ];
+
+// Copilot translation targets — keep in sync with the backend translateTargets
+// whitelist (translate_handlers.go). Labels are written in the language itself
+// so agents can spot the right one regardless of their UI locale.
+const TRANSLATE_LANGS: { code: TranslateTarget; label: string; flag: string }[] = [
+  { code: "zh", label: "简体中文", flag: "🇨🇳" },
+  { code: "km", label: "ភាសាខ្មែរ", flag: "🇰🇭" },
+  { code: "en", label: "English", flag: "🇬🇧" },
+  { code: "th", label: "ไทย", flag: "🇹🇭" },
+  { code: "vi", label: "Tiếng Việt", flag: "🇻🇳" },
+  { code: "lo", label: "ລາວ", flag: "🇱🇦" },
+  { code: "my", label: "မြန်မာ", flag: "🇲🇲" },
+  { code: "ms", label: "Bahasa Melayu", flag: "🇲🇾" },
+  { code: "id", label: "Bahasa Indonesia", flag: "🇮🇩" },
+  { code: "ja", label: "日本語", flag: "🇯🇵" },
+  { code: "ko", label: "한국어", flag: "🇰🇷" },
+  { code: "ar", label: "العربية", flag: "🇸🇦" },
+  { code: "ru", label: "Русский", flag: "🇷🇺" },
+  { code: "fr", label: "Français", flag: "🇫🇷" },
+  { code: "es", label: "Español", flag: "🇪🇸" },
+  { code: "de", label: "Deutsch", flag: "🇩🇪" },
+];
+
+function translateLang(code: string) {
+  return TRANSLATE_LANGS.find((l) => l.code === code) ?? TRANSLATE_LANGS[0];
+}
+
+// Dropdown of agent-pickable translation target languages.
+function TranslateLangMenu({ current, onPick, label, triggerTitle, triggerClassName, disabled, children }: {
+  current?: TranslateTarget;
+  onPick: (code: TranslateTarget) => void;
+  label: string;
+  triggerTitle?: string;
+  triggerClassName?: string;
+  disabled?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger disabled={disabled} title={triggerTitle} className={triggerClassName}>
+        {children}
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-auto min-w-40 max-h-72 overflow-y-auto">
+        <DropdownMenuLabel>{label}</DropdownMenuLabel>
+        {TRANSLATE_LANGS.map((l) => (
+          <DropdownMenuItem key={l.code} onClick={() => onPick(l.code)}>
+            <span className="w-4 shrink-0 text-center">{l.flag}</span>
+            <span className="flex-1">{l.label}</span>
+            {current === l.code && <Check className="size-3" />}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+// Per-message translation block: pick-language trigger, or the rendered
+// translation with a small re-pick chevron.
+function TranslateBubble({ busy, result, current, onPick, triggerLabel, pickLabel, resultTitle }: {
+  busy: boolean;
+  result?: { text: string; target: TranslateTarget };
+  current: TranslateTarget;
+  onPick: (code: TranslateTarget) => void;
+  triggerLabel: string;
+  pickLabel: string;
+  resultTitle: string;
+}) {
+  if (busy) {
+    return <p className="text-[10px] text-accent-foreground/60"><Loader2 className="inline size-3 animate-spin" /></p>;
+  }
+  if (!result) {
+    return (
+      <TranslateLangMenu
+        current={current}
+        onPick={onPick}
+        label={pickLabel}
+        triggerClassName="inline-flex items-center gap-0.5 text-[10px] text-accent-foreground/60 hover:text-accent-foreground"
+      >
+        🌐 {triggerLabel} <ChevronDown className="size-2.5" />
+      </TranslateLangMenu>
+    );
+  }
+  const lang = translateLang(result.target);
+  return (
+    <div className="flex items-start gap-1 rounded border border-border/40 bg-background/70 px-1.5 py-1" title={resultTitle}>
+      <p className="min-w-0 flex-1 text-[11px] leading-5 text-foreground/80">{lang.flag} {result.text}</p>
+      <TranslateLangMenu
+        current={result.target}
+        onPick={onPick}
+        label={pickLabel}
+        triggerTitle={pickLabel}
+        triggerClassName="mt-0.5 shrink-0 rounded p-0.5 text-accent-foreground/50 hover:text-accent-foreground"
+      >
+        <ChevronDown className="size-3" />
+      </TranslateLangMenu>
+    </div>
+  );
+}
 
 function clampRunes(value: string, max: number) {
   return Array.from(value).slice(0, max).join("");
@@ -683,17 +785,20 @@ function ConversationDetail({
   const prependingRef = React.useRef(false);
   const [unreadSeen, setUnreadSeen] = React.useState(0);
 
-  // Copilot translation state: per-message 中文 renderings of Khmer customer
-  // messages, and a one-shot 高棉语 rendering of the reply draft.
-  const [translations, setTranslations] = React.useState<Record<number, string>>({});
+  // Copilot translation state: per-message renderings in the agent-picked
+  // language, and a one-shot rendering of the reply draft into the customer's
+  // language. Both language picks persist across visits via localStorage.
+  const [translations, setTranslations] = React.useState<Record<number, { text: string; target: TranslateTarget }>>({});
   const [translatingId, setTranslatingId] = React.useState<number | null>(null);
   const [translatingDraft, setTranslatingDraft] = React.useState(false);
+  const [readLang, setReadLang] = React.useState<TranslateTarget>(() => lsGetJSON<TranslateTarget>("inbox.readLang", "zh"));
+  const [replyLang, setReplyLang] = React.useState<TranslateTarget>(() => lsGetJSON<TranslateTarget>("inbox.replyLang", "km"));
 
-  const handleTranslateMessage = async (messageID: number, content: string) => {
+  const handleTranslateMessage = async (messageID: number, content: string, target: TranslateTarget) => {
     setTranslatingId(messageID);
     try {
-      const res = await translateText(content, "zh");
-      setTranslations((prev) => ({ ...prev, [messageID]: res.translation }));
+      const res = await translateText(content, target);
+      setTranslations((prev) => ({ ...prev, [messageID]: { text: res.translation, target: res.target } }));
     } catch (err: unknown) {
       toast.error((err as Error).message || t("inbox.translateFailed"));
     } finally {
@@ -701,11 +806,19 @@ function ConversationDetail({
     }
   };
 
-  const handleTranslateDraft = async () => {
+  const pickReadLang = (messageID: number, content: string, target: TranslateTarget) => {
+    setReadLang(target);
+    lsSetJSON("inbox.readLang", target);
+    void handleTranslateMessage(messageID, content, target);
+  };
+
+  const handleTranslateDraft = async (target: TranslateTarget) => {
     if (!draft.trim()) return;
+    setReplyLang(target);
+    lsSetJSON("inbox.replyLang", target);
     setTranslatingDraft(true);
     try {
-      const res = await translateText(draft, "km");
+      const res = await translateText(draft, target);
       onDraftChange(res.translation);
     } catch (err: unknown) {
       toast.error((err as Error).message || t("inbox.translateFailed"));
@@ -1106,21 +1219,15 @@ function ConversationDetail({
                           <MessagePayloadPreview messageID={m.message_id} content={m.content} metadata={m.metadata} payload={m.delivery?.payload} />
                           {m.role === "user" && m.content && (
                             <div className="mt-1">
-                              {translations[m.message_id] ? (
-                                <p className="rounded border border-border/40 bg-background/70 px-1.5 py-1 text-[11px] leading-5 text-foreground/80" title={t("inbox.zhTranslation")}>
-                                  🈶 {translations[m.message_id]}
-                                </p>
-                              ) : (
-                                <button
-                                  type="button"
-                                  onClick={() => { void handleTranslateMessage(m.message_id, m.content); }}
-                                  disabled={translatingId === m.message_id}
-                                  className="text-[10px] text-accent-foreground/60 hover:text-accent-foreground disabled:opacity-50"
-                                >
-                                  {translatingId === m.message_id ? <Loader2 className="size-3 animate-spin" /> : "🈶 "}
-                                  {t("inbox.translateZh")}
-                                </button>
-                              )}
+                              <TranslateBubble
+                                busy={translatingId === m.message_id}
+                                result={translations[m.message_id]}
+                                current={readLang}
+                                onPick={(code) => { pickReadLang(m.message_id, m.content, code); }}
+                                triggerLabel={translateLang(readLang).label}
+                                pickLabel={t("inbox.translatePick")}
+                                resultTitle={t("inbox.translation")}
+                              />
                             </div>
                           )}
                           {m.role === "model" && parseSources(m.sources_json).length > 0 && (
@@ -1376,17 +1483,18 @@ function ConversationDetail({
               disabled={sending || isReplyBlocked || composerKind === "template"}
               className="text-xs resize-none flex-1"
             />
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => { void handleTranslateDraft(); }}
+            <TranslateLangMenu
+              current={replyLang}
+              onPick={(code) => { void handleTranslateDraft(code); }}
+              label={t("inbox.translatePick")}
+              triggerTitle={t("inbox.translateDraftTitle")}
               disabled={translatingDraft || !draft.trim() || composerKind === "template"}
-              title={t("inbox.translateKmTitle")}
-              className="h-9 text-xs gap-1.5 self-end"
+              triggerClassName={buttonVariants({ variant: "outline", size: "lg", className: "self-end text-xs" })}
             >
               {translatingDraft ? <Loader2 className="size-3 animate-spin" /> : <Languages className="size-3" />}
-              {t("inbox.translateKm")}
-            </Button>
+              {translateLang(replyLang).label}
+              <ChevronDown className="size-3 opacity-60" />
+            </TranslateLangMenu>
             <Button
               size="sm"
               onClick={handleSendReply}

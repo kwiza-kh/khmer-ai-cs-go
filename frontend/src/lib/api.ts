@@ -626,12 +626,17 @@ export async function postTelegramNotifyTest() {
   return apiFetch<{ message: string }>("/settings/telegram-notify/test", { method: "POST" });
 }
 
-// Agent copilot: one-shot translation (km/zh/en).
-export async function translateText(text: string, target: "km" | "zh" | "en") {
-  return apiFetch<{ translation: string; target: string }>("/translate", {
-    method: "POST",
-    body: JSON.stringify({ text, target }),
-  });
+// Agent copilot: one-shot translation into an agent-picked language.
+// Keep in sync with backend translateTargets (translate_handlers.go).
+export type TranslateTarget =
+	| "km" | "zh" | "en" | "th" | "vi" | "lo" | "my" | "ms" | "id"
+	| "ja" | "ko" | "ar" | "ru" | "fr" | "es" | "de";
+
+export async function translateText(text: string, target: TranslateTarget) {
+	return apiFetch<{ translation: string; target: TranslateTarget }>("/translate", {
+		method: "POST",
+		body: JSON.stringify({ text, target }),
+	});
 }
 
 export async function deleteKnowledge(docId: number) {

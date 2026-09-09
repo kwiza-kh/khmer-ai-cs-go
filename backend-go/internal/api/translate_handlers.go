@@ -1,4 +1,4 @@
-// Package api — agent copilot translation (Khmer ↔ 中文 ↔ English).
+// Package api — agent copilot translation (multi-language, agent picks target).
 package api
 
 import (
@@ -10,12 +10,35 @@ import (
 	"khmer-ai-cs-go/internal/gemini"
 )
 
+// translateTargets — languages the copilot can render a message into. Names
+// are given in the language itself so agents can spot the right one at a
+// glance regardless of their UI locale.
+var translateTargets = map[string]string{
+	"km": "Khmer (ភាសាខ្មែរ)",
+	"zh": "Simplified Chinese (简体中文)",
+	"en": "English",
+	"th": "Thai (ไทย)",
+	"vi": "Vietnamese (Tiếng Việt)",
+	"lo": "Lao (ລາວ)",
+	"my": "Burmese (မြန်မာ)",
+	"ms": "Malay (Bahasa Melayu)",
+	"id": "Indonesian (Bahasa Indonesia)",
+	"ja": "Japanese (日本語)",
+	"ko": "Korean (한국어)",
+	"ar": "Arabic (العربية)",
+	"ru": "Russian (Русский)",
+	"fr": "French (Français)",
+	"es": "Spanish (Español)",
+	"de": "German (Deutsch)",
+}
+
 // translateText — one-shot machine translation for the agent copilot: read a
-// Khmer customer message in 中文, or send your 中文 reply as Khmer.
+// customer message in the agent's working language, or send the reply as the
+// customer's language.
 func (a *App) translateText(w http.ResponseWriter, r *http.Request) (any, error) {
 	var req struct {
 		Text   string `json:"text"`
-		Target string `json:"target"` // km | zh | en
+		Target string `json:"target"` // key of translateTargets
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
 		return nil, ErrBadRequest("请求格式错误")
@@ -25,7 +48,7 @@ func (a *App) translateText(w http.ResponseWriter, r *http.Request) (any, error)
 		return nil, ErrBadRequest("text 必填且不超过 4000 字")
 	}
 	target := req.Target
-	if target != "km" && target != "zh" && target != "en" {
+	if _, ok := translateTargets[target]; !ok {
 		// Default: translate into the operator's own working language when
 		// the source is Khmer, and into Khmer otherwise.
 		target = map[string]string{"km": "zh"}[gemini.DetectLanguage(text)]
@@ -33,8 +56,7 @@ func (a *App) translateText(w http.ResponseWriter, r *http.Request) (any, error)
 			target = "km"
 		}
 	}
-	languageName := map[string]string{"km": "Khmer (ភាសាខ្មែរ)", "zh": "Simplified Chinese (简体中文)", "en": "English"}[target]
-	prompt := "Translate the following customer-support message into " + languageName + ". " +
+	prompt := "Translate the following customer-support message into " + translateTargets[target] + ". " +
 		"Reply with ONLY the translation — no quotes, no notes, keep the original tone, line breaks, numbers and prices exactly.\n\n" +
 		text
 	out, ok := a.Gemini.GenerateFast(r.Context(), prompt, 15*time.Second)
