@@ -29,3 +29,4 @@ frontend/.next-dev.log
 
 # macOS junk
 .DS_Store
+frontend/scripts-i18n-scan.js
