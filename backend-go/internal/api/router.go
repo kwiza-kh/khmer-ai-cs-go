@@ -65,6 +65,7 @@ func (a *App) Router() http.Handler {
 	// Personal profile (settings page).
 	authed.Handle("GET /api/v1/profile", a.handle(a.getProfile))
 	authed.Handle("PUT /api/v1/profile", a.handle(a.putProfile))
+	authed.Handle("POST /api/v1/profile/avatar", a.handle(a.uploadAvatar))
 
 	// Chat (plain + SSE streaming) + sessions.
 	authed.Handle("POST /api/v1/chat", a.handle(a.chatPlain))

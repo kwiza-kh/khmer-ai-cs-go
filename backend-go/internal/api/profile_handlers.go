@@ -2,10 +2,90 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
+	"time"
 )
+
+const maxAvatarBytes = 2 << 20 // 2 MB — plenty for a 512px avatar.
+
+// allowedAvatarTypes — magic-byte sniffed, never trusting the client mime.
+var allowedAvatarTypes = map[string]string{
+	"image/jpeg": ".jpg",
+	"image/png":  ".png",
+	"image/webp": ".webp",
+	"image/gif":  ".gif",
+}
+
+// sniffImageType identifies the image format from the leading bytes.
+func sniffImageType(data []byte) string {
+	if len(data) < 12 {
+		return ""
+	}
+	switch {
+	case data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF:
+		return "image/jpeg"
+	case len(data) > 8 && string(data[0:8]) == "\x89PNG\r\n\x1a\n":
+		return "image/png"
+	case string(data[0:4]) == "GIF8":
+		return "image/gif"
+	case string(data[0:4]) == "RIFF" && string(data[8:12]) == "WEBP":
+		return "image/webp"
+	}
+	return ""
+}
+
+// uploadAvatar — POST /api/v1/profile/avatar (multipart "file"): stores the
+// image in R2 and saves its URL on the user, returning the updated profile.
+func (a *App) uploadAvatar(w http.ResponseWriter, r *http.Request) (any, error) {
+	user, _ := UserFrom(r)
+	if a.Media == nil {
+		return nil, ErrServiceUnavailable("媒体存储未配置")
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxAvatarBytes+512<<10)
+	if err := r.ParseMultipartForm(maxAvatarBytes); err != nil {
+		return nil, ErrBadRequest("图片过大或格式错误（上限 2MB）")
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		return nil, ErrBadRequest("缺少图片文件")
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxAvatarBytes+1))
+	if err != nil {
+		return nil, ErrBadRequest("读取图片失败")
+	}
+	if len(data) > maxAvatarBytes {
+		return nil, ErrBadRequest("图片不能超过 2MB")
+	}
+	contentType := sniffImageType(data)
+	ext, ok := allowedAvatarTypes[contentType]
+	if !ok {
+		return nil, ErrBadRequest("仅支持 JPG / PNG / WebP / GIF 图片")
+	}
+	_ = header
+
+	key := fmt.Sprintf("avatars/%d-%d%s", user.UserID, time.Now().UnixNano(), ext)
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	if err := a.Media.PutObject(ctx, key, data, contentType); err != nil {
+		a.Logger.Warn("avatar upload failed", "error", err.Error())
+		return nil, &ApiError{http.StatusBadGateway, "头像上传失败，请重试"}
+	}
+	publicURL := strings.TrimSuffix(a.Cfg.R2.PublicURL, "/") + "/" + key
+	if a.Cfg.R2.PublicURL == "" {
+		return nil, ErrServiceUnavailable("媒体存储未配置公开域名")
+	}
+	if _, err := a.DB.Exec(r.Context(),
+		"UPDATE users SET avatar_url = $1, updated_at = NOW() WHERE user_id = $2", publicURL, user.UserID); err != nil {
+		return nil, ErrInternal("保存头像失败")
+	}
+	return a.getProfile(w, r)
+}
 
 // profileFields is the JSON shape shared by GET and PUT.
 type profileFields struct {

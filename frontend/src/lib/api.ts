@@ -1635,3 +1635,18 @@ export async function putProfile(data: {
 }) {
   return apiFetch<UserProfile>("/profile", { method: "PUT", body: JSON.stringify(data) });
 }
+
+// uploadAvatar — multipart image upload; returns the refreshed profile.
+export async function uploadAvatar(file: File) {
+  const token = localStorage.getItem("token");
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(`${API_BASE}/profile/avatar`, {
+    method: "POST",
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    body: form,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || "头像上传失败");
+  return data as UserProfile;
+}

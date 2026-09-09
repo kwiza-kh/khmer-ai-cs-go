@@ -3,7 +3,7 @@
 // Personal profile section — identity (read-only), editable contact details,
 // and the linked sign-in methods.
 import * as React from "react";
-import { getProfile, putProfile, type UserProfile } from "@/lib/api";
+import { getProfile, putProfile, uploadAvatar, type UserProfile } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -13,7 +13,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import {
-  UserRound, Mail, Building2, Phone, Save, Loader2,
+  UserRound, Mail, Building2, Phone, Save, Loader2, Camera, Upload, Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useI18n } from "@/lib/i18n";
@@ -28,6 +28,43 @@ export function ProfileCard() {
   const [phone, setPhone] = React.useState("");
   const [timezone, setTimezone] = React.useState("Asia/Phnom_Penh");
   const [avatarUrl, setAvatarUrl] = React.useState("");
+  const [uploading, setUploading] = React.useState(false);
+  const fileRef = React.useRef<HTMLInputElement | null>(null);
+
+  const onPickFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-picking the same file
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) {
+      toast.error(t("settings.avatarTooLarge"));
+      return;
+    }
+    setUploading(true);
+    try {
+      const updated = await uploadAvatar(file);
+      setProfile(updated);
+      setAvatarUrl(updated.avatar_url || "");
+      toast.success(t("settings.avatarSaved"));
+    } catch (err: unknown) {
+      toast.error((err as Error).message || t("settings.avatarUploadFailed"));
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const removeAvatar = async () => {
+    setSaving(true);
+    try {
+      const updated = await putProfile({ avatar_url: "" });
+      setProfile(updated);
+      setAvatarUrl("");
+      toast.success(t("settings.saved"));
+    } catch (err: unknown) {
+      toast.error((err as Error).message || t("settings.saveFailed"));
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const load = React.useCallback(() => {
     setLoading(true);
@@ -54,7 +91,6 @@ export function ProfileCard() {
         job_title: jobTitle,
         phone,
         timezone,
-        avatar_url: avatarUrl,
       });
       setProfile(updated);
       toast.success(t("settings.saved"));
@@ -181,15 +217,66 @@ export function ProfileCard() {
                   </Select>
                 </div>
               </div>
+              {/* Avatar upload — click the circle or the button to pick an image */}
               <div>
-                <Label className="text-xs text-muted-foreground">{t("settings.avatarUrl")}</Label>
-                <Input
-                  value={avatarUrl}
-                  onChange={(e) => setAvatarUrl(e.target.value)}
-                  placeholder="https://…"
-                  className="mt-1 h-9 text-sm"
-                />
-                <p className="mt-1 text-[11px] text-muted-foreground">{t("settings.avatarHint")}</p>
+                <Label className="text-xs text-muted-foreground">{t("settings.avatar")}</Label>
+                <div className="mt-1.5 flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => fileRef.current?.click()}
+                    disabled={uploading}
+                    title={t("settings.avatarUpload")}
+                    className="group relative flex size-14 shrink-0 items-center justify-center overflow-hidden rounded-full bg-primary/10 text-lg font-semibold text-primary ring-1 ring-border transition-colors hover:ring-primary/50 disabled:opacity-60"
+                  >
+                    {avatarUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={avatarUrl} alt="" className="size-full object-cover" />
+                    ) : initial}
+                    <span className="absolute inset-0 flex items-center justify-center bg-black/50 opacity-0 transition-opacity group-hover:opacity-100">
+                      {uploading ? (
+                        <Loader2 className="size-4 animate-spin text-white" />
+                      ) : (
+                        <Camera className="size-4 text-white" />
+                      )}
+                    </span>
+                  </button>
+                  <div className="min-w-0 space-y-1.5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => fileRef.current?.click()}
+                        disabled={uploading}
+                        className="h-8 gap-1.5 text-xs"
+                      >
+                        {uploading ? <Loader2 className="size-3.5 animate-spin" /> : <Upload className="size-3.5" />}
+                        {uploading ? t("settings.avatarUploading") : t("settings.avatarUpload")}
+                      </Button>
+                      {avatarUrl && (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          onClick={removeAvatar}
+                          disabled={uploading || saving}
+                          className="h-8 gap-1.5 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
+                        >
+                          <Trash2 className="size-3.5" />
+                          {t("settings.avatarRemove")}
+                        </Button>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-muted-foreground">{t("settings.avatarHint")}</p>
+                  </div>
+                  <input
+                    ref={fileRef}
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp,image/gif"
+                    className="hidden"
+                    onChange={onPickFile}
+                  />
+                </div>
               </div>
               <Button size="sm" onClick={save} disabled={saving} className="gap-1.5">
                 {saving ? <Loader2 className="size-3.5 animate-spin" /> : <Save className="size-3.5" />}
