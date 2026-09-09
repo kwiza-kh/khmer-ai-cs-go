@@ -45,6 +45,10 @@ export const km: Dict = {
   "login.submit": "ចូល",
   "login.registerSubmit": "បង្កើតគណនី",
   "login.userPlaceholder": "បញ្ចូលឈ្មោះអ្នកប្រើ",
+  "login.noAccount": "មិនទាន់មានគណនី?",
+  "login.haveAccount": "មានគណនីរួចហើយ?",
+  "login.showPassword": "បង្ហាញពាក្យសម្ងាត់",
+  "login.hidePassword": "លាក់ពាក្យសម្ងាត់",
   "login.emailPlaceholder": "បញ្ចូលអ៊ីមែល",
 
   "settings.kicker": "គណនី",

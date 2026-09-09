@@ -47,6 +47,10 @@ export const en: Dict = {
   "login.submit": "Sign In",
   "login.registerSubmit": "Create Account",
   "login.userPlaceholder": "Enter username",
+  "login.noAccount": "Don't have an account?",
+  "login.haveAccount": "Already have an account?",
+  "login.showPassword": "Show password",
+  "login.hidePassword": "Hide password",
   "login.emailPlaceholder": "Enter email",
 
   // Settings

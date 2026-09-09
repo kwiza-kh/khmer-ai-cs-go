@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AnimatePresence, motion } from "motion/react";
-import { Loader2, Eye, EyeOff, ArrowRight } from "lucide-react";
+import { Loader2, Eye, EyeOff, UserRound, Lock, Mail, ShieldCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { LANGS, useI18n } from "@/lib/i18n";
 
@@ -74,104 +74,117 @@ export default function LoginPage() {
         ))}
       </div>
 
-      <div className="relative w-full max-w-[400px]">
-        {/* Brand */}
-        <div className="flex flex-col items-center mb-7">
-          <div className="flex size-11 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-indigo-700 shadow-[0_8px_24px_-6px] shadow-primary/60 ring-1 ring-white/25">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" className="size-5 text-primary-foreground">
-              <path d="M12 3l9 4.9-9 4.9-9-4.9L12 3z" />
-              <path d="M3 13l9 4.9 9-4.9" opacity="0.55" />
-            </svg>
-          </div>
-          <p className="mt-3 text-[15px] font-semibold tracking-tight text-foreground">Khmer AI</p>
-          <p className="mt-1 text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
-            {t("login.tagline")}
+      <div className="relative w-full max-w-[380px]">
+        {/* Heading — the reference design leads with a plain centred title,
+            no logo block, no card chrome. */}
+        <div className="mb-7 text-center">
+          <h1 className="text-[28px] font-semibold tracking-tight text-foreground">
+            {tab === "login" ? t("login.title") : t("login.registerTitle")}
+          </h1>
+          <p className="mt-1.5 text-sm text-muted-foreground">
+            {tab === "login" ? t("login.desc") : t("login.registerDesc")}
           </p>
         </div>
 
-        {/* Card */}
-        <div className="rounded-2xl border border-border/70 bg-card/85 shadow-[0_24px_64px_-28px_rgb(17_20_45/0.4)] ring-1 ring-white/50 backdrop-blur-xl dark:bg-card/75 dark:ring-white/[0.06]">
-          <div className="px-6 pt-6 pb-2">
-            <h1 className="text-lg font-semibold tracking-tight">
-              {tab === "login" ? t("login.title") : t("login.registerTitle")}
-            </h1>
-            <p className="text-sm text-muted-foreground mt-1">
-              {tab === "login" ? t("login.desc") : t("login.registerDesc")}
-            </p>
-          </div>
+        {/* Segmented control — pill track with the active side raised. */}
+        <Tabs value={tab} onValueChange={setTab}>
+          <TabsList className="grid h-11 w-full grid-cols-2 gap-1 rounded-2xl bg-muted/70 p-1">
+            <TabsTrigger
+              value="login"
+              className="rounded-xl text-sm font-medium data-[state=active]:bg-background data-[state=active]:shadow-sm"
+            >
+              {t("login.tab")}
+            </TabsTrigger>
+            <TabsTrigger
+              value="register"
+              className="rounded-xl text-sm font-medium data-[state=active]:bg-background data-[state=active]:shadow-sm"
+            >
+              {t("login.registerTab")}
+            </TabsTrigger>
+          </TabsList>
+        </Tabs>
 
-          <div className="px-6 pt-3 pb-1">
-            <Tabs value={tab} onValueChange={setTab}>
-              <TabsList className="w-full h-9">
-                <TabsTrigger value="login" className="flex-1 text-xs">{t("login.tab")}</TabsTrigger>
-                <TabsTrigger value="register" className="flex-1 text-xs">{t("login.registerTab")}</TabsTrigger>
-              </TabsList>
-            </Tabs>
-          </div>
+        <AnimatePresence>
+          {error && (
+            <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}>
+              <div className="mt-4 rounded-xl border border-destructive/25 bg-destructive/10 px-3.5 py-2.5">
+                <p className="text-sm text-destructive">{error}</p>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
-          <AnimatePresence>
-            {error && (
-              <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className="mx-6 mt-3">
-                <div className="rounded-md bg-destructive/10 border border-destructive/20 px-3 py-2">
-                  <p className="text-sm text-destructive-foreground">{error}</p>
-                </div>
-              </motion.div>
+        <div className="mt-5">
+          <AnimatePresence mode="wait">
+            {tab === "login" ? (
+              <motion.form key="login" initial={{ opacity: 0, x: -4 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 4 }} transition={{ duration: 0.15 }} onSubmit={handleLogin} className="space-y-3.5">
+                <IconField icon={UserRound}>
+                  <Input value={loginUser} onChange={(e) => setLoginUser(e.target.value)}
+                    placeholder={t("login.userPlaceholder")} required autoComplete="username"
+                    className="h-12 rounded-2xl border-border/70 bg-card/70 pl-11 text-sm shadow-none" />
+                </IconField>
+                <IconField icon={Lock}>
+                  <Input type={showPassword ? "text" : "password"} value={loginPass}
+                    onChange={(e) => setLoginPass(e.target.value)} placeholder="········" required
+                    autoComplete="current-password"
+                    className="h-12 rounded-2xl border-border/70 bg-card/70 pl-11 pr-11 text-sm shadow-none" />
+                  <button type="button" onClick={() => setShowPassword(!showPassword)}
+                    aria-label={showPassword ? t("login.hidePassword") : t("login.showPassword")}
+                    className="absolute right-3.5 top-1/2 -translate-y-1/2 text-muted-foreground transition-colors hover:text-foreground">
+                    {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+                  </button>
+                </IconField>
+                {need2fa && (
+                  <IconField icon={ShieldCheck}>
+                    <Input value={loginCode} onChange={(e) => setLoginCode(e.target.value)}
+                      placeholder={t("login.totpPlaceholder")} inputMode="numeric" autoComplete="one-time-code"
+                      maxLength={6} required autoFocus
+                      className="h-12 rounded-2xl border-border/70 bg-card/70 pl-11 text-center text-sm tracking-[0.4em] shadow-none" />
+                  </IconField>
+                )}
+                <button type="submit" disabled={loading || (need2fa && loginCode.trim().length !== 6)}
+                  className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-2xl bg-foreground text-base font-semibold text-background transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60">
+                  {loading ? <Loader2 className="size-4 animate-spin" /> : t("login.submit")}
+                </button>
+              </motion.form>
+            ) : (
+              <motion.form key="register" initial={{ opacity: 0, x: -4 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 4 }} transition={{ duration: 0.15 }} onSubmit={handleRegister} className="space-y-3.5">
+                <IconField icon={UserRound}>
+                  <Input value={regUser} onChange={(e) => setRegUser(e.target.value)}
+                    placeholder={t("login.userPlaceholder")} required autoComplete="username"
+                    className="h-12 rounded-2xl border-border/70 bg-card/70 pl-11 text-sm shadow-none" />
+                </IconField>
+                <IconField icon={Mail}>
+                  <Input type="email" value={regEmail} onChange={(e) => setRegEmail(e.target.value)}
+                    placeholder={t("login.emailPlaceholder")} required autoComplete="email"
+                    className="h-12 rounded-2xl border-border/70 bg-card/70 pl-11 text-sm shadow-none" />
+                </IconField>
+                <IconField icon={Lock}>
+                  <Input type="password" value={regPass} onChange={(e) => setRegPass(e.target.value)}
+                    placeholder="········" required autoComplete="new-password"
+                    className="h-12 rounded-2xl border-border/70 bg-card/70 pl-11 text-sm shadow-none" />
+                </IconField>
+                <button type="submit" disabled={loading}
+                  className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-2xl bg-foreground text-base font-semibold text-background transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60">
+                  {loading ? <Loader2 className="size-4 animate-spin" /> : t("login.registerSubmit")}
+                </button>
+              </motion.form>
             )}
           </AnimatePresence>
-
-          <div className="px-6 py-5">
-            <AnimatePresence mode="wait">
-              {tab === "login" ? (
-                <motion.form key="login" initial={{ opacity: 0, x: -4 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 4 }} transition={{ duration: 0.15 }} onSubmit={handleLogin} className="space-y-4">
-                  <Field label={t("login.username")}>
-                    <Input value={loginUser} onChange={(e) => setLoginUser(e.target.value)}
-                      placeholder={t("login.userPlaceholder")} required className="h-10" />
-                  </Field>
-                  <Field label={t("login.password")}>
-                    <div className="relative">
-                      <Input type={showPassword ? "text" : "password"} value={loginPass}
-                        onChange={(e) => setLoginPass(e.target.value)} placeholder="········" required className="h-10 pr-10" />
-                      <button type="button" onClick={() => setShowPassword(!showPassword)}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
-                        {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-                      </button>
-                    </div>
-                  </Field>
-                  {need2fa && (
-                    <Field label={t("login.totp")}>
-                      <Input value={loginCode} onChange={(e) => setLoginCode(e.target.value)}
-                        placeholder={t("login.totpPlaceholder")} inputMode="numeric" autoComplete="one-time-code"
-                        maxLength={6} required className="h-10 tracking-[0.4em] text-center" autoFocus />
-                    </Field>
-                  )}
-                  <Button type="submit" disabled={loading || (need2fa && loginCode.trim().length !== 6)} className="w-full h-10 text-sm gap-2">
-                    {loading ? <Loader2 className="size-4 animate-spin" /> : <>{t("login.submit")}<ArrowRight className="size-3.5 opacity-50" /></>}
-                  </Button>
-                </motion.form>
-              ) : (
-                <motion.form key="register" initial={{ opacity: 0, x: -4 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 4 }} transition={{ duration: 0.15 }} onSubmit={handleRegister} className="space-y-4">
-                  <Field label={t("login.username")}>
-                    <Input value={regUser} onChange={(e) => setRegUser(e.target.value)}
-                      placeholder={t("login.userPlaceholder")} required className="h-10" />
-                  </Field>
-                  <Field label={t("login.email")}>
-                    <Input type="email" value={regEmail} onChange={(e) => setRegEmail(e.target.value)}
-                      placeholder={t("login.emailPlaceholder")} required className="h-10" />
-                  </Field>
-                  <Field label={t("login.password")}>
-                    <Input type="password" value={regPass} onChange={(e) => setRegPass(e.target.value)}
-                      placeholder="········" required className="h-10" />
-                  </Field>
-                  <Button type="submit" disabled={loading} className="w-full h-10 text-sm gap-2">
-                    {loading ? <Loader2 className="size-4 animate-spin" /> : <>{t("login.registerSubmit")}<ArrowRight className="size-3.5 opacity-50" /></>}
-                  </Button>
-                </motion.form>
-              )}
-            </AnimatePresence>
-          </div>
         </div>
 
-        <p className="text-center text-xs text-muted-foreground/70 mt-6 tracking-wide">
+        <p className="mt-7 text-center text-sm text-muted-foreground">
+          {tab === "login" ? t("login.noAccount") : t("login.haveAccount")}{" "}
+          <button
+            type="button"
+            onClick={() => { setError(""); setTab(tab === "login" ? "register" : "login"); }}
+            className="font-semibold text-foreground underline-offset-4 hover:underline"
+          >
+            {tab === "login" ? t("login.registerTab") : t("login.tab")}
+          </button>
+        </p>
+
+        <p className="mt-6 text-center text-[11px] tracking-wide text-muted-foreground/60">
           {t("login.footer")}
         </p>
       </div>
@@ -179,10 +192,11 @@ export default function LoginPage() {
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+// Icon-prefixed input wrapper — the leading icon sits inside the rounded field.
+function IconField({ icon: Icon, children }: { icon: React.ComponentType<{ className?: string }>; children: React.ReactNode }) {
   return (
-    <div className="space-y-2">
-      <label className="block text-sm font-medium text-foreground">{label}</label>
+    <div className="relative">
+      <Icon className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
       {children}
     </div>
   );
