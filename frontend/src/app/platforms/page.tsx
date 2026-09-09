@@ -325,6 +325,15 @@ export default function PlatformsPage() {
 
       <div className="flex-1 overflow-auto px-4 py-5 sm:px-6">
         <div className="mx-auto max-w-6xl space-y-6">
+          {/* Operational status first — the at-a-glance health row belongs at
+              the top of the page. */}
+          <div className="grid overflow-hidden border border-border bg-card sm:grid-cols-2 xl:grid-cols-5">
+            <StatusMetric icon={Radio} label={t("pf.verified")} value={operationalSummary.connected} tone="text-success" />
+            <StatusMetric icon={Inbox} label={t("pf.inboundQueue")} value={operationalSummary.inboundPending} tone="text-info" />
+            <StatusMetric icon={Clock3} label={t("pf.outboundQueue")} value={operationalSummary.outboundPending} tone="text-info" />
+            <StatusMetric icon={CircleAlert} label={t("pf.failures")} value={operationalSummary.failed} tone={operationalSummary.failed > 0 ? "text-destructive" : "text-muted-foreground"} />
+            <StatusMetric icon={CheckCircle2} label={t("pf.aiHeld")} value={operationalSummary.cancelled} tone={operationalSummary.cancelled > 0 ? "text-warning" : "text-muted-foreground"} />
+          </div>
           <MetaOAuthConnectCard
             starting={startingMetaOAuth}
             onStart={startMetaOAuth}
@@ -334,13 +343,6 @@ export default function PlatformsPage() {
           <WhatsAppEmbeddedSignupCard
             connected={whatsappAccounts.map((c) => ({ name: c.health?.account_name || c.whatsapp_business_account_id || `#${c.config_id}`, healthy: c.health?.status === "connected" }))}
           />
-          <div className="grid overflow-hidden border border-border bg-card sm:grid-cols-2 xl:grid-cols-5">
-            <StatusMetric icon={Radio} label={t("pf.verified")} value={operationalSummary.connected} tone="text-success" />
-            <StatusMetric icon={Inbox} label={t("pf.inboundQueue")} value={operationalSummary.inboundPending} tone="text-info" />
-            <StatusMetric icon={Clock3} label={t("pf.outboundQueue")} value={operationalSummary.outboundPending} tone="text-info" />
-            <StatusMetric icon={CircleAlert} label={t("pf.failures")} value={operationalSummary.failed} tone={operationalSummary.failed > 0 ? "text-destructive" : "text-muted-foreground"} />
-            <StatusMetric icon={CheckCircle2} label={t("pf.aiHeld")} value={operationalSummary.cancelled} tone={operationalSummary.cancelled > 0 ? "text-warning" : "text-muted-foreground"} />
-          </div>
           {isLoading ? (
             <Card><CardContent className="py-12 flex items-center justify-center">
               <Loader2 className="size-5 animate-spin text-muted-foreground" />
