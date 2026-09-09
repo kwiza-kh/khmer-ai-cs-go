@@ -1606,3 +1606,32 @@ export function streamWidgetChat(
   return controller;
 }
 
+// Personal profile
+export interface UserProfile {
+  user_id: number;
+  username: string;
+  email: string;
+  role: string;
+  display_name: string;
+  job_title: string;
+  phone: string;
+  timezone: string;
+  avatar_url: string;
+  has_password: boolean;
+  has_google: boolean;
+  created_at: string;
+}
+
+export async function getProfile() {
+  return apiFetch<UserProfile>("/profile");
+}
+
+export async function putProfile(data: {
+  display_name?: string;
+  job_title?: string;
+  phone?: string;
+  timezone?: string;
+  avatar_url?: string;
+}) {
+  return apiFetch<UserProfile>("/profile", { method: "PUT", body: JSON.stringify(data) });
+}

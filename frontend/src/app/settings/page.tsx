@@ -15,6 +15,7 @@ import {
 import { Settings as SettingsIcon, Lock, Globe, Loader2, Clock, ShieldCheck } from "lucide-react";
 import { BusinessHoursCard, CannedResponsesCard } from "@/components/admin/operations-tab";
 import { TelegramNotifyCard } from "@/components/settings/telegram-notify-card";
+import { ProfileCard } from "@/components/settings/profile-card";
 import { toast } from "sonner";
 import { useI18n, type Lang } from "@/lib/i18n";
 
@@ -63,26 +64,8 @@ export default function SettingsPage() {
       <div className="flex-1 overflow-auto p-5 sm:p-8">
         <div className="max-w-2xl mx-auto space-y-5">
 
-          {/* Profile */}
-          <Card>
-            <CardHeader><CardTitle className="text-sm flex items-center gap-2"><SettingsIcon className="size-4" /> {t("settings.profile")}</CardTitle></CardHeader>
-            <CardContent className="space-y-3">
-              <div>
-                <Label className="text-xs text-muted-foreground">{t("settings.username")}</Label>
-                <Input value={user?.username ?? ""} disabled className="mt-1 h-9 text-sm" />
-              </div>
-              <div>
-                <Label className="text-xs text-muted-foreground">{t("settings.email")}</Label>
-                <Input value={user?.email ?? ""} disabled className="mt-1 h-9 text-sm" />
-              </div>
-              <div>
-                <Label className="text-xs text-muted-foreground">{t("settings.role")}</Label>
-                <div className="mt-1">
-                  <Badge variant={user?.role === "admin" ? "info" : "secondary"} className="text-xs">{user?.role}</Badge>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+          {/* Personal profile */}
+          <ProfileCard />
 
           {/* Change password */}
           <ChangePasswordCard />
