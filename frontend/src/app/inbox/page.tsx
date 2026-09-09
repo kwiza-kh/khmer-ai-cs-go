@@ -1721,6 +1721,8 @@ function InboundPlatformMediaPreview({ messageID, media }: { messageID: number; 
   const autoLoadRef = React.useRef(false);
   React.useEffect(() => {
     if (autoLoadRef.current) return;
+    // "unavailable" means the media was never stored (R2 off / upload failed)
+    // — requesting its URL would 404 on every render.
     if (media.processing_status === "unavailable") return;
     if (!isImage && !isAudio) return;
     autoLoadRef.current = true;

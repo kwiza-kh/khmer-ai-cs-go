@@ -678,6 +678,10 @@ func (p *Pipeline) prepareMedia(ctx context.Context, ev *InboundEvent, cfg *conf
 	pm := map[string]any{"kind": kind, "filename": filename, "mime_type": mime}
 	if storageKey != "" {
 		pm["processing_status"] = "stored"
+	} else {
+		// No stored object (R2 off or upload failed) — mark it explicitly so
+		// the inbox stops requesting a media URL that will always 404.
+		pm["processing_status"] = "unavailable"
 	}
 	if extracted != "" {
 		pm["extracted_text"] = extracted
