@@ -15,6 +15,7 @@ import {
 import { Settings as SettingsIcon, Lock, Globe, Loader2, Clock, ShieldCheck } from "lucide-react";
 import { BusinessHoursCard, CannedResponsesCard } from "@/components/admin/operations-tab";
 import { TelegramNotifyCard } from "@/components/settings/telegram-notify-card";
+import { PasswordInput } from "@/components/ui/password-input";
 import { ProfileCard } from "@/components/settings/profile-card";
 import { toast } from "sonner";
 import { useI18n, type Lang } from "@/lib/i18n";
@@ -161,16 +162,16 @@ function ChangePasswordCard() {
       <CardContent className="space-y-3">
         <div>
           <Label className="text-xs text-muted-foreground">{t("settings.currentPassword")}</Label>
-          <Input type="password" value={old} onChange={(e) => setOld(e.target.value)} className="mt-1 h-9 text-sm" />
+          <PasswordInput value={old} onChange={(e) => setOld(e.target.value)} autoComplete="current-password" className="mt-1 h-9 text-sm" />
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
             <Label className="text-xs text-muted-foreground">{t("settings.newPassword")}</Label>
-            <Input type="password" value={next} onChange={(e) => setNext(e.target.value)} className="mt-1 h-9 text-sm" />
+            <PasswordInput value={next} onChange={(e) => setNext(e.target.value)} autoComplete="new-password" className="mt-1 h-9 text-sm" />
           </div>
           <div>
             <Label className="text-xs text-muted-foreground">{t("settings.confirmPassword")}</Label>
-            <Input type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} className="mt-1 h-9 text-sm" />
+            <PasswordInput value={confirm} onChange={(e) => setConfirm(e.target.value)} autoComplete="new-password" className="mt-1 h-9 text-sm" />
           </div>
         </div>
         <Button onClick={submit} disabled={saving} className="h-8 text-xs gap-1.5">

@@ -78,6 +78,17 @@ export function MarkdownKnowledgeEditor({
 
   const canSave = title.trim().length > 0 && content.trim().length > 0 && !saving;
 
+  // Losing a long FAQ answer because the dialog was dismissed by accident is
+  // one of the worst UX failures here — guard the close path.
+  const dirty = title.trim() !== (document?.title ?? initialTitle ?? "").trim()
+    || content.trim() !== (document?.content ?? initialContent ?? "").trim();
+
+  const requestClose = () => {
+    if (saving) return;
+    if (dirty && !window.confirm(t("kb.discardChanges"))) return;
+    onOpenChange(false);
+  };
+
   const handleSave = async () => {
     if (!canSave) return;
     setSaving(true);
@@ -118,7 +129,7 @@ export function MarkdownKnowledgeEditor({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(next) => { if (!next) requestClose(); }}>
       <DialogContent
         className="max-w-[calc(100vw-2rem)] sm:max-w-6xl h-[90vh] max-h-[900px] p-0 gap-0 overflow-hidden flex flex-col"
       >
@@ -225,7 +236,7 @@ export function MarkdownKnowledgeEditor({
         </div>
 
         <DialogFooter className="px-5 py-3 shrink-0">
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>{t("common.cancel")}</Button>
+          <Button variant="outline" onClick={requestClose} disabled={saving}>{t("common.cancel")}</Button>
           <Button onClick={handleSave} disabled={!canSave} className="gap-1.5">
             {saving ? <Loader2 className="size-3.5 animate-spin" /> : <Save className="size-3.5" />}
             {isEdit ? t("kbe.saveReindex") : t("kbe.createIndex")}

@@ -447,6 +447,7 @@ export const en: Dict = {
   "kb.savedKnowledge": "Saved knowledge",
   "kb.docLibrary": "Document library",
   "kb.docCount": "{n} documents",
+  "kb.discardChanges": "Discard unsaved changes?",
   "kb.emptyTitle": "No documents yet",
   "kb.emptyDesc": "Upload a file, paste text, or import a public web page.",
   "kb.groupTxt": "Text files",

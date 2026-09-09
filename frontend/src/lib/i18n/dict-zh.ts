@@ -437,6 +437,7 @@ export const zh: Dict = {
   "kb.savedKnowledge": "已保存的知识",
   "kb.docLibrary": "文档库",
   "kb.docCount": "{n} 篇文档",
+  "kb.discardChanges": "放弃未保存的修改？",
   "kb.emptyTitle": "还没有文档",
   "kb.emptyDesc": "上传文件、粘贴文本，或导入公开网页。",
   "kb.groupTxt": "文本文件",

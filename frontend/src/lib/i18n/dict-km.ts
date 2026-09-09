@@ -437,6 +437,7 @@ export const km: Dict = {
   "kb.savedKnowledge": "ចំណេះដឹងបានរក្សាទុក",
   "kb.docLibrary": "បណ្ណាល័យឯកសារ",
   "kb.docCount": "{n} ឯកសារ",
+  "kb.discardChanges": "បោះបង់ការកែប្រែដែលមិនបានរក្សាទុក?",
   "kb.emptyTitle": "មិនទាន់មានឯកសារ",
   "kb.emptyDesc": "បង្ហោះឯកសារ បិទភ្ជាប់អត្ថបទ ឬនាំចូលទំព័របណ្តាញសាធារណៈ។",
   "kb.groupTxt": "ឯកសារអត្ថបទ",
