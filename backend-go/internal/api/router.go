@@ -20,6 +20,12 @@ func (a *App) Router() http.Handler {
 	// Public auth — rate limited per client (Rust: rate_limit_10).
 	mux.Handle("POST /api/v1/auth/login", a.rateLimit(10)(a.handle(a.login)))
 	mux.Handle("POST /api/v1/auth/register", a.rateLimit(10)(a.handle(a.register)))
+	// Google (OIDC) sign-in — browser redirects carry no JWT, so these are
+	// public; the callback validates a one-time CSRF state token.
+	mux.HandleFunc("GET /api/v1/auth/google/start", a.googleStart)
+	mux.HandleFunc("GET /api/v1/auth/google/callback", a.googleCallback)
+	mux.Handle("POST /api/v1/auth/google/exchange", a.rateLimit(20)(a.handle(a.googleLoginExchange)))
+	mux.Handle("GET /api/v1/auth/methods", a.handle(a.googleAuthMethods))
 
 	// Website chat widget — public, authenticated by the embed token only
 	// (CORS is opened for /api/v1/widget/* in a.cors).

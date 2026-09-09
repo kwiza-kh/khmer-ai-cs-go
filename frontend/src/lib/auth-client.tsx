@@ -18,6 +18,8 @@ interface AuthContextType {
    *  its TOTP field and retries with the code. */
   login: (username: string, password: string, totpCode?: string) => Promise<{ twoFactorRequired?: boolean }>;
   register: (username: string, email: string, password: string) => Promise<void>;
+  /** Exchange a one-time Google sign-in code (from ?google_code=) for a session. */
+  completeGoogleLogin: (code: string) => Promise<void>;
   logout: () => void;
   isLoading: boolean;
 }
@@ -98,6 +100,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.setItem("user", JSON.stringify(data.user));
   };
 
+  // completeGoogleLogin — the OAuth callback redirects back with a one-time
+  // code; swap it for the JWT payload (single use, 2-minute TTL server-side).
+  const completeGoogleLogin = async (code: string) => {
+    const res = await fetch(`${API_BASE}/auth/google/exchange`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(localizeCurrentLang(data.error || "Google 登录失败"));
+    setToken(data.token);
+    setUser(data.user);
+    localStorage.setItem("token", data.token);
+    localStorage.setItem("user", JSON.stringify(data.user));
+  };
+
   const logout = () => {
     setToken(null);
     setUser(null);
@@ -116,7 +134,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, token, login, register, logout, isLoading }}>
+    <AuthContext.Provider value={{ user, token, login, register, completeGoogleLogin, logout, isLoading }}>
       {children}
     </AuthContext.Provider>
   );

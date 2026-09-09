@@ -90,6 +90,11 @@ func (c *Client) SetString(ctx context.Context, key, value string, ttl time.Dura
 	return c.rdb.Set(ctx, key, value, ttl).Err()
 }
 
+// Del — remove keys (used to consume one-time tokens).
+func (c *Client) Del(ctx context.Context, keys ...string) error {
+	return c.rdb.Del(ctx, keys...).Err()
+}
+
 // PushWindow appends one JSON message onto the sliding window (RPush + trim to
 // the newest `window` entries + refresh TTL).
 func (c *Client) PushWindow(ctx context.Context, key string, v any, window int64, ttl time.Duration) error {

@@ -3,7 +3,7 @@
 import * as React from "react";
 import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { useAuth } from "@/lib/auth-client";
+import { API_BASE, useAuth } from "@/lib/auth-client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -17,13 +17,14 @@ import { cn } from "@/lib/utils";
 import { LANGS, useI18n } from "@/lib/i18n";
 
 export default function LoginPage() {
-  const { login, register } = useAuth();
+  const { login, register, completeGoogleLogin } = useAuth();
   const router = useRouter();
   const { lang, setLang, t } = useI18n();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [tab, setTab] = useState<"login" | "register">("login");
   const [showPassword, setShowPassword] = useState(false);
+  const [googleEnabled, setGoogleEnabled] = useState(false);
 
   const [loginUser, setLoginUser] = useState("");
   const [loginPass, setLoginPass] = useState("");
@@ -32,6 +33,38 @@ export default function LoginPage() {
   const [regUser, setRegUser] = useState("");
   const [regEmail, setRegEmail] = useState("");
   const [regPass, setRegPass] = useState("");
+
+  // OAuth return: the callback redirects here with ?google_code= (success) or
+  // ?google_error= (failure). Swap the one-time code for a session, then clean
+  // the URL so a refresh cannot replay it.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get("google_code");
+    const errReason = params.get("google_error");
+    if (!code && !errReason) return;
+    window.history.replaceState({}, "", window.location.pathname);
+    if (errReason) {
+      const key = `login.googleErr.${errReason}`;
+      const msg = t(key);
+      setError(msg === key ? t("login.googleErr.failed") : msg);
+      return;
+    }
+    setLoading(true);
+    void completeGoogleLogin(code!)
+      .then(() => router.push("/ai-test"))
+      .catch((err: unknown) => setError((err as Error).message))
+      .finally(() => setLoading(false));
+  }, [completeGoogleLogin, router, t]);
+
+  // Probe whether the deployment has Google sign-in configured.
+  useEffect(() => {
+    let cancelled = false;
+    void fetch(`${API_BASE}/auth/methods`)
+      .then((res) => res.json())
+      .then((data: { google?: boolean }) => { if (!cancelled) setGoogleEnabled(Boolean(data.google)); })
+      .catch(() => { /* keep the button hidden */ });
+    return () => { cancelled = true; };
+  }, []);
 
   // Monochrome particle drift — the signature backdrop of this design.
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -297,6 +330,26 @@ export default function LoginPage() {
                     {loading ? <Loader2 className="size-4 animate-spin" /> : t("login.submit")}
                   </button>
 
+                  {googleEnabled && (
+                    <>
+                      <div className="relative">
+                        <Separator className="bg-zinc-800" />
+                        <span className="absolute left-1/2 -top-3 -translate-x-1/2 bg-zinc-900/70 px-2 text-[11px] uppercase tracking-widest text-zinc-500">
+                          {t("login.or")}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => window.location.assign(`${API_BASE}/auth/google/start`)}
+                        disabled={loading}
+                        className="inline-flex h-10 w-full items-center justify-center gap-2.5 rounded-lg border border-zinc-800 bg-zinc-950 text-sm text-zinc-50 transition-colors hover:bg-zinc-900/80 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        <GoogleMark />
+                        {t("login.googleSignIn")}
+                      </button>
+                    </>
+                  )}
+
                   <div className="relative">
                     <Separator className="bg-zinc-800" />
                     <span className="absolute left-1/2 -top-3 -translate-x-1/2 bg-zinc-900/70 px-2 text-[11px] uppercase tracking-widest text-zinc-500">
@@ -410,5 +463,18 @@ export default function LoginPage() {
         </Card>
       </div>
     </section>
+  );
+}
+
+// GoogleMark — the official four-colour "G" (brand guidelines require the
+// full-colour mark on light surfaces and the monochrome one on dark).
+function GoogleMark() {
+  return (
+    <svg viewBox="0 0 24 24" className="size-4" aria-hidden>
+      <path fill="#4285F4" d="M23.06 12.25c0-.85-.08-1.67-.22-2.45H12v4.63h6.2a5.3 5.3 0 0 1-2.3 3.48v2.9h3.72c2.18-2 3.44-4.96 3.44-8.56Z" />
+      <path fill="#34A853" d="M12 24c3.11 0 5.72-1.03 7.62-2.79l-3.72-2.89c-1.03.69-2.35 1.1-3.9 1.1-3 0-5.54-2.03-6.45-4.75H1.71v2.98A11.5 11.5 0 0 0 12 24Z" />
+      <path fill="#FBBC05" d="M5.55 14.67a6.9 6.9 0 0 1 0-4.41V7.28H1.71a11.5 11.5 0 0 0 0 10.37l3.84-2.98Z" />
+      <path fill="#EA4335" d="M12 4.75c1.69 0 3.21.58 4.4 1.72l3.3-3.3C17.72 1.19 15.1 0 12 0A11.5 11.5 0 0 0 1.71 7.28l3.84 2.98C6.46 7.54 9 4.75 12 4.75Z" />
+    </svg>
   );
 }
