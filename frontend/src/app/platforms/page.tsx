@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { PageHeader } from "@/components/page-header";
+import { PLATFORM_ICONS } from "@/components/platform-icons";
 import { Globe, MessageCircle, ExternalLink, CheckCircle2, Loader2, Link2, Camera, Plus, RefreshCw, Unplug, CircleAlert, Radio, Clock3, Inbox, Send, RotateCcw, Copy, type LucideIcon } from "lucide-react";
 import { toast } from "sonner";
 import { useI18n } from "@/lib/i18n";
@@ -50,8 +51,11 @@ interface PlatformHealth {
 // User-facing text resolves through i18n keys of the form pf.{label}.*
 // (name / desc / inbound / outbound / receipts / limitation / webhookInfo).
 interface PlatformMeta {
-  icon: LucideIcon;
+  // Lucide icons and the hand-drawn brand marks both fit this shape.
+  icon: React.ComponentType<{ className?: string }>;
   tone: "info" | "warning" | "default" | "success";
+  // Brand color chip for the card avatar (each social platform has its own).
+  brandClass: string;
   label: PlatformKey;
   fields: { labelKey: string; key: keyof PlatformConfig; placeholder: string; type?: string }[];
   docsUrl: string;
@@ -115,8 +119,9 @@ declare global {
 
 const PLATFORMS: PlatformMeta[] = [
   {
-    icon: Globe,
+    icon: PLATFORM_ICONS.meta,
     tone: "info",
+    brandClass: "bg-[#0084FF]/12 text-[#0084FF]",
     label: "meta",
     fields: [
       { labelKey: "pf.field.pageId", key: "page_id", placeholder: "123456789" },
@@ -126,8 +131,9 @@ const PLATFORMS: PlatformMeta[] = [
     docsUrl: "https://developers.facebook.com/docs/messenger-platform",
   },
   {
-    icon: Globe,
+    icon: PLATFORM_ICONS.instagram,
     tone: "warning",
+    brandClass: "bg-[#E1306C]/12 text-[#E1306C]",
     label: "instagram",
     fields: [
       { labelKey: "pf.field.businessAccountId", key: "instagram_business_id", placeholder: "178414..." },
@@ -137,8 +143,9 @@ const PLATFORMS: PlatformMeta[] = [
     docsUrl: "https://developers.facebook.com/docs/messenger-platform",
   },
   {
-    icon: MessageCircle,
+    icon: PLATFORM_ICONS.telegram,
     tone: "info",
+    brandClass: "bg-[#229ED9]/12 text-[#229ED9]",
     label: "telegram",
     fields: [
       { labelKey: "pf.field.botToken", key: "bot_token", placeholder: "123456:ABC-DEF...", type: "password" },
@@ -152,8 +159,9 @@ const PLATFORMS: PlatformMeta[] = [
     },
   },
   {
-    icon: MessageCircle,
+    icon: PLATFORM_ICONS.whatsapp,
     tone: "success" as const,
+    brandClass: "bg-[#25D366]/12 text-[#1FAA52]",
     label: "whatsapp",
     fields: [
       // WhatsApp Cloud API: Phone Number ID lives in the page_id slot (overloaded
@@ -165,8 +173,9 @@ const PLATFORMS: PlatformMeta[] = [
     docsUrl: "https://developers.facebook.com/docs/whatsapp/cloud-api",
   },
   {
-    icon: MessageCircle,
+    icon: PLATFORM_ICONS.line,
     tone: "success",
+    brandClass: "bg-[#06C755]/12 text-[#06A94A]",
     label: "line",
     fields: [
       { labelKey: "pf.field.channelUserId", key: "page_id", placeholder: "U1234567890abcdef..." },
@@ -182,8 +191,9 @@ const PLATFORMS: PlatformMeta[] = [
     },
   },
   {
-    icon: MessageCircle,
+    icon: PLATFORM_ICONS.zalo,
     tone: "info",
+    brandClass: "bg-[#0068FF]/12 text-[#0068FF]",
     label: "zalo",
     fields: [
       { labelKey: "pf.field.accessToken", key: "access_token", placeholder: "Zalo OA access_token", type: "password" },
@@ -378,8 +388,8 @@ function PlatformGroup({ meta, configs }: { meta: PlatformMeta; configs: Platfor
     <section className="border-t border-border pt-5 first:border-t-0 first:pt-0">
       <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
         <div className="flex min-w-0 items-center gap-3">
-          <div className={`flex size-9 shrink-0 items-center justify-center rounded-lg ${TONE_CLASS[meta.tone]}`}>
-            <meta.icon className="size-4" />
+          <div className={`flex size-9 shrink-0 items-center justify-center rounded-lg ${meta.brandClass}`}>
+            <meta.icon className="size-5" />
           </div>
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
@@ -482,7 +492,8 @@ function ConnectedAccountRow({
   names,
   items,
 }: {
-  icon: LucideIcon;
+  // Lucide icons and the brand marks share this shape.
+  icon: React.ComponentType<{ className?: string }>;
   label: string;
   names: string[];
   items: ConnectedAccount[];
@@ -531,10 +542,10 @@ function MetaOAuthConnectCard({
             {hasConnections ? (
               <div className="mt-1 space-y-1">
                 {connectedMeta.length > 0 && (
-                  <ConnectedAccountRow icon={MessageCircle} label="Messenger" names={connectedMeta.map((a) => a.name)} items={connectedMeta} />
+                  <ConnectedAccountRow icon={PLATFORM_ICONS.meta} label="Messenger" names={connectedMeta.map((a) => a.name)} items={connectedMeta} />
                 )}
                 {connectedInstagram.length > 0 && (
-                  <ConnectedAccountRow icon={Camera} label="Instagram" names={connectedInstagram.map((a) => a.name)} items={connectedInstagram} />
+                  <ConnectedAccountRow icon={PLATFORM_ICONS.instagram} label="Instagram" names={connectedInstagram.map((a) => a.name)} items={connectedInstagram} />
                 )}
               </div>
             ) : (
@@ -681,7 +692,7 @@ function WhatsAppEmbeddedSignupCard({ connected }: { connected: ConnectedAccount
               )}
             </div>
             {connected.length > 0 ? (
-              <ConnectedAccountRow icon={MessageCircle} label="WhatsApp" names={connected.map((a) => a.name)} items={connected} />
+              <ConnectedAccountRow icon={PLATFORM_ICONS.whatsapp} label="WhatsApp" names={connected.map((a) => a.name)} items={connected} />
             ) : (
               <p className="mt-0.5 text-xs text-muted-foreground">{t("pf.waDesc")}</p>
             )}
