@@ -226,8 +226,8 @@ func (a *App) findOrCreateGoogleUser(ctx context.Context, sub, email, name strin
 		return userID, username, role, isActive, nil
 	}
 
-	if !a.Cfg.AllowRegistration {
-		return 0, "", "", false, fmt.Errorf("registration disabled")
+	if !a.Cfg.SSO.AllowSignup {
+		return 0, "", "", false, fmt.Errorf("google signup disabled")
 	}
 	// Derive a unique username from the email local-part.
 	base := strings.ToLower(strings.Split(email, "@")[0])
@@ -261,6 +261,7 @@ func (a *App) googleAuthMethods(w http.ResponseWriter, r *http.Request) (any, er
 	return map[string]any{
 		"google":             a.googleSSOEnabled(),
 		"allow_registration": a.Cfg.AllowRegistration,
+		"google_signup":      a.Cfg.SSO.AllowSignup,
 	}, nil
 }
 

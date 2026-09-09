@@ -83,8 +83,13 @@ type SSOConfig struct {
 	// RedirectURL — the public callback registered in the provider console
 	// (e.g. https://host/api/v1/auth/google/callback). FrontendURL receives
 	// the one-time login code after a successful exchange.
-	RedirectURL  string
-	FrontendURL  string
+	RedirectURL string
+	FrontendURL string
+	// AllowSignup — Google sign-in may auto-provision an account even when
+	// password registration is closed. Decoupled from ALLOW_REGISTRATION so a
+	// deployment can restrict self-service password signups while still
+	// letting staff sign in with their Google Workspace account.
+	AllowSignup bool
 }
 
 // TTSConfig gates voice replies (Gemini TTS → R2 → platform audio message).
@@ -184,6 +189,7 @@ func Load() (*Config, error) {
 			OIDCClientSecret: env("SSO_OIDC_CLIENT_SECRET", ""),
 			RedirectURL:      env("SSO_REDIRECT_URL", ""),
 			FrontendURL:      env("SSO_FRONTEND_URL", ""),
+			AllowSignup:      envBool("SSO_ALLOW_SIGNUP", true),
 		},
 		TTS: TTSConfig{
 			Enabled: envBool("TTS_ENABLED", false),

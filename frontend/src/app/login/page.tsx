@@ -331,23 +331,15 @@ export default function LoginPage() {
                   </button>
 
                   {googleEnabled && (
-                    <>
-                      <div className="relative">
-                        <Separator className="bg-zinc-800" />
-                        <span className="absolute left-1/2 -top-3 -translate-x-1/2 bg-zinc-900/70 px-2 text-[11px] uppercase tracking-widest text-zinc-500">
-                          {t("login.or")}
-                        </span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => window.location.assign(`${API_BASE}/auth/google/start`)}
-                        disabled={loading}
-                        className="inline-flex h-10 w-full items-center justify-center gap-2.5 rounded-lg border border-zinc-800 bg-zinc-950 text-sm text-zinc-50 transition-colors hover:bg-zinc-900/80 disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        <GoogleMark />
-                        {t("login.googleSignIn")}
-                      </button>
-                    </>
+                    <button
+                      type="button"
+                      onClick={() => window.location.assign(`${API_BASE}/auth/google/start`)}
+                      disabled={loading}
+                      className="inline-flex h-10 w-full items-center justify-center gap-2.5 rounded-lg border border-zinc-800 bg-zinc-950 text-sm text-zinc-50 transition-colors hover:bg-zinc-900/80 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      <GoogleMark />
+                      {t("login.googleSignIn")}
+                    </button>
                   )}
 
                   <div className="relative">
