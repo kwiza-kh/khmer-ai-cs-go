@@ -102,7 +102,7 @@ RestartSec=3
 **nginx** `/etc/nginx/sites-enabled/khmer-ai-cs` 三个 location (完整文件见 references/deploy-commands.md §8):
 - `location /api/` → 8081, **`proxy_buffering off`** (chat/stream SSE 必需)
 - `location /api/v1/realtime/inbox` → 8081, WebSocket Upgrade 头 + `proxy_read/send_timeout 3600s` (**必须排在 /api/ 之前**)
-- `location /` → 3001 (Next standalone), 安全头含 CSP (`connect.facebook.net` 允许, Meta SDK 用), 80 块 `return 301 https://`
+- `location /` → 3001 (Next standalone), 安全头含 CSP (`connect.facebook.net` 允许 Meta SDK; `media-src https:` 允许 R2 音频回放), 80 块 `return 301 https://`
 
 ## 验证清单
 
