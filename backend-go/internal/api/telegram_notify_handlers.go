@@ -104,6 +104,7 @@ func (a *App) putTelegramNotify(w http.ResponseWriter, r *http.Request) (any, er
 			"INSERT INTO telegram_notify_settings (user_id, bot_token_enc, chat_id, chat_title, notify_messages, notify_handoff) VALUES ($1,$2,$3,$4,$5,$6)",
 			user.UserID, tokenEnc, chatID, chatTitle, notifyMessages, notifyHandoff)
 	}
+	platform.InvalidateTelegramNotify(user.UserID)
 	return map[string]any{"message": "已保存", "configured": true, "chat_id": chatID, "chat_title": chatTitle,
 		"notify_messages": notifyMessages, "notify_handoff": notifyHandoff}, nil
 }

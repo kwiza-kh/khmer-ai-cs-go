@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -19,9 +20,45 @@ type TelegramNotifyConfig struct {
 	NotifyHandoff  bool
 }
 
+// notifyCache memoizes decrypted notify configs briefly — this is on the
+// per-message path and repeated DB hits + AES decrypts add up.
+type notifyCacheEntry struct {
+	cfg     *TelegramNotifyConfig
+	expires time.Time
+}
+
+var (
+	notifyCacheMu sync.Mutex
+	notifyCache   = map[int32]notifyCacheEntry{}
+)
+
+// InvalidateTelegramNotify drops the cache entry after a settings change.
+func InvalidateTelegramNotify(userID int32) {
+	notifyCacheMu.Lock()
+	delete(notifyCache, userID)
+	notifyCacheMu.Unlock()
+}
+
 // LoadTelegramNotify loads + decrypts the tenant's notify config; nil when
-// unset or unusable (missing token/chat).
+// unset or unusable (missing token/chat). Cached for 30 seconds.
 func (p *Pipeline) LoadTelegramNotify(ctx context.Context, userID int32) *TelegramNotifyConfig {
+	notifyCacheMu.Lock()
+	if e, ok := notifyCache[userID]; ok && time.Now().Before(e.expires) {
+		notifyCacheMu.Unlock()
+		return e.cfg
+	}
+	notifyCacheMu.Unlock()
+	cfg := p.loadTelegramNotifyUncached(ctx, userID)
+	notifyCacheMu.Lock()
+	if len(notifyCache) > 500 {
+		notifyCache = map[int32]notifyCacheEntry{}
+	}
+	notifyCache[userID] = notifyCacheEntry{cfg: cfg, expires: time.Now().Add(30 * time.Second)}
+	notifyCacheMu.Unlock()
+	return cfg
+}
+
+func (p *Pipeline) loadTelegramNotifyUncached(ctx context.Context, userID int32) *TelegramNotifyConfig {
 	var tokenEnc, chatID, chatTitle *string
 	var notifyMessages, notifyHandoff bool
 	err := p.DB.QueryRow(ctx,
@@ -113,11 +150,13 @@ type redisWindowLimiter interface {
 // customer message (throttled per session). Includes a deep link that opens
 // the conversation in the agent inbox.
 func (p *Pipeline) NotifyNewCustomerMessage(ctx context.Context, userID int32, sessionID, platformName, displayName, content string) {
-	cfg := p.LoadTelegramNotify(ctx, userID)
-	if cfg == nil || !cfg.NotifyMessages {
+	// Throttle first: a throttled message should not pay for the config
+	// lookup and AES decryption.
+	if !ThrottleTelegramMessage(p.Redis, sessionID) {
 		return
 	}
-	if !ThrottleTelegramMessage(p.Redis, sessionID) {
+	cfg := p.LoadTelegramNotify(ctx, userID)
+	if cfg == nil || !cfg.NotifyMessages {
 		return
 	}
 	name := displayName
@@ -140,6 +179,10 @@ func (p *Pipeline) bumpMessagesUsed(ctx context.Context, userID int32) {
 
 // NotifyHandoffRequest — Telegram ping for one handoff request, with inline
 // buttons so the owner can take over or resolve right from the phone.
+//
+// The HTTP send runs in the background with its own timeout: this is called
+// from request handlers (widget/handoff/feedback), and a slow Telegram API
+// must not add up to 15s of latency to the caller.
 func (p *Pipeline) NotifyHandoffRequest(ctx context.Context, userID int32, sessionID, reason string) {
 	cfg := p.LoadTelegramNotify(ctx, userID)
 	if cfg == nil || !cfg.NotifyHandoff {
@@ -149,10 +192,14 @@ func (p *Pipeline) NotifyHandoffRequest(ctx context.Context, userID int32, sessi
 		{"🧑‍💼 接管", "ho:takeover:" + sessionID},
 		{"✅ 解决", "ho:resolve:" + sessionID},
 	}
-	if _, err := NewTelegramClient(cfg.BotToken).SendMessage(
-		context.WithoutCancel(ctx), cfg.ChatID, "🔔 "+reason, buttons); err != nil {
-		p.Logger.Warn("telegram notify send failed", "user_id", userID, "error", err.Error())
-	}
+	botToken, chatID := cfg.BotToken, cfg.ChatID
+	SpawnClassifier(func() {
+		sendCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		if _, err := NewTelegramClient(botToken).SendMessage(sendCtx, chatID, "🔔 "+reason, buttons); err != nil {
+			p.Logger.Warn("telegram notify send failed", "user_id", userID, "error", err.Error())
+		}
+	})
 }
 
 // ProcessNotifyCallbacks — poll the notify bot's getUpdates and handle the

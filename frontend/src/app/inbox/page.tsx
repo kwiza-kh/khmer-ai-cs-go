@@ -775,17 +775,23 @@ function ConversationDetail({
     lsSetJSON("inbox.autoTranslate", autoTranslate);
   }, [autoTranslate]);
 
+  // Gate concurrent translations: opening a long conversation used to fire one
+  // LLM call per message at once, which burned the per-user rate limit and
+  // tripped 429s on unrelated requests (bell, inbox poll).
+  const translateQueueRef = React.useRef<Promise<void>>(Promise.resolve());
   const translateOne = React.useCallback((messageID: number, content: string, target: TranslateTarget) => {
     if (inflightRef.current.has(messageID)) return;
     inflightRef.current.add(messageID);
-    void translateText(content, target)
+    translateQueueRef.current = translateQueueRef.current.then(() =>
+      translateText(content, target)
       .then((res) => {
         const entry = { text: res.translation, target: res.target as TranslateTarget };
         translationCache.set(messageID, entry);
         setTranslations((prev) => ({ ...prev, [messageID]: entry }));
       })
       .catch(() => { /* silent — toggling the switch retries */ })
-      .finally(() => { inflightRef.current.delete(messageID); });
+      .finally(() => { inflightRef.current.delete(messageID); }),
+    );
   }, []);
 
   // Auto-translate every customer message (cache-first) while the toggle is on.
