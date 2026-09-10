@@ -769,7 +769,7 @@ function ConversationDetail({
   const [replyLang, setReplyLang] = React.useState<TranslateTarget>(() => lsGetJSON<TranslateTarget>("inbox.replyLang", "km"));
   const [translations, setTranslations] = React.useState<Record<number, { text: string; target: TranslateTarget }>>({});
   const [translatingDraft, setTranslatingDraft] = React.useState(false);
-  const inflightRef = React.useRef<Set<number>>(new Set());
+  const inflightRef = React.useRef<Set<string>>(new Set());
 
   React.useEffect(() => {
     lsSetJSON("inbox.autoTranslate", autoTranslate);
@@ -780,8 +780,11 @@ function ConversationDetail({
   // tripped 429s on unrelated requests (bell, inbox poll).
   const translateQueueRef = React.useRef<Promise<void>>(Promise.resolve());
   const translateOne = React.useCallback((messageID: number, content: string, target: TranslateTarget) => {
-    if (inflightRef.current.has(messageID)) return;
-    inflightRef.current.add(messageID);
+    // Keyed by message+target: switching the target language must be able to
+    // start a fresh translation instead of being swallowed as a duplicate.
+    const key = `${messageID}:${target}`;
+    if (inflightRef.current.has(key)) return;
+    inflightRef.current.add(key);
     translateQueueRef.current = translateQueueRef.current.then(() =>
       translateText(content, target)
       .then((res) => {
@@ -790,7 +793,7 @@ function ConversationDetail({
         setTranslations((prev) => ({ ...prev, [messageID]: entry }));
       })
       .catch(() => { /* silent — toggling the switch retries */ })
-      .finally(() => { inflightRef.current.delete(messageID); }),
+      .finally(() => { inflightRef.current.delete(key); }),
     );
   }, []);
 

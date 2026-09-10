@@ -148,7 +148,7 @@ export default function LoginPage() {
   };
 
   return (
-    <section className="fixed inset-0 overflow-hidden bg-zinc-950 text-zinc-50">
+    <section className="fixed inset-0 overflow-y-auto bg-zinc-950 text-zinc-50">
       <style>{`
         .accent-lines{position:absolute;inset:0;pointer-events:none;opacity:.7}
         .hline,.vline{position:absolute;background:#27272a;will-change:transform,opacity}
@@ -220,7 +220,7 @@ export default function LoginPage() {
       {/* Centered card. This page has its own fixed dark design, so every
           text colour is set explicitly — inheriting card-foreground would
           render dark-on-dark when the app theme is light. */}
-      <div className="grid h-full w-full place-items-center px-4">
+      <div className="grid min-h-full w-full place-items-center px-4 py-6">
         <Card className="card-animate w-full max-w-sm border-zinc-800 bg-zinc-900/70 text-zinc-50 backdrop-blur supports-[backdrop-filter]:bg-zinc-900/60">
           <CardHeader className="space-y-1">
             <CardTitle className="text-2xl text-zinc-50">
@@ -252,7 +252,7 @@ export default function LoginPage() {
             <AnimatePresence>
               {error && (
                 <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}>
-                  <div className="rounded-lg border border-red-900/60 bg-red-950/40 px-3 py-2">
+                  <div role="alert" aria-live="assertive" className="rounded-lg border border-red-900/60 bg-red-950/40 px-3 py-2">
                     <p className="text-sm text-red-300">{error}</p>
                   </div>
                 </motion.div>
@@ -401,14 +401,22 @@ export default function LoginPage() {
                       <Lock className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-zinc-500" />
                       <Input
                         id="reg-pass"
-                        type="password"
+                        type={showPassword ? "text" : "password"}
                         value={regPass}
                         onChange={(e) => setRegPass(e.target.value)}
                         placeholder="••••••••"
                         required
                         autoComplete="new-password"
-                        className="border-zinc-800 bg-zinc-950 pl-10 text-zinc-50 placeholder:text-zinc-600"
+                        className="border-zinc-800 bg-zinc-950 pl-10 pr-10 text-zinc-50 placeholder:text-zinc-600"
                       />
+                      <button
+                        type="button"
+                        aria-label={showPassword ? t("login.hidePassword") : t("login.showPassword")}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-2 text-zinc-400 hover:text-zinc-200"
+                        onClick={() => setShowPassword((v) => !v)}
+                      >
+                        {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+                      </button>
                     </div>
                   </div>
 
