@@ -30,7 +30,7 @@ func (a *App) listInbox(w http.ResponseWriter, r *http.Request) (any, error) {
 	countSQL := "SELECT COUNT(*) FROM sessions WHERE user_id = $1 AND is_test = FALSE"
 	args := []any{user.UserID}
 	if statusFilter != "" {
-		countSQL += " AND status::text = $" + strconv.Itoa(len(args)+1)
+		countSQL += " AND status = $" + strconv.Itoa(len(args)+1) + "::session_status"
 		args = append(args, statusFilter)
 	}
 	var total int64
@@ -53,7 +53,7 @@ func (a *App) listInbox(w http.ResponseWriter, r *http.Request) (any, error) {
 		"WHERE s.user_id = $1 AND s.is_test = FALSE"
 	selArgs := []any{user.UserID}
 	if statusFilter != "" {
-		selSQL += " AND s.status::text = $" + strconv.Itoa(len(selArgs)+1)
+		selSQL += " AND s.status = $" + strconv.Itoa(len(selArgs)+1) + "::session_status"
 		selArgs = append(selArgs, statusFilter)
 	}
 	selSQL += " ORDER BY last_message.created_at DESC NULLS LAST, s.created_at DESC LIMIT $" + strconv.Itoa(len(selArgs)+1) + " OFFSET $" + strconv.Itoa(len(selArgs)+2)

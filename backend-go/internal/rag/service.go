@@ -551,6 +551,11 @@ func applyRerankScores(chunks []SearchChunk, scores []float32, topK int64) []Sea
 		}
 	}
 	sort.Slice(paired, func(i, j int) bool { return paired[i].score > paired[j].score })
+	// Honour topK: without this the caller received every candidate above
+	// rerankMin (up to rerankWindow=15), inflating the grounding prompt.
+	if topK > 0 && int64(len(paired)) > topK {
+		paired = paired[:topK]
+	}
 	out := make([]SearchChunk, 0, len(paired))
 	for _, p := range paired {
 		out = append(out, p.chunk)
