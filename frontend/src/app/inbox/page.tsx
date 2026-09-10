@@ -238,6 +238,17 @@ export default function InboxPage() {
   const [bulkBusy, setBulkBusy] = React.useState(false);
   // Per-browser UX state hydrated lazily (client-only; SSR-safe fallbacks).
   const [lastSeenMap, setLastSeenMap] = React.useState<Record<string, string>>(() => lsGetJSON<Record<string, string>>(LS_LASTSEEN, {}));
+  // Collapsed platform groups in the conversation list (persisted per browser).
+  const [collapsedPlatforms, setCollapsedPlatforms] = React.useState<Set<string>>(() => new Set(lsGetJSON<string[]>(LS_COLLAPSED, [])));
+  React.useEffect(() => { lsSetJSON(LS_COLLAPSED, [...collapsedPlatforms]); }, [collapsedPlatforms]);
+  const togglePlatform = React.useCallback((key: string) => {
+    setCollapsedPlatforms((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
   const [drafts, setDrafts] = React.useState<Record<string, string>>(() => lsGetJSON<Record<string, string>>(LS_DRAFTS, {}));
   React.useEffect(() => { lsSetJSON(LS_DRAFTS, drafts); }, [drafts]);
 
@@ -275,6 +286,15 @@ export default function InboxPage() {
     { refreshInterval: wsConnected ? 60_000 : 15_000 },
   );
   React.useEffect(() => { mutateInboxRef.current = () => { void mutateInbox(); }; }, [mutateInbox]);
+  // Consistency guard: if the server reports rows it could not decode, say so
+  // instead of quietly rendering an incomplete list (this is how web-client
+  // conversations once disappeared without a trace).
+  const skippedRows = inboxData?.skipped ?? 0;
+  React.useEffect(() => {
+    if (skippedRows > 0) {
+      toast.warning(tf("inbox.rowsSkipped", { n: skippedRows }));
+    }
+  }, [skippedRows, tf]);
   // useMemo keeps the array identity stable between renders — the keydown
   // effect depends on it, so this prevents listener churn on every poll.
   const items = React.useMemo(() => (inboxData?.data ?? []).filter((item) => {
@@ -433,7 +453,7 @@ export default function InboxPage() {
             </div>
           </div>
 
-          <ScrollArea className="flex-1">
+          <ScrollArea className="min-h-0 flex-1">
             <div className="p-2.5">
               {groupedItems.length === 0 ? (
                 <EmptyState
@@ -441,14 +461,26 @@ export default function InboxPage() {
                   title={query || platformFilter !== "all" ? t("inbox.emptyFiltered") : t("inbox.emptyTitle")}
                   description={query || platformFilter !== "all" ? t("inbox.emptyFilteredDesc") : t("inbox.emptyDesc")}
                 />
-              ) : groupedItems.map((group) => (
+              ) : groupedItems.map((group) => {
+                const collapsed = collapsedPlatforms.has(group.value);
+                return (
                 <div key={group.value} className="mb-4 last:mb-0">
-                  <div className="flex items-center gap-2 px-1.5 pb-1.5">
+                  {/* Header doubles as the collapse toggle: a busy tenant can
+                      fold the channels they are not working on right now. */}
+                  <button
+                    type="button"
+                    onClick={() => togglePlatform(group.value)}
+                    aria-expanded={!collapsed}
+                    title={t("inbox.collapsePlatform")}
+                    className="flex w-full items-center gap-2 rounded-md px-1.5 pb-1.5 text-left transition-colors hover:bg-muted/60"
+                  >
+                    <ChevronRight className={cn("size-3 shrink-0 text-muted-foreground transition-transform", !collapsed && "rotate-90")} />
                     <span className={cn("size-1.5 shrink-0 rounded-full", group.dotClass)} />
                     <span className="text-[11px] font-semibold tracking-wide text-muted-foreground">{group.label}</span>
                     <span className="h-px flex-1 bg-border" />
                     <span className="text-[11px] tabular-nums text-muted-foreground">{group.items.length}</span>
-                  </div>
+                  </button>
+                  {!collapsed && (
                   <div className="space-y-1">
                     {group.items.map((item) => (
                       <button
@@ -519,8 +551,10 @@ export default function InboxPage() {
                       </button>
                     ))}
                   </div>
+                  )}
                 </div>
-              ))}
+                );
+              })}
             </div>
           </ScrollArea>
 
@@ -1690,6 +1724,7 @@ const LS_PANEL = "khmer-inbox-panel";
 const LS_DRAFTS = "khmer-inbox-drafts";
 const LS_LASTSEEN = "khmer-inbox-lastseen";
 const LS_LASTSEENMSG = "khmer-inbox-lastseen-msg";
+const LS_COLLAPSED = "khmer-inbox-collapsed-platforms";
 
 function lsGetJSON<T>(key: string, fallback: T): T {
   if (typeof window === "undefined") return fallback;

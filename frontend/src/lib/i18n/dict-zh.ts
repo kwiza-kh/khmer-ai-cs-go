@@ -155,6 +155,8 @@ export const zh: Dict = {
   "inbox.bulkAssigned": "已分配 {ok}/{total} 个会话",
   "inbox.bulkClosed": "已关闭 {ok}/{total} 个会话",
   "inbox.bulkPartial": "成功 {ok}/{total}，{failed} 个失败，请重试",
+  "inbox.rowsSkipped": "有 {n} 条会话未能加载，请联系技术支持",
+  "inbox.collapsePlatform": "折叠/展开该平台",
   "inbox.emptyTitle": "还没有客户会话",
   "inbox.emptyDesc": "当客户通过 Messenger、Telegram、WhatsApp、网站组件等渠道发来消息时，会话会出现在这里。",
   "inbox.emptyFiltered": "没有匹配的会话",

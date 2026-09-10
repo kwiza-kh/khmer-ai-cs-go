@@ -65,6 +65,7 @@ func (a *App) listInbox(w http.ResponseWriter, r *http.Request) (any, error) {
 	}
 	defer rows.Close()
 	items := make([]map[string]any, 0)
+	skipped := 0
 	for rows.Next() {
 		var (
 			sid, status, language                        string
@@ -85,6 +86,7 @@ func (a *App) listInbox(w http.ResponseWriter, r *http.Request) (any, error) {
 		if err := rows.Scan(&sid, &uid, &platform, &puid, &displayName, &avatarURL, &replyWindow,
 			&status, &language, &title, &umc, &mmc, &assignedAgent, &firstResp, &escalated,
 			&createdAt, &lastMsg, &lastMsgAt, &agentName, &sentiment, &tagsPtr, &intent); err != nil {
+			skipped++
 			a.Logger.Warn("inbox row skipped", "session_id", sid, "error", err.Error())
 			continue
 		}
@@ -115,7 +117,11 @@ func (a *App) listInbox(w http.ResponseWriter, r *http.Request) (any, error) {
 			"intent":                derefStr(intent),
 		})
 	}
-	return map[string]any{"data": items, "total": total, "page": page, "page_size": pageSize}, nil
+		// Surface how many rows could not be decoded: a non-zero value means the
+	// client is seeing fewer conversations than `total`, which used to happen
+	// silently (NULL platform_user_id on web sessions) and looked like data
+	// vanishing.
+	return map[string]any{"data": items, "total": total, "page": page, "page_size": pageSize, "skipped": skipped}, nil
 }
 
 // ============================================

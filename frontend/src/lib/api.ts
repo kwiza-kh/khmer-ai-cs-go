@@ -91,6 +91,8 @@ export interface PaginatedResponse<T> {
   total: number;
   page: number;
   page_size: number;
+  /** Rows the server could not decode — non-zero means the list is incomplete. */
+  skipped?: number;
 }
 
 export interface ChatResponse {

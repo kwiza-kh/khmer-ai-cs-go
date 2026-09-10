@@ -159,6 +159,8 @@ export const en: Dict = {
   "inbox.bulkAssigned": "Assigned {ok} of {total} conversations",
   "inbox.bulkClosed": "Closed {ok} of {total} conversations",
   "inbox.bulkPartial": "{ok} of {total} succeeded, {failed} failed — please retry",
+  "inbox.rowsSkipped": "{n} conversations could not be loaded — please contact support",
+  "inbox.collapsePlatform": "Collapse or expand this platform",
   "inbox.emptyTitle": "No conversations yet",
   "inbox.emptyDesc": "Conversations appear here as soon as a customer messages you on Messenger, Telegram, WhatsApp, the website widget, or any other connected channel.",
   "inbox.emptyFiltered": "No matching conversations",

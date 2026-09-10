@@ -155,6 +155,8 @@ export const km: Dict = {
   "inbox.bulkAssigned": "បានចាត់តាំង {ok}/{total} ការសន្ទនា",
   "inbox.bulkClosed": "បានបិទ {ok}/{total} ការសន្ទនា",
   "inbox.bulkPartial": "ជោគជ័យ {ok}/{total}, បរាជ័យ {failed} — សូមព្យាយាមម្តងទៀត",
+  "inbox.rowsSkipped": "ការសន្ទនា {n} មិនអាចផ្ទុកបានទេ — សូមទាក់ទងផ្នែកគាំទ្រ",
+  "inbox.collapsePlatform": "បង្រួម/ពង្រីកវេទិកានេះ",
   "inbox.emptyTitle": "មិនទាន់មានការសន្ទនាទេ",
   "inbox.emptyDesc": "ការសន្ទនានឹងបង្ហាញនៅទីនេះ នៅពេលអតិថិជនផ្ញើសារមកតាម Messenger, Telegram, WhatsApp, ផ្នែកជជែកគេហទំព័រ ឬឆានែលផ្សេងទៀត។",
   "inbox.emptyFiltered": "គ្មានការសន្ទនាត្រូវគ្នាទេ",
