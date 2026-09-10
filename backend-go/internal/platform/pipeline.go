@@ -644,7 +644,11 @@ func (p *Pipeline) prepareMedia(ctx context.Context, ev *InboundEvent, cfg *conf
 	// Image    → Gemini vision description so the AI can actually answer.
 	extracted := ""
 	if !isImage && (kind == "audio" || kind == "voice") {
-		transcript, terr := transcribeAudio(ctx, p, data, mime, p.ownerLanguage(ctx, cfg.UserID))
+		// Pass no language hint: the merchant's UI language says nothing about
+		// what the customer spoke. Pinning it made Gemini render Khmer speech in
+		// the wrong script (e.g. Amharic) — let the model detect it, and the
+		// script guard in TranscribeAudio retries as Khmer if it mis-decodes.
+		transcript, terr := transcribeAudio(ctx, p, data, mime, "")
 		switch {
 		case terr != nil:
 			p.Logger.Warn("voice transcription failed", "event_id", ev.EventID, "error", fmt.Sprint(terr))

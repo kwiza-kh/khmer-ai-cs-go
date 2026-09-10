@@ -846,10 +846,28 @@ func DetectLanguage(message string) string {
 
 // TranscribeAudio — verbatim speech-to-text via Gemini multimodal. Returns the
 // transcript (mock returns a fixed Khmer phrase so the flow is testable).
-// langHint is the ISO code of the expected spoken language ("km"/"zh"/"en",
-// "" = unknown) — pinning it stops gemini-3.x from rendering Khmer speech in
-// a wrong script (observed: Amharic).
+//
+// langHint pins the spoken language when the caller genuinely knows it; empty
+// means "detect it". Callers must NOT pass the merchant's UI language here —
+// the merchant reads Chinese while their customers speak Khmer, so pinning it
+// would force Khmer speech into the wrong script (observed: Amharic).
 func (s *Service) TranscribeAudio(ctx context.Context, audio []byte, mimeType, langHint string) (string, error) {
+	transcript, err := s.transcribeOnce(ctx, audio, mimeType, transcribePrompt(langHint))
+	if err != nil {
+		return "", err
+	}
+	// Khmer voice notes occasionally decode into an unrelated script. When we
+	// were not pinned, retry once with Khmer explicit rather than storing
+	// gibberish the AI cannot ground on.
+	if langHint == "" && hasUnexpectedScript(transcript) {
+		if retry, rerr := s.transcribeOnce(ctx, audio, mimeType, transcribePrompt("km")); rerr == nil && strings.TrimSpace(retry) != "" {
+			return retry, nil
+		}
+	}
+	return transcript, nil
+}
+
+func (s *Service) transcribeOnce(ctx context.Context, audio []byte, mimeType, prompt string) (string, error) {
 	if !s.IsConfigured() {
 		return "ផលិតផលនេះតម្លៃប៉ុន្មាន និងមានសេវាកម្មអ្វីខ្លះ?", nil
 	}
@@ -860,12 +878,13 @@ func (s *Service) TranscribeAudio(ctx context.Context, audio []byte, mimeType, l
 		"contents": []map[string]any{{
 			"role": "user",
 			"parts": []map[string]any{
-				{"text": transcribePrompt(langHint)},
+				{"text": prompt},
 				{"inlineData": map[string]any{"mimeType": mimeType, "data": base64.StdEncoding.EncodeToString(audio)}},
 			},
 		}},
 	}
-	status, text, err := s.postWithRetry(ctx, s.generateURLFor(s.modelName), body)
+	cfg := s.snapshot()
+	status, text, err := s.postWithRetry(ctx, s.generateURLFor(cfg.modelName), body)
 	if err != nil {
 		return "", fmt.Errorf("transcribe request: %w", err)
 	}
@@ -883,19 +902,23 @@ func (s *Service) TranscribeAudio(ctx context.Context, audio []byte, mimeType, l
 	return transcript, nil
 }
 
-// transcribePrompt builds the speech-to-text instruction. When the spoken
-// language is known it is pinned explicitly — gemini-3.x otherwise sometimes
-// transcribes Khmer speech into a wrong script (e.g. Amharic).
+// transcribePrompt builds the speech-to-text instruction. The platform serves
+// Khmer, English and Chinese speakers, so the default is an explicit candidate
+// list plus "use the script you actually hear" — pinning a single language is
+// what produced wrong-script transcripts.
 func transcribePrompt(lang string) string {
-	label := speechLanguageLabel(lang)
-	if label == "" {
-		return "Transcribe this audio verbatim. Output ONLY the transcribed text in its original script — no labels, no translation, no commentary, no quotes."
+	if label := speechLanguageLabel(lang); label != "" {
+		return "The audio is spoken in " + label + ". Transcribe it verbatim in " + label + " script ONLY — no translation, no labels, no commentary, no quotes."
 	}
-	return "The audio is spoken in " + label + ". Transcribe it verbatim in " + label + " script ONLY — no translation, no labels, no commentary, no quotes."
+	return "Transcribe this audio verbatim. The speaker is most likely speaking Khmer, English, or Chinese — " +
+		"use whichever of those languages you actually hear and write it in that language's OWN script. " +
+		"Never translate, never transliterate into another script, and never substitute a different language " +
+		"(for example do not render Khmer speech in Amharic or any other script). " +
+		"Output ONLY the transcribed text — no labels, no commentary, no quotes."
 }
 
 // speechLanguageLabel maps an ISO-ish language code to its display name
-// ("" = unknown → generic prompt).
+// ("" = unknown → auto-detect prompt).
 func speechLanguageLabel(lang string) string {
 	switch lang {
 	case "km":
@@ -907,6 +930,50 @@ func speechLanguageLabel(lang string) string {
 	default:
 		return ""
 	}
+}
+
+// hasUnexpectedScript reports whether a transcript contains letters from a
+// script the platform never serves (Ethiopic, Arabic, Thai, Devanagari, …).
+// Khmer, CJK and Latin — plus digits/punctuation — are expected.
+func hasUnexpectedScript(text string) bool {
+	for _, r := range text {
+		if r < 0x80 { // ASCII letters, digits, punctuation, space
+			continue
+		}
+		switch {
+		case r >= 0x00C0 && r <= 0x024F: // Latin-1 / Extended (é, ü, ǎ…)
+			continue
+		case r >= 0x1780 && r <= 0x17FF, r >= 0x19E0 && r <= 0x19FF: // Khmer + symbols
+			continue
+		case r >= 0x4E00 && r <= 0x9FFF, r >= 0x3400 && r <= 0x4DBF: // CJK ideographs
+			continue
+		case r >= 0x3000 && r <= 0x303F, r >= 0xFF00 && r <= 0xFFEF: // CJK punctuation / fullwidth
+			continue
+		case r >= 0x2000 && r <= 0x206F, r >= 0x20A0 && r <= 0x20CF: // general punctuation, currency
+			continue
+		case r >= 0x0E00 && r <= 0x0E7F: // Thai — a Khmer speaker's neighbours, but never our market
+			return true
+		case r >= 0x1200 && r <= 0x137F: // Ethiopic (Amharic) — the observed mis-decode
+			return true
+		case r >= 0x0600 && r <= 0x06FF, r >= 0x0750 && r <= 0x077F: // Arabic
+			return true
+		case r >= 0x0900 && r <= 0x097F: // Devanagari
+			return true
+		case r >= 0x0E80 && r <= 0x0EFF: // Lao
+			return true
+		case r >= 0x1000 && r <= 0x109F: // Myanmar
+			return true
+		case r >= 0x0530 && r <= 0x058F: // Armenian
+			return true
+		case r >= 0x10A0 && r <= 0x10FF: // Georgian
+			return true
+		case r >= 0x0080 && r <= 0x00BF: // C1 controls / Latin-1 punctuation
+			continue
+		default:
+			return true
+		}
+	}
+	return false
 }
 
 // isTranscriptionRefusal catches "I am unable to decode or process raw binary
