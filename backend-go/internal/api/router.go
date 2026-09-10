@@ -62,6 +62,7 @@ func (a *App) Router() http.Handler {
 	authed.Handle("POST /api/v1/settings/telegram-notify/test", a.handle(a.postTelegramNotifyTest))
 	// Agent copilot: one-shot translation (Khmer ↔ 中文 ↔ English).
 	authed.Handle("POST /api/v1/translate", a.handle(a.translateText))
+	authed.Handle("POST /api/v1/translate/batch", a.handle(a.translateBatch))
 	// Personal profile (settings page).
 	authed.Handle("GET /api/v1/profile", a.handle(a.getProfile))
 	authed.Handle("PUT /api/v1/profile", a.handle(a.putProfile))

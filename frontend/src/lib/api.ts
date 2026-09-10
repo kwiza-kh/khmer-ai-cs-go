@@ -640,6 +640,16 @@ export async function translateText(text: string, target: TranslateTarget) {
 	});
 }
 
+// translateTexts — batch translation: one model call for up to 50 messages
+// instead of one request each (auto-translate used to be the slowest part of
+// opening a busy conversation).
+export async function translateTexts(texts: string[], target: TranslateTarget) {
+	return apiFetch<{ translations: string[]; target: TranslateTarget }>("/translate/batch", {
+		method: "POST",
+		body: JSON.stringify({ texts, target }),
+	});
+}
+
 export async function deleteKnowledge(docId: number) {
   return apiFetch<{ message: string }>(`/knowledge/${docId}`, { method: "DELETE" });
 }

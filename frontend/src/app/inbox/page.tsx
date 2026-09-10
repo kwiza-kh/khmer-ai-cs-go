@@ -10,7 +10,7 @@ import {
 	sendTestMessage, RAGSource, PlatformMessageKind, PlatformMessagePayload, PlatformReplyButton,
 	listSessionWhatsAppTemplates, WhatsAppTemplate, getInboundPlatformMediaURL, InboundPlatformMedia,
 	copilotSuggest, getCustomer360, listCustomers, CustomerProfile, updateCustomerNotes,
-	translateText,
+	translateText, translateTexts,
 	TranslateTarget,
 } from "@/lib/api";
 import { PageHeader } from "@/components/page-header";
@@ -775,48 +775,78 @@ function ConversationDetail({
     lsSetJSON("inbox.autoTranslate", autoTranslate);
   }, [autoTranslate]);
 
-  // Gate concurrent translations: opening a long conversation used to fire one
-  // LLM call per message at once, which burned the per-user rate limit and
-  // tripped 429s on unrelated requests (bell, inbox poll).
-  const translateQueueRef = React.useRef<Promise<void>>(Promise.resolve());
+  // Translate one message on demand (the manual "translate this" path).
   const translateOne = React.useCallback((messageID: number, content: string, target: TranslateTarget) => {
-    // Keyed by message+target: switching the target language must be able to
-    // start a fresh translation instead of being swallowed as a duplicate.
     const key = `${messageID}:${target}`;
     if (inflightRef.current.has(key)) return;
     inflightRef.current.add(key);
-    translateQueueRef.current = translateQueueRef.current.then(() =>
-      translateText(content, target)
+    void translateText(content, target)
       .then((res) => {
         const entry = { text: res.translation, target: res.target as TranslateTarget };
         translationCache.set(messageID, entry);
         setTranslations((prev) => ({ ...prev, [messageID]: entry }));
       })
       .catch(() => { /* silent — toggling the switch retries */ })
-      .finally(() => { inflightRef.current.delete(key); }),
-    );
+      .finally(() => { inflightRef.current.delete(key); });
   }, []);
 
-  // Auto-translate every customer message (cache-first) while the toggle is on.
+  // Auto-translate every customer message in ONE batch request per pass.
+  //
+  // Sending one request per message made opening a busy conversation slow
+  // (N sequential model calls). The batch endpoint translates up to 50 texts
+  // per call, and the server caches by (text, target), so the second and later
+  // passes are essentially free.
+  const batchInflightRef = React.useRef(false);
   React.useEffect(() => {
-    if (!autoTranslate) return;
+    if (!autoTranslate || batchInflightRef.current) return;
+
+    const pending: { id: number; content: string }[] = [];
+    const fresh: Record<number, { text: string; target: TranslateTarget }> = {};
     for (const m of msgList) {
       if (m.role !== "user" || !m.content) continue;
       const cached = translationCache.get(m.message_id);
-      if (cached) {
-        if (cached.target === readLang) {
-          setTranslations((prev) => (prev[m.message_id] === cached ? prev : { ...prev, [m.message_id]: cached }));
-          continue;
-        }
-        if (cached.target !== readLang) {
-          // Language changed — re-translate into the newly picked target.
-          translateOne(m.message_id, m.content, readLang);
-          continue;
+      if (cached && cached.target === readLang) {
+        fresh[m.message_id] = cached;
+        continue;
+      }
+      // Not cached, or cached for a different language → needs translating.
+      if (!inflightRef.current.has(`${m.message_id}:${readLang}`)) {
+        pending.push({ id: m.message_id, content: m.content });
+      }
+    }
+    // Show cache hits immediately (no model round trip).
+    if (Object.keys(fresh).length > 0) {
+      setTranslations((prev) => ({ ...prev, ...fresh }));
+    }
+    if (pending.length === 0) return;
+
+    batchInflightRef.current = true;
+    void (async () => {
+      // Chunk to the endpoint's 50-item limit.
+      for (let i = 0; i < pending.length; i += 50) {
+        const slice = pending.slice(i, i + 50);
+        slice.forEach((p) => inflightRef.current.add(`${p.id}:${readLang}`));
+        try {
+          const res = await translateTexts(slice.map((p) => p.content), readLang);
+          const update: Record<number, { text: string; target: TranslateTarget }> = {};
+          slice.forEach((p, idx) => {
+            const text = res.translations[idx];
+            if (text) {
+              const entry = { text, target: res.target as TranslateTarget };
+              translationCache.set(p.id, entry);
+              update[p.id] = entry;
+            }
+          });
+          if (Object.keys(update).length > 0) {
+            setTranslations((prev) => ({ ...prev, ...update }));
+          }
+        } catch { /* silent — the toggle can be retried */ }
+        finally {
+          slice.forEach((p) => inflightRef.current.delete(`${p.id}:${readLang}`));
         }
       }
-      translateOne(m.message_id, m.content, readLang);
-    }
-  }, [autoTranslate, msgList, readLang, translateOne]);
+    })().finally(() => { batchInflightRef.current = false; });
+  }, [autoTranslate, msgList, readLang]);
 
   const pickReadLang = (target: TranslateTarget) => {
     setReadLang(target);
