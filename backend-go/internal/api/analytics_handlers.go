@@ -337,7 +337,7 @@ func (a *App) agentPerformance(w http.ResponseWriter, r *http.Request) (any, err
 			(SELECT COUNT(*) FROM chat_messages cm WHERE cm.role='agent' AND cm.content <> '' AND cm.created_at >= NOW() - ($2 || ' days')::interval
 				AND cm.session_id IN (SELECT session_id FROM sessions WHERE user_id=$1 AND assigned_agent_id=u.user_id)) AS reply_count
 		FROM users u
-		LEFT JOIN agent_teams at ON at.agent_user_id = u.user_id AND at.owner_id = $1
+		LEFT JOIN agent_teams at ON at.agent_user_id = u.user_id AND at.owner_user_id = $1
 		WHERE u.user_id IN (
 			SELECT DISTINCT assigned_agent_id FROM sessions WHERE user_id=$1 AND assigned_agent_id IS NOT NULL
 		)

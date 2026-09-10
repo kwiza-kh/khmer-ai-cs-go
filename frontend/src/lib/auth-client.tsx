@@ -19,7 +19,7 @@ interface AuthContextType {
   login: (username: string, password: string, totpCode?: string) => Promise<{ twoFactorRequired?: boolean }>;
   register: (username: string, email: string, password: string) => Promise<void>;
   /** Exchange a one-time Google sign-in code (from ?google_code=) for a session. */
-  completeGoogleLogin: (code: string) => Promise<void>;
+  completeGoogleLogin: (code: string, state: string) => Promise<void>;
   logout: () => void;
   isLoading: boolean;
 }
@@ -104,11 +104,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // completeGoogleLogin — the OAuth callback redirects back with a one-time
   // code; swap it for the JWT payload (single use, 2-minute TTL server-side).
-  const completeGoogleLogin = async (code: string) => {
+  const completeGoogleLogin = async (code: string, state: string) => {
     const res = await settle(fetch(`${API_BASE}/auth/google/exchange`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code }),
+      body: JSON.stringify({ code, state }),
     }));
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(localizeCurrentLang(data.error || "Google 登录失败"));

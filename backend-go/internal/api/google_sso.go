@@ -72,7 +72,10 @@ func (a *App) googleCallback(w http.ResponseWriter, r *http.Request) {
 		a.googleRedirectError(w, r, "invalid_state")
 		return
 	}
-	_ = a.Redis.Del(ctx, "google-state:"+state)
+	// NOTE: the state key is deliberately NOT deleted here — it stays until
+	// its 10-minute TTL so the login-code exchange can prove the same browser
+	// started the flow (prevents an injected ?google_code= from logging the
+	// visitor into someone else's account).
 
 	if errCode := r.URL.Query().Get("error"); errCode != "" {
 		a.googleRedirectError(w, r, "cancelled")
@@ -99,11 +102,24 @@ func (a *App) googleCallback(w http.ResponseWriter, r *http.Request) {
 	userID, username, role, isActive, err := a.findOrCreateGoogleUser(ctx, claims.Sub, email, claims.Name)
 	if err != nil {
 		a.Logger.Warn("google sso user provisioning failed", "error", err.Error())
-		a.googleRedirectError(w, r, "failed")
+		reason := "failed"
+		if strings.Contains(err.Error(), "already has a password account") {
+			reason = "email_in_use"
+		}
+		a.googleRedirectError(w, r, reason)
 		return
 	}
 	if !isActive {
 		a.googleRedirectError(w, r, "disabled")
+		return
+	}
+	// Accounts with TOTP enabled must not bypass the second factor by taking
+	// the Google route — send them to the password flow, which enforces it.
+	var totpEnabled bool
+	_ = a.DB.QueryRow(ctx,
+		"SELECT EXISTS(SELECT 1 FROM user_totp WHERE user_id = $1 AND enabled = true)", userID).Scan(&totpEnabled)
+	if totpEnabled {
+		a.googleRedirectError(w, r, "totp_required")
 		return
 	}
 	token, err := a.JWT.GenerateToken(userID, username, role)
@@ -122,7 +138,10 @@ func (a *App) googleCallback(w http.ResponseWriter, r *http.Request) {
 		a.googleRedirectError(w, r, "failed")
 		return
 	}
-	http.Redirect(w, r, a.Cfg.SSO.FrontendURL+"?google_code="+url.QueryEscape(loginCode), http.StatusFound)
+	// The state travels back in the URL so the SPA can present it with the
+	// code; the exchange rejects a code whose state does not match a flow
+	// this browser actually started.
+	http.Redirect(w, r, a.Cfg.SSO.FrontendURL+"?google_code="+url.QueryEscape(loginCode)+"&state="+url.QueryEscape(state), http.StatusFound)
 }
 
 // googleClaimExchange — POST the code to Google's token endpoint.
@@ -210,6 +229,7 @@ func (a *App) findOrCreateGoogleUser(ctx context.Context, sub, email, name strin
 	var userID int32
 	var username, role string
 	var isActive bool
+	var existingHash string
 	err := a.DB.QueryRow(ctx,
 		"SELECT user_id, username, role::text, is_active FROM users WHERE google_sub = $1", sub).
 		Scan(&userID, &username, &role, &isActive)
@@ -218,10 +238,18 @@ func (a *App) findOrCreateGoogleUser(ctx context.Context, sub, email, name strin
 	}
 
 	err = a.DB.QueryRow(ctx,
-		"SELECT user_id, username, role::text, is_active FROM users WHERE lower(email) = $1", email).
-		Scan(&userID, &username, &role, &isActive)
+		"SELECT user_id, username, role::text, is_active, COALESCE(password_hash,'') FROM users WHERE lower(email) = $1", email).
+		Scan(&userID, &username, &role, &isActive, &existingHash)
 	if err == nil {
-		// Existing password account with the same verified email — bind it.
+		// Pre-hijack guard: a password account must never be silently adopted
+		// by whoever first proves this email via Google. Anyone can register
+		// an arbitrary address (the register endpoint does not verify the
+		// inbox), so auto-binding would hand them the Google user's future
+		// data. Only accounts with no password yet (i.e. created through SSO)
+		// may be linked.
+		if existingHash != "" {
+			return 0, "", "", false, fmt.Errorf("email already has a password account")
+		}
 		_, _ = a.DB.Exec(ctx, "UPDATE users SET google_sub = $1, updated_at = NOW() WHERE user_id = $2", sub, userID)
 		return userID, username, role, isActive, nil
 	}
@@ -278,15 +306,27 @@ func (a *App) googleRedirectError(w http.ResponseWriter, r *http.Request, reason
 // one-time code for the JWT payload (single use, 2-minute TTL).
 func (a *App) googleLoginExchange(w http.ResponseWriter, r *http.Request) (any, error) {
 	var req struct {
-		Code string `json:"code"`
+		Code  string `json:"code"`
+		State string `json:"state"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10)).Decode(&req); err != nil {
 		return nil, ErrBadRequest("请求格式错误")
 	}
 	code := strings.TrimSpace(req.Code)
+	state := strings.TrimSpace(req.State)
 	if code == "" || len(code) > 64 {
 		return nil, ErrBadRequest("无效的登录码")
 	}
+	if state == "" {
+		return nil, ErrBadRequest("缺少登录会话标识")
+	}
+	// The state must still be live — it is deleted on first successful use
+	// below, which also makes the whole exchange single-shot.
+	stateKey := "google-state:" + state
+	if v, err := a.Redis.GetString(r.Context(), stateKey); err != nil || v == "" {
+		return nil, ErrUnauthorized("登录会话已失效，请重新登录")
+	}
+	_ = a.Redis.Del(r.Context(), stateKey)
 	raw, err := a.Redis.GetString(r.Context(), "google-login:"+code)
 	if err != nil || raw == "" {
 		return nil, ErrUnauthorized("登录码已失效，请重新登录")

@@ -926,7 +926,14 @@ func chunkProse(text string) []string {
 		if end == len(runes) {
 			break
 		}
-		start += step
+		// Continue from the emitted chunk's end minus the overlap — advancing by
+		// a fixed step would skip [end, start+step) whenever the sentence
+		// boundary pulled `end` back, silently losing document content.
+		next := end - DefaultChunkOverlap
+		if next <= start {
+			next = start + 1
+		}
+		start = next
 	}
 	return chunks
 }

@@ -127,9 +127,14 @@ func MarkApplied(ctx context.Context, pool *pgxpool.Pool, version string) error 
 //   - otherwise initialPassword (≥12 chars) is required; INSERT when the row
 //     is missing, UPDATE (re-hash) when it still uses the default hash.
 func EnsureBootstrapAdmin(ctx context.Context, pool *pgxpool.Pool, initialPassword string) error {
-	var hash, role string
+	var hashPtr *string // NULL when the admin signed up through Google only
+	var role string
 	err := pool.QueryRow(ctx, "SELECT password_hash, role::text FROM users WHERE username = 'admin'").
-		Scan(&hash, &role)
+		Scan(&hashPtr, &role)
+	hash := ""
+	if hashPtr != nil {
+		hash = *hashPtr
+	}
 	needsCreate := false
 	passwordOK := true
 	if err != nil {

@@ -58,7 +58,8 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) (any, error) {
 	}
 
 	var userID int32
-	var username, email, passwordHash, role string
+	var username, email, role string
+	var passwordHash *string // NULL for Google-provisioned accounts
 	var isActive bool
 	err := a.DB.QueryRow(ctx,
 		"SELECT user_id, username, email, password_hash, role::text, is_active FROM users WHERE username = $1",
@@ -71,7 +72,12 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) (any, error) {
 		return nil, ErrInternal("用户查询失败")
 	}
 
-	if !auth.VerifyPassword(req.Password, passwordHash) {
+	if passwordHash == nil || *passwordHash == "" {
+		// Google-only account: there is no password to verify against.
+		a.recordLoginFailure(ctx, failKey, lockKey)
+		return nil, ErrUnauthorized("该账号使用 Google 登录，请点击「使用 Google 登录」")
+	}
+	if !auth.VerifyPassword(req.Password, *passwordHash) {
 		a.recordLoginFailure(ctx, failKey, lockKey)
 		return nil, ErrUnauthorized("用户名或密码错误")
 	}
@@ -79,7 +85,7 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) (any, error) {
 	_ = a.Redis.SetJSON(ctx, failKey, 0, time.Second)
 
 	// Upgrade legacy-cost hashes at login.
-	if auth.PasswordNeedsRehash(passwordHash) {
+	if auth.PasswordNeedsRehash(*passwordHash) {
 		if newHash, herr := auth.HashPassword(req.Password); herr == nil {
 			_, _ = a.DB.Exec(ctx, "UPDATE users SET password_hash = $1 WHERE user_id = $2", newHash, userID)
 		}
@@ -227,15 +233,21 @@ func (a *App) changePassword(w http.ResponseWriter, r *http.Request) (any, error
 	}
 
 	ctx := r.Context()
-	var hash string
-	err := a.DB.QueryRow(ctx, "SELECT password_hash FROM users WHERE user_id = $1", user.UserID).Scan(&hash)
+	var hashPtr *string
+	err := a.DB.QueryRow(ctx, "SELECT password_hash FROM users WHERE user_id = $1", user.UserID).Scan(&hashPtr)
 	if err != nil {
 		if strings.Contains(err.Error(), "no rows") {
 			return nil, ErrUnauthorized("用户不存在")
 		}
 		return nil, ErrInternal("用户查询失败")
 	}
-	if !auth.VerifyPassword(req.OldPassword, hash) {
+	if hashPtr == nil || *hashPtr == "" {
+		// Google-only account — allow setting an initial password without
+		// asking for a "current" one that does not exist.
+		if strings.TrimSpace(req.OldPassword) != "" {
+			return nil, ErrUnauthorized("该账号尚未设置密码，请留空原密码")
+		}
+	} else if !auth.VerifyPassword(req.OldPassword, *hashPtr) {
 		return nil, ErrUnauthorized("原密码错误")
 	}
 	newHash, err := auth.HashPassword(req.NewPassword)

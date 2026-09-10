@@ -50,7 +50,9 @@ export default function LoginPage() {
       return;
     }
     setLoading(true);
-    void completeGoogleLogin(code!)
+    // The state travels with the code; the server rejects a code whose state
+    // did not originate from this browser (login-CSRF guard).
+    void completeGoogleLogin(code!, params.get("state") ?? "")
       .then(() => router.push("/ai-test"))
       .catch((err: unknown) => setError((err as Error).message))
       .finally(() => setLoading(false));

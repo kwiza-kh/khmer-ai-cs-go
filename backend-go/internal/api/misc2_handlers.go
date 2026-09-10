@@ -317,7 +317,7 @@ func (a *App) assignRole(w http.ResponseWriter, r *http.Request, roleID int32) (
 		return nil, ErrNotFound("角色不存在")
 	}
 	_, _ = a.DB.Exec(r.Context(),
-		"INSERT INTO role_assignments (role_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING", roleID, req.UserID)
+		"INSERT INTO user_roles (role_id, user_id) VALUES ($1,$2) ON CONFLICT (user_id, role_id) DO NOTHING", roleID, req.UserID)
 	return map[string]string{"message": "已分配"}, nil
 }
 
@@ -327,7 +327,7 @@ func (a *App) unassignRole(w http.ResponseWriter, r *http.Request, roleID int32)
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		return nil, ErrBadRequest("请求格式错误")
 	}
-	_, _ = a.DB.Exec(r.Context(), "DELETE FROM role_assignments WHERE role_id = $1 AND user_id = $2", roleID, req.UserID)
+	_, _ = a.DB.Exec(r.Context(), "DELETE FROM user_roles WHERE role_id = $1 AND user_id = $2", roleID, req.UserID)
 	_ = user
 	return map[string]string{"message": "已取消"}, nil
 }
@@ -702,7 +702,7 @@ func (a *App) listTeam(w http.ResponseWriter, r *http.Request) (any, error) {
 	user, _ := UserFrom(r)
 	rows, err := a.DB.Query(r.Context(),
 		"SELECT t.team_id, t.agent_user_id, t.display_name, t.skills, t.is_active, u.username, u.email "+
-			"FROM agent_teams t JOIN users u ON u.user_id = t.agent_user_id WHERE t.owner_id = $1 ORDER BY t.team_id", user.UserID)
+			"FROM agent_teams t JOIN users u ON u.user_id = t.agent_user_id WHERE t.owner_user_id = $1 ORDER BY t.team_id", user.UserID)
 	if err != nil {
 		return nil, ErrInternal("查询失败")
 	}
@@ -746,7 +746,7 @@ func (a *App) addTeamAgent(w http.ResponseWriter, r *http.Request) (any, error) 
 	}
 	var teamID int
 	if err := a.DB.QueryRow(r.Context(),
-		"INSERT INTO agent_teams (owner_id, agent_user_id, display_name, skills, is_active) VALUES ($1,$2,$3,$4::text[],true) RETURNING team_id",
+		"INSERT INTO agent_teams (owner_user_id, agent_user_id, display_name, skills, is_active) VALUES ($1,$2,$3,$4::text[],true) RETURNING team_id",
 		user.UserID, req.AgentUserID, req.DisplayName, req.Skills).Scan(&teamID); err != nil {
 		return nil, ErrInternal("添加失败")
 	}
@@ -755,7 +755,7 @@ func (a *App) addTeamAgent(w http.ResponseWriter, r *http.Request) (any, error) 
 
 func (a *App) removeTeamAgent(w http.ResponseWriter, r *http.Request, teamID int32) (any, error) {
 	user, _ := UserFrom(r)
-	tag, err := a.DB.Exec(r.Context(), "DELETE FROM agent_teams WHERE team_id = $1 AND owner_id = $2", teamID, user.UserID)
+	tag, err := a.DB.Exec(r.Context(), "DELETE FROM agent_teams WHERE team_id = $1 AND owner_user_id = $2", teamID, user.UserID)
 	if err != nil {
 		return nil, ErrInternal("删除失败")
 	}
