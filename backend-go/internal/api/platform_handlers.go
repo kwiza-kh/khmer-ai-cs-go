@@ -67,6 +67,7 @@ func (a *App) listPlatformConfigs(w http.ResponseWriter, r *http.Request) (any, 
 		if err := rows.Scan(&c.ConfigID, &c.UserID, &c.Platform, &c.AccessToken, &c.PageID,
 			&c.InstagramBusinessID, &c.WhatsAppBusinessAccountID, &c.BotToken, &c.BotTokenHash,
 			&c.WebhookSecret, &c.WebhookSecretHash, &c.IsActive, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			a.Logger.Warn("platform config row skipped", "config_id", c.ConfigID, "error", err.Error())
 			continue
 		}
 		cfgs = append(cfgs, c)

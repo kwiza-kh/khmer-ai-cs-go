@@ -587,6 +587,7 @@ func (a *App) listSessionMessages(w http.ResponseWriter, r *http.Request, sessio
 			&tokensUsed, &modelName, &usedMock, &feedbackRating, &feedbackComment, &feedbackAt,
 			&sourcesJSON, &mediaURL, &metadataText,
 			&delStatus, &delProviderStatus, &sentAt, &deliveredAt, &readAt, &delError, &deliveryPayload); err != nil {
+			a.Logger.Warn("message row skipped", "message_id", mid, "error", err.Error())
 			continue
 		}
 		msg := map[string]any{

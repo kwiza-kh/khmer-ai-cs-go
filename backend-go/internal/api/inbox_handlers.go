@@ -67,29 +67,33 @@ func (a *App) listInbox(w http.ResponseWriter, r *http.Request) (any, error) {
 	items := make([]map[string]any, 0)
 	for rows.Next() {
 		var (
-			sid, platform, puid, status, language      string
-			displayName, avatarURL, title, lastMsg     *string
+			sid, status, language                        string
+			platform, puid                               *string // NULL for every web/widget session
+			displayName, avatarURL, title, lastMsg       *string
 			replyWindow, firstResp, escalated, lastMsgAt *time.Time
-			assignedAgent                              *int32
-			agentName, sentiment, intent               *string
-			tags                                       []string
-			uid                                        int32
-			umc, mmc                                   int32
-			createdAt                                  time.Time
+			assignedAgent                                *int32
+			agentName, sentiment, intent                 *string
+			tagsPtr                                      *[]string
+			uid                                          int32
+			umc, mmc                                     int32
+			createdAt                                    time.Time
 		)
-		if tags == nil {
-			tags = []string{}
-		}
+		// Nullable columns MUST scan into pointers. platform_user_id is NULL
+		// for web/widget sessions, and scanning NULL into a plain string made
+		// every one of those rows fail — the error was swallowed by `continue`,
+		// so those conversations silently vanished from the inbox.
 		if err := rows.Scan(&sid, &uid, &platform, &puid, &displayName, &avatarURL, &replyWindow,
 			&status, &language, &title, &umc, &mmc, &assignedAgent, &firstResp, &escalated,
-			&createdAt, &lastMsg, &lastMsgAt, &agentName, &sentiment, &tags, &intent); err != nil {
+			&createdAt, &lastMsg, &lastMsgAt, &agentName, &sentiment, &tagsPtr, &intent); err != nil {
+			a.Logger.Warn("inbox row skipped", "session_id", sid, "error", err.Error())
 			continue
 		}
-		if tags == nil {
-			tags = []string{}
+		tags := []string{}
+		if tagsPtr != nil {
+			tags = *tagsPtr
 		}
 		items = append(items, map[string]any{
-			"session_id": sid, "user_id": uid, "platform": platform, "platform_user_id": puid,
+			"session_id": sid, "user_id": uid, "platform": derefStr(platform), "platform_user_id": derefStr(puid),
 			"user_display_name":     displayName,
 			"avatar_url":            avatarURL,
 			"reply_window_expires_at": replyWindow,
