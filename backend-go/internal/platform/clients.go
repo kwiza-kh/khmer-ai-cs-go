@@ -275,6 +275,13 @@ func buildMetaMessageBody(req *SendRequest) map[string]any {
 }
 
 func buildMetaMessageBodyInner(req *SendRequest) map[string]any {
+	// WhatsApp Cloud API uses a different envelope from Messenger/Instagram:
+	// messaging_product + to + type + a type-specific object. Sending the
+	// Messenger shape to /{phone-id}/messages is rejected with HTTP 400, which
+	// previously made every non-template WhatsApp reply fail.
+	if req.Platform == "whatsapp" {
+		return buildWhatsAppBody(req)
+	}
 	switch req.Kind {
 	case "media":
 		mediaType := req.MediaType
@@ -319,6 +326,71 @@ func buildMetaMessageBodyInner(req *SendRequest) map[string]any {
 			"recipient": map[string]any{"id": req.RecipientID},
 			"message":   map[string]any{"text": req.Text},
 		}
+	}
+}
+
+// buildWhatsAppBody — WhatsApp Cloud API message envelope. Text/media/
+// interactive all share messaging_product + to + type; templates add their
+// own object. Long text is capped at 4096 by the caller (SplitPlatformText).
+func buildWhatsAppBody(req *SendRequest) map[string]any {
+	base := map[string]any{"messaging_product": "whatsapp", "to": req.RecipientID}
+	switch req.Kind {
+	case "template":
+		var params []map[string]any
+		for _, p := range req.TemplateBodyParams {
+			params = append(params, map[string]any{"type": "text", "text": p})
+		}
+		base["type"] = "template"
+		base["template"] = map[string]any{
+			"name":     req.TemplateName,
+			"language": map[string]any{"code": firstNonEmpty(req.TemplateLanguage, "en")},
+			"components": []map[string]any{{
+				"type": "body", "parameters": params,
+			}},
+		}
+		return base
+	case "media":
+		mediaType := req.MediaType
+		if mediaType == "" {
+			mediaType = "image"
+		}
+		media := map[string]any{"link": req.MediaURL}
+		if req.Text != "" && mediaType != "audio" {
+			media["caption"] = req.Text
+		}
+		base["type"] = mediaType
+		base[mediaType] = media
+		return base
+	case "buttons":
+		// WhatsApp interactive reply buttons (max 3, titles ≤ 20 chars).
+		var btns []map[string]any
+		for i, b := range req.Buttons {
+			title := []rune(b[0])
+			if len(title) > 20 {
+				title = title[:20]
+			}
+			btns = append(btns, map[string]any{
+				"type": "reply",
+				"reply": map[string]any{
+					"id":    firstNonEmpty(b[1], string(title)),
+					"title": string(title),
+				},
+			})
+			if i == 2 {
+				break
+			}
+		}
+		base["type"] = "interactive"
+		base["interactive"] = map[string]any{
+			"type": "button",
+			"body": map[string]any{"text": req.Text},
+			"action": map[string]any{"buttons": btns},
+		}
+		return base
+	default: // text
+		base["type"] = "text"
+		base["text"] = map[string]any{"body": req.Text, "preview_url": false}
+		return base
 	}
 }
 
@@ -660,6 +732,11 @@ func (l *LineClient) DownloadContent(ctx context.Context, messageID string) ([]b
 
 // VerifySignature — LINE X-Line-Signature HMAC-SHA256 base64 check.
 func LineVerifySignature(secret, signature string, body []byte) bool {
+	// An empty configured secret cannot authenticate anyone — computing an
+	// HMAC with an empty key would let anyone forge a matching signature.
+	if secret == "" || signature == "" {
+		return false
+	}
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(body)
 	expected := base64.StdEncoding.EncodeToString(mac.Sum(nil))

@@ -165,7 +165,7 @@ func (wh *Webhooks) TelegramWebhook(w http.ResponseWriter, r *http.Request) {
 	var update map[string]any
 	_ = json.Unmarshal(body, &update)
 
-	cfg := wh.resolveTelegramConfig(r.Context())
+	cfg := wh.resolveTelegramConfig(r.Context(), r.Header.Get("X-Telegram-Bot-Api-Secret-Token"))
 	if cfg == nil {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -468,28 +468,50 @@ func (wh *Webhooks) WhatsAppWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body, _ := io.ReadAll(io.LimitReader(r.Body, 8*1024*1024))
-	// Signature gate: WhatsApp Cloud API signs payloads with the app secret
-	// via X-Hub-Signature-256. Without this check anyone could forge inbound
-	// messages and make the pipeline reply through the tenant's WhatsApp
-	// credentials. Reject unsigned/invalid requests outright.
-	cfg := wh.resolveWhatsAppConfig(r.Context())
-	if cfg == nil || cfg.WebhookSecret == "" {
-		w.WriteHeader(http.StatusUnauthorized)
-		return
-	}
-	if !verifyMetaSignature(cfg.WebhookSecret, r.Header.Get("X-Hub-Signature-256"), body) {
-		w.WriteHeader(http.StatusUnauthorized)
-		return
-	}
 	var payload map[string]any
 	_ = json.Unmarshal(body, &payload)
 	entries, _ := payload["entry"].([]any)
+	handled := false
 	for _, e := range entries {
 		entry, _ := e.(map[string]any)
 		changes, _ := entry["changes"].([]any)
 		for _, c := range changes {
 			change, _ := c.(map[string]any)
 			value, _ := change["value"].(map[string]any)
+			if value == nil {
+				continue
+			}
+			// Route by the phone number the event belongs to (stored as
+			// page_id). Every WhatsApp config shares the app secret, so a
+			// wrong-tenant match would still verify and cross-deliver.
+			phoneNumberID := ""
+			if meta, ok := value["metadata"].(map[string]any); ok {
+				phoneNumberID, _ = meta["phone_number_id"].(string)
+			}
+			cfg := wh.resolveWhatsAppConfig(r.Context(), phoneNumberID)
+			if cfg == nil || cfg.WebhookSecret == "" {
+				continue
+			}
+			// Signature gate: WhatsApp Cloud API signs payloads with the app
+			// secret via X-Hub-Signature-256. Without this check anyone could
+			// forge inbound messages and make the pipeline reply through the
+			// tenant's WhatsApp credentials.
+			if !verifyMetaSignature(cfg.WebhookSecret, r.Header.Get("X-Hub-Signature-256"), body) {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			handled = true
+			wh.recordHealth(r.Context(), cfg.ConfigID, "connected", "", "Receiving signed WhatsApp webhook events")
+
+			// Delivery receipts (sent/delivered/read/failed) → update outbox.
+			if statuses, ok := value["statuses"].([]any); ok {
+				for _, st := range statuses {
+					if s, ok := st.(map[string]any); ok {
+						wh.applyWhatsAppStatus(r.Context(), cfg.ConfigID, s)
+					}
+				}
+			}
+
 			messages, _ := value["messages"].([]any)
 			for _, m := range messages {
 				msg, _ := m.(map[string]any)
@@ -499,30 +521,103 @@ func (wh *Webhooks) WhatsAppWebhook(w http.ResponseWriter, r *http.Request) {
 				if from == "" || msgID == "" {
 					continue
 				}
-				wh.recordHealth(r.Context(), cfg.ConfigID, "connected", "", "Receiving signed WhatsApp webhook events")
 				text := ""
 				var media map[string]any
-				if msgType == "text" {
+				switch msgType {
+				case "text":
 					if bodyObj, ok := msg["text"].(map[string]any); ok {
 						text, _ = bodyObj["body"].(string)
 					}
-				} else if msgType == "audio" || msgType == "voice" {
-					if audioObj, ok := msg["audio"].(map[string]any); ok {
-						fileID, _ := audioObj["id"].(string)
-						mime, _ := audioObj["mime_type"].(string)
-						media = map[string]any{"kind": "audio", "provider_media_id": fileID, "mime_type": mime}
-						text = "[Customer sent audio media]"
+				case "button":
+					// Quick-reply / template button press carries the title.
+					if b, ok := msg["button"].(map[string]any); ok {
+						text, _ = b["text"].(string)
+					}
+				case "interactive":
+					if ia, ok := msg["interactive"].(map[string]any); ok {
+						if br, ok := ia["button_reply"].(map[string]any); ok {
+							text, _ = br["title"].(string)
+						} else if lr, ok := ia["list_reply"].(map[string]any); ok {
+							text, _ = lr["title"].(string)
+						}
+					}
+				case "location":
+					if loc, ok := msg["location"].(map[string]any); ok {
+						name, _ := loc["name"].(string)
+						addr, _ := loc["address"].(string)
+						text = "[Customer shared a location"
+						if name != "" {
+							text += ": " + name
+						}
+						if addr != "" {
+							text += " " + addr
+						}
+						text += "]"
+					}
+				default:
+					// image / video / document / audio / voice / sticker —
+					// forward the media id so the pipeline can download it.
+					if payloadObj, ok := msg[msgType].(map[string]any); ok {
+						fileID, _ := payloadObj["id"].(string)
+						mime, _ := payloadObj["mime_type"].(string)
+						caption, _ := payloadObj["caption"].(string)
+						kind := msgType
+						if msgType == "voice" {
+							kind = "audio"
+						}
+						media = map[string]any{"kind": kind, "provider_media_id": fileID, "mime_type": mime}
+						text = caption
+						if text == "" {
+							text = "[Customer sent " + msgType + " media]"
+						}
 					}
 				}
-				if text == "" {
+				if text == "" && media == nil {
 					continue
 				}
 				_ = wh.Pipe.EnqueueInboundEvent(r.Context(), cfg.ConfigID, "whatsapp", msgID, from, "", text, media)
 			}
 		}
 	}
+	if !handled {
+		// No configured tenant owns this phone number — acknowledge so Meta
+		// does not retry forever, but do not process the event.
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ignored"}`))
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"received"}`))
+}
+
+// applyWhatsAppStatus records a WhatsApp delivery receipt on the outbox row.
+func (wh *Webhooks) applyWhatsAppStatus(ctx context.Context, configID int32, status map[string]any) {
+	providerID, _ := status["id"].(string)
+	state, _ := status["status"].(string)
+	if providerID == "" || state == "" {
+		return
+	}
+	switch state {
+	case "sent":
+		_, _ = wh.DB.Exec(ctx,
+			"UPDATE platform_outbox SET provider_message_id = COALESCE(NULLIF(provider_message_id,''), $1), status = 'sent' "+
+				"WHERE config_id = $2 AND provider_message_id = $1 AND status NOT IN ('sent','delivered','read')",
+			providerID, configID)
+	case "delivered", "read":
+		_, _ = wh.DB.Exec(ctx,
+			"UPDATE platform_outbox SET status = $1 WHERE config_id = $2 AND provider_message_id = $3",
+			state, configID, providerID)
+	case "failed":
+		errMsg := ""
+		if errs, ok := status["errors"].([]any); ok && len(errs) > 0 {
+			if e0, ok := errs[0].(map[string]any); ok {
+				errMsg, _ = e0["title"].(string)
+			}
+		}
+		_, _ = wh.DB.Exec(ctx,
+			"UPDATE platform_outbox SET status = 'failed', last_error = $1 WHERE config_id = $2 AND provider_message_id = $3",
+			"provider rejected: "+errMsg, configID, providerID)
+	}
 }
 
 // ============================================
@@ -563,11 +658,29 @@ func (wh *Webhooks) metaConfigWhere(ctx context.Context, where, id string) *webh
 	return &cfg
 }
 
-func (wh *Webhooks) resolveTelegramConfig(ctx context.Context) *webhookConfig {
+// resolveTelegramConfig routes a Telegram update to its tenant. The bot API
+// sends the per-webhook secret in X-Telegram-Bot-Api-Secret-Token; its
+// sha256 matches webhook_secret_hash, which is how the owning config is found
+// when several tenants each run a bot. Falling back to "first active" would
+// 401 the other tenants' events forever.
+func (wh *Webhooks) resolveTelegramConfig(ctx context.Context, providedSecret string) *webhookConfig {
 	var cfg webhookConfig
 	var secretEnc *string
+	if providedSecret != "" {
+		hash := security.Sha256Hex(providedSecret)
+		if err := wh.DB.QueryRow(ctx,
+			"SELECT config_id, user_id, platform::text, webhook_secret FROM platform_configs "+
+				"WHERE platform = 'telegram'::platform_type AND is_active = true AND webhook_secret_hash = $1 LIMIT 1",
+			hash).Scan(&cfg.ConfigID, &cfg.UserID, &cfg.Platform, &secretEnc); err == nil {
+			if secretEnc != nil {
+				cfg.WebhookSecret, _ = wh.Sealer.Decrypt(*secretEnc)
+			}
+			return &cfg
+		}
+	}
+	// Legacy configs saved before the hash column was populated.
 	err := wh.DB.QueryRow(ctx,
-		"SELECT config_id, user_id, platform::text, webhook_secret FROM platform_configs WHERE platform = 'telegram'::platform_type AND is_active = true LIMIT 1").
+		"SELECT config_id, user_id, platform::text, webhook_secret FROM platform_configs WHERE platform = 'telegram'::platform_type AND is_active = true ORDER BY config_id LIMIT 1").
 		Scan(&cfg.ConfigID, &cfg.UserID, &cfg.Platform, &secretEnc)
 	if err != nil {
 		return nil
@@ -608,12 +721,21 @@ func (wh *Webhooks) resolveZaloConfig(ctx context.Context) *webhookConfig {
 	return &cfg
 }
 
-func (wh *Webhooks) resolveWhatsAppConfig(ctx context.Context) *webhookConfig {
+// resolveWhatsAppConfig routes a WhatsApp webhook to its tenant by the
+// phone_number_id carried in value.metadata (stored in the page_id column).
+// Falling back to "any active config" would deliver the event to the wrong
+// tenant — and since every WhatsApp config shares the app secret, signature
+// verification would happily accept it. No match means drop.
+func (wh *Webhooks) resolveWhatsAppConfig(ctx context.Context, phoneNumberID string) *webhookConfig {
+	if phoneNumberID == "" {
+		return nil
+	}
 	var cfg webhookConfig
 	var secretEnc *string
 	err := wh.DB.QueryRow(ctx,
-		"SELECT config_id, user_id, platform::text, webhook_secret FROM platform_configs WHERE platform = 'whatsapp'::platform_type AND is_active = true LIMIT 1").
-		Scan(&cfg.ConfigID, &cfg.UserID, &cfg.Platform, &secretEnc)
+		"SELECT config_id, user_id, platform::text, webhook_secret FROM platform_configs "+
+			"WHERE platform = 'whatsapp'::platform_type AND is_active = true AND page_id = $1 LIMIT 1",
+		phoneNumberID).Scan(&cfg.ConfigID, &cfg.UserID, &cfg.Platform, &secretEnc)
 	if err != nil {
 		return nil
 	}
