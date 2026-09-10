@@ -10,6 +10,7 @@ import {
 	sendTestMessage, RAGSource, PlatformMessageKind, PlatformMessagePayload, PlatformReplyButton,
 	listSessionWhatsAppTemplates, WhatsAppTemplate, getInboundPlatformMediaURL, InboundPlatformMedia,
 	copilotSuggest, getCustomer360, listCustomers, CustomerProfile, updateCustomerNotes,
+	archiveSession, unarchiveSession, deleteSession,
 	translateText, translateTexts,
 	TranslateTarget,
 } from "@/lib/api";
@@ -28,6 +29,7 @@ import {
 	Send, Loader2, Sparkles, Zap, FileText, Clock3, CircleAlert, CheckCheck,
 	Image as ImageIcon, ListChecks, FileCode2, Plus, Trash2, Paperclip, MessageSquare, Volume2,
 	AlertTriangle, RefreshCw, ChevronDown, ChevronUp, PanelRight, ChevronRight, Phone, Mail, ChevronLeft, Pencil,
+	Archive, ArchiveRestore,
 	Languages, Check,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -218,6 +220,9 @@ export default function InboxPage() {
   const searchParams = useSearchParams();
   const [statusFilter, setStatusFilter] = React.useState<SessionStatus | "all">("all");
   const [platformFilter, setPlatformFilter] = React.useState<PlatformFilter>("all");
+  // Archive view: hidden conversations are kept out of the default list so the
+  // working inbox stays clean, and can be reviewed/restored on demand.
+  const [showArchived, setShowArchived] = React.useState(false);
   // 全局顶栏搜索跳转到 /inbox?q=... — 预填本地过滤词.
   const [query, setQuery] = React.useState(() => searchParams.get("q") ?? "");
   // Stay in sync when the top-bar search pushes a new ?q= while already here.
@@ -278,10 +283,10 @@ export default function InboxPage() {
 
   const wsConnected = useInboxRealtime(token, handleRealtimeEvent);
 
-  const inboxKey = `inbox-${statusFilter}`;
+  const inboxKey = `inbox-${statusFilter}-${showArchived ? "archived" : "active"}`;
   const { data: inboxData, mutate: mutateInbox } = useSWR(
     inboxKey,
-    () => listInbox({ status: statusFilter === "all" ? undefined : statusFilter, pageSize: 100 }),
+    () => listInbox({ status: statusFilter === "all" ? undefined : statusFilter, archived: showArchived, pageSize: 100 }),
     // WS 事件驱动是主通道 (收到即刷新); 轮询为自愈兜底 — 连接正常时降频, 断线时加密.
     { refreshInterval: wsConnected ? 60_000 : 15_000 },
   );
@@ -357,6 +362,38 @@ export default function InboxPage() {
     });
   }, []);
 
+  // Archive / restore — the safe way to clear a conversation out of the list.
+  const handleArchive = async (sessionID: string, archived: boolean) => {
+    try {
+      if (archived) await unarchiveSession(sessionID);
+      else await archiveSession(sessionID);
+      toast.success(archived ? t("inbox.restored") : t("inbox.archived"));
+      if (activeId === sessionID) setActiveId(null);
+      await mutateInbox();
+    } catch (err: unknown) {
+      toast.error((err as Error).message || t("inbox.archiveFailed"));
+    }
+  };
+
+  // Permanent deletion — admin only, and the operator must retype the
+  // conversation title so a mis-tap cannot erase a customer's history.
+  const handleHardDelete = async (sessionID: string, title: string) => {
+    const typed = window.prompt(tf("inbox.deleteConfirmPrompt", { title: title || t("inbox.anonymous") }));
+    if (typed === null) return;
+    if (typed.trim() !== (title || "").trim()) {
+      toast.error(t("inbox.deleteConfirmMismatch"));
+      return;
+    }
+    try {
+      await deleteSession(sessionID);
+      toast.success(t("inbox.deletedPermanently"));
+      if (activeId === sessionID) setActiveId(null);
+      await mutateInbox();
+    } catch (err: unknown) {
+      toast.error((err as Error).message || t("inbox.deleteFailed"));
+    }
+  };
+
   const runBulk = async (action: "assign" | "close") => {
     const ids = [...selectedIds];
     if (ids.length === 0) return;
@@ -414,17 +451,31 @@ export default function InboxPage() {
                 <InboxIcon className="size-3" /> {t("inbox.title")}
               </button>
               <span className="hidden text-[11px] font-semibold uppercase tracking-wide text-muted-foreground lg:inline">{t("inbox.title")}</span>
-              <button
-                type="button"
-                onClick={() => { setSelectMode((v) => !v); setSelectedIds(new Set()); }}
-                aria-pressed={selectMode}
-                className={cn(
-                  "inline-flex h-6 items-center gap-1 rounded px-1.5 text-[11px] transition-colors",
-                  selectMode ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
-                )}
-              >
-                <ListChecks className="size-3" /> {t("inbox.bulkMode")}
-              </button>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => { setShowArchived((v) => !v); setActiveId(null); }}
+                  aria-pressed={showArchived}
+                  title={t("inbox.archiveViewHint")}
+                  className={cn(
+                    "inline-flex h-6 items-center gap-1 rounded px-1.5 text-[11px] transition-colors",
+                    showArchived ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
+                  )}
+                >
+                  <Archive className="size-3" /> {t("inbox.archived")}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setSelectMode((v) => !v); setSelectedIds(new Set()); }}
+                  aria-pressed={selectMode}
+                  className={cn(
+                    "inline-flex h-6 items-center gap-1 rounded px-1.5 text-[11px] transition-colors",
+                    selectMode ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
+                  )}
+                >
+                  <ListChecks className="size-3" /> {t("inbox.bulkMode")}
+                </button>
+              </div>
             </div>
             <Select value={statusFilter} onValueChange={(v) => setStatusFilter((v || "all") as SessionStatus | "all")}>
               <SelectTrigger className="h-9 rounded-lg text-xs"><SelectValue /></SelectTrigger>
@@ -483,15 +534,15 @@ export default function InboxPage() {
                   {!collapsed && (
                   <div className="space-y-1">
                     {group.items.map((item) => (
+                      <div key={item.session_id} className="relative">
                       <button
-                        key={item.session_id}
                         data-sid={item.session_id}
                         onClick={() => {
                           if (selectMode) { toggleSelected(item.session_id); return; }
                           setActiveId(item.session_id); setNotes(""); setMobileView("chat"); markSeen(item.session_id);
                         }}
                         className={cn(
-                          "flex w-full items-start gap-2.5 border px-3 py-2.5 text-left transition-colors",
+                          "flex w-full items-start gap-3 border px-3 py-2.5 pr-14 text-left transition-colors",
                           activeId === item.session_id
                             ? "border-primary/40 bg-primary/10"
                             : "border-transparent hover:border-border hover:bg-muted/70",
@@ -549,6 +600,31 @@ export default function InboxPage() {
                           </p>
                         </div>
                       </button>
+                      {/* Row actions: archive (safe) always; permanent delete
+                          only for admins, behind a typed confirmation. */}
+                      <div className="absolute right-1.5 top-1.5 flex items-center gap-0.5">
+                        <button
+                          type="button"
+                          title={showArchived ? t("inbox.restore") : t("inbox.archive")}
+                          aria-label={showArchived ? t("inbox.restore") : t("inbox.archive")}
+                          onClick={(e) => { e.stopPropagation(); void handleArchive(item.session_id, showArchived); }}
+                          className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                        >
+                          {showArchived ? <ArchiveRestore className="size-3.5" /> : <Archive className="size-3.5" />}
+                        </button>
+                        {showArchived && user?.role !== "user" && (
+                          <button
+                            type="button"
+                            title={t("inbox.deletePermanently")}
+                            aria-label={t("inbox.deletePermanently")}
+                            onClick={(e) => { e.stopPropagation(); void handleHardDelete(item.session_id, item.user_display_name || item.title || ""); }}
+                            className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                          >
+                            <Trash2 className="size-3.5" />
+                          </button>
+                        )}
+                      </div>
+                      </div>
                     ))}
                   </div>
                   )}

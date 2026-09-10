@@ -26,8 +26,15 @@ func (a *App) listInbox(w http.ResponseWriter, r *http.Request) (any, error) {
 	}
 	offset := (page - 1) * pageSize
 	statusFilter := r.URL.Query().Get("status")
+	// "" / "active" → not archived (the default view); "archived" → only the
+	// archive. Archiving hides a conversation without destroying anything.
+	archiveFilter := r.URL.Query().Get("archived")
+	archivePredicate := " AND archived_at IS NULL"
+	if archiveFilter == "1" || archiveFilter == "true" || archiveFilter == "archived" {
+		archivePredicate = " AND archived_at IS NOT NULL"
+	}
 
-	countSQL := "SELECT COUNT(*) FROM sessions WHERE user_id = $1 AND is_test = FALSE"
+	countSQL := "SELECT COUNT(*) FROM sessions WHERE user_id = $1 AND is_test = FALSE" + archivePredicate
 	args := []any{user.UserID}
 	if statusFilter != "" {
 		countSQL += " AND status = $" + strconv.Itoa(len(args)+1) + "::session_status"
@@ -42,7 +49,7 @@ func (a *App) listInbox(w http.ResponseWriter, r *http.Request) (any, error) {
 		"pus.user_display_name, cp.avatar_url, " +
 		"CASE WHEN s.platform IN ('whatsapp','meta','instagram') THEN pus.last_inbound_at + INTERVAL '24 hours' END AS reply_window_expires_at, " +
 		"s.status::text, s.language, s.title, s.user_message_count, s.model_message_count, " +
-		"s.assigned_agent_id, s.first_response_at, s.escalated_at, s.created_at, " +
+		"s.assigned_agent_id, s.first_response_at, s.escalated_at, s.created_at, s.archived_at, " +
 		"last_message.content AS last_message, last_message.created_at AS last_message_at, " +
 		"u.username AS assigned_agent_name, s.sentiment, s.tags, s.intent " +
 		"FROM sessions AS s " +
@@ -50,7 +57,7 @@ func (a *App) listInbox(w http.ResponseWriter, r *http.Request) (any, error) {
 		"LEFT JOIN platform_user_sessions pus ON pus.session_id = s.session_id " +
 		"LEFT JOIN customer_profiles cp ON cp.user_id = s.user_id AND cp.platform::text = s.platform::text AND cp.platform_user_id = s.platform_user_id " +
 		"LEFT JOIN LATERAL (SELECT content, created_at FROM chat_messages WHERE session_id = s.session_id ORDER BY created_at DESC, message_id DESC LIMIT 1) AS last_message ON TRUE " +
-		"WHERE s.user_id = $1 AND s.is_test = FALSE"
+		"WHERE s.user_id = $1 AND s.is_test = FALSE" + archivePredicate
 	selArgs := []any{user.UserID}
 	if statusFilter != "" {
 		selSQL += " AND s.status = $" + strconv.Itoa(len(selArgs)+1) + "::session_status"
@@ -72,6 +79,7 @@ func (a *App) listInbox(w http.ResponseWriter, r *http.Request) (any, error) {
 			platform, puid                               *string // NULL for every web/widget session
 			displayName, avatarURL, title, lastMsg       *string
 			replyWindow, firstResp, escalated, lastMsgAt *time.Time
+			archivedAt                                   *time.Time
 			assignedAgent                                *int32
 			agentName, sentiment, intent                 *string
 			tagsPtr                                      *[]string
@@ -85,7 +93,7 @@ func (a *App) listInbox(w http.ResponseWriter, r *http.Request) (any, error) {
 		// so those conversations silently vanished from the inbox.
 		if err := rows.Scan(&sid, &uid, &platform, &puid, &displayName, &avatarURL, &replyWindow,
 			&status, &language, &title, &umc, &mmc, &assignedAgent, &firstResp, &escalated,
-			&createdAt, &lastMsg, &lastMsgAt, &agentName, &sentiment, &tagsPtr, &intent); err != nil {
+			&createdAt, &archivedAt, &lastMsg, &lastMsgAt, &agentName, &sentiment, &tagsPtr, &intent); err != nil {
 			skipped++
 			a.Logger.Warn("inbox row skipped", "session_id", sid, "error", err.Error())
 			continue
@@ -109,6 +117,7 @@ func (a *App) listInbox(w http.ResponseWriter, r *http.Request) (any, error) {
 			"first_response_at":     firstResp,
 			"escalated_at":          escalated,
 			"created_at":            createdAt,
+			"archived_at":           archivedAt,
 			"last_message":          lastMsg,
 			"last_message_at":       lastMsgAt,
 			"last_inbound_at":       replyWindow, // approximation: reply window derives from last inbound
@@ -472,4 +481,47 @@ func (a *App) markHandoffResolved(ctx context.Context, sessionID, note string) {
 	_, _ = a.DB.Exec(ctx,
 		"UPDATE human_handoff_requests SET status='resolved', resolved_at=NOW(), resolution_note=COALESCE(NULLIF($2,''), resolution_note) "+
 			"WHERE session_id=$1::uuid AND status IN ('pending','assigned')", sessionID, note)
+}
+
+// ============================================
+// Archive / restore
+// ============================================
+
+// archiveSession hides a conversation from the default inbox list without
+// deleting anything — messages, handoff records and billing history all stay
+// intact, so the customer thread can be restored at any time.
+func (a *App) archiveSession(w http.ResponseWriter, r *http.Request, sessionID string) (any, error) {
+	return a.setSessionArchived(w, r, sessionID, true)
+}
+
+// unarchiveSession returns an archived conversation to the inbox.
+func (a *App) unarchiveSession(w http.ResponseWriter, r *http.Request, sessionID string) (any, error) {
+	return a.setSessionArchived(w, r, sessionID, false)
+}
+
+func (a *App) setSessionArchived(w http.ResponseWriter, r *http.Request, sessionID string, archived bool) (any, error) {
+	user, _ := UserFrom(r)
+	if err := a.ensureSessionOwner(r.Context(), sessionID, user.UserID); err != nil {
+		return nil, err
+	}
+	var tag interface{ RowsAffected() int64 }
+	var err error
+	if archived {
+		tag, err = a.DB.Exec(r.Context(),
+			"UPDATE sessions SET archived_at = NOW() WHERE session_id = $1 AND user_id = $2", sessionID, user.UserID)
+	} else {
+		tag, err = a.DB.Exec(r.Context(),
+			"UPDATE sessions SET archived_at = NULL WHERE session_id = $1 AND user_id = $2", sessionID, user.UserID)
+	}
+	if err != nil {
+		return nil, ErrInternal("操作失败")
+	}
+	if tag.RowsAffected() == 0 {
+		return nil, ErrNotFound("会话不存在")
+	}
+	a.publishSessionEvent(r.Context(), user.UserID, sessionID)
+	if archived {
+		return map[string]string{"message": "已归档"}, nil
+	}
+	return map[string]string{"message": "已恢复"}, nil
 }

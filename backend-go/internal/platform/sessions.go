@@ -44,6 +44,9 @@ func (p *Pipeline) ensureSession(ctx context.Context, ev *InboundEvent, cfg *con
 		_, _ = p.DB.Exec(ctx,
 			"UPDATE platform_user_sessions SET last_inbound_at = $1, user_display_name = $2 WHERE config_id = $3 AND platform_user_id = $4",
 			time.Now(), ev.UserDisplayName, ev.ConfigID, ev.PlatformUserID)
+		// A returned customer un-archives the thread: otherwise their new
+		// messages would land in a conversation hidden from the inbox.
+		_, _ = p.DB.Exec(ctx, "UPDATE sessions SET archived_at = NULL WHERE session_id = $1 AND archived_at IS NOT NULL", sessionID)
 	}
 
 	// Persist the user message (with media metadata for the inbox UI).

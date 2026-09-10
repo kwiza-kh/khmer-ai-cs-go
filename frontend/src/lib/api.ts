@@ -282,6 +282,7 @@ export interface InboxItem {
   reply_window_expires_at?: string | null;
   first_response_at?: string | null;
   escalated_at?: string | null;
+  archived_at?: string | null;
   created_at: string;
   sentiment?: "neutral" | "positive" | "negative";
   tags?: string[];
@@ -718,8 +719,19 @@ export async function updateSession(id: string, data: { title?: string; status?:
   });
 }
 
+// archiveSession — hide a conversation from the inbox without deleting data.
+export async function archiveSession(id: string) {
+  return apiFetch<{ message: string }>(`/inbox/sessions/${id}/archive`, { method: "POST" });
+}
+
+export async function unarchiveSession(id: string) {
+  return apiFetch<{ message: string }>(`/inbox/sessions/${id}/unarchive`, { method: "POST" });
+}
+
+// deleteSession — permanent, cascading removal. Admin-only; the server also
+// requires ?confirm=1 so a stray request cannot wipe history.
 export async function deleteSession(id: string) {
-  return apiFetch<{ message: string }>(`/chat/sessions/${id}`, { method: "DELETE" });
+  return apiFetch<{ message: string }>(`/chat/sessions/${id}?confirm=1`, { method: "DELETE" });
 }
 
 export async function listSessionMessages(id: string, limit = 100, after = 0, before = 0) {
@@ -892,9 +904,10 @@ export async function listFeedback(page = 1, pageSize = 50, rating?: -1 | 1) {
   return apiFetch<PaginatedResponse<ChatMessageItem>>(`/admin/feedback?${qs}`);
 }
 
-export async function listInbox(params?: { status?: SessionStatus; page?: number; pageSize?: number }) {
+export async function listInbox(params?: { status?: SessionStatus; archived?: boolean; page?: number; pageSize?: number }) {
   const qs = new URLSearchParams();
   if (params?.status) qs.set("status", params.status);
+  if (params?.archived) qs.set("archived", "1");
   qs.set("page", String(params?.page ?? 1));
   qs.set("page_size", String(params?.pageSize ?? 50));
   return apiFetch<PaginatedResponse<InboxItem>>(`/inbox?${qs}`);

@@ -297,6 +297,10 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 	if req.SessionID != "" {
 		_ = a.DB.QueryRow(ctx, "SELECT user_id FROM sessions WHERE session_id = $1", req.SessionID).Scan(&owner)
 	}
+	// A returning visitor un-archives their thread so the reply is not hidden.
+	if req.SessionID != "" && owner == t.ownerID {
+		_, _ = a.DB.Exec(ctx, "UPDATE sessions SET archived_at=NULL WHERE session_id=$1 AND archived_at IS NOT NULL", req.SessionID)
+	}
 	if req.SessionID == "" || owner != t.ownerID {
 		// New-session throttle: scripted abuse without client-side session
 		// persistence would flood the inbox with sessions (fail-open).

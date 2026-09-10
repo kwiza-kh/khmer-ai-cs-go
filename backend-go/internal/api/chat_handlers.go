@@ -52,6 +52,8 @@ func (a *App) resolveChatSession(ctx context.Context, userID int32, req *chatReq
 		if status == "resolved" || status == "closed" {
 			_, _ = a.DB.Exec(ctx, "UPDATE sessions SET status='active', resolved_at=NULL, closed_at=NULL WHERE session_id=$1", sid)
 		}
+		// New activity revives an archived conversation so it is not hidden.
+		_, _ = a.DB.Exec(ctx, "UPDATE sessions SET archived_at=NULL WHERE session_id=$1 AND archived_at IS NOT NULL", sid)
 		return sid, test, nil
 	}
 	sid := newUUID()
@@ -645,9 +647,19 @@ func (a *App) listSessionMessages(w http.ResponseWriter, r *http.Request, sessio
 	return msgs, nil
 }
 
-// deleteSession — remove a session (owner-checked).
+// deleteSession — permanently remove a session (owner-checked).
+//
+// This cascades to every child row (messages, handoff requests, delivery
+// queue entries, notes), so it is destructive and irreversible. Ordinary
+// agents must use archiveSession instead; only tenant admins may hard-delete.
 func (a *App) deleteSession(w http.ResponseWriter, r *http.Request, sessionID string) (any, error) {
 	user, _ := UserFrom(r)
+	if !user.IsAdmin() {
+		return nil, ErrForbidden("仅管理员可永久删除会话，请使用归档")
+	}
+	if r.URL.Query().Get("confirm") != "1" {
+		return nil, ErrBadRequest("缺少确认参数")
+	}
 	tag, err := a.DB.Exec(r.Context(), "DELETE FROM sessions WHERE session_id = $1 AND user_id = $2", sessionID, user.UserID)
 	if err != nil {
 		return nil, ErrInternal("删除失败")

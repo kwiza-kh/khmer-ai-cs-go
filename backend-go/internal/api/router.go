@@ -86,6 +86,8 @@ func (a *App) Router() http.Handler {
 	authed.HandleFunc("POST /api/v1/inbox/sessions/{id}/reply", a.handleSession(a.agentReply))
 	authed.HandleFunc("PATCH /api/v1/inbox/sessions/{id}/status", a.handleSession(a.updateSessionStatus))
 	authed.HandleFunc("PUT /api/v1/inbox/sessions/{id}/tags", a.handleSession(a.setSessionTags))
+	authed.HandleFunc("POST /api/v1/inbox/sessions/{id}/archive", a.handleSession(a.archiveSession))
+	authed.HandleFunc("POST /api/v1/inbox/sessions/{id}/unarchive", a.handleSession(a.unarchiveSession))
 	authed.HandleFunc("GET /api/v1/inbox/sessions/{id}/summary", a.handleSession(a.sessionSummary))
 	authed.Handle("GET /api/v1/inbox/messages/{id}/media-url", a.handle(a.getInboundMediaURL))
 
