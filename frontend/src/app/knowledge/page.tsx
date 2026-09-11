@@ -2,9 +2,10 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  deleteKnowledge, getKnowledgeDocument, knowledgeDocQuality, knowledgeGaps, knowledgeGapDraft,
-  listKnowledge, ragQuery, retryKnowledge, updateKnowledgeDocument,
-  type KnowledgeDocument, type KnowledgeDocQuality, type KnowledgeGap,
+  deleteKnowledge, dismissKnowledgeContradiction, getKnowledgeDocument, getRagSettings, knowledgeDocQuality,
+  knowledgeGaps, knowledgeGapDraft, listKnowledge, listKnowledgeContradictions, ragQuery,
+  resolveKnowledgeContradiction, retryKnowledge, updateKnowledgeDocument, updateRagSettings,
+  type KnowledgeContradiction, type KnowledgeDocument, type KnowledgeDocQuality, type KnowledgeGap,
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,8 +18,8 @@ import {
 } from "@/components/ui/dialog";
 import {
   BookOpen, ChevronDown, ChevronUp, File, FileCode2, FileSpreadsheet, FileText,
-  FileType2, Loader2, Pencil, RotateCw, Save, Search, Sparkles, ThumbsDown, ThumbsUp,
-  Trash2, Plus, type LucideIcon,
+  FileType2, GitCompareArrows, Loader2, Pencil, RotateCw, Save, Search, Sparkles, ThumbsDown, ThumbsUp,
+  Trash2, Plus, Wand2, Check, X, type LucideIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/page-header";
@@ -27,6 +28,7 @@ import { KnowledgeUploadDialog } from "@/components/knowledge/upload-dialog";
 import { MarkdownKnowledgeEditor } from "@/components/knowledge/markdown-editor";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
+import { useAuth } from "@/lib/auth-client";
 
 interface SrcItem { title: string; score: number; content: string }
 
@@ -96,20 +98,53 @@ export default function KnowledgePage() {
   // Prefills a fresh create form (AI draft generated from a knowledge gap).
   const [editorDraft, setEditorDraft] = useState<{ title: string; content: string; language: string } | null>(null);
 
-  // Knowledge-quality & gap insights.
+  // Knowledge-quality & gap insights + contradiction review queue.
   const [quality, setQuality] = useState<KnowledgeDocQuality[]>([]);
   const [gaps, setGaps] = useState<KnowledgeGap[]>([]);
+  const [contradictions, setContradictions] = useState<KnowledgeContradiction[]>([]);
+  const [workingContradictionId, setWorkingContradictionId] = useState<number | null>(null);
   const [drafting, setDrafting] = useState<string | null>(null);
+  // Ingest-time compile toggle (admin-only; null until loaded).
+  const [compileEnabled, setCompileEnabled] = useState<boolean | null>(null);
+  const [toggleSaving, setToggleSaving] = useState(false);
 
   const loadInsights = useCallback(async () => {
     try {
-      const [q, g] = await Promise.all([knowledgeDocQuality(), knowledgeGaps()]);
+      const [q, g, c] = await Promise.all([knowledgeDocQuality(), knowledgeGaps(), listKnowledgeContradictions("pending")]);
       setQuality(q.data || []);
       setGaps(g.data || []);
+      setContradictions(c.data || []);
     } catch {
       // Insights are auxiliary — never break the page over them.
     }
   }, []);
+
+  const handleContradiction = async (id: number, action: "resolve" | "dismiss") => {
+    setWorkingContradictionId(id);
+    try {
+      if (action === "resolve") await resolveKnowledgeContradiction(id);
+      else await dismissKnowledgeContradiction(id);
+      setContradictions((cur) => cur.filter((c) => c.id !== id));
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setWorkingContradictionId(null);
+    }
+  };
+
+  const handleToggleCompile = async () => {
+    if (compileEnabled === null) return;
+    setToggleSaving(true);
+    try {
+      const res = await updateRagSettings(!compileEnabled);
+      setCompileEnabled(res.compile_enabled);
+      toast.success(t("kb.settingsSaved"));
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setToggleSaving(false);
+    }
+  };
 
   const openCreateEditor = () => {
     setEditorDoc(null);
@@ -159,6 +194,15 @@ export default function KnowledgePage() {
     }, 0);
     return () => window.clearTimeout(timer);
   }, [loadDocs, loadInsights]);
+
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin" || user?.role === "platform_admin";
+  useEffect(() => {
+    if (!isAdmin) return;
+    getRagSettings()
+      .then((s) => setCompileEnabled(s.compile_enabled))
+      .catch(() => { /* settings are admin-only; hide the toggle on failure */ });
+  }, [isAdmin]);
 
   const hasActiveIndexing = documents.some((doc) => doc.index_status === "pending" || doc.index_status === "indexing");
   useEffect(() => {
@@ -288,6 +332,26 @@ export default function KnowledgePage() {
         description={tf("kb.readyCount", { ready: readyCount, total })}
         actions={
           <>
+            {isAdmin && compileEnabled !== null && (
+              <button
+                type="button"
+                role="switch"
+                aria-checked={compileEnabled}
+                onClick={() => void handleToggleCompile()}
+                disabled={toggleSaving}
+                title={t("kb.compileToggleHint")}
+                className={cn(
+                  "inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2 text-xs transition-colors disabled:opacity-50",
+                  compileEnabled ? "text-foreground" : "text-muted-foreground",
+                )}
+              >
+                <Wand2 className={cn("size-3.5", compileEnabled && "text-primary")} />
+                <span className="hidden sm:inline">{t("kb.compileToggle")}</span>
+                <span className={cn("ml-0.5 h-3.5 w-6 rounded-full transition-colors", compileEnabled ? "bg-primary" : "bg-muted-foreground/30")}>
+                  <span className={cn("block size-3.5 rounded-full bg-background transition-transform", compileEnabled && "translate-x-2.5")} />
+                </span>
+              </button>
+            )}
             <Button size="sm" variant="outline" className="gap-1.5" onClick={openCreateEditor}>
               <Plus className="size-3.5" />{t("kb.newDoc")}
             </Button>
@@ -362,8 +426,53 @@ export default function KnowledgePage() {
             </div>
           )}
 
-          {(quality.some((q) => q.uses > 0 || q.thumbs_up > 0 || q.thumbs_down > 0) || gaps.length > 0) && (
+          {(quality.some((q) => q.uses > 0 || q.thumbs_up > 0 || q.thumbs_down > 0) || gaps.length > 0 || contradictions.length > 0) && (
             <div className="grid gap-4 lg:grid-cols-2">
+              {contradictions.length > 0 && (
+                <Card className="lg:col-span-2 border-warning/40">
+                  <CardHeader className="border-b border-border pb-2">
+                    <CardTitle className="flex items-center gap-2 text-sm">
+                      <GitCompareArrows className="size-3.5 text-warning" />{t("kb.contradictionTitle")}
+                      <Badge variant="warning" className="h-4 px-1.5 text-[10px]">{contradictions.length}</Badge>
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-2 pt-4">
+                    {contradictions.map((c) => (
+                      <div key={c.id} className="rounded-lg border border-warning/30 bg-warning/5 p-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <p className="min-w-0 truncate text-xs font-semibold">{c.new_title}</p>
+                          <div className="flex shrink-0 items-center gap-1.5">
+                            <Button variant="outline" size="sm" className="h-6 gap-1 px-2 text-[11px]"
+                              onClick={() => void handleContradiction(c.id, "resolve")}
+                              disabled={workingContradictionId === c.id}>
+                              {workingContradictionId === c.id ? <Loader2 className="size-3 animate-spin" /> : <Check className="size-3" />}
+                              {t("kb.contradictionResolve")}
+                            </Button>
+                            <Button variant="ghost" size="sm" className="h-6 gap-1 px-2 text-[11px] text-muted-foreground"
+                              onClick={() => void handleContradiction(c.id, "dismiss")}
+                              disabled={workingContradictionId === c.id}>
+                              <X className="size-3" />{t("kb.contradictionDismiss")}
+                            </Button>
+                          </div>
+                        </div>
+                        <div className="mt-2 space-y-1.5">
+                          {c.items.map((item, i) => (
+                            <div key={i} className="grid gap-1.5 sm:grid-cols-2">
+                              <p className="rounded border border-border/60 bg-background/60 px-2 py-1 text-[11px] leading-relaxed">
+                                <span className="font-medium text-success">{t("kb.contradictionNew")}：</span>{item.new_claim}
+                              </p>
+                              <p className="rounded border border-border/60 bg-background/60 px-2 py-1 text-[11px] leading-relaxed">
+                                <span className="font-medium text-destructive">{t("kb.contradictionOld")}：</span>{item.old_claim}
+                                {item.old_doc_title && <span className="block text-[10px] text-muted-foreground">{item.old_doc_title}</span>}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </CardContent>
+                </Card>
+              )}
               <Card>
                 <CardHeader className="border-b border-border pb-2">
                   <CardTitle className="flex items-center gap-2 text-sm">
@@ -488,9 +597,20 @@ export default function KnowledgePage() {
                                   {metadata.extension && <Badge variant="outline" className="h-5 px-1.5 font-mono text-[10px]">{metadata.extension}</Badge>}
                                 </div>
                                 <p className="line-clamp-2 min-h-10 text-sm font-semibold leading-5">{doc.title}</p>
+                                {doc.origin === "compiled" && doc.compiled_from_title && (
+                                  <p className="mt-0.5 truncate text-[10px] text-muted-foreground">{tf("kb.compiledFrom", { title: doc.compiled_from_title })}</p>
+                                )}
                                 <p className="mt-2 text-xs text-muted-foreground">{tf("kb.created", { date: formatDate(doc.created_at, t("kb.dateUnavailable")) })}</p>
                                 <div className="mt-3 flex flex-wrap items-center gap-1.5">
                                   <IndexStatusBadge status={doc.index_status} />
+                                  {doc.origin === "compiled" && (
+                                    <Badge variant="info" className="h-4 gap-1 px-1.5 text-[10px]">
+                                      <Wand2 className="size-2.5" />{t("kb.compiledBadge")}
+                                    </Badge>
+                                  )}
+                                  {doc.compile_status === "failed" && (
+                                    <Badge variant="secondary" className="h-4 px-1.5 text-[10px]">{t("kb.compileFailed")}</Badge>
+                                  )}
                                   {doc.category && <Badge variant="secondary" className="h-4 px-1.5 text-[10px]">{doc.category}</Badge>}
                                   <span className="text-[11px] text-muted-foreground">{tf("kb.chunks", { n: doc.chunk_count })}</span>
                                 </div>

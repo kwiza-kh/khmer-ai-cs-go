@@ -160,6 +160,28 @@ export interface KnowledgeDocument {
   index_error?: string;
   created_at?: string;
   updated_at?: string;
+  origin?: string;
+  compiled_from?: number | null;
+  compile_status?: string;
+  compiled_from_title?: string | null;
+}
+
+export interface KnowledgeContradictionItem {
+  new_claim: string;
+  old_claim: string;
+  old_doc_title?: string;
+  severity?: string;
+}
+
+export interface KnowledgeContradiction {
+  id: number;
+  new_doc_id: number;
+  new_title: string;
+  old_doc_id: number | null;
+  old_title: string | null;
+  items: KnowledgeContradictionItem[];
+  status: string;
+  created_at: string;
 }
 
 export interface TokenStatsResponse {
@@ -597,6 +619,29 @@ export async function knowledgeGapDraft(query: string) {
   return apiFetch<{ title: string; content: string; language: string }>("/knowledge/gaps/draft", {
     method: "POST",
     body: JSON.stringify({ query }),
+  });
+}
+
+export async function listKnowledgeContradictions(status = "pending") {
+  return apiFetch<{ data: KnowledgeContradiction[] }>(`/knowledge/contradictions?status=${status}`);
+}
+
+export async function resolveKnowledgeContradiction(id: number) {
+  return apiFetch<{ message: string }>(`/knowledge/contradictions/${id}/resolve`, { method: "POST" });
+}
+
+export async function dismissKnowledgeContradiction(id: number) {
+  return apiFetch<{ message: string }>(`/knowledge/contradictions/${id}/dismiss`, { method: "POST" });
+}
+
+export async function getRagSettings() {
+  return apiFetch<{ compile_enabled: boolean }>("/admin/rag/settings");
+}
+
+export async function updateRagSettings(compileEnabled: boolean) {
+  return apiFetch<{ compile_enabled: boolean }>("/admin/rag/settings", {
+    method: "PUT",
+    body: JSON.stringify({ compile_enabled: compileEnabled }),
   });
 }
 

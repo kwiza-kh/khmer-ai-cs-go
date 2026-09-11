@@ -501,6 +501,17 @@ export const en: Dict = {
   "kb.statusReady": "Ready",
   "kb.statusFailed": "Failed",
   "kb.statusUnknown": "Unknown",
+  "kb.compiledBadge": "AI compiled",
+  "kb.compiledFrom": "Compiled from “{title}”",
+  "kb.compileFailed": "Compile failed",
+  "kb.compileToggle": "Ingest-time AI compile",
+  "kb.compileToggleHint": "After indexing, auto-generate an FAQ/summary compiled page and detect contradictions with existing knowledge",
+  "kb.contradictionTitle": "Contradiction review",
+  "kb.contradictionNew": "New doc",
+  "kb.contradictionOld": "Existing doc",
+  "kb.contradictionResolve": "Mark resolved",
+  "kb.contradictionDismiss": "Dismiss",
+  "kb.settingsSaved": "Settings saved",
 
   // Knowledge upload dialog
   "kbup.upload": "Upload",
