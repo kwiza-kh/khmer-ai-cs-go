@@ -37,6 +37,7 @@ interface UserItem {
   email: string;
   role: string;
   is_active: boolean;
+  auth_method?: string;
 }
 
 interface UsersResponse {
@@ -178,7 +179,16 @@ export function UsersAdminPage() {
                   {users.map((user) => (
                     <TableRow key={user.user_id}>
                       <TableCell className="text-xs text-muted-foreground">{user.user_id}</TableCell>
-                      <TableCell className="text-xs font-medium">{user.username}</TableCell>
+                      <TableCell className="text-xs font-medium">
+                        <span className="inline-flex items-center gap-1.5">
+                          {user.username}
+                          {user.auth_method === "google" && (
+                            <Badge variant="secondary" className="h-4 px-1.5 text-[10px] font-normal">
+                              Google
+                            </Badge>
+                          )}
+                        </span>
+                      </TableCell>
                       <TableCell className="text-xs text-muted-foreground">{user.email}</TableCell>
                       <TableCell>
                         <Select value={user.role} onValueChange={(value) => handleUpdateRole(user.user_id, value || "user")}>

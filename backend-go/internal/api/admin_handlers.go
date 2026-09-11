@@ -322,29 +322,51 @@ func (a *App) listAvailableModels(w http.ResponseWriter, r *http.Request, config
 // Users + analytics (admin)
 // ============================================
 
-// listUsers — all users (admin).
+// listUsers — all users (admin), paginated with the same {data,total,...}
+// envelope every other list endpoint uses; the admin users page reads
+// .data/.total, so a bare array rendered the whole list (Google sign-ups
+// included) as empty.
 func (a *App) listUsers(w http.ResponseWriter, r *http.Request) (any, error) {
+	page := parseIntOr(r.URL.Query().Get("page"), 1)
+	pageSize := parseIntOr(r.URL.Query().Get("page_size"), 100)
+	if pageSize > 200 {
+		pageSize = 200
+	}
+	offset := (page - 1) * pageSize
+
+	var total int64
+	if err := a.DB.QueryRow(r.Context(), "SELECT COUNT(*) FROM users").Scan(&total); err != nil {
+		return nil, ErrInternal("查询失败")
+	}
+
 	rows, err := a.DB.Query(r.Context(),
-		"SELECT user_id, username, email, role::text, is_active, created_at FROM users ORDER BY user_id")
+		"SELECT user_id, username, email, role::text, is_active, created_at, google_sub IS NOT NULL "+
+			"FROM users ORDER BY user_id LIMIT $1 OFFSET $2", pageSize, offset)
 	if err != nil {
 		return nil, ErrInternal("查询失败")
 	}
 	defer rows.Close()
-	out := make([]map[string]any, 0)
+	out := make([]map[string]any, 0, pageSize)
+	skipped := 0
 	for rows.Next() {
 		var uid int
 		var username, email, role string
-		var isActive bool
-		var createdAt time.Time
-		if err := rows.Scan(&uid, &username, &email, &role, &isActive, &createdAt); err != nil {
+		var isActive, hasGoogle bool
+		var createdAt *time.Time
+		if err := rows.Scan(&uid, &username, &email, &role, &isActive, &createdAt, &hasGoogle); err != nil {
+			skipped++
 			continue
+		}
+		authMethod := "password"
+		if hasGoogle {
+			authMethod = "google"
 		}
 		out = append(out, map[string]any{
 			"user_id": uid, "username": username, "email": email, "role": role,
-			"is_active": isActive, "created_at": createdAt,
+			"is_active": isActive, "created_at": createdAt, "auth_method": authMethod,
 		})
 	}
-	return out, nil
+	return map[string]any{"data": out, "total": total, "page": page, "page_size": pageSize, "skipped": skipped}, nil
 }
 
 // updateUserRole — change a user's role / active state (admin).
