@@ -32,6 +32,7 @@ import {
 	Archive, ArchiveRestore,
 	Languages, Check, AudioLines, Headset, Bot,
 } from "lucide-react";
+import { PLATFORM_ICONS, PLATFORM_BRAND_COLORS } from "@/components/platform-icons";
 import { Message, MessageAvatar, MessageContent, MessageFooter, MessageGroup, MessageHeader } from "@/components/ui/message";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import VoiceMessageBubble from "@/components/ui/voice-message-bubble";
@@ -216,6 +217,13 @@ function platformCategory(platform?: string): PlatformCategory | null {
       // NULL/未知平台的会话 (旧数据) 不归入任何平台分组, 仅在 "all" 下展示.
       return null;
   }
+}
+
+/** Brand mark for a platform category; mono=true inherits the current text
+    color (used on active chips where the mark sits on the primary fill). */
+function PlatformMark({ platform, mono = false, className }: { platform: PlatformCategory; mono?: boolean; className?: string }) {
+  const Icon = PLATFORM_ICONS[platform];
+  return <Icon className={className} style={mono ? undefined : { color: PLATFORM_BRAND_COLORS[platform] }} />;
 }
 
 export default function InboxPage() {
@@ -508,7 +516,6 @@ export default function InboxPage() {
             <div className="flex flex-wrap gap-1" role="group" aria-label="Filter by platform">
               {PLATFORM_FILTERS.map((filter) => {
                 const isActive = platformFilter === filter.value;
-                const dot = PLATFORM_GROUPS.find((group) => group.value === filter.value)?.dotClass;
                 const count = filter.value === "all"
                   ? queryItems.length
                   : platformCounts.get(filter.value as PlatformCategory) ?? 0;
@@ -525,9 +532,9 @@ export default function InboxPage() {
                         : "border-border/70 bg-card text-muted-foreground hover:bg-accent hover:text-foreground",
                     )}
                   >
-                    {dot
-                      ? <span className={cn("size-1.5 rounded-full", dot)} />
-                      : <InboxIcon className={cn("size-3", isActive ? "text-primary-foreground" : "text-muted-foreground")} />}
+                    {filter.value === "all"
+                      ? <InboxIcon className={cn("size-3", isActive ? "text-primary-foreground" : "text-muted-foreground")} />
+                      : <PlatformMark platform={filter.value as PlatformCategory} mono={isActive} className="size-3" />}
                     {filter.filterLabel ?? t("inbox.platformAll")}
                     <span className={cn("tabular-nums", isActive ? "text-primary-foreground/70" : "text-muted-foreground/70")}>{count}</span>
                   </button>
@@ -558,7 +565,7 @@ export default function InboxPage() {
                     className="flex w-full items-center gap-2 rounded-md px-1.5 pb-1.5 text-left transition-colors hover:bg-muted/60"
                   >
                     <ChevronRight className={cn("size-3 shrink-0 text-muted-foreground transition-transform", !collapsed && "rotate-90")} />
-                    <span className={cn("size-1.5 shrink-0 rounded-full", group.dotClass)} />
+                    <PlatformMark platform={group.value} className="size-3 shrink-0" />
                     <span className="text-[11px] font-semibold tracking-wide text-muted-foreground">{group.label}</span>
                     <span className="h-px flex-1 bg-border" />
                     <span className="text-[11px] tabular-nums text-muted-foreground">{group.items.length}</span>

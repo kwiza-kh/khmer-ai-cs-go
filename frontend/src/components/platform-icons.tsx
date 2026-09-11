@@ -65,6 +65,15 @@ export function ZaloIcon(props: IconProps) {
   );
 }
 
+/** Website widget — globe with meridians. */
+export function WebIcon(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M12 2a10 10 0 100 20 10 10 0 000-20zm7.93 9.25h-3.2a13.9 13.9 0 00-1.02-4.6 8.54 8.54 0 014.22 4.6zM12 3.6c.9 1.13 1.63 2.4 2.16 3.78a12.3 12.3 0 00-4.32 0C10.37 6 11.1 4.73 12 3.6zM4.07 14.75a8.54 8.54 0 010-5.5h3.2a13.9 13.9 0 000 5.5h-3.2zm.71 1.5h3.03c.3.9.68 1.77 1.14 2.6a8.54 8.54 0 01-4.17-2.6zm3.03-8.5H4.78a8.54 8.54 0 014.17-2.6c-.46.83-.84 1.7-1.14 2.6zM12 20.4a12.6 12.6 0 01-2.16-3.78 12.3 12.3 0 004.32 0A12.6 12.6 0 0112 20.4zm2.53-5.4H9.47a12.4 12.4 0 010-6h5.06a12.4 12.4 0 010 6zm.52 3.85c.46-.83.84-1.7 1.14-2.6h3.03a8.54 8.54 0 01-4.17 2.6zm1.68-3.85a13.9 13.9 0 000-5.5h3.2a8.54 8.54 0 010 5.5h-3.2z" />
+    </svg>
+  );
+}
+
 /** Registry keyed by PlatformKey. */
 export const PLATFORM_ICONS = {
   meta: MessengerIcon,
@@ -73,4 +82,16 @@ export const PLATFORM_ICONS = {
   whatsapp: WhatsAppIcon,
   line: LineIcon,
   zalo: ZaloIcon,
+  web: WebIcon,
 } as const;
+
+/** Official-ish brand hex per platform, for marks that must keep identity. */
+export const PLATFORM_BRAND_COLORS: Record<keyof typeof PLATFORM_ICONS, string> = {
+  meta: "#0084FF",
+  instagram: "#E1306C",
+  telegram: "#229ED9",
+  whatsapp: "#25D366",
+  line: "#06C755",
+  zalo: "#0077FF",
+  web: "#8B5CF6",
+};
