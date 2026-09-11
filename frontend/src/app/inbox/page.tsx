@@ -30,7 +30,7 @@ import {
 	Image as ImageIcon, ListChecks, FileCode2, Plus, Trash2, Paperclip, MessageSquare, Volume2,
 	AlertTriangle, RefreshCw, ChevronDown, ChevronUp, PanelRight, ChevronRight, Phone, Mail, ChevronLeft, Pencil,
 	Archive, ArchiveRestore,
-	Languages, Check,
+	Languages, Check, Play, Pause,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -1856,6 +1856,73 @@ function parseInboundPlatformMedia(metadata?: string | Record<string, unknown> |
   }
 }
 
+function formatVoiceTime(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
+  return `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
+}
+
+// Compact voice-note player: the native <audio controls> widget is ~40px of
+// browser chrome that clashes with the message bubble, so drive a hidden
+// audio element from a play button + seekable progress bar instead.
+function VoiceNotePlayer({ src }: { src: string }) {
+  const { t } = useI18n();
+  const audioRef = React.useRef<HTMLAudioElement | null>(null);
+  const barRef = React.useRef<HTMLDivElement | null>(null);
+  const [playing, setPlaying] = React.useState(false);
+  const [current, setCurrent] = React.useState(0);
+  const [duration, setDuration] = React.useState(0);
+
+  const toggle = () => {
+    const el = audioRef.current;
+    if (!el) return;
+    if (el.paused) void el.play().catch(() => setPlaying(false));
+    else el.pause();
+  };
+
+  const seek = (event: React.MouseEvent<HTMLDivElement>) => {
+    const el = audioRef.current;
+    const bar = barRef.current;
+    if (!el || !bar || !Number.isFinite(duration) || duration <= 0) return;
+    const rect = bar.getBoundingClientRect();
+    const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+    el.currentTime = ratio * duration;
+    setCurrent(el.currentTime);
+  };
+
+  const progress = duration > 0 ? Math.min(100, (current / duration) * 100) : 0;
+
+  return (
+    <div className="mt-2 flex items-center gap-2.5 rounded-md border border-border/70 bg-muted/40 px-2.5 py-2">
+      <audio
+        ref={audioRef}
+        src={src}
+        preload="metadata"
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
+        onEnded={() => { setPlaying(false); setCurrent(0); }}
+        onTimeUpdate={(event) => setCurrent(event.currentTarget.currentTime)}
+        onLoadedMetadata={(event) => setDuration(event.currentTarget.duration)}
+      />
+      <button
+        type="button"
+        onClick={toggle}
+        aria-label={playing ? t("inbox.voicePause") : t("inbox.voicePlay")}
+        className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-colors hover:bg-primary/90"
+      >
+        {playing ? <Pause className="size-3.5" /> : <Play className="size-3.5 translate-x-px" />}
+      </button>
+      <div ref={barRef} onClick={seek} className="flex h-6 flex-1 cursor-pointer items-center" title={t("inbox.voiceSeek")}>
+        <div className="relative h-1 w-full overflow-hidden rounded-full bg-border">
+          <div className="absolute inset-y-0 left-0 rounded-full bg-primary" style={{ width: `${progress}%` }} />
+        </div>
+      </div>
+      <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
+        {formatVoiceTime(current)} / {formatVoiceTime(duration)}
+      </span>
+    </div>
+  );
+}
+
 function InboundPlatformMediaPreview({ messageID, media }: { messageID: number; media: InboundPlatformMedia }) {
   const { t, tf } = useI18n();
   const [previewURL, setPreviewURL] = React.useState<string | null>(null);
@@ -1919,9 +1986,7 @@ function InboundPlatformMediaPreview({ messageID, media }: { messageID: number; 
           </Button>
         )}
       </div>
-      {audioURL && isAudio && (
-        <audio controls src={audioURL} preload="none" className="mt-2 h-9 w-full" />
-      )}
+      {audioURL && isAudio && <VoiceNotePlayer src={audioURL} />}
       {previewURL && isImage && (
         <a href={previewURL} target="_blank" rel="noreferrer" className="mt-2 block overflow-hidden border border-border bg-muted/30">
           {/* Signed R2 hosts are runtime-only and cannot be safely allowlisted for next/image. */}
