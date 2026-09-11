@@ -1281,6 +1281,15 @@ function ConversationDetail({
     try { await updateSessionStatus(item.session_id, "closed", notes); toast.success(t("inbox.toastClosed")); onMutate(); }
     catch (e) { toast.error((e as Error).message); }
   };
+  const handleArchiveHere = async () => {
+    const archived = Boolean(item.archived_at);
+    try {
+      if (archived) await unarchiveSession(item.session_id);
+      else await archiveSession(item.session_id);
+      toast.success(archived ? t("inbox.restored") : t("inbox.archived"));
+      onMutate();
+    } catch (e) { toast.error((e as Error).message || t("inbox.archiveFailed")); }
+  };
   const handleAssignToMe = async () => {
     try { await assignSession(item.session_id, currentUserId, notes); toast.success(t("inbox.toastAssigned")); onMutate(); }
     catch (e) { toast.error((e as Error).message); }
@@ -1295,9 +1304,24 @@ function ConversationDetail({
           <p className="text-base font-semibold truncate">
             {item.user_display_name || item.title || t("inbox.anonymous")}
           </p>
-          <p className="text-sm text-muted-foreground">
-            {item.platform} · {tf("inbox.sessionLabel", { id: item.session_id.slice(0, 8) })}
-            {item.assigned_agent_name && ` · ${tf("inbox.agentLabel", { name: item.assigned_agent_name })}`}
+          {/* Intercom-style at-a-glance context: platform mark, live status,
+              conversation size and session/agent refs in one chip row. */}
+          <p className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+            {platformCategory(item.platform) && (
+              <span className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-card px-1.5 py-0.5 font-medium text-foreground">
+                <PlatformMark platform={platformCategory(item.platform)!} className="size-3" />
+                {item.platform ? (PLATFORM_LABELS[item.platform] || item.platform) : t("inbox.anonymous")}
+              </span>
+            )}
+            <Badge variant={STATUS_BADGE[item.status].variant} className="h-4 px-1.5 text-[10px]">
+              {t(STATUS_BADGE[item.status].labelKey)}
+            </Badge>
+            <span className="inline-flex items-center gap-1 rounded-full border border-border/70 px-1.5 py-0.5 tabular-nums" title={t("inbox.messageCountTitle")}>
+              <MessageSquare className="size-2.5" />
+              {item.user_message_count + item.model_message_count}
+            </span>
+            <span className="truncate">{tf("inbox.sessionLabel", { id: item.session_id.slice(0, 8) })}</span>
+            {item.assigned_agent_name && <span className="truncate">· {tf("inbox.agentLabel", { name: item.assigned_agent_name })}</span>}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -1356,6 +1380,15 @@ function ConversationDetail({
           </Button>
           <Button size="sm" variant="ghost" onClick={handleClose} className="h-7 text-xs gap-1.5 text-muted-foreground">
             <XCircle className="size-3" />{t("inbox.close")}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => void handleArchiveHere()}
+            className="h-7 w-7 p-0 text-muted-foreground"
+            title={item.archived_at ? t("inbox.restore") : t("inbox.archive")}
+          >
+            {item.archived_at ? <ArchiveRestore className="size-3.5" /> : <Archive className="size-3.5" />}
           </Button>
         </div>
       </div>
