@@ -674,10 +674,15 @@ export async function listUsers(page = 1, pageSize = 20, search = "") {
   return apiFetch<PaginatedResponse<UserItem> & { stats?: UsersStats }>(`/admin/users?${qs.toString()}`);
 }
 
-export async function updateUserRole(userId: number, role: string, isActive?: boolean) {
+export async function updateUserRole(userId: number, role?: string, isActive?: boolean) {
+  // Only send the fields being changed: the backend validates any present
+  // `role`, so an empty placeholder string would 400 as "unknown role".
+  const body: Record<string, unknown> = {};
+  if (role) body.role = role;
+  if (isActive !== undefined) body.is_active = isActive;
   return apiFetch<{ message: string }>(`/admin/users/${userId}/role`, {
     method: "PUT",
-    body: JSON.stringify({ role, is_active: isActive }),
+    body: JSON.stringify(body),
   });
 }
 

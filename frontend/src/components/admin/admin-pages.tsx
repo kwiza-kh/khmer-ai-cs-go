@@ -193,7 +193,7 @@ export function UsersAdminPage() {
 
   const handleToggleActive = async (userId: number, isActive: boolean) => {
     try {
-      await updateUserRole(userId, "", isActive);
+      await updateUserRole(userId, undefined, isActive);
       await mutate();
     } catch (error: unknown) {
       toast.error((error as Error).message);
