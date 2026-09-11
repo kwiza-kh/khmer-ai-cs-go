@@ -30,8 +30,22 @@
     return;
   }
 
+  // Panel open/close transition, launcher attention pulse, unread badge.
+  var STYLE =
+    "@keyframes kw-launch{0%{box-shadow:0 0 0 0 rgba(17,20,45,.35)}70%{box-shadow:0 0 0 14px rgba(17,20,45,0)}100%{box-shadow:0 0 0 0 rgba(17,20,45,0)}}" +
+    "#khmer-widget-frame{opacity:0;transform:translateY(10px) scale(.96);transform-origin:bottom right;" +
+    "transition:opacity .18s ease,transform .18s ease,visibility 0s linear .18s;visibility:hidden;pointer-events:none;}" +
+    "#khmer-widget-frame.kw-open{opacity:1;transform:translateY(0) scale(1);visibility:visible;pointer-events:auto;transition:opacity .18s ease,transform .18s ease;}" +
+    "#khmer-widget-btn{animation:kw-launch 1.6s ease-out .8s 2;}" +
+    "#khmer-widget-badge{position:absolute;top:1px;right:1px;width:13px;height:13px;border-radius:50%;" +
+    "background:#ef4444;border:2px solid #fff;display:none;}";
+
   function boot() {
     if (document.getElementById("khmer-widget-root")) return;
+
+    var style = document.createElement("style");
+    style.textContent = STYLE;
+    document.head.appendChild(style);
 
     var host = document.createElement("div");
     host.id = "khmer-widget-root";
@@ -43,27 +57,57 @@
     frame.src = origin + "/widget?t=" + encodeURIComponent(token) +
       "&api=" + encodeURIComponent(api) + "&lang=" + encodeURIComponent(lang) +
       "&color=" + encodeURIComponent(color);
-    frame.style.cssText = "display:none;width:360px;max-width:calc(100vw - 32px);height:520px;max-height:calc(100vh - 110px);" +
+    frame.style.cssText = "width:360px;max-width:calc(100vw - 32px);height:520px;max-height:calc(100vh - 110px);" +
       "border:0;border-radius:14px;box-shadow:0 18px 48px -12px rgba(17,20,45,0.35);background:#fff;";
+
+    var CHAT_SVG =
+      '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">' +
+      '<path d="M21 11.5a8.38 8.38 0 0 1-8.5 8.5 8.5 8.5 0 0 1-3.8-.9L3 21l1.9-5.7a8.5 8.5 0 1 1 16.1-3.8z"/></svg>';
+    var CLOSE_SVG =
+      '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.4" stroke-linecap="round">' +
+      '<path d="M6 6l12 12M18 6L6 18"/></svg>';
 
     var btn = document.createElement("button");
     btn.type = "button";
+    btn.id = "khmer-widget-btn";
     btn.setAttribute("aria-label", "Open support chat");
-    btn.innerHTML =
-      '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">' +
-      '<path d="M21 11.5a8.38 8.38 0 0 1-8.5 8.5 8.5 8.5 0 0 1-3.8-.9L3 21l1.9-5.7a8.5 8.5 0 1 1 16.1-3.8z"/></svg>';
-    btn.style.cssText = "display:flex;align-items:center;justify-content:center;width:56px;height:56px;border-radius:50%;" +
+    btn.innerHTML = CHAT_SVG + '<span id="khmer-widget-badge"></span>';
+    btn.style.cssText = "position:relative;display:flex;align-items:center;justify-content:center;width:56px;height:56px;border-radius:50%;" +
       "border:none;background:" + color + ";cursor:pointer;box-shadow:0 10px 28px -8px rgba(17,20,45,0.45);" +
       "transition:transform .15s ease;margin-left:auto;";
     btn.onmouseenter = function () { btn.style.transform = "scale(1.06)"; };
     btn.onmouseleave = function () { btn.style.transform = "scale(1)"; };
-    btn.onclick = function () {
-      var open = frame.style.display !== "none";
-      frame.style.display = open ? "none" : "block";
-      if (!open) {
+
+    var badge = null;
+    var setOpen = function (open) {
+      if (open) {
+        frame.classList.add("kw-open");
+        btn.innerHTML = CLOSE_SVG;
+        unread = false;
+        if (badge) badge.style.display = "none";
         try { frame.contentWindow.postMessage({ khmerWidgetFocus: true }, origin); } catch { /* noop */ }
+      } else {
+        frame.classList.remove("kw-open");
+        btn.innerHTML = CHAT_SVG + '<span id="khmer-widget-badge"></span>';
+        badge = document.getElementById("khmer-widget-badge");
+        if (badge && unread) badge.style.display = "block";
       }
     };
+    var isOpen = function () { return frame.classList.contains("kw-open"); };
+
+    // Unread ping from the widget iframe (new agent/AI message while closed).
+    var unread = false;
+    window.addEventListener("message", function (ev) {
+      if (ev.source !== frame.contentWindow) return;
+      var d = ev.data;
+      if (d && d.khmerWidgetUnread) {
+        unread = true;
+        badge = document.getElementById("khmer-widget-badge");
+        if (badge && !isOpen()) badge.style.display = "block";
+      }
+    });
+
+    btn.onclick = function () { setOpen(!isOpen()); };
 
     var column = document.createElement("div");
     column.style.cssText = "display:flex;flex-direction:column;align-items:flex-end;gap:12px;";

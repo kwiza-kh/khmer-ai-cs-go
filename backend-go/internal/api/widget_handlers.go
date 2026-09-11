@@ -41,17 +41,18 @@ func (a *App) widgetRateLimit(maxRPM int) func(http.Handler) http.Handler {
 
 // widgetTokenRow is one embed token; ownerID is the tenant behind it.
 type widgetTokenRow struct {
-	TokenID       int64    `json:"token_id"`
-	ownerID       int32
-	Name          string   `json:"name"`
-	Token         string   `json:"token"`
-	IsActive      bool     `json:"is_active"`
-	AllowedOrigin []string `json:"allowed_origins"`
-	Theme         string   `json:"theme"`
-	PrimaryColor  string   `json:"primary_color"`
-	GreetingKm    string   `json:"greeting_km"`
-	GreetingEn    string   `json:"greeting_en"`
-	CreatedAt     string   `json:"created_at"`
+	TokenID            int64 `json:"token_id"`
+	ownerID            int32
+	Name               string   `json:"name"`
+	Token              string   `json:"token"`
+	IsActive           bool     `json:"is_active"`
+	AllowedOrigin      []string `json:"allowed_origins"`
+	Theme              string   `json:"theme"`
+	PrimaryColor       string   `json:"primary_color"`
+	GreetingKm         string   `json:"greeting_km"`
+	GreetingEn         string   `json:"greeting_en"`
+	SuggestedQuestions []string `json:"suggested_questions"`
+	CreatedAt          string   `json:"created_at"`
 }
 
 func generateWidgetToken() string {
@@ -62,14 +63,15 @@ func generateWidgetToken() string {
 	return "wt_" + hex.EncodeToString(b)
 }
 
-const widgetCols = "token_id, user_id, name, token, is_active, allowed_origins, theme, primary_color, COALESCE(greeting_km,''), COALESCE(greeting_en,''), created_at"
+const widgetCols = "token_id, user_id, name, token, is_active, allowed_origins, theme, primary_color, COALESCE(greeting_km,''), COALESCE(greeting_en,''), suggested_questions, created_at"
 
 func scanWidgetToken(scan func(dest ...any) error) (widgetTokenRow, error) {
 	var t widgetTokenRow
-	var origins []string
+	var origins, questions []string
 	var createdAt time.Time
-	err := scan(&t.TokenID, &t.ownerID, &t.Name, &t.Token, &t.IsActive, &origins, &t.Theme, &t.PrimaryColor, &t.GreetingKm, &t.GreetingEn, &createdAt)
+	err := scan(&t.TokenID, &t.ownerID, &t.Name, &t.Token, &t.IsActive, &origins, &t.Theme, &t.PrimaryColor, &t.GreetingKm, &t.GreetingEn, &questions, &createdAt)
 	t.AllowedOrigin = origins
+	t.SuggestedQuestions = questions
 	t.CreatedAt = createdAt.Format(time.RFC3339)
 	return t, err
 }
@@ -99,6 +101,7 @@ type createWidgetRequest struct {
 	Color      string   `json:"primary_color"`
 	GreetingKm string   `json:"greeting_km"`
 	GreetingEn string   `json:"greeting_en"`
+	Questions  []string `json:"suggested_questions"`
 }
 
 // createWidgetToken — mint a new embed token.
@@ -120,12 +123,23 @@ func (a *App) createWidgetToken(w http.ResponseWriter, r *http.Request) (any, er
 	if req.Origins == nil {
 		req.Origins = []string{}
 	}
+	// Opening-question chips: trim, drop blanks, cap the list so the widget
+	// never renders a wall of chips.
+	questions := make([]string, 0, len(req.Questions))
+	for _, q := range req.Questions {
+		if q = strings.TrimSpace(q); q != "" {
+			questions = append(questions, q)
+		}
+		if len(questions) == 6 {
+			break
+		}
+	}
 	token := generateWidgetToken()
 	var id int64
 	err := a.DB.QueryRow(r.Context(),
-		"INSERT INTO widget_tokens (user_id, name, token, is_active, allowed_origins, theme, primary_color, greeting_km, greeting_en) "+
-			"VALUES ($1,$2,$3,true,$4::text[],$5,$6,$7,$8) RETURNING token_id",
-		user.UserID, req.Name, token, req.Origins, req.Theme, req.Color, req.GreetingKm, req.GreetingEn).Scan(&id)
+		"INSERT INTO widget_tokens (user_id, name, token, is_active, allowed_origins, theme, primary_color, greeting_km, greeting_en, suggested_questions) "+
+			"VALUES ($1,$2,$3,true,$4::text[],$5,$6,$7,$8,$9::text[]) RETURNING token_id",
+		user.UserID, req.Name, token, req.Origins, req.Theme, req.Color, req.GreetingKm, req.GreetingEn, questions).Scan(&id)
 	if err != nil {
 		return nil, ErrInternal("创建失败")
 	}
@@ -196,11 +210,17 @@ func (a *App) widgetBootstrap(w http.ResponseWriter, r *http.Request) (any, erro
 	if apiErr != nil {
 		return nil, apiErr
 	}
+	suggested := t.SuggestedQuestions
+	if suggested == nil {
+		suggested = []string{}
+	}
 	return map[string]any{
-		"theme":         t.Theme,
-		"primary_color": t.PrimaryColor,
-		"greeting_km":   t.GreetingKm,
-		"greeting_en":   t.GreetingEn,
+		"name":                t.Name,
+		"theme":               t.Theme,
+		"primary_color":       t.PrimaryColor,
+		"greeting_km":         t.GreetingKm,
+		"greeting_en":         t.GreetingEn,
+		"suggested_questions": suggested,
 	}, nil
 }
 

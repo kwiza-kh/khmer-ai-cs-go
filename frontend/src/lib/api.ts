@@ -1564,6 +1564,7 @@ export interface WidgetTokenItem {
   primary_color: string;
   greeting_km: string;
   greeting_en: string;
+  suggested_questions: string[];
   created_at: string;
 }
 
@@ -1573,6 +1574,7 @@ export function listWidgetTokens() {
 
 export function createWidgetToken(input: {
   name?: string; allowed_origins?: string[]; theme?: string; primary_color?: string; greeting_km?: string; greeting_en?: string;
+  suggested_questions?: string[];
 }) {
   return apiFetch<{ token_id: number; token: string; embed_src: string }>("/widgets", {
     method: "POST", body: JSON.stringify(input),

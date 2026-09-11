@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import {
   listWidgetTokens, createWidgetToken, deleteWidgetToken, type WidgetTokenItem,
 } from "@/lib/api";
@@ -18,9 +19,10 @@ import { Globe2, Copy, Plus, Trash2, Code2, Loader2 } from "lucide-react";
 export default function WidgetAdminPage() {
   const { t, tf } = useI18n();
   const { data: tokens, isLoading, mutate } = useSWR<WidgetTokenItem[]>("widget-tokens", listWidgetTokens);
-  const [creating, setCreating] = React.useState(false);
   const [name, setName] = React.useState("");
   const [origins, setOrigins] = React.useState("");
+  const [color, setColor] = React.useState("#4f46e5");
+  const [questions, setQuestions] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [showForm, setShowForm] = React.useState(false);
 
@@ -29,16 +31,23 @@ export default function WidgetAdminPage() {
 
   const create = async () => {
     setBusy(true);
-    setCreating(true);
     try {
       const list = origins.split(/[,\s]+/).map((o) => o.trim()).filter(Boolean);
-      await createWidgetToken({ name: name.trim() || undefined, allowed_origins: list.length ? list : undefined });
+      const qlist = questions.split("\n").map((q) => q.trim()).filter(Boolean).slice(0, 4);
+      await createWidgetToken({
+        name: name.trim() || undefined,
+        allowed_origins: list.length ? list : undefined,
+        primary_color: color,
+        suggested_questions: qlist.length ? qlist : undefined,
+      });
       await mutate();
       setName("");
       setOrigins("");
+      setQuestions("");
+      setColor("#4f46e5");
       setShowForm(false);
       toast.success(t("widget.createdToast"));
-    } catch (e) { toast.error((e as Error).message); } finally { setBusy(false); setCreating(false); }
+    } catch (e) { toast.error((e as Error).message); } finally { setBusy(false); }
   };
 
   const remove = async (id: number) => {
@@ -92,7 +101,33 @@ export default function WidgetAdminPage() {
                   </div>
                 </div>
                 <p className="text-[11px] text-muted-foreground">{t("widget.originsHint")}</p>
-                <Button onClick={create} disabled={busy || creating} className="h-8 text-xs gap-1.5">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <Label className="text-xs text-muted-foreground">{t("widget.colorLabel")}</Label>
+                    <div className="mt-1 flex items-center gap-2">
+                      <input
+                        type="color"
+                        value={color}
+                        onChange={(e) => setColor(e.target.value)}
+                        aria-label={t("widget.colorLabel")}
+                        className="h-9 w-12 cursor-pointer rounded-md border border-border bg-background p-1"
+                      />
+                      <code className="text-xs text-muted-foreground">{color}</code>
+                    </div>
+                  </div>
+                  <div>
+                    <Label className="text-xs text-muted-foreground">{t("widget.questionsLabel")}</Label>
+                    <Textarea
+                      value={questions}
+                      onChange={(e) => setQuestions(e.target.value)}
+                      rows={2}
+                      placeholder={t("widget.questionsPh")}
+                      className="mt-1 text-sm resize-none"
+                    />
+                  </div>
+                </div>
+                <p className="text-[11px] text-muted-foreground">{t("widget.questionsHint")}</p>
+                <Button onClick={create} disabled={busy} className="h-8 text-xs gap-1.5">
                   {busy ? <Loader2 className="size-3 animate-spin" /> : <Plus className="size-3" />}{t("widget.create")}
                 </Button>
               </CardContent>
@@ -104,7 +139,7 @@ export default function WidgetAdminPage() {
           ) : (tokens ?? []).length === 0 ? (
             <Card className="border-dashed"><CardContent className="flex flex-col items-center gap-3 py-12">
               <p className="text-sm text-muted-foreground">{t("widget.empty")}</p>
-              <Button size="sm" onClick={() => setCreating(true)} disabled={busy} className="h-8 gap-1.5 text-xs">
+              <Button size="sm" onClick={() => setShowForm(true)} disabled={busy} className="h-8 gap-1.5 text-xs">
                 <Plus className="size-3.5" />
                 {t("widget.newToken")}
               </Button>
@@ -135,6 +170,23 @@ export default function WidgetAdminPage() {
                       <pre className="flex-1 overflow-x-auto rounded bg-muted px-2 py-1.5 text-[10px] leading-relaxed text-muted-foreground">{embedSnippet(tk.token)}</pre>
                       <Button size="icon-sm" variant="outline" onClick={() => copy(embedSnippet(tk.token))} title={t("widget.copy")}><Copy className="size-3" /></Button>
                     </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="inline-flex items-center gap-1.5 rounded-full border border-border/70 px-2 py-0.5 text-[10px] text-muted-foreground">
+                      <span className="size-2 rounded-full" style={{ background: tk.primary_color }} />
+                      {tk.primary_color}
+                    </span>
+                    <span className="rounded-full border border-border/70 px-2 py-0.5 text-[10px] text-muted-foreground">{tk.theme}</span>
+                    {(tk.suggested_questions ?? []).length > 0 && (
+                      <span className="rounded-full border border-border/70 px-2 py-0.5 text-[10px] text-muted-foreground">
+                        {tf("widget.questionsCount", { n: tk.suggested_questions.length })}
+                      </span>
+                    )}
+                    {(tk.allowed_origins ?? []).length > 0 && (
+                      <span className="rounded-full border border-border/70 px-2 py-0.5 text-[10px] text-muted-foreground">
+                        {tf("widget.originsCount", { n: tk.allowed_origins.length })}
+                      </span>
+                    )}
                   </div>
                   {tk.allowed_origins && tk.allowed_origins.length > 0 && (
                     <p className="text-[11px] text-muted-foreground">{tf("widget.allowedFor", { origins: tk.allowed_origins.join(", ") })}</p>

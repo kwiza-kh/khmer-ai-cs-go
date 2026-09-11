@@ -2,6 +2,9 @@
 
 // Public website-chat widget UI. Rendered inside the iframe opened by
 // widget-embed.js. Authenticated solely by the ?t= embed token; no JWT.
+// Deliberately self-contained (inline styles + one injected <style> block):
+// the page ships inside third-party sites' iframes and must not depend on
+// the app's Tailwind theme or i18n provider.
 import * as React from "react";
 import { useSearchParams } from "next/navigation";
 import { Suspense } from "react";
@@ -15,16 +18,46 @@ type Msg = {
   pending?: boolean;
 };
 
-const STR = {
+type WidgetCfg = {
+  name?: string;
+  theme?: "light" | "dark" | "auto";
+  primary_color?: string;
+  greeting_km?: string;
+  greeting_en?: string;
+  suggested_questions?: string[];
+};
+
+type Lang = "km" | "en" | "zh";
+
+const STR: Record<Lang, Record<string, string>> = {
   km: {
     title: "客服助手", intro: "您好！有什么可以帮您？", placeholder: "输入消息…",
-    send: "发送", powered: "由 Khmer AI 提供", typing: "在线",
+    send: "发送", powered: "由 Khmer AI 提供", online: "在线", ai: "AI",
   },
   en: {
     title: "Support Assistant", intro: "Hi! How can we help you today?", placeholder: "Type a message…",
-    send: "Send", powered: "Powered by Khmer AI", typing: "online",
+    send: "Send", powered: "Powered by Khmer AI", online: "online", ai: "AI",
+  },
+  zh: {
+    title: "客服助手", intro: "您好！有什么可以帮您？", placeholder: "输入消息…",
+    send: "发送", powered: "由 Khmer AI 提供", online: "在线", ai: "AI",
   },
 };
+
+// Injected once: keyframes for the presence dot, typing dots, message
+// entrance and the suggestion-chip hover. Inline styles can't animate.
+const WIDGET_CSS = `
+@keyframes kw-pulse { 0% { box-shadow: 0 0 0 0 rgba(74,222,128,.55); } 70% { box-shadow: 0 0 0 5px rgba(74,222,128,0); } 100% { box-shadow: 0 0 0 0 rgba(74,222,128,0); } }
+@keyframes kw-bounce { 0%, 80%, 100% { transform: translateY(0); opacity: .45; } 40% { transform: translateY(-3px); opacity: 1; } }
+@keyframes kw-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+.kw-msg { animation: kw-in .18s ease-out; }
+.kw-dot { width: 7px; height: 7px; border-radius: 50%; background: #4ade80; animation: kw-pulse 1.8s ease-out infinite; }
+.kw-typing span { width: 5px; height: 5px; border-radius: 50%; background: currentColor; display: inline-block; margin-right: 3px; animation: kw-bounce 1s infinite ease-in-out; }
+.kw-typing span:nth-child(2) { animation-delay: .15s; }
+.kw-typing span:nth-child(3) { animation-delay: .3s; }
+.kw-chip { transition: border-color .12s ease, color .12s ease, background .12s ease; }
+.kw-chip:hover { border-color: currentColor !important; }
+`;
 
 function parseLine(raw: string): { event: string; data: unknown } | null {
   let event = "message";
@@ -41,16 +74,56 @@ function WidgetInner() {
   const params = useSearchParams();
   const token = params.get("t") || "";
   const apiBase = (params.get("api") || "").replace(/\/$/, "");
-  const lang = (params.get("lang") === "en" ? "en" : "km") as "km" | "en";
-  const accent = params.get("color") || "#4f46e5";
+  const langParam = params.get("lang");
+  const lang: Lang = langParam === "en" ? "en" : langParam === "zh" ? "zh" : "km";
+  const colorParam = params.get("color") || "";
   const s = STR[lang];
 
+  const [cfg, setCfg] = React.useState<WidgetCfg | null>(null);
   const [messages, setMessages] = React.useState<Msg[]>([]);
   const [draft, setDraft] = React.useState("");
   const [sessionId, setSessionId] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
+  const [dark, setDark] = React.useState(false);
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const nextId = React.useRef(0);
+  const lastSeenDbId = React.useRef(0);
+
+  const accent = cfg?.primary_color || colorParam || "#4f46e5";
+  const p = dark
+    ? {
+        bg: "#17181c", bubbleIn: "#26272b", bubbleInText: "#e8e8ea", bubbleOutText: "#fff",
+        border: "#2e2f34", muted: "#9a9ba1", inputBg: "#1f2024", inputText: "#e8e8ea",
+        sysBg: "#3a1d1d", sysText: "#fca5a5", chipBg: "#1f2024",
+      }
+    : {
+        bg: "#ffffff", bubbleIn: "#f1f1f4", bubbleInText: "#222", bubbleOutText: "#fff",
+        border: "#eee", muted: "#8a8a90", inputBg: "#fff", inputText: "#222",
+        sysBg: "#fef2f2", sysText: "#b91c1c", chipBg: "#fff",
+      };
+
+  // Tenant branding (name/theme/color/greeting/suggestions) lives server-side
+  // on the embed token; the page is useless-branded without it.
+  React.useEffect(() => {
+    if (!apiBase || !token) return;
+    let dead = false;
+    fetch(`${apiBase}/widget/config?token=${encodeURIComponent(token)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => { if (!dead && j) setCfg(j as WidgetCfg); })
+      .catch(() => { /* fall back to query params + defaults */ });
+    return () => { dead = true; };
+  }, [apiBase, token]);
+
+  React.useEffect(() => {
+    const theme = cfg?.theme ?? "light";
+    if (theme === "dark") { setDark(true); return; }
+    if (theme !== "auto") { setDark(false); return; }
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    setDark(mq.matches);
+    const onChange = (e: MediaQueryListEvent) => setDark(e.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, [cfg]);
 
   React.useEffect(() => {
     const el = scrollRef.current;
@@ -58,8 +131,6 @@ function WidgetInner() {
   }, [messages, busy]);
 
   // Persist the session id per token so a reload continues the conversation.
-  // localStorage is an external store, so reading it in an effect is the
-  // sanctioned pattern here (same rationale as auth-client.tsx).
   React.useEffect(() => {
     try {
       const saved = localStorage.getItem(`khmer-widget-sid:${token}`);
@@ -84,7 +155,17 @@ function WidgetInner() {
           role: (r.role === "user" ? "user" : "model") as Msg["role"],
           content: r.content, rating: r.feedback_rating ?? null,
         }));
-      if (mapped.length) setMessages(mapped);
+      if (mapped.length) {
+        // Unread ping for the host-page launcher badge: an inbound (model/
+        // agent) message arrived that the visitor hasn't seen rendered yet.
+        const fresh = mapped.some((m) => m.role === "model" && (m.dbId ?? 0) > lastSeenDbId.current && lastSeenDbId.current > 0);
+        const maxDb = mapped.reduce((mx, m) => Math.max(mx, m.dbId ?? 0), 0);
+        if (fresh) {
+          try { window.parent.postMessage({ khmerWidgetUnread: true }, "*"); } catch { /* ignore */ }
+        }
+        lastSeenDbId.current = Math.max(lastSeenDbId.current, maxDb);
+        setMessages(mapped);
+      }
     } catch { /* ignore */ }
   }, [apiBase, token]);
 
@@ -103,8 +184,8 @@ function WidgetInner() {
     if (sessionId) void syncMessages(sessionId);
   }, [sessionId, syncMessages]);
 
-  const send = async () => {
-    const content = draft.trim();
+  const send = async (text?: string) => {
+    const content = (text ?? draft).trim();
     if (!content || busy || !apiBase) return;
     setDraft("");
     const pendingId = nextId.current++;
@@ -135,7 +216,7 @@ function WidgetInner() {
         let sep: number;
         while ((sep = buffer.indexOf("\n\n")) !== -1) {
           const raw = buffer.slice(0, sep);
-          buffer = buffer.slice(sep + 2);
+          buffer = buffer.slice(2 + sep);
           const evt = parseLine(raw);
           if (!evt) continue;
           if (evt.event === "session") {
@@ -176,39 +257,77 @@ function WidgetInner() {
     return <div style={{ padding: 16, fontFamily: "system-ui", color: "#666", fontSize: 13 }}>Widget not configured.</div>;
   }
 
+  const title = cfg?.name || s.title;
+  const greeting = (lang === "en" ? cfg?.greeting_en : lang === "zh" ? (cfg?.greeting_en || cfg?.greeting_km) : cfg?.greeting_km) || s.intro;
+  const chips = cfg?.suggested_questions ?? [];
+  const showOpeners = messages.length === 0;
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100vh", background: "#fff", fontFamily: "'Noto Sans Khmer','Inter',system-ui,sans-serif" }}>
-      <div style={{ padding: "12px 16px", background: accent, color: "#fff", display: "flex", alignItems: "center", gap: 8 }}>
-        <div style={{ width: 28, height: 28, borderRadius: 8, background: "rgba(255,255,255,0.2)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14 }}>💬</div>
+    <div style={{ display: "flex", flexDirection: "column", height: "100vh", background: p.bg, color: p.bubbleInText, fontFamily: "'Noto Sans Khmer','Inter',system-ui,sans-serif" }}>
+      <style>{WIDGET_CSS}</style>
+
+      {/* Header — tenant-branded, Crisp-style presence */}
+      <div style={{ padding: "12px 16px", background: accent, color: "#fff", display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ width: 34, height: 34, borderRadius: "50%", background: "rgba(255,255,255,0.22)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, fontWeight: 700 }}>
+          {title.trim().charAt(0).toUpperCase()}
+        </div>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 14, fontWeight: 600, lineHeight: 1.2 }}>{s.title}</div>
-          <div style={{ fontSize: 11, opacity: 0.85 }}>● {s.typing}</div>
+          <div style={{ fontSize: 14, fontWeight: 600, lineHeight: 1.25, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{title}</div>
+          <div style={{ fontSize: 11, opacity: 0.92, display: "flex", alignItems: "center", gap: 5 }}>
+            <span className="kw-dot" /> {s.online}
+          </div>
         </div>
       </div>
 
-      <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", padding: "12px 14px", display: "flex", flexDirection: "column", gap: 8 }}>
-        {messages.length === 0 && (
-          <div style={{ alignSelf: "flex-start", background: "#f1f1f4", color: "#333", padding: "10px 12px", borderRadius: "4px 12px 12px 12px", fontSize: 14, maxWidth: "85%" }}>{s.intro}</div>
+      <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", padding: "14px 14px 8px", display: "flex", flexDirection: "column", gap: 8 }}>
+        {showOpeners && (
+          <div className="kw-msg" style={{ alignSelf: "flex-start", background: p.bubbleIn, color: p.bubbleInText, padding: "10px 12px", borderRadius: "4px 12px 12px 12px", fontSize: 14, maxWidth: "85%", lineHeight: 1.5 }}>
+            {greeting}
+          </div>
+        )}
+        {showOpeners && chips.length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-start" }}>
+            {chips.map((q) => (
+              <button
+                key={q}
+                type="button"
+                className="kw-chip"
+                onClick={() => void send(q)}
+                style={{ border: `1px solid ${p.border}`, background: p.chipBg, color: accent, borderRadius: 16, padding: "7px 12px", fontSize: 13, cursor: "pointer", textAlign: "left", maxWidth: "90%" }}
+              >
+                {q}
+              </button>
+            ))}
+          </div>
         )}
         {messages.map((m) => (
-          <div key={m.id} style={{ display: "flex", flexDirection: "column", alignItems: m.role === "user" ? "flex-end" : "flex-start" }}>
+          <div key={m.id} className="kw-msg" style={{ display: "flex", flexDirection: "column", alignItems: m.role === "user" ? "flex-end" : "flex-start" }}>
             <div style={{
-              background: m.role === "user" ? accent : m.role === "system" ? "#fef2f2" : "#f1f1f4",
-              color: m.role === "user" ? "#fff" : m.role === "system" ? "#b91c1c" : "#222",
+              background: m.role === "user" ? accent : m.role === "system" ? p.sysBg : p.bubbleIn,
+              color: m.role === "user" ? p.bubbleOutText : m.role === "system" ? p.sysText : p.bubbleInText,
               padding: "9px 12px", borderRadius: m.role === "user" ? "12px 4px 12px 12px" : "4px 12px 12px 12px",
               fontSize: 14, maxWidth: "85%", whiteSpace: "pre-wrap", wordBreak: "break-word", lineHeight: 1.5,
+              boxShadow: "0 1px 2px rgba(0,0,0,0.06)",
             }}>
-              {m.pending && !m.content ? <span style={{ opacity: 0.6 }}>…</span> : m.content}
+              {m.pending && !m.content
+                ? <span className="kw-typing" style={{ display: "inline-flex", alignItems: "center", height: 14 }}><span /><span /><span /></span>
+                : m.content}
             </div>
-            {m.role === "model" && !m.pending && m.dbId != null && (
-              <div style={{ marginTop: 3, display: "flex", gap: 6, fontSize: 13 }}>
-                {m.rating ? (
-                  <span style={{ color: m.rating === 1 ? "#16a34a" : "#dc2626" }}>{m.rating === 1 ? "👍" : "👎"}</span>
-                ) : (
-                  <>
-                    <button type="button" aria-label="good" style={{ border: "none", background: "transparent", cursor: "pointer", padding: 0 }} onClick={() => void rate(m, 1)}>👍</button>
-                    <button type="button" aria-label="bad" style={{ border: "none", background: "transparent", cursor: "pointer", padding: 0 }} onClick={() => void rate(m, -1)}>👎</button>
-                  </>
+            {m.role === "model" && !m.pending && (
+              <div style={{ marginTop: 3, display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+                <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: 0.4, color: p.muted, display: "inline-flex", alignItems: "center", gap: 3 }}>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill={accent} aria-hidden="true"><path d="M12 2l2.1 6.2L20 10l-5.9 1.8L12 18l-2.1-6.2L4 10l5.9-1.8z" /></svg>
+                  {s.ai}
+                </span>
+                {m.dbId != null && (
+                  m.rating ? (
+                    <span style={{ color: m.rating === 1 ? "#16a34a" : "#dc2626" }}>{m.rating === 1 ? "👍" : "👎"}</span>
+                  ) : (
+                    <>
+                      <button type="button" aria-label="good" style={{ border: "none", background: "transparent", cursor: "pointer", padding: 0 }} onClick={() => void rate(m, 1)}>👍</button>
+                      <button type="button" aria-label="bad" style={{ border: "none", background: "transparent", cursor: "pointer", padding: 0 }} onClick={() => void rate(m, -1)}>👎</button>
+                    </>
+                  )
                 )}
               </div>
             )}
@@ -216,21 +335,21 @@ function WidgetInner() {
         ))}
       </div>
 
-      <div style={{ borderTop: "1px solid #eee", padding: 10, display: "flex", gap: 8 }}>
+      <div style={{ borderTop: `1px solid ${p.border}`, padding: 10, display: "flex", gap: 8, background: p.bg }}>
         <input
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing) void send(); }}
           placeholder={s.placeholder}
           disabled={busy}
-          style={{ flex: 1, border: "1px solid #ddd", borderRadius: 20, padding: "8px 14px", fontSize: 14, outline: "none" }}
+          style={{ flex: 1, border: `1px solid ${p.border}`, background: p.inputBg, color: p.inputText, borderRadius: 20, padding: "8px 14px", fontSize: 14, outline: "none" }}
         />
         <button type="button" onClick={() => void send()} disabled={busy || !draft.trim()}
           style={{ border: "none", background: accent, color: "#fff", borderRadius: 20, padding: "0 16px", fontSize: 14, cursor: "pointer", opacity: busy || !draft.trim() ? 0.6 : 1 }}>
           {s.send}
         </button>
       </div>
-      <div style={{ textAlign: "center", fontSize: 10, color: "#aaa", paddingBottom: 4 }}>{s.powered}</div>
+      <div style={{ textAlign: "center", fontSize: 10, color: p.muted, paddingBottom: 4 }}>{s.powered}</div>
     </div>
   );
 }
