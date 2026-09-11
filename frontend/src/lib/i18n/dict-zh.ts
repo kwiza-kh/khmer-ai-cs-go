@@ -568,6 +568,7 @@ export const zh: Dict = {
   "admin.rolePlatformAdmin": "超级管理员",
   "admin.noSearchResults": "没有匹配的用户",
   "admin.statusToggleHint": "点击切换启用/禁用",
+  "admin.platformAdminLockHint": "超级管理员账号不可禁用",
   "admin.tokenCost": "估算成本 ${cost}",
   "admin.registeredUsers": "已注册用户（{n}）",
   "admin.noUsers": "暂无注册用户",

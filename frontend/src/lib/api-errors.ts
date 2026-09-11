@@ -97,6 +97,7 @@ const ERR_MAP: Record<string, ErrTranslation> = {
   "获取模型列表失败": { en: "Failed to fetch the model list", km: "មិនអាចទាញយកបញ្ជីម៉ូដែល" },
   "营业时间已保存": { en: "Business hours saved", km: "ម៉ោងធ្វើការបានរក្សាទុក" },
   "角色不存在": { en: "Role not found", km: "រកមិនឃើញតួនាទី" },
+  "超级管理员账号不可禁用": { en: "Super admin accounts cannot be disabled", km: "គណនីអ្នកគ្រប់គ្រងជាន់ខ្ពស់មិនអាចបិទបានទេ" },
   "认证格式错误": { en: "Invalid authentication format", km: "ទម្រង់ផ្ទៀងផ្ទាត់មិនត្រឹមត្រូវ" },
   "该平台账号已连接到其他客户": { en: "This platform account is already connected to another customer", km: "គណនីវេទិកានេះបានភ្ជាប់ទៅអតិថិជនផ្សេងរួចហើយ" },
   "该平台需要配置 access_token": { en: "This platform requires an access_token", km: "វេទិកានេះត្រូវការ access_token" },

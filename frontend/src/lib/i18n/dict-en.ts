@@ -581,6 +581,7 @@ export const en: Dict = {
   "admin.rolePlatformAdmin": "Super admin",
   "admin.noSearchResults": "No users match your search",
   "admin.statusToggleHint": "Click to toggle active/disabled",
+  "admin.platformAdminLockHint": "Super admin accounts cannot be disabled",
   "admin.tokenCost": "Estimated cost ${cost}",
   "admin.registeredUsers": "Registered users ({n})",
   "admin.noUsers": "No registered users",

@@ -16,7 +16,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { BarChart3, Clock, KeyRound, MessageSquare, RefreshCw, Send, Sparkles, TrendingUp, Users, Zap, Download, ShieldCheck, Search, UserCheck, UserPlus, Coins, type LucideIcon } from "lucide-react";
+import { BarChart3, Clock, KeyRound, MessageSquare, RefreshCw, Send, Sparkles, TrendingUp, Users, Zap, Download, ShieldCheck, Search, UserCheck, UserPlus, Coins, Lock, type LucideIcon } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
 
@@ -283,6 +283,15 @@ export function UsersAdminPage() {
                         </Select>
                       </TableCell>
                       <TableCell>
+                        {user.role === "platform_admin" ? (
+                          <span
+                            title={t("admin.platformAdminLockHint")}
+                            className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-full bg-success/10 px-2 py-0.5 text-[11px] font-medium text-success"
+                          >
+                            <Lock className="size-2.5" />
+                            {t("admin.statusActive")}
+                          </span>
+                        ) : (
                         <button
                           type="button"
                           onClick={() => handleToggleActive(user.user_id, !user.is_active)}
@@ -295,6 +304,7 @@ export function UsersAdminPage() {
                           <span className={cn("size-1.5 rounded-full", user.is_active ? "bg-success" : "bg-muted-foreground/50")} />
                           {user.is_active ? t("admin.statusActive") : t("admin.statusDisabled")}
                         </button>
+                        )}
                       </TableCell>
                       <TableCell>
                         <div className="flex items-center gap-2">

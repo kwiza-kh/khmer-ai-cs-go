@@ -435,6 +435,12 @@ func (a *App) updateUserRole(w http.ResponseWriter, r *http.Request, userID int3
 	if err := a.DB.QueryRow(r.Context(), "SELECT role::text FROM users WHERE user_id = $1", userID).Scan(&targetRole); err != nil {
 		return nil, ErrNotFound("用户不存在")
 	}
+	// Super-admin accounts must stay loginable — disabling one (especially
+	// by accident, e.g. clicking the wrong row's status pill) locks the
+	// owner out of the whole admin panel until someone patches the DB.
+	if req.IsActive != nil && !*req.IsActive && targetRole == "platform_admin" {
+		return nil, ErrBadRequest("超级管理员账号不可禁用")
+	}
 	// Empty-string role means "not changing the role" (status-only update);
 	// validating it as a role would reject the request with 未知角色.
 	if req.Role != nil && *req.Role != "" {

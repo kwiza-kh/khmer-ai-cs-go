@@ -568,6 +568,7 @@ export const km: Dict = {
   "admin.rolePlatformAdmin": "អ្នកគ្រប់គ្រងជាន់ខ្ពស់",
   "admin.noSearchResults": "គ្មានអ្នកប្រើត្រូវនឹងការស្វែងរក",
   "admin.statusToggleHint": "ចុចដើម្បីប្តូរ សកម្ម/បានបិទ",
+  "admin.platformAdminLockHint": "គណនីអ្នកគ្រប់គ្រងជាន់ខ្ពស់មិនអាចបិទបានទេ",
   "admin.tokenCost": "ការប៉ាន់ស្មានចំណាយ ${cost}",
   "admin.registeredUsers": "អ្នកប្រើដែលបានចុះឈ្មោះ ({n})",
   "admin.noUsers": "មិនទាន់មានអ្នកប្រើចុះឈ្មោះ",
