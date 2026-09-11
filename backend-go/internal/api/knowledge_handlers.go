@@ -455,3 +455,100 @@ func (a *App) knowledgeGaps(w http.ResponseWriter, r *http.Request) (any, error)
 	}
 	return map[string]any{"data": gaps}, nil
 }
+
+// ============================================
+// Contradiction review queue + compile toggle
+// ============================================
+
+// listContradictions — ingest-time KB conflicts awaiting human review.
+func (a *App) listContradictions(w http.ResponseWriter, r *http.Request) (any, error) {
+	user, _ := UserFrom(r)
+	status := r.URL.Query().Get("status")
+	if status == "" {
+		status = "pending"
+	}
+	rows, err := a.DB.Query(r.Context(),
+		"SELECT c.contradiction_id, c.new_doc_id, nd.title, c.old_doc_id, od.title, c.items, c.status, c.created_at "+
+			"FROM kb_contradictions c "+
+			"JOIN knowledge_documents nd ON nd.doc_id = c.new_doc_id "+
+			"LEFT JOIN knowledge_documents od ON od.doc_id = c.old_doc_id "+
+			"WHERE c.user_id = $1 AND c.status = $2 ORDER BY c.created_at DESC LIMIT 50",
+		user.UserID, status)
+	if err != nil {
+		return nil, ErrInternal("查询失败")
+	}
+	defer rows.Close()
+	out := make([]map[string]any, 0)
+	for rows.Next() {
+		var id int64
+		var newDocID int32
+		var newTitle string
+		var oldDocID *int32
+		var oldTitle *string
+		var items []byte
+		var st string
+		var createdAt time.Time
+		if err := rows.Scan(&id, &newDocID, &newTitle, &oldDocID, &oldTitle, &items, &st, &createdAt); err != nil {
+			continue
+		}
+		out = append(out, map[string]any{
+			"id": id, "new_doc_id": newDocID, "new_title": newTitle,
+			"old_doc_id": oldDocID, "old_title": oldTitle,
+			"items": json.RawMessage(items), "status": st, "created_at": createdAt,
+		})
+	}
+	return map[string]any{"data": out}, nil
+}
+
+func (a *App) setContradictionStatus(w http.ResponseWriter, r *http.Request, id int32, status string) (any, error) {
+	user, _ := UserFrom(r)
+	if status != "resolved" && status != "dismissed" {
+		return nil, ErrBadRequest("无效状态")
+	}
+	// resolved_at is inlined (not a parameter): a bare $1 appearing only in a
+	// CASE comparison cannot be type-resolved by Postgres.
+	resolvedAt := "resolved_at"
+	if status == "resolved" {
+		resolvedAt = "NOW()"
+	}
+	tag, err := a.DB.Exec(r.Context(),
+		"UPDATE kb_contradictions SET status = $1::varchar, resolved_at = "+resolvedAt+
+			" WHERE contradiction_id = $2 AND user_id = $3",
+		status, id, user.UserID)
+	if err != nil {
+		return nil, ErrInternal("更新失败")
+	}
+	if tag.RowsAffected() == 0 {
+		return nil, ErrNotFound("不存在")
+	}
+	return map[string]string{"message": "已更新"}, nil
+}
+
+func (a *App) resolveContradiction(w http.ResponseWriter, r *http.Request, id int32) (any, error) {
+	return a.setContradictionStatus(w, r, id, "resolved")
+}
+
+func (a *App) dismissContradiction(w http.ResponseWriter, r *http.Request, id int32) (any, error) {
+	return a.setContradictionStatus(w, r, id, "dismissed")
+}
+
+// getRagSettings / putRagSettings — admin toggle for the ingest-time compile.
+func (a *App) getRagSettings(w http.ResponseWriter, r *http.Request) (any, error) {
+	return map[string]any{"compile_enabled": a.RAG.CompileEnabledPublic(r.Context())}, nil
+}
+
+func (a *App) putRagSettings(w http.ResponseWriter, r *http.Request) (any, error) {
+	var req struct {
+		CompileEnabled *bool `json:"compile_enabled"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil {
+		return nil, ErrBadRequest("请求格式错误")
+	}
+	if req.CompileEnabled == nil {
+		return nil, ErrBadRequest("无更新字段")
+	}
+	if err := a.RAG.SetCompileEnabled(r.Context(), *req.CompileEnabled); err != nil {
+		return nil, ErrInternal("保存失败")
+	}
+	return map[string]any{"compile_enabled": *req.CompileEnabled}, nil
+}

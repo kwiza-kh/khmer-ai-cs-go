@@ -55,6 +55,11 @@ func (a *App) Router() http.Handler {
 	authed.Handle("GET /api/v1/knowledge/quality", a.handle(a.knowledgeDocQuality))
 	authed.Handle("GET /api/v1/knowledge/gaps", a.handle(a.knowledgeGaps))
 	authed.Handle("POST /api/v1/knowledge/gaps/draft", a.handle(a.knowledgeGapDraft))
+	authed.Handle("GET /api/v1/knowledge/contradictions", a.handle(a.listContradictions))
+	authed.HandleFunc("POST /api/v1/knowledge/contradictions/{id}/resolve", a.handleDoc(a.resolveContradiction))
+	authed.HandleFunc("POST /api/v1/knowledge/contradictions/{id}/dismiss", a.handleDoc(a.dismissContradiction))
+	authed.Handle("GET /api/v1/admin/rag/settings", a.adminOnly(a.handle(a.getRagSettings)))
+	authed.Handle("PUT /api/v1/admin/rag/settings", a.adminOnly(a.handle(a.putRagSettings)))
 	// Telegram notify bot (owner setup + test + chat discovery).
 	authed.Handle("GET /api/v1/settings/telegram-notify", a.handle(a.getTelegramNotify))
 	authed.Handle("PUT /api/v1/settings/telegram-notify", a.handle(a.putTelegramNotify))

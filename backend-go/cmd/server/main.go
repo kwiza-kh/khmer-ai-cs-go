@@ -70,7 +70,7 @@ func main() {
 		logger.Warn("Gemini not configured — running in mock mode")
 	}
 
-	ragService := &rag.Service{DB: pool, Gemini: gem, Logger: logger}
+	ragService := &rag.Service{DB: pool, Gemini: gem, Redis: redisClient, Logger: logger}
 	ragService.SpawnIndexWorkers(ctx)
 
 	// Platform credential sealer.

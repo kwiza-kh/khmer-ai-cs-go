@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -19,14 +20,15 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"khmer-ai-cs-go/internal/gemini"
+	"khmer-ai-cs-go/internal/redisstore"
 )
 
 const (
-	DefaultChunkSize   = 1000
+	DefaultChunkSize    = 1000
 	DefaultChunkOverlap = 200
-	DefaultTopK        = int64(5)
+	DefaultTopK         = int64(5)
 
-	indexWorkerCount     = 2
+	indexWorkerCount      = 2
 	searchCandidateFactor = int64(4)
 	maxSearchCandidates   = int64(40)
 	rrfRankConstant       = 60.0
@@ -95,6 +97,7 @@ type GroundingContext struct {
 type Service struct {
 	DB     *pgxpool.Pool
 	Gemini *gemini.Service
+	Redis  *redisstore.Client
 	Logger *slog.Logger
 }
 
@@ -232,20 +235,26 @@ func (s *Service) refreshStaleURLDocs(ctx context.Context) error {
 
 // indexNextPending claims and indexes the oldest pending document (if any).
 func (s *Service) indexNextPending(ctx context.Context) bool {
-	var docID int32
-	var content string
+	var docID, userID int32
+	var content, title, language, origin string
 	err := s.DB.QueryRow(ctx,
 		"UPDATE knowledge_documents SET index_status = 'indexing', index_error = '' "+
 			"WHERE doc_id = (SELECT doc_id FROM knowledge_documents "+
-			"WHERE index_status = 'pending' ORDER BY created_at ASC LIMIT 1) "+
-			"RETURNING doc_id, content").Scan(&docID, &content)
+			"WHERE index_status = 'pending' ORDER BY created_at ASC FOR UPDATE SKIP LOCKED LIMIT 1) "+
+			"RETURNING doc_id, content, title, language, origin, uploaded_by").
+		Scan(&docID, &content, &title, &language, &origin, &userID)
 	if err != nil {
 		return false
 	}
 	if err := s.indexDocument(ctx, docID, content); err != nil {
 		s.Logger.Warn("knowledge document indexing failed", "error", err.Error())
 		s.markDocumentFailed(ctx, docID, err.Error())
+		return true
 	}
+	// Ingest-time compile (llm-wiki pattern): distill the freshly indexed
+	// source into an FAQ/summary child document and flag contradictions with
+	// the existing KB. Never blocks or fails the indexing itself.
+	s.maybeCompileDocument(ctx, docID, userID, title, content, language, origin)
 	return true
 }
 
@@ -298,6 +307,192 @@ func (s *Service) markDocumentFailed(ctx context.Context, docID int32, message s
 		msg, docID)
 }
 
+// ============================================
+// Ingest-time compile (llm-wiki pattern)
+// ============================================
+
+const (
+	compileMinRunes     = 600
+	compileMaxRunes     = 60000
+	compileRedisKey     = "rag:compile_enabled"
+	compiledTitleSuffix = " · AI 编译摘要"
+)
+
+// compileEnabled — Redis toggle written by PUT /api/v1/admin/rag/settings;
+// absent key means enabled (compile is on by default).
+func (s *Service) compileEnabled(ctx context.Context) bool {
+	if s.Redis == nil {
+		return true
+	}
+	v, err := s.Redis.GetString(ctx, compileRedisKey)
+	if err != nil || v == "" {
+		return true
+	}
+	return v == "1" || v == "true"
+}
+
+// CompileEnabledPublic exposes the toggle state for the admin settings GET.
+func (s *Service) CompileEnabledPublic(ctx context.Context) bool {
+	return s.compileEnabled(ctx)
+}
+
+// SetCompileEnabled persists the admin toggle ("1"/"0", no expiry).
+func (s *Service) SetCompileEnabled(ctx context.Context, enabled bool) error {
+	v := "0"
+	if enabled {
+		v = "1"
+	}
+	return s.Redis.SetString(ctx, compileRedisKey, v, 0)
+}
+
+type compileContradiction struct {
+	NewClaim    string `json:"new_claim"`
+	OldClaim    string `json:"old_claim"`
+	OldDocTitle string `json:"old_doc_title"`
+	Severity    string `json:"severity"`
+}
+
+type compileResult struct {
+	FaqMarkdown    string                 `json:"faq_markdown"`
+	Contradictions []compileContradiction `json:"contradictions"`
+}
+
+// maybeCompileDocument distills a freshly indexed source document into an
+// FAQ/summary child document (queued through the normal indexing path) and
+// records contradictions against the existing KB for human review. Indexing
+// has already succeeded at this point, so every failure here degrades to a
+// compile_status marker instead of an error.
+func (s *Service) maybeCompileDocument(ctx context.Context, docID, userID int32, title, content, language, origin string) {
+	if origin == "compiled" {
+		return
+	}
+	runes := len([]rune(content))
+	if runes < compileMinRunes || runes > compileMaxRunes || !s.compileEnabled(ctx) {
+		s.setCompileStatus(ctx, docID, "skipped")
+		return
+	}
+	if err := s.compileDocument(ctx, docID, userID, title, content, language); err != nil {
+		s.Logger.Warn("knowledge compile failed", "doc_id", docID, "error", err.Error())
+		s.setCompileStatus(ctx, docID, "failed")
+		return
+	}
+	s.setCompileStatus(ctx, docID, "done")
+}
+
+func (s *Service) setCompileStatus(ctx context.Context, docID int32, status string) {
+	_, _ = s.DB.Exec(ctx, "UPDATE knowledge_documents SET compile_status = $1 WHERE doc_id = $2", status, docID)
+}
+
+func (s *Service) compileDocument(ctx context.Context, docID, userID int32, title, content, language string) error {
+	// Idempotency: a re-indexed source replaces its previous compiled child.
+	if _, err := s.DB.Exec(ctx, "DELETE FROM knowledge_documents WHERE compiled_from = $1", docID); err != nil {
+		return fmt.Errorf("clear old compiled doc: %w", err)
+	}
+
+	// Existing KB excerpts feed the contradiction check (self and compiled
+	// children excluded).
+	var excerpts strings.Builder
+	if sources, err := s.Search(ctx, userID, title+" "+truncateRunes(content, 300), 6); err == nil {
+		for _, src := range sources {
+			// Skip the document itself and AI-compiled children (a source must
+			// not be flagged as contradicting its own previous summary).
+			if src.DocID == docID || strings.HasSuffix(src.Title, compiledTitleSuffix) {
+				continue
+			}
+			fmt.Fprintf(&excerpts, "--- EXISTING DOC: %s ---\n%s\n\n", src.Title, truncateRunes(src.Content, 400))
+		}
+	}
+
+	prompt := "You maintain a customer-support knowledge base.\n\n" +
+		"NEW DOCUMENT (title: " + title + "):\n" + truncateRunes(content, 9000) + "\n\n" +
+		"EXISTING KB EXCERPTS:\n" + truncateRunes(excerpts.String(), 4000) + "\n" +
+		"TASK 1 — compile the NEW DOCUMENT into a concise support-ready page. Write field \"faq_markdown\" as Markdown:\n" +
+		"  line 1 exactly: \"# " + title + compiledTitleSuffix + "\"\n" +
+		"  then a summary of at most 300 characters,\n" +
+		"  then at most 8 lines formatted \"- **Q**: <question> **A**: <answer>\" covering the document's key facts.\n" +
+		"  Keep it under 1200 characters total. Write in the same language as the NEW DOCUMENT (" + language + ").\n" +
+		"TASK 2 — compare the NEW DOCUMENT against the EXISTING KB EXCERPTS and list factual contradictions " +
+		"(different prices, dates, policies, specs). Field \"contradictions\": array of at most 5 " +
+		"{\"new_claim\",\"old_claim\",\"old_doc_title\",\"severity\"} (severity: high|medium|low); empty array when none.\n" +
+		"Reply with ONLY a JSON object: {\"faq_markdown\": string, \"contradictions\": [...]}"
+	// 4096 output tokens: the FAQ + contradictions JSON overflows the 2048
+	// default and a truncated payload fails to parse.
+	reply, ok := s.Gemini.GenerateFastMax(ctx, prompt, 60*time.Second, 4096)
+	if !ok {
+		return fmt.Errorf("compile LLM call failed")
+	}
+	trimmed := strings.TrimSpace(reply)
+	if i := strings.Index(trimmed, "{"); i >= 0 {
+		if j := strings.LastIndex(trimmed, "}"); j > i {
+			trimmed = trimmed[i : j+1]
+		}
+	}
+	var res compileResult
+	if err := json.Unmarshal([]byte(trimmed), &res); err != nil {
+		// Fallback: the model sometimes answers with the Markdown page directly
+		// instead of the JSON envelope. Accept it (with no contradictions)
+		// rather than losing the compile entirely.
+		if head, ok := strings.CutPrefix(strings.TrimSpace(reply), "# "); ok {
+			res = compileResult{FaqMarkdown: "# " + head}
+		} else {
+			return fmt.Errorf("parse compile output: %w", err)
+		}
+	}
+	faq := strings.TrimSpace(res.FaqMarkdown)
+	if faq == "" {
+		return fmt.Errorf("empty compile output")
+	}
+
+	var category *string
+	var tags []string
+	_ = s.DB.QueryRow(ctx, "SELECT category, tags FROM knowledge_documents WHERE doc_id = $1", docID).Scan(&category, &tags)
+	compiledTags := append(append([]string{}, tags...), "auto-compiled")
+	var compiledID int32
+	err := s.DB.QueryRow(ctx,
+		"INSERT INTO knowledge_documents (title, content, language, category, tags, uploaded_by, index_status, source, origin, compiled_from, compile_status) "+
+			"VALUES ($1, $2, $3, $4, $5::text[], $6, 'pending', 'manual', 'compiled', $7, 'none') "+
+			"ON CONFLICT (compiled_from) WHERE compiled_from IS NOT NULL DO NOTHING RETURNING doc_id",
+		title+compiledTitleSuffix, faq, language, category, compiledTags, userID, docID).Scan(&compiledID)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			// Another compile already produced the child — nothing more to do.
+			return nil
+		}
+		return fmt.Errorf("insert compiled doc: %w", err)
+	}
+	s.Logger.Info("knowledge document compiled", "doc_id", docID, "compiled_id", compiledID)
+
+	if len(res.Contradictions) > 0 {
+		items, _ := json.Marshal(res.Contradictions)
+		var oldDocID *int32
+		first := ""
+		for _, c := range res.Contradictions {
+			if c.OldDocTitle != "" {
+				first = c.OldDocTitle
+				break
+			}
+		}
+		if first != "" {
+			var id int32
+			// Match a real source document only: compiled children carry the
+			// source title too, and picking one would point the review at an
+			// AI summary instead of the human-authored original.
+			if err := s.DB.QueryRow(ctx,
+				"SELECT doc_id FROM knowledge_documents WHERE uploaded_by = $1 AND doc_id <> $2 "+
+					"AND origin <> 'compiled' AND title ILIKE $3 ORDER BY created_at DESC LIMIT 1",
+				userID, docID, "%"+first+"%").Scan(&id); err == nil {
+				oldDocID = &id
+			}
+		}
+		if _, err := s.DB.Exec(ctx,
+			"INSERT INTO kb_contradictions (user_id, new_doc_id, old_doc_id, items) VALUES ($1, $2, $3, $4::jsonb)",
+			userID, docID, oldDocID, string(items)); err != nil {
+			s.Logger.Warn("contradiction record failed", "doc_id", docID, "error", err.Error())
+		}
+	}
+	return nil
+}
+
 // UploadDocument creates a document (pending) and lets the worker index it.
 // sourceURL marks the document as URL-derived (source='url').
 func (s *Service) UploadDocument(ctx context.Context, userID int32, title, content, language, category string, tags []string, sourceURL *string) (map[string]any, error) {
@@ -315,10 +510,10 @@ func (s *Service) UploadDocument(ctx context.Context, userID int32, title, conte
 		source = "url"
 	}
 	row := s.DB.QueryRow(ctx,
-		"INSERT INTO knowledge_documents (title, content, language, category, tags, uploaded_by, index_status, source, source_url) "+
-			"VALUES ($1, $2, $3, $4, $5::text[], $6, 'pending', $7, $8) "+
-			"RETURNING doc_id, title, language, category, chunk_count, source, index_status, index_error, created_at, updated_at",
-		title, content, lang, category, tags, userID, source, sourceURL)
+		"INSERT INTO knowledge_documents (title, content, language, category, tags, uploaded_by, index_status, source, source_url, origin) "+
+			"VALUES ($1, $2, $3, $4, $5::text[], $6, 'pending', $7, $8, $9) "+
+			"RETURNING doc_id, title, language, category, chunk_count, source, index_status, index_error, created_at, updated_at, origin, compiled_from, compile_status",
+		title, content, lang, category, tags, userID, source, sourceURL, source)
 	doc, err := scanDocumentRow(row)
 	if err != nil {
 		return nil, err
@@ -572,7 +767,7 @@ func (s *Service) searchDense(ctx context.Context, userID int32, vector string, 
 			"AND kd.embedding_model = $5 "+
 			"AND 1 - (kc.embedding <=> $1::vector) > $2 "+
 			"ORDER BY kc.embedding <=> $1::vector LIMIT $3",
-			vector, currentThresholds().floor, limit, userID, gemini.EmbeddingModel)
+		vector, currentThresholds().floor, limit, userID, gemini.EmbeddingModel)
 	if err != nil {
 		return nil, fmt.Errorf("vector search: %w", err)
 	}
@@ -1023,8 +1218,8 @@ func ChunkMarkdown(text string) []string {
 // 文档管理
 // ============================================
 
-const summaryCols = "doc_id, title, language, category, chunk_count, source, index_status, index_error, created_at, updated_at"
-const fullCols = "doc_id, title, content, language, category, tags, chunk_count, source, index_status, index_error, created_at, updated_at"
+const summaryCols = "kd.doc_id, kd.title, kd.language, kd.category, kd.chunk_count, kd.source, kd.index_status, kd.index_error, kd.created_at, kd.updated_at, kd.origin, kd.compiled_from, kd.compile_status, src.title"
+const fullCols = "doc_id, title, content, language, category, tags, chunk_count, source, index_status, index_error, created_at, updated_at, origin, compiled_from, compile_status"
 
 // ListDocuments — paginated document summaries.
 func (s *Service) ListDocuments(ctx context.Context, userID int32, page, pageSize int64) (map[string]any, error) {
@@ -1043,7 +1238,9 @@ func (s *Service) ListDocuments(ctx context.Context, userID int32, page, pageSiz
 		return nil, fmt.Errorf("查询失败: %w", err)
 	}
 	rows, err := s.DB.Query(ctx,
-		"SELECT "+summaryCols+" FROM knowledge_documents WHERE uploaded_by = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",
+		"SELECT "+summaryCols+" FROM knowledge_documents kd "+
+			"LEFT JOIN knowledge_documents src ON src.doc_id = kd.compiled_from "+
+			"WHERE kd.uploaded_by = $1 ORDER BY kd.created_at DESC LIMIT $2 OFFSET $3",
 		userID, pageSize, offset)
 	if err != nil {
 		return nil, fmt.Errorf("查询失败: %w", err)

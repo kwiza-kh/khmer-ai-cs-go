@@ -115,11 +115,11 @@ func (s *Service) ModelName() string {
 
 // snapshot returns an immutable copy of the serving config for one request.
 type servingConfig struct {
-	apiKey      string
-	modelName   string
+	apiKey       string
+	modelName    string
 	systemPrompt string
-	maxTokens   int
-	client      *http.Client
+	maxTokens    int
+	client       *http.Client
 }
 
 func (s *Service) snapshot() servingConfig {
@@ -559,8 +559,18 @@ func (s *Service) chatMock(message, language string) ChatResult {
 // GenerateFast runs an auxiliary prompt on the fast model with a timeout.
 // Returns ("", false) on any failure/mock — callers degrade gracefully.
 func (s *Service) GenerateFast(ctx context.Context, prompt string, timeout time.Duration) (string, bool) {
+	return s.GenerateFastMax(ctx, prompt, timeout, 2048)
+}
+
+// GenerateFastMax is GenerateFast with an explicit output-token budget for
+// prompts that emit longer structured payloads (e.g. the ingest-time compile,
+// whose JSON is truncated into invalid syntax at the default 2048).
+func (s *Service) GenerateFastMax(ctx context.Context, prompt string, timeout time.Duration, maxOutputTokens int) (string, bool) {
 	if !s.IsConfigured() {
 		return "", false
+	}
+	if maxOutputTokens <= 0 {
+		maxOutputTokens = 2048
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -569,7 +579,7 @@ func (s *Service) GenerateFast(ctx context.Context, prompt string, timeout time.
 			"role":  "user",
 			"parts": []map[string]any{{"text": prompt}},
 		}},
-		"generationConfig": map[string]any{"temperature": 0.0, "maxOutputTokens": 2048},
+		"generationConfig": map[string]any{"temperature": 0.0, "maxOutputTokens": maxOutputTokens},
 	}
 	status, text, err := s.postWithRetry(ctx, s.generateURLFor(s.fastModelName()), body)
 	if err != nil || status != http.StatusOK {
@@ -795,9 +805,9 @@ func (s *Service) embed(ctx context.Context, text, taskType string) ([]float32, 
 		return MockEmbedding(), nil
 	}
 	body := map[string]any{
-		"model":              "models/" + EmbeddingModel,
-		"content":            map[string]any{"parts": []map[string]any{{"text": text}}},
-		"taskType":           taskType,
+		"model":                "models/" + EmbeddingModel,
+		"content":              map[string]any{"parts": []map[string]any{{"text": text}}},
+		"taskType":             taskType,
 		"outputDimensionality": embeddingVectorDimension,
 	}
 	status, respText, err := s.postWithRetry(ctx, s.embedURL(), body)
