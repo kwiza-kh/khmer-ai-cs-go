@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import useSWR from "swr";
-import { listUsers, updateUserRole, getTokenStats, listModelConfigs, listAvailableModels, testModelConfig, updateModelConfig, type AvailableModel, type ModelItem } from "@/lib/api";
+import { listUsers, updateUserRole, getTokenStats, listModelConfigs, listAvailableModels, testModelConfig, updateModelConfig, type AvailableModel, type ModelItem, type PaginatedResponse, type UserItem, type UsersStats } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -16,7 +16,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { BarChart3, Clock, KeyRound, MessageSquare, RefreshCw, Send, Sparkles, TrendingUp, Users, Zap, Download, ShieldCheck, type LucideIcon } from "lucide-react";
+import { BarChart3, Clock, KeyRound, MessageSquare, RefreshCw, Send, Sparkles, TrendingUp, Users, Zap, Download, ShieldCheck, Search, UserCheck, UserPlus, Coins, type LucideIcon } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
 
@@ -31,19 +31,7 @@ import { GrowthTab } from "@/components/admin/growth-tab";
 import { ReportsTab } from "@/components/admin/reports-tab";
 import { EnterpriseTab } from "@/components/admin/enterprise-tab";
 
-interface UserItem {
-  user_id: number;
-  username: string;
-  email: string;
-  role: string;
-  is_active: boolean;
-  auth_method?: string;
-}
-
-interface UsersResponse {
-  data: UserItem[];
-  total: number;
-}
+type UsersResponse = PaginatedResponse<UserItem> & { stats?: UsersStats };
 
 interface TokenStats {
   daily_usage: { date: string; tokens: number; cost: number }[];
@@ -52,18 +40,20 @@ interface TokenStats {
 function AdminPageFrame({
   icon,
   title,
+  description,
   children,
   actions,
 }: {
   icon: LucideIcon;
   title: string;
+  description?: string;
   children: React.ReactNode;
   actions?: React.ReactNode;
 }) {
   const { t } = useI18n();
   return (
     <div className="flex h-full flex-col">
-      <PageHeader icon={icon} kicker={t("nav.administration")} title={title} actions={actions} />
+      <PageHeader icon={icon} kicker={t("nav.administration")} title={title} description={description} actions={actions} />
       <div className="flex-1 overflow-auto p-5 sm:p-8">
         <div className="mx-auto max-w-6xl">{children}</div>
       </div>
@@ -125,11 +115,71 @@ export function DashboardPage() {
   );
 }
 
+function formatTokenCount(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}k`;
+  return String(tokens);
+}
+
+function UserStatCard({
+  icon: Icon,
+  label,
+  value,
+  prefix = "",
+  tone = "default",
+}: {
+  icon: LucideIcon;
+  label: string;
+  value?: number;
+  prefix?: string;
+  tone?: "default" | "success" | "primary" | "warning";
+}) {
+  const toneClass = {
+    default: "bg-muted text-muted-foreground ring-border/60",
+    success: "bg-success/10 text-success ring-success/20",
+    primary: "bg-primary/10 text-primary ring-primary/15",
+    warning: "bg-warning/10 text-warning ring-warning/20",
+  }[tone];
+  return (
+    <Card>
+      <CardContent className="flex items-center gap-3 p-4">
+        <div className={cn("flex size-9 shrink-0 items-center justify-center rounded-xl ring-1 ring-inset", toneClass)}>
+          <Icon className="size-4" />
+        </div>
+        <div className="min-w-0">
+          <p className="truncate text-[11px] font-medium text-muted-foreground">{label}</p>
+          <p className="text-xl font-semibold tabular-nums text-foreground">
+            {value == null ? "—" : `${prefix}${value.toLocaleString()}`}
+          </p>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+const ROLE_PILL: Record<string, string> = {
+  platform_admin: "bg-warning/15 text-warning",
+  admin: "bg-primary/10 text-primary",
+  user: "bg-muted text-muted-foreground",
+};
+
 export function UsersAdminPage() {
   const { t, tf } = useI18n();
-  const { data, isLoading, mutate } = useSWR<UsersResponse>("admin-users", () => listUsers(1, 100));
+  const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState("");
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSearch(searchInput.trim()), 300);
+    return () => window.clearTimeout(timer);
+  }, [searchInput]);
+
+  const { data, isLoading, mutate } = useSWR<UsersResponse>(
+    ["admin-users", search],
+    () => listUsers(1, 100, search),
+  );
   const users = data?.data ?? [];
   const userTotal = data?.total ?? 0;
+  const stats = data?.stats;
+  const maxTokens = users.reduce((max, u) => Math.max(max, u.total_tokens ?? 0), 0);
 
   const handleUpdateRole = async (userId: number, role: string) => {
     try {
@@ -154,68 +204,119 @@ export function UsersAdminPage() {
     <AdminPageFrame
       icon={Users}
       title={t("admin.usersTitle")}
-      actions={<RefreshAction onClick={() => void mutate()} refreshing={isLoading} />}
+      description={t("admin.usersSubtitle")}
+      actions={
+        <div className="flex items-center gap-2">
+          <div className="relative">
+            <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={searchInput}
+              onChange={(event) => setSearchInput(event.target.value)}
+              placeholder={t("admin.searchUsers")}
+              className="h-8 w-44 pl-8 text-xs sm:w-64"
+            />
+          </div>
+          <RefreshAction onClick={() => void mutate()} refreshing={isLoading} />
+        </div>
+      }
     >
-      {isLoading ? <PageLoadingState /> : (
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm">{tf("admin.registeredUsers", { n: userTotal })}</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {users.length === 0 ? (
-              <EmptyState icon={Users} title={t("admin.noUsers")} />
-            ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="w-12 text-xs">{t("admin.colId")}</TableHead>
-                    <TableHead className="text-xs">{t("admin.colUsername")}</TableHead>
-                    <TableHead className="text-xs">{t("admin.colEmail")}</TableHead>
-                    <TableHead className="text-xs">{t("admin.colRole")}</TableHead>
-                    <TableHead className="text-xs">{t("admin.colStatus")}</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {users.map((user) => (
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <UserStatCard icon={Users} label={t("admin.statTotalUsers")} value={stats?.total} />
+        <UserStatCard icon={UserCheck} label={t("admin.statActive")} value={stats?.active} tone="success" />
+        <UserStatCard icon={UserPlus} label={t("admin.statNewWeek")} value={stats?.new_week} prefix="+" tone="primary" />
+        <UserStatCard icon={ShieldCheck} label={t("admin.statAdmins")} value={stats?.admins} tone="warning" />
+      </div>
+
+      <Card className="mt-4">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm">{tf("admin.registeredUsers", { n: userTotal })}</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {isLoading ? <PageLoadingState /> : users.length === 0 ? (
+            <EmptyState icon={Users} title={search ? t("admin.noSearchResults") : t("admin.noUsers")} />
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="text-xs">{t("admin.colUser")}</TableHead>
+                  <TableHead className="text-xs">{t("admin.colRole")}</TableHead>
+                  <TableHead className="text-xs">{t("admin.colStatus")}</TableHead>
+                  <TableHead className="text-xs">{t("admin.colUsage")}</TableHead>
+                  <TableHead className="text-xs">{t("admin.colRegistered")}</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {users.map((user) => {
+                  const tokens = user.total_tokens ?? 0;
+                  const usagePct = maxTokens > 0 ? Math.round((tokens / maxTokens) * 100) : 0;
+                  return (
                     <TableRow key={user.user_id}>
-                      <TableCell className="text-xs text-muted-foreground">{user.user_id}</TableCell>
-                      <TableCell className="text-xs font-medium">
-                        <span className="inline-flex items-center gap-1.5">
-                          {user.username}
-                          {user.auth_method === "google" && (
-                            <Badge variant="secondary" className="h-4 px-1.5 text-[10px] font-normal">
-                              Google
-                            </Badge>
-                          )}
-                        </span>
+                      <TableCell>
+                        <div className="flex min-w-0 items-center gap-2.5">
+                          <span className={cn(
+                            "flex size-8 shrink-0 items-center justify-center rounded-full text-xs font-semibold uppercase",
+                            ROLE_PILL[user.role] ?? ROLE_PILL.user,
+                          )}>
+                            {user.username.slice(0, 2)}
+                          </span>
+                          <div className="min-w-0">
+                            <p className="flex items-center gap-1.5 truncate text-xs font-medium text-foreground">
+                              {user.username}
+                              <Badge variant="outline" className="h-4 shrink-0 gap-1 px-1.5 text-[10px] font-normal text-muted-foreground">
+                                {user.auth_method === "google" ? "Google" : t("admin.authPassword")}
+                              </Badge>
+                            </p>
+                            <p className="truncate text-[11px] text-muted-foreground">{user.email}</p>
+                          </div>
+                        </div>
                       </TableCell>
-                      <TableCell className="text-xs text-muted-foreground">{user.email}</TableCell>
                       <TableCell>
                         <Select value={user.role} onValueChange={(value) => handleUpdateRole(user.user_id, value || "user")}>
-                          <SelectTrigger className="h-7 w-20 text-xs"><SelectValue /></SelectTrigger>
+                          <SelectTrigger className={cn("h-6 w-auto min-w-24 gap-1.5 rounded-full border-transparent px-2.5 text-[11px] font-medium shadow-none", ROLE_PILL[user.role] ?? ROLE_PILL.user)}>
+                            <SelectValue />
+                          </SelectTrigger>
                           <SelectContent>
                             <SelectItem value="user">{t("admin.roleUser")}</SelectItem>
                             <SelectItem value="admin">{t("admin.roleAdmin")}</SelectItem>
+                            <SelectItem value="platform_admin">{t("admin.rolePlatformAdmin")}</SelectItem>
                           </SelectContent>
                         </Select>
                       </TableCell>
                       <TableCell>
-                        <Badge
-                          variant={user.is_active ? "success" : "destructive"}
+                        <button
+                          type="button"
                           onClick={() => handleToggleActive(user.user_id, !user.is_active)}
-                          className="h-5 cursor-pointer px-2 text-xs"
+                          title={t("admin.statusToggleHint")}
+                          className={cn(
+                            "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium transition-colors",
+                            user.is_active ? "bg-success/10 text-success hover:bg-success/15" : "bg-muted text-muted-foreground hover:bg-muted/70",
+                          )}
                         >
+                          <span className={cn("size-1.5 rounded-full", user.is_active ? "bg-success" : "bg-muted-foreground/50")} />
                           {user.is_active ? t("admin.statusActive") : t("admin.statusDisabled")}
-                        </Badge>
+                        </button>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-2">
+                          <div className="h-1.5 w-20 overflow-hidden rounded-full bg-muted">
+                            <div className="h-full rounded-full bg-primary" style={{ width: `${usagePct}%` }} />
+                          </div>
+                          <span className="text-[11px] font-medium tabular-nums text-foreground" title={tf("admin.tokenCost", { cost: (user.cost_estimate ?? 0).toFixed(4) })}>
+                            {formatTokenCount(tokens)}
+                          </span>
+                        </div>
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap text-[11px] text-muted-foreground">
+                        {user.created_at ? new Date(user.created_at).toLocaleDateString() : "—"}
                       </TableCell>
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            )}
-          </CardContent>
-        </Card>
-      )}
+                  );
+                })}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
     </AdminPageFrame>
   );
 }

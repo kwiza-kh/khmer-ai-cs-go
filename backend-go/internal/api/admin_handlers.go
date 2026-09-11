@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"khmer-ai-cs-go/internal/gemini"
@@ -325,7 +327,8 @@ func (a *App) listAvailableModels(w http.ResponseWriter, r *http.Request, config
 // listUsers — all users (admin), paginated with the same {data,total,...}
 // envelope every other list endpoint uses; the admin users page reads
 // .data/.total, so a bare array rendered the whole list (Google sign-ups
-// included) as empty.
+// included) as empty. Supports ?search= over username/email and reports
+// per-user token consumption plus global header stats for the stat cards.
 func (a *App) listUsers(w http.ResponseWriter, r *http.Request) (any, error) {
 	page := parseIntOr(r.URL.Query().Get("page"), 1)
 	pageSize := parseIntOr(r.URL.Query().Get("page_size"), 100)
@@ -333,15 +336,51 @@ func (a *App) listUsers(w http.ResponseWriter, r *http.Request) (any, error) {
 		pageSize = 200
 	}
 	offset := (page - 1) * pageSize
+	search := strings.TrimSpace(r.URL.Query().Get("search"))
+
+	whereClause, likePattern := "", ""
+	if search != "" {
+		whereClause = " WHERE username ILIKE $1 OR email ILIKE $1"
+		likePattern = "%" + search + "%"
+	}
+	countArgs := []any{}
+	if search != "" {
+		countArgs = append(countArgs, likePattern)
+	}
 
 	var total int64
-	if err := a.DB.QueryRow(r.Context(), "SELECT COUNT(*) FROM users").Scan(&total); err != nil {
+	if err := a.DB.QueryRow(r.Context(), "SELECT COUNT(*) FROM users"+whereClause, countArgs...).Scan(&total); err != nil {
 		return nil, ErrInternal("查询失败")
 	}
 
+	// Global (unfiltered) stats for the header cards.
+	var stats struct {
+		Total    int64
+		Active   int64
+		NewWeek  int64
+		Admins   int64
+	}
+	if err := a.DB.QueryRow(r.Context(),
+		"SELECT COUNT(*), COUNT(*) FILTER (WHERE is_active), "+
+			"COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '7 days'), "+
+			"COUNT(*) FILTER (WHERE role IN ('admin','platform_admin')) FROM users").
+		Scan(&stats.Total, &stats.Active, &stats.NewWeek, &stats.Admins); err != nil {
+		return nil, ErrInternal("查询失败")
+	}
+
+	selArgs := []any{}
+	if search != "" {
+		selArgs = append(selArgs, likePattern)
+	}
+	selArgs = append(selArgs, pageSize, offset)
 	rows, err := a.DB.Query(r.Context(),
-		"SELECT user_id, username, email, role::text, is_active, created_at, google_sub IS NOT NULL "+
-			"FROM users ORDER BY user_id LIMIT $1 OFFSET $2", pageSize, offset)
+		"SELECT u.user_id, u.username, u.email, u.role::text, u.is_active, u.created_at, "+
+			"u.google_sub IS NOT NULL, COALESCE(t.total_tokens, 0), COALESCE(t.cost_estimate, 0) "+
+			"FROM users u LEFT JOIN LATERAL ("+
+			"SELECT SUM(total_tokens) AS total_tokens, SUM(cost_estimate) AS cost_estimate "+
+			"FROM token_usage WHERE user_id = u.user_id) t ON TRUE"+
+			whereClause+" ORDER BY u.user_id LIMIT $"+strconv.Itoa(len(selArgs)-1)+" OFFSET $"+strconv.Itoa(len(selArgs)),
+		selArgs...)
 	if err != nil {
 		return nil, ErrInternal("查询失败")
 	}
@@ -353,7 +392,9 @@ func (a *App) listUsers(w http.ResponseWriter, r *http.Request) (any, error) {
 		var username, email, role string
 		var isActive, hasGoogle bool
 		var createdAt *time.Time
-		if err := rows.Scan(&uid, &username, &email, &role, &isActive, &createdAt, &hasGoogle); err != nil {
+		var totalTokens int64
+		var cost float64
+		if err := rows.Scan(&uid, &username, &email, &role, &isActive, &createdAt, &hasGoogle, &totalTokens, &cost); err != nil {
 			skipped++
 			continue
 		}
@@ -364,9 +405,15 @@ func (a *App) listUsers(w http.ResponseWriter, r *http.Request) (any, error) {
 		out = append(out, map[string]any{
 			"user_id": uid, "username": username, "email": email, "role": role,
 			"is_active": isActive, "created_at": createdAt, "auth_method": authMethod,
+			"total_tokens": totalTokens, "cost_estimate": cost,
 		})
 	}
-	return map[string]any{"data": out, "total": total, "page": page, "page_size": pageSize, "skipped": skipped}, nil
+	return map[string]any{
+		"data": out, "total": total, "page": page, "page_size": pageSize, "skipped": skipped,
+		"stats": map[string]any{
+			"total": stats.Total, "active": stats.Active, "new_week": stats.NewWeek, "admins": stats.Admins,
+		},
+	}, nil
 }
 
 // updateUserRole — change a user's role / active state (admin).
@@ -404,13 +451,17 @@ func (a *App) updateUserRole(w http.ResponseWriter, r *http.Request, userID int3
 		if targetRole == "platform_admin" && caller.Role != "platform_admin" {
 			return nil, ErrForbidden("无权修改平台管理员")
 		}
-		_, _ = a.DB.Exec(r.Context(), "UPDATE users SET role = $1::user_role WHERE user_id = $2", *req.Role, userID)
+		if _, err := a.DB.Exec(r.Context(), "UPDATE users SET role = $1::user_role WHERE user_id = $2", *req.Role, userID); err != nil {
+			return nil, ErrInternal("更新失败")
+		}
 	}
 	if req.IsActive != nil {
 		if targetRole == "platform_admin" && caller.Role != "platform_admin" {
 			return nil, ErrForbidden("无权修改平台管理员")
 		}
-		_, _ = a.DB.Exec(r.Context(), "UPDATE users SET is_active = $1 WHERE user_id = $2", *req.IsActive, userID)
+		if _, err := a.DB.Exec(r.Context(), "UPDATE users SET is_active = $1 WHERE user_id = $2", *req.IsActive, userID); err != nil {
+			return nil, ErrInternal("更新失败")
+		}
 	}
 	return map[string]string{"message": "已更新"}, nil
 }

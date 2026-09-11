@@ -59,6 +59,16 @@ export interface UserItem {
   is_active: boolean;
   created_at: string;
   updated_at?: string;
+  auth_method?: string;
+  total_tokens?: number;
+  cost_estimate?: number;
+}
+
+export interface UsersStats {
+  total: number;
+  active: number;
+  new_week: number;
+  admins: number;
 }
 
 export interface ModelItem {
@@ -658,8 +668,10 @@ export async function deleteKnowledge(docId: number) {
 }
 
 // Admin
-export async function listUsers(page = 1, pageSize = 20) {
-  return apiFetch<PaginatedResponse<UserItem>>(`/admin/users?page=${page}&page_size=${pageSize}`);
+export async function listUsers(page = 1, pageSize = 20, search = "") {
+  const qs = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+  if (search) qs.set("search", search);
+  return apiFetch<PaginatedResponse<UserItem> & { stats?: UsersStats }>(`/admin/users?${qs.toString()}`);
 }
 
 export async function updateUserRole(userId: number, role: string, isActive?: boolean) {
