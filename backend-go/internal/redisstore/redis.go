@@ -58,6 +58,14 @@ func (c *Client) CheckRateLimit(ctx context.Context, key string, max uint32) (bo
 	if err := c.rdb.SetNX(ctx, rk, 0, time.Minute).Err(); err != nil {
 		return false, err
 	}
+	// Self-heal poison keys: a window left without a TTL (leaked by the old
+	// INCR-then-EXPIRE pattern) never expires, and SET NX is a no-op on an
+	// existing key — its owner stays rate-limited forever once the count
+	// passes max. Re-asserting the TTL on every check bounds such a key to
+	// one extra window.
+	if err := c.rdb.Expire(ctx, rk, time.Minute).Err(); err != nil {
+		return false, err
+	}
 	count, err := c.rdb.Incr(ctx, rk).Result()
 	if err != nil {
 		return false, err
@@ -71,6 +79,10 @@ func (c *Client) CheckRateLimit(ctx context.Context, key string, max uint32) (bo
 func (c *Client) IncrWindow(ctx context.Context, key string, max int64, ttl time.Duration) (bool, error) {
 	rk := "ratelimit:" + key
 	if err := c.rdb.SetNX(ctx, rk, 0, ttl).Err(); err != nil {
+		return false, err
+	}
+	// Same poison-key self-heal as CheckRateLimit: re-assert the window TTL.
+	if err := c.rdb.Expire(ctx, rk, ttl).Err(); err != nil {
 		return false, err
 	}
 	count, err := c.rdb.Incr(ctx, rk).Result()
