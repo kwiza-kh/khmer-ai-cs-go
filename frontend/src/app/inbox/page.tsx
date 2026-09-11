@@ -209,6 +209,7 @@ function platformCategory(platform?: string): PlatformCategory | null {
     case "instagram":
     case "whatsapp":
     case "line":
+    case "zalo":
     case "web":
       return platform;
     default:
@@ -305,10 +306,24 @@ export default function InboxPage() {
   }, [skippedRows, tf]);
   // useMemo keeps the array identity stable between renders — the keydown
   // effect depends on it, so this prevents listener churn on every poll.
-  const items = React.useMemo(() => (inboxData?.data ?? []).filter((item) => {
-    const matchesQuery = !query || (item.title || item.user_display_name || item.last_message || "").toLowerCase().includes(query.toLowerCase());
-    return matchesQuery && (platformFilter === "all" || platformCategory(item.platform) === platformFilter);
-  }), [inboxData, query, platformFilter]);
+  // Two-stage filter: query first (so platform chips can show "matches within
+  // the current search" counts), then the platform chip narrows the list.
+  const queryItems = React.useMemo(() => (inboxData?.data ?? []).filter((item) =>
+    !query || (item.title || item.user_display_name || item.last_message || "").toLowerCase().includes(query.toLowerCase()),
+  ), [inboxData, query]);
+  const platformCounts = React.useMemo(() => {
+    const counts = new Map<PlatformCategory, number>();
+    for (const item of queryItems) {
+      const category = platformCategory(item.platform);
+      if (category) counts.set(category, (counts.get(category) ?? 0) + 1);
+    }
+    return counts;
+  }, [queryItems]);
+  const items = React.useMemo(() => (
+    platformFilter === "all"
+      ? queryItems
+      : queryItems.filter((item) => platformCategory(item.platform) === platformFilter)
+  ), [queryItems, platformFilter]);
   const groupedItems = React.useMemo(() => {
     const groups = platformFilter === "all"
       ? PLATFORM_GROUPS
@@ -480,30 +495,44 @@ export default function InboxPage() {
                 </button>
               </div>
             </div>
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t("inbox.search")} className="h-8 rounded-lg pl-8 text-xs" />
+            </div>
             <Select value={statusFilter} onValueChange={(v) => setStatusFilter((v || "all") as SessionStatus | "all")}>
-              <SelectTrigger className="h-9 rounded-lg text-xs"><SelectValue /></SelectTrigger>
+              <SelectTrigger className="h-8 rounded-lg text-xs"><SelectValue /></SelectTrigger>
               <SelectContent>
                 {STATUS_FILTERS.map((f) => <SelectItem key={f.value} value={f.value}>{t(f.labelKey)}</SelectItem>)}
               </SelectContent>
             </Select>
-            <div className="grid grid-cols-3 gap-1" role="group" aria-label="Filter by platform">
-              {PLATFORM_FILTERS.map((filter) => (
-                <Button
-                  key={filter.value}
-                  type="button"
-                  size="sm"
-                  variant={platformFilter === filter.value ? "default" : "ghost"}
-                  onClick={() => setPlatformFilter(filter.value)}
-                  aria-pressed={platformFilter === filter.value}
-                  className="h-8 w-full justify-start rounded-md px-2 text-[11px] font-medium"
-                >
-                  {filter.filterLabel ?? t("inbox.platformAll")}
-                </Button>
-              ))}
-            </div>
-            <div className="relative">
-              <Search className="absolute left-2 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
-              <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t("inbox.search")} className="h-9 rounded-lg pl-8 text-xs" />
+            <div className="flex flex-wrap gap-1" role="group" aria-label="Filter by platform">
+              {PLATFORM_FILTERS.map((filter) => {
+                const isActive = platformFilter === filter.value;
+                const dot = PLATFORM_GROUPS.find((group) => group.value === filter.value)?.dotClass;
+                const count = filter.value === "all"
+                  ? queryItems.length
+                  : platformCounts.get(filter.value as PlatformCategory) ?? 0;
+                return (
+                  <button
+                    key={filter.value}
+                    type="button"
+                    onClick={() => setPlatformFilter(filter.value)}
+                    aria-pressed={isActive}
+                    className={cn(
+                      "inline-flex h-6 items-center gap-1.5 rounded-full border px-2 text-[11px] font-medium transition-colors",
+                      isActive
+                        ? "border-transparent bg-primary text-primary-foreground shadow-sm"
+                        : "border-border/70 bg-card text-muted-foreground hover:bg-accent hover:text-foreground",
+                    )}
+                  >
+                    {dot
+                      ? <span className={cn("size-1.5 rounded-full", dot)} />
+                      : <InboxIcon className={cn("size-3", isActive ? "text-primary-foreground" : "text-muted-foreground")} />}
+                    {filter.filterLabel ?? t("inbox.platformAll")}
+                    <span className={cn("tabular-nums", isActive ? "text-primary-foreground/70" : "text-muted-foreground/70")}>{count}</span>
+                  </button>
+                );
+              })}
             </div>
           </div>
 
