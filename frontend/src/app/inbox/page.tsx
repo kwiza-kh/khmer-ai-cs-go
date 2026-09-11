@@ -30,8 +30,11 @@ import {
 	Image as ImageIcon, ListChecks, FileCode2, Plus, Trash2, Paperclip, MessageSquare, Volume2,
 	AlertTriangle, RefreshCw, ChevronDown, ChevronUp, PanelRight, ChevronRight, Phone, Mail, ChevronLeft, Pencil,
 	Archive, ArchiveRestore,
-	Languages, Check, Play, Pause,
+	Languages, Check, AudioLines, Headset, Bot,
 } from "lucide-react";
+import { Message, MessageAvatar, MessageContent, MessageFooter, MessageGroup, MessageHeader } from "@/components/ui/message";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import VoiceMessageBubble from "@/components/ui/voice-message-bubble";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { useAuth } from "@/lib/auth-client";
@@ -1396,62 +1399,85 @@ function ConversationDetail({
                         <span className="h-px flex-1 bg-primary/40" />
                       </div>
                     )}
-                    <div className={cn("flex flex-col gap-1", isUser ? "items-end" : "items-start")}>
-                      <div className={cn("flex items-center gap-1.5 text-[10px] text-muted-foreground", isUser && "flex-row-reverse")}>
-                        <span className="font-semibold">{t(roleLabelKey(role))}</span>
-                        <span className="tabular-nums">{fmtRelTime(group[0].created_at, t("inbox.timeNow"))}</span>
-                      </div>
-                      {group.map((m) => (
-                        <React.Fragment key={m.message_id}>
-                          <div className={cn(
-                            "max-w-[85%] rounded-lg px-2.5 py-1.5",
-                            m.role === "user" ? "bg-accent text-accent-foreground"
-                              : m.role === "agent" ? "bg-warning/15 text-foreground"
-                              : m.role === "model" ? "bg-primary/10 text-foreground"
-                              : "bg-muted text-muted-foreground",
-                          )}>
-                            <MessagePayloadPreview messageID={m.message_id} content={m.content} metadata={m.metadata} payload={m.delivery?.payload} />
-                            {m.role === "model" && parseSources(m.sources_json).length > 0 && (
-                              <div className="mt-1.5 flex flex-wrap gap-1 border-t border-border/60 pt-1.5">
-                                {parseSources(m.sources_json).slice(0, 4).map((src) => (
-                                  <span key={`${src.doc_id}-${src.title}`} title={(src.content || "").slice(0, 140)} className="inline-flex max-w-full items-center gap-1 rounded border border-border bg-muted/50 px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                                    <FileText className="size-2.5 shrink-0" />
-                                    <span className="truncate">{src.title}</span>
-                                  </span>
-                                ))}
-                              </div>
-                            )}
-                            {(m.feedback_rating != null || m.delivery) && (
-                              <div className="mt-1 flex items-center gap-2">
-                                {m.feedback_rating != null && (
-                                  <Badge variant={m.feedback_rating === 1 ? "success" : "destructive"} className="h-3.5 px-1 text-[10px]">
-                                    {m.feedback_rating === 1 ? "👍" : "👎"}
-                                  </Badge>
-                                )}
-                                {m.delivery && <MessageDeliveryState delivery={m.delivery} />}
-                              </div>
-                            )}
-                          </div>
-                          {/* Translation layer: sits OUTSIDE the customer bubble as a
-                              distinct annotation so it reads as an aid, not as the
-                              message itself. */}
-                          {m.role === "user" && autoTranslate && translations[m.message_id] && (
-                            <div className={cn(
-                              "max-w-[85%] border-primary/40 py-0.5",
-                              isUser ? "border-r-2 pr-2.5 text-right" : "border-l-2 pl-2.5",
+                    <MessageGroup className="gap-1">
+                      <Message align={isUser ? "end" : "start"}>
+                        <MessageAvatar className="size-7 self-end">
+                          <Avatar className="size-7">
+                            <AvatarFallback className={cn(
+                              role === "user" ? "bg-primary/10 text-primary"
+                                : role === "agent" ? "bg-warning/15 text-foreground"
+                                : "bg-muted text-muted-foreground",
                             )}>
-                              <p className={cn("mb-0.5 flex items-center gap-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground", isUser && "justify-end")}>
-                                <Languages className="size-2.5" />
-                                {translateLang(translations[m.message_id].target).label}
-                              </p>
-                              <p className="whitespace-pre-wrap text-[13px] leading-6 text-foreground">
-                                {translations[m.message_id].text}
-                              </p>
-                            </div>
-                          )}
-                        </React.Fragment>
-                      ))}
-                    </div>
+                              {role === "user" ? <UserCircle2 className="size-4" /> : role === "agent" ? <Headset className="size-3.5" /> : <Bot className="size-3.5" />}
+                            </AvatarFallback>
+                          </Avatar>
+                        </MessageAvatar>
+                        <MessageContent className={cn("gap-1", isUser ? "mr-2 items-end" : "ml-2 items-start")}>
+                          <MessageHeader className={cn("gap-1.5 text-[10px] text-muted-foreground", isUser && "flex-row-reverse")}>
+                            <span className="text-[11px] font-semibold text-foreground">{t(roleLabelKey(role))}</span>
+                            <span className="tabular-nums">{fmtRelTime(group[0].created_at, t("inbox.timeNow"))}</span>
+                          </MessageHeader>
+                          {group.map((m) => {
+                            const inboundMedia = parseInboundPlatformMedia(m.metadata);
+                            const isVoiceMsg = inboundMedia != null && (inboundMedia.kind === "audio" || inboundMedia.kind === "voice");
+                            return (
+                              <React.Fragment key={m.message_id}>
+                                <div className={cn(
+                                  "max-w-[85%]",
+                                  !isVoiceMsg && cn(
+                                    "rounded-2xl px-3.5 py-2",
+                                    m.role === "user" ? "rounded-br-md bg-primary text-primary-foreground"
+                                      : m.role === "agent" ? "rounded-bl-md bg-warning/15 text-foreground"
+                                      : m.role === "model" ? "rounded-bl-md bg-muted text-foreground"
+                                      : "rounded-bl-md bg-muted text-muted-foreground",
+                                  ),
+                                )}>
+                                  <MessagePayloadPreview messageID={m.message_id} content={m.content} metadata={m.metadata} payload={m.delivery?.payload} />
+                                  {m.role === "model" && parseSources(m.sources_json).length > 0 && (
+                                    <div className="mt-1.5 flex flex-wrap gap-1 border-t border-border/60 pt-1.5">
+                                      {parseSources(m.sources_json).slice(0, 4).map((src) => (
+                                        <span key={`${src.doc_id}-${src.title}`} title={(src.content || "").slice(0, 140)} className="inline-flex max-w-full items-center gap-1 rounded border border-border bg-muted/50 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                                          <FileText className="size-2.5 shrink-0" />
+                                          <span className="truncate">{src.title}</span>
+                                        </span>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                                {(m.feedback_rating != null || m.delivery) && (
+                                  <MessageFooter className="gap-2">
+                                    {m.feedback_rating != null && (
+                                      <Badge variant={m.feedback_rating === 1 ? "success" : "destructive"} className="h-3.5 px-1 text-[10px]">
+                                        {m.feedback_rating === 1 ? "👍" : "👎"}
+                                      </Badge>
+                                    )}
+                                    {m.delivery && <MessageDeliveryState delivery={m.delivery} />}
+                                  </MessageFooter>
+                                )}
+                                {/* Translation layer: sits OUTSIDE the customer bubble as a
+                                    distinct annotation so it reads as an aid, not as the
+                                    message itself. Voice notes get the dark companion
+                                    panel so transcript + translation read as one unit. */}
+                                {m.role === "user" && autoTranslate && translations[m.message_id] && (
+                                  <div className={cn(
+                                    "max-w-[85%] rounded-xl px-3 py-1.5",
+                                    isVoiceMsg ? "bg-primary/85 text-primary-foreground" : "bg-muted/60 text-foreground",
+                                  )}>
+                                    <p className={cn("mb-0.5 flex items-center gap-1 text-[10px] font-medium uppercase tracking-wide", isVoiceMsg ? "text-primary-foreground/60" : "text-muted-foreground")}>
+                                      <Languages className="size-2.5" />
+                                      {translateLang(translations[m.message_id].target).label}
+                                    </p>
+                                    <p className="whitespace-pre-wrap text-[13px] leading-6">
+                                      {translations[m.message_id].text}
+                                    </p>
+                                  </div>
+                                )}
+                              </React.Fragment>
+                            );
+                          })}
+                        </MessageContent>
+                      </Message>
+                    </MessageGroup>
                   </React.Fragment>
                 );
               })}
@@ -1856,73 +1882,6 @@ function parseInboundPlatformMedia(metadata?: string | Record<string, unknown> |
   }
 }
 
-function formatVoiceTime(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
-  return `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
-}
-
-// Compact voice-note player: the native <audio controls> widget is ~40px of
-// browser chrome that clashes with the message bubble, so drive a hidden
-// audio element from a play button + seekable progress bar instead.
-function VoiceNotePlayer({ src }: { src: string }) {
-  const { t } = useI18n();
-  const audioRef = React.useRef<HTMLAudioElement | null>(null);
-  const barRef = React.useRef<HTMLDivElement | null>(null);
-  const [playing, setPlaying] = React.useState(false);
-  const [current, setCurrent] = React.useState(0);
-  const [duration, setDuration] = React.useState(0);
-
-  const toggle = () => {
-    const el = audioRef.current;
-    if (!el) return;
-    if (el.paused) void el.play().catch(() => setPlaying(false));
-    else el.pause();
-  };
-
-  const seek = (event: React.MouseEvent<HTMLDivElement>) => {
-    const el = audioRef.current;
-    const bar = barRef.current;
-    if (!el || !bar || !Number.isFinite(duration) || duration <= 0) return;
-    const rect = bar.getBoundingClientRect();
-    const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
-    el.currentTime = ratio * duration;
-    setCurrent(el.currentTime);
-  };
-
-  const progress = duration > 0 ? Math.min(100, (current / duration) * 100) : 0;
-
-  return (
-    <div className="mt-2 flex items-center gap-2.5 rounded-md border border-border/70 bg-muted/40 px-2.5 py-2">
-      <audio
-        ref={audioRef}
-        src={src}
-        preload="metadata"
-        onPlay={() => setPlaying(true)}
-        onPause={() => setPlaying(false)}
-        onEnded={() => { setPlaying(false); setCurrent(0); }}
-        onTimeUpdate={(event) => setCurrent(event.currentTarget.currentTime)}
-        onLoadedMetadata={(event) => setDuration(event.currentTarget.duration)}
-      />
-      <button
-        type="button"
-        onClick={toggle}
-        aria-label={playing ? t("inbox.voicePause") : t("inbox.voicePlay")}
-        className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-colors hover:bg-primary/90"
-      >
-        {playing ? <Pause className="size-3.5" /> : <Play className="size-3.5 translate-x-px" />}
-      </button>
-      <div ref={barRef} onClick={seek} className="flex h-6 flex-1 cursor-pointer items-center" title={t("inbox.voiceSeek")}>
-        <div className="relative h-1 w-full overflow-hidden rounded-full bg-border">
-          <div className="absolute inset-y-0 left-0 rounded-full bg-primary" style={{ width: `${progress}%` }} />
-        </div>
-      </div>
-      <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
-        {formatVoiceTime(current)} / {formatVoiceTime(duration)}
-      </span>
-    </div>
-  );
-}
-
 function InboundPlatformMediaPreview({ messageID, media }: { messageID: number; media: InboundPlatformMedia }) {
   const { t, tf } = useI18n();
   const [previewURL, setPreviewURL] = React.useState<string | null>(null);
@@ -1971,12 +1930,58 @@ function InboundPlatformMediaPreview({ messageID, media }: { messageID: number; 
     }
   };
 
+  // Voice notes render as a standalone waveform bubble (dark, like a sent
+  // message) with the transcript docked underneath — no card chrome.
+  if (isAudio) {
+    if (!audioURL) {
+      return (
+        <div className="mt-1 flex min-w-0 items-center gap-2 rounded-xl border border-border/70 bg-muted/40 px-2.5 py-2 text-xs">
+          <Volume2 className="size-4 shrink-0 text-muted-foreground" />
+          <div className="min-w-0 flex-1">
+            <p className="truncate font-medium text-foreground">{media.filename || t("inbox.voiceMessage")}</p>
+            <p className="mt-0.5 truncate text-[10px] text-muted-foreground">{media.mime_type || media.kind} · {status}</p>
+          </div>
+          {media.processing_status !== "unavailable" && (
+            <Button type="button" size="sm" variant="outline" onClick={() => void preview()} disabled={loadingPreview} className="h-7 shrink-0 gap-1 px-2 text-[11px]">
+              {loadingPreview ? <Loader2 className="size-3 animate-spin" /> : <Paperclip className="size-3" />}
+              {t("inbox.preview")}
+            </Button>
+          )}
+        </div>
+      );
+    }
+    return (
+      <div className="w-72 max-w-full overflow-hidden rounded-xl">
+        <VoiceMessageBubble
+          audioSrc={audioURL}
+          bubbleColor="var(--color-primary)"
+          waveColor="var(--color-primary-foreground)"
+          playLabel={t("inbox.voicePlay")}
+          pauseLabel={t("inbox.voicePause")}
+          className="rounded-b-none shadow-none"
+        />
+        {media.extracted_text && (
+          <div className="border-t border-primary-foreground/10 bg-primary px-3 py-2">
+            <p className="mb-0.5 flex items-center gap-1 text-[10px] font-medium uppercase tracking-wide text-primary-foreground/60">
+              <AudioLines className="size-2.5" />
+              {t("inbox.extractedText")}
+            </p>
+            <p className="whitespace-pre-wrap text-xs leading-5 text-primary-foreground/90">{media.extracted_text}</p>
+          </div>
+        )}
+        {media.processing_error && (
+          <p className="border-t border-primary-foreground/10 bg-primary px-3 py-1.5 text-[11px] text-warning">{media.processing_error}</p>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="mt-2 border border-border/80 bg-background/45 p-2.5 text-xs">
       <div className="flex min-w-0 items-center gap-2">
         <MediaIcon className="size-4 shrink-0 text-muted-foreground" />
         <div className="min-w-0 flex-1">
-          <p className="truncate font-medium text-foreground">{media.filename || (isAudio ? t("inbox.voiceMessage") : tf("inbox.attachment", { kind: media.kind }))}</p>
+          <p className="truncate font-medium text-foreground">{media.filename || tf("inbox.attachment", { kind: media.kind })}</p>
           <p className="mt-0.5 truncate text-[10px] text-muted-foreground">{media.mime_type || media.kind} · {status}</p>
         </div>
         {media.processing_status !== "unavailable" && (
@@ -1986,7 +1991,6 @@ function InboundPlatformMediaPreview({ messageID, media }: { messageID: number; 
           </Button>
         )}
       </div>
-      {audioURL && isAudio && <VoiceNotePlayer src={audioURL} />}
       {previewURL && isImage && (
         <a href={previewURL} target="_blank" rel="noreferrer" className="mt-2 block overflow-hidden border border-border bg-muted/30">
           {/* Signed R2 hosts are runtime-only and cannot be safely allowlisted for next/image. */}

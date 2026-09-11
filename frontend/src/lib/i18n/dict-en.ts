@@ -286,7 +286,6 @@ export const en: Dict = {
   "inbox.voiceMessage": "Voice message",
   "inbox.voicePlay": "Play",
   "inbox.voicePause": "Pause",
-  "inbox.voiceSeek": "Click to seek",
   "inbox.attachment": "{kind} attachment",
   "inbox.preview": "Preview",
   "inbox.extractedText": "Extracted text",

@@ -282,7 +282,6 @@ export const km: Dict = {
   "inbox.voiceMessage": "សារសំឡេង",
   "inbox.voicePlay": "ចាក់",
   "inbox.voicePause": "ផ្អាក",
-  "inbox.voiceSeek": "ចុចដើម្បីជ្រើសទីតាំងចាក់",
   "inbox.attachment": "ឯកសារភ្ជាប់ {kind}",
   "inbox.preview": "មើលជាមុន",
   "inbox.extractedText": "អត្ថបទដែលបានស្រង់ចេញ",
