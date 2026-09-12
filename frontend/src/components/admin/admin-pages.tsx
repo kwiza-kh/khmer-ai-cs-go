@@ -163,6 +163,15 @@ const ROLE_PILL: Record<string, string> = {
   user: "bg-muted text-muted-foreground",
 };
 
+// Sign-in methods an account can carry. A user may have several at once — a
+// passwordless Google or Telegram account can set an initial password later —
+// so the column renders one badge per method rather than picking a winner.
+const AUTH_LABEL: Record<string, string> = {
+  password: "admin.authPassword",
+  google: "admin.authGoogle",
+  telegram: "admin.authTelegram",
+};
+
 export function UsersAdminPage() {
   const { t, tf } = useI18n();
   const [searchInput, setSearchInput] = useState("");
@@ -262,9 +271,15 @@ export function UsersAdminPage() {
                           <div className="min-w-0">
                             <p className="flex items-center gap-1.5 truncate text-xs font-medium text-foreground">
                               {user.username}
-                              <Badge variant="outline" className="h-4 shrink-0 gap-1 px-1.5 text-[10px] font-normal text-muted-foreground">
-                                {user.auth_method === "google" ? "Google" : t("admin.authPassword")}
-                              </Badge>
+                              {(user.auth_methods ?? []).map((method) => (
+                                <Badge
+                                  key={method}
+                                  variant="outline"
+                                  className="h-4 shrink-0 gap-1 px-1.5 text-[10px] font-normal text-muted-foreground"
+                                >
+                                  {AUTH_LABEL[method] ? t(AUTH_LABEL[method]) : method}
+                                </Badge>
+                              ))}
                             </p>
                             <p className="truncate text-[11px] text-muted-foreground">{user.email}</p>
                           </div>

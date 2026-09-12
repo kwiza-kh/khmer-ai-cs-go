@@ -406,7 +406,8 @@ func (a *App) listUsers(w http.ResponseWriter, r *http.Request) (any, error) {
 	selArgs := append(append([]any{}, args...), pageSize, offset)
 	rows, err := a.DB.Query(r.Context(),
 		"SELECT u.user_id, u.username, COALESCE(u.email,''), u.role::text, u.is_active, u.created_at, "+
-			"u.google_sub IS NOT NULL, COALESCE(t.total_tokens, 0), COALESCE(t.cost_estimate, 0) "+
+			"u.google_sub IS NOT NULL, u.telegram_sub IS NOT NULL, COALESCE(u.password_hash,'') <> '', "+
+			"COALESCE(t.total_tokens, 0), COALESCE(t.cost_estimate, 0) "+
 			"FROM users u LEFT JOIN LATERAL ("+
 			"SELECT SUM(total_tokens) AS total_tokens, SUM(cost_estimate) AS cost_estimate "+
 			"FROM token_usage WHERE user_id = u.user_id) t ON TRUE"+
@@ -421,21 +422,33 @@ func (a *App) listUsers(w http.ResponseWriter, r *http.Request) (any, error) {
 	for rows.Next() {
 		var uid int
 		var username, email, role string
-		var isActive, hasGoogle bool
+		var isActive, hasGoogle, hasTelegram, hasPassword bool
 		var createdAt *time.Time
 		var totalTokens int64
 		var cost float64
-		if err := rows.Scan(&uid, &username, &email, &role, &isActive, &createdAt, &hasGoogle, &totalTokens, &cost); err != nil {
+		if err := rows.Scan(&uid, &username, &email, &role, &isActive, &createdAt,
+			&hasGoogle, &hasTelegram, &hasPassword, &totalTokens, &cost); err != nil {
 			skipped++
 			continue
 		}
-		authMethod := "password"
+		// Every method the account can actually sign in with, not just one.
+		// These genuinely combine: changePassword lets a passwordless account —
+		// Google or Telegram — set an initial password without proving an old
+		// one, so "telegram + password" is a state that exists. Reporting a
+		// single method would silently hide the others.
+		authMethods := make([]string, 0, 3)
+		if hasPassword {
+			authMethods = append(authMethods, "password")
+		}
 		if hasGoogle {
-			authMethod = "google"
+			authMethods = append(authMethods, "google")
+		}
+		if hasTelegram {
+			authMethods = append(authMethods, "telegram")
 		}
 		out = append(out, map[string]any{
 			"user_id": uid, "username": username, "email": email, "role": role,
-			"is_active": isActive, "created_at": createdAt, "auth_method": authMethod,
+			"is_active": isActive, "created_at": createdAt, "auth_methods": authMethods,
 			"total_tokens": totalTokens, "cost_estimate": cost,
 		})
 	}
