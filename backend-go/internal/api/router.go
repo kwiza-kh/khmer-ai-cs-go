@@ -66,13 +66,13 @@ func (a *App) Router() http.Handler {
 	authed.HandleFunc("POST /api/v1/knowledge/contradictions/{id}/dismiss", a.handleDoc(a.dismissContradiction))
 	authed.Handle("GET /api/v1/admin/rag/settings", a.adminOnly(a.handle(a.getRagSettings)))
 	authed.Handle("PUT /api/v1/admin/rag/settings", a.adminOnly(a.handle(a.putRagSettings)))
-	// Telegram notify bot (owner setup + test + chat discovery).
+	// Telegram notifications — one-tap linking through the platform bot plus
+	// the three delivery toggles. The bring-your-own-bot setup (save a token,
+	// discover chats via getUpdates) was removed in 056; there is no endpoint
+	// left that accepts a bot token or an arbitrary chat id.
 	authed.Handle("GET /api/v1/settings/telegram-notify", a.handle(a.getTelegramNotify))
 	authed.Handle("PUT /api/v1/settings/telegram-notify", a.handle(a.putTelegramNotify))
-	authed.Handle("POST /api/v1/settings/telegram-notify/updates", a.handle(a.postTelegramNotifyUpdates))
 	authed.Handle("POST /api/v1/settings/telegram-notify/test", a.handle(a.postTelegramNotifyTest))
-	// One-tap account linking through the platform bot (replaces the old
-	// bring-your-own-bot setup).
 	authed.Handle("POST /api/v1/settings/telegram-notify/link", a.handle(a.postTelegramNotifyLink))
 	// Agent copilot: one-shot translation (Khmer ↔ 中文 ↔ English).
 	authed.Handle("POST /api/v1/translate", a.handle(a.translateText))

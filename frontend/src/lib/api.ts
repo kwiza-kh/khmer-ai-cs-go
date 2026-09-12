@@ -63,7 +63,8 @@ export interface UserItem {
   is_active: boolean;
   created_at: string;
   updated_at?: string;
-  auth_method?: string;
+  /** Every sign-in method the account carries: "password" | "google" | "telegram". */
+  auth_methods?: string[];
   total_tokens?: number;
   cost_estimate?: number;
 }
@@ -649,27 +650,25 @@ export async function updateRagSettings(compileEnabled: boolean) {
   });
 }
 
-// Telegram notify bot (owner notifications).
-export interface TelegramChat {
-  id: string;
-  title: string;
-}
-
+// Telegram notifications (owner notifications via the platform bot).
 export async function getTelegramNotify() {
   return apiFetch<{
     configured: boolean;
-    chat_id: string;
     chat_title: string;
     notify_messages: boolean;
     notify_handoff: boolean;
     notify_announcements: boolean;
+    /** false when the deployment has no PLATFORM_TELEGRAM_BOT_TOKEN. */
+    platform_bot_ready: boolean;
   }>("/settings/telegram-notify");
 }
 
+/**
+ * Update the three delivery toggles. The chat itself is not settable: it is
+ * owned by the linking flow, and the API no longer accepts a bot token or an
+ * arbitrary chat id at all.
+ */
 export async function putTelegramNotify(data: {
-  bot_token?: string;
-  chat_id?: string;
-  chat_title?: string;
   notify_messages?: boolean;
   notify_handoff?: boolean;
   notify_announcements?: boolean;
@@ -680,21 +679,14 @@ export async function putTelegramNotify(data: {
   });
 }
 
-export async function postTelegramNotifyUpdates(botToken?: string) {
-  return apiFetch<{ chats: TelegramChat[] }>("/settings/telegram-notify/updates", {
-    method: "POST",
-    body: JSON.stringify({ bot_token: botToken }),
-  });
-}
-
 export async function postTelegramNotifyTest() {
   return apiFetch<{ message: string }>("/settings/telegram-notify/test", { method: "POST" });
 }
 
 /**
  * Mint a one-time deep link that binds this account's Telegram chat through the
- * platform bot. Replaces the bring-your-own-bot setup: the merchant taps once
- * instead of creating a bot in BotFather and pasting its token.
+ * platform bot. This is the whole setup: the merchant taps once instead of
+ * creating a bot in BotFather and pasting its token.
  */
 export async function postTelegramNotifyLink() {
   return apiFetch<{ link: string; expires_in_seconds: number }>("/settings/telegram-notify/link", { method: "POST" });

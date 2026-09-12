@@ -16,18 +16,24 @@ import (
 // Platform bot webhook
 // ============================================
 
+// telegramFrom is the sender of a message or callback. language_code is the
+// Telegram client's own UI language — the only language signal available before
+// an account is linked.
+type telegramFrom struct {
+	ID           int64  `json:"id"`
+	IsBot        bool   `json:"is_bot"`
+	FirstName    string `json:"first_name"`
+	LastName     string `json:"last_name"`
+	Username     string `json:"username"`
+	LanguageCode string `json:"language_code"`
+}
+
 // telegramUpdate is the slice of the Bot API Update object this bot handles.
 type telegramUpdate struct {
 	Message *struct {
-		MessageID int64 `json:"message_id"`
-		From      *struct {
-			ID        int64  `json:"id"`
-			IsBot     bool   `json:"is_bot"`
-			FirstName string `json:"first_name"`
-			LastName  string `json:"last_name"`
-			Username  string `json:"username"`
-		} `json:"from"`
-		Chat *struct {
+		MessageID int64         `json:"message_id"`
+		From      *telegramFrom `json:"from"`
+		Chat      *struct {
 			ID    int64  `json:"id"`
 			Type  string `json:"type"`
 			Title string `json:"title"`
@@ -39,6 +45,29 @@ type telegramUpdate struct {
 			MessageID int64 `json:"message_id"`
 		} `json:"reply_to_message"`
 	} `json:"message"`
+
+	// Inline-button presses (接管/解决 on a handoff notification, and the
+	// /unlink confirmation) arrive as their own update type, NOT as a message.
+	// 056 moved them here from a per-tenant getUpdates poll, which could never
+	// have worked: the platform bot has a webhook registered, and Telegram
+	// refuses getUpdates while one is set. Until then a merchant could press
+	// 接管 and have absolutely nothing happen.
+	CallbackQuery *telegramCallbackQuery `json:"callback_query"`
+}
+
+// telegramCallbackQuery is an inline-button press.
+type telegramCallbackQuery struct {
+	ID   string        `json:"id"`
+	From *telegramFrom `json:"from"`
+	// Message is the message the button is attached to.
+	Message *struct {
+		MessageID int64 `json:"message_id"`
+		Chat      *struct {
+			ID int64 `json:"id"`
+		} `json:"chat"`
+	} `json:"message"`
+	// Data is the callback_data the button was built with.
+	Data string `json:"data"`
 }
 
 // PlatformBotWebhook receives updates for the operator bot.
@@ -72,7 +101,12 @@ func (p *Pipeline) PlatformBotWebhook(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 
 	var upd telegramUpdate
-	if json.Unmarshal(body, &upd) != nil || upd.Message == nil || upd.Message.From == nil {
+	if json.Unmarshal(body, &upd) != nil {
+		return
+	}
+	// A callback_query update carries no message — checking only Message here
+	// silently discarded every inline-button press.
+	if upd.Message == nil && upd.CallbackQuery == nil {
 		return
 	}
 	// Detach: the HTTP response is already written, so the request context is
@@ -82,11 +116,16 @@ func (p *Pipeline) PlatformBotWebhook(w http.ResponseWriter, r *http.Request) {
 	p.dispatchPlatformUpdate(ctx, &upd)
 }
 
-// dispatchPlatformUpdate routes one message: account linking, operator
-// commands, or the merchant support inbox.
+// dispatchPlatformUpdate routes one update: inline-button presses, account
+// linking, operator commands, or the merchant support inbox.
 func (p *Pipeline) dispatchPlatformUpdate(ctx context.Context, upd *telegramUpdate) {
+	// Inline buttons carry no message, so this has to be checked first.
+	if upd.CallbackQuery != nil {
+		p.handlePlatformCallback(ctx, upd.CallbackQuery)
+		return
+	}
 	msg := upd.Message
-	if msg.From.IsBot {
+	if msg == nil || msg.From == nil || msg.From.IsBot {
 		return
 	}
 	chatID := strconv.FormatInt(msg.Chat.ID, 10)
@@ -96,23 +135,31 @@ func (p *Pipeline) dispatchPlatformUpdate(ctx context.Context, upd *telegramUpda
 	display := strings.TrimSpace(msg.From.FirstName + " " + msg.From.LastName)
 	handle := msg.From.Username
 
+	// Everything a MERCHANT reads is resolved through merchantText. The
+	// operator console below stays Chinese on purpose — that audience is the
+	// RelayChat team, not a customer of it.
+	linkedUserID, linked := p.lookupLinkedUser(ctx, senderID, chatID)
+	lang := botLang(msg.From.LanguageCode)
+	if linked {
+		lang = p.merchantLang(ctx, linkedUserID, msg.From.LanguageCode)
+	}
+
 	// --- account linking: /start <token> ---
 	if strings.HasPrefix(text, "/start") {
 		arg := strings.TrimSpace(strings.TrimPrefix(text, "/start"))
 		if arg == "" {
-			p.SendPlatformMessage(ctx, chatID,
-				"👋 RelayChat bot.\n\nTo connect your RelayChat account, open Settings → Telegram notifications and tap *Connect Telegram*.",
-				nil)
+			p.SendPlatformMessage(ctx, chatID, merchantText(lang, "welcome"), nil)
 			return
 		}
 		userID, ok := p.RedeemLinkToken(ctx, arg, chatID, deref(&msg.Chat.Title))
 		if !ok {
-			p.SendPlatformMessage(ctx, chatID,
-				"⚠️ That connect link is invalid or has expired. Generate a fresh one from Settings → Telegram notifications.", nil)
+			p.SendPlatformMessage(ctx, chatID, merchantText(lang, "link_invalid"), nil)
 			return
 		}
+		// Re-resolve the language: the saved preference belongs to the account
+		// that was unknown until this very moment.
 		p.SendPlatformMessage(ctx, chatID,
-			"✅ Connected. RelayChat notifications for your account will arrive in this chat.", nil)
+			merchantText(p.merchantLang(ctx, userID, msg.From.LanguageCode), "link_ok"), nil)
 		p.Logger.Info("telegram account linked", "user_id", userID, "chat_id", chatID)
 		return
 	}
@@ -133,13 +180,26 @@ func (p *Pipeline) dispatchPlatformUpdate(ctx context.Context, upd *telegramUpda
 		}
 	}
 
+	// --- merchant: /unlink ---
+	// Gated behind an inline confirmation rather than acting immediately:
+	// silently killing your own notifications from a mistyped command is a
+	// nasty way to find out, and the button is one tap.
+	if text == "/unlink" || strings.HasPrefix(text, "/unlink ") {
+		if !linked {
+			p.SendPlatformMessage(ctx, chatID, merchantText(lang, "unlink_none"), nil)
+			return
+		}
+		p.SendPlatformMessage(ctx, chatID, merchantText(lang, "unlink_confirm"), [][2]string{
+			{merchantText(lang, "btn_unlink"), "unlink:confirm"},
+		})
+		return
+	}
+
 	// --- merchant support inbox ---
-	linkedUserID, linked := p.lookupLinkedUser(ctx, senderID, chatID)
 	if strings.HasPrefix(text, "/") {
 		// An unknown command from a non-admin: do not file it as a support
 		// message, just explain what this bot does.
-		p.SendPlatformMessage(ctx, chatID,
-			"Commands: /start — connect your account.\nMessage me anything else and it reaches the RelayChat team.", nil)
+		p.SendPlatformMessage(ctx, chatID, merchantText(lang, "help_hint"), nil)
 		return
 	}
 	if text == "" {
@@ -153,7 +213,7 @@ func (p *Pipeline) dispatchPlatformUpdate(ctx context.Context, upd *telegramUpda
 		p.Logger.Warn("support message persist failed", "error", err.Error())
 		return
 	}
-	p.SendPlatformMessage(ctx, chatID, "📨 已收到，消息已转达 RelayChat 团队。", nil)
+	p.SendPlatformMessage(ctx, chatID, merchantText(lang, "support_received"), nil)
 
 	// Relay to the operator and remember WHICH of their messages carries this
 	// conversation, so their reply can be routed back.
@@ -183,6 +243,74 @@ func (p *Pipeline) dispatchPlatformUpdate(ctx context.Context, upd *telegramUpda
 	}
 }
 
+// handlePlatformCallback answers an inline-button press.
+//
+// 056 moved these here from a per-tenant getUpdates poll, which could never
+// have received them: the platform bot has a webhook registered and Telegram
+// refuses getUpdates while one is set. Merchant handoff notifications carried
+// 接管/解决 buttons the whole time, and pressing them did nothing at all.
+func (p *Pipeline) handlePlatformCallback(ctx context.Context, cb *telegramCallbackQuery) {
+	if cb.From == nil || cb.Message == nil || cb.Message.Chat == nil {
+		return
+	}
+	chatID := strconv.FormatInt(cb.Message.Chat.ID, 10)
+
+	// Telegram keeps a spinner on the button until answerCallbackQuery arrives,
+	// so EVERY path has to answer — including the failures. A silent return
+	// leaves the merchant tapping a button that looks stuck.
+	answer := func(text string) {
+		if err := NewTelegramClient(p.Cfg.PlatformBot.Token).AnswerCallback(ctx, cb.ID, text); err != nil {
+			p.Logger.Warn("answerCallbackQuery failed", "error", err.Error())
+		}
+	}
+	clearButtons := func() {
+		if cb.Message.MessageID > 0 {
+			_ = NewTelegramClient(p.Cfg.PlatformBot.Token).EditMessageReplyMarkup(ctx, chatID, cb.Message.MessageID)
+		}
+	}
+
+	userID, linked := p.lookupLinkedUser(ctx, cb.From.ID, chatID)
+	lang := botLang(cb.From.LanguageCode)
+	if linked {
+		lang = p.merchantLang(ctx, userID, cb.From.LanguageCode)
+	}
+
+	switch {
+	case cb.Data == "unlink:confirm":
+		if !linked || !p.UnlinkMerchant(ctx, userID) {
+			answer(merchantText(lang, "unlink_none"))
+			return
+		}
+		answer(merchantText(lang, "cb_unlink_ok"))
+		clearButtons()
+		p.SendPlatformMessage(ctx, chatID, merchantText(lang, "unlink_done"), nil)
+
+	case strings.HasPrefix(cb.Data, "ho:"):
+		// ho:<takeover|resolve>:<session_id>
+		parts := strings.SplitN(cb.Data, ":", 3)
+		if len(parts) != 3 || (parts[1] != "takeover" && parts[1] != "resolve") {
+			answer("")
+			return
+		}
+		// applyNotifyAction scopes every write by user_id, so a press from a
+		// chat that does not own the session matches no rows and changes
+		// nothing. No separate ownership check is needed, and none would be
+		// any stronger than the WHERE clause already doing the work.
+		if !linked || !p.applyNotifyAction(ctx, userID, parts[1], parts[2]) {
+			answer(merchantText(lang, "cb_gone"))
+			return
+		}
+		if parts[1] == "takeover" {
+			answer(merchantText(lang, "cb_takeover_ok"))
+		} else {
+			answer(merchantText(lang, "cb_resolve_ok"))
+		}
+		clearButtons()
+
+	default:
+		answer("")
+	}
+}
 // storeSupportRelay records which operator-facing message carries which
 // merchant conversation, so a reply to it can be routed back.
 func (p *Pipeline) storeSupportRelay(ctx context.Context, adminChat string, adminMessageID string, merchantChatID int64, supportID int64) {
@@ -217,7 +345,15 @@ func (p *Pipeline) relayAdminReply(ctx context.Context, adminChatID, adminMessag
 		return false
 	}
 	adminChat := strconv.FormatInt(adminChatID, 10)
-	if err := p.SendPlatformMessage(ctx, strconv.FormatInt(merchantChat, 10), "💬 RelayChat 团队：\n\n"+text, nil); err != nil {
+	merchantChatID := strconv.FormatInt(merchantChat, 10)
+	// Resolve by chat: the relay row stores the merchant's chat, not their
+	// Telegram user id, so the telegram_sub branch is skipped with 0.
+	merchantUser, merchantLinked := p.lookupLinkedUser(ctx, 0, merchantChatID)
+	lang := "en"
+	if merchantLinked {
+		lang = p.merchantLang(ctx, merchantUser, "")
+	}
+	if err := p.SendPlatformMessage(ctx, merchantChatID, merchantText(lang, "team_reply_prefix")+text, nil); err != nil {
 		p.SendPlatformMessage(ctx, adminChat, "⚠️ 回复发送失败："+err.Error(), nil)
 		return true
 	}

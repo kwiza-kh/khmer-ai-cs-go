@@ -24,9 +24,6 @@ func (a *App) StartBackgroundTasks(ctx context.Context) {
 	go a.loop(ctx, 30*time.Second, a.dispatchDueCampaigns)
 	go a.loop(ctx, 60*time.Second, a.scanSLABreaches)
 	go a.loop(ctx, 1*time.Hour, a.resetBillingCycles)
-	// Telegram notify bots: poll inline-button presses (接管/解决) and send
-	// the 08:00 Phnom Penh daily digest.
-	go a.loop(ctx, 12*time.Second, a.pollNotifyBotCallbacks)
 	// Watchdog: nothing else notices a degraded dependency. The process keeps
 	// running, the HTTP port stays open, and customers simply stop getting
 	// answers — the operator finds out from a complaint.
@@ -35,27 +32,13 @@ func (a *App) StartBackgroundTasks(ctx context.Context) {
 	// Every merchant message creates one, so without this they accumulate
 	// forever.
 	go a.loop(ctx, 6*time.Hour, a.pruneStaleSupportRelays)
+	// Daily digest at 08:00 Phnom Penh. The 接管/解决 button presses no longer
+	// need a poller of their own: since 056 every notification goes out through
+	// the platform bot, whose webhook receives the presses directly. The old
+	// per-tenant getUpdates loop was also a real hazard here — it ran one
+	// Telegram call per merchant every 12s, and for a platform-bot merchant it
+	// polled a bot that has a webhook registered, which Telegram rejects.
 	go a.loop(ctx, 15*time.Minute, a.sendDueDigests)
-}
-
-// pollNotifyBotCallbacks — handle 接管/解决 button presses for every tenant
-// with a configured notify bot (getUpdates; the notify bot has no webhook).
-func (a *App) pollNotifyBotCallbacks(ctx context.Context) {
-	rows, err := a.DB.Query(ctx, "SELECT user_id FROM telegram_notify_settings")
-	if err != nil {
-		return
-	}
-	defer rows.Close()
-	var ids []int32
-	for rows.Next() {
-		var id int32
-		if rows.Scan(&id) == nil {
-			ids = append(ids, id)
-		}
-	}
-	for _, id := range ids {
-		a.Pipe.ProcessNotifyCallbacks(ctx, id)
-	}
 }
 
 // checkPlatformHealth pages the operator when a dependency is down, and clears

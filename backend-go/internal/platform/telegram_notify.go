@@ -5,7 +5,6 @@ package platform
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -62,30 +61,23 @@ func (p *Pipeline) LoadTelegramNotify(ctx context.Context, userID int32) *Telegr
 }
 
 func (p *Pipeline) loadTelegramNotifyUncached(ctx context.Context, userID int32) *TelegramNotifyConfig {
-	var tokenEnc, chatID, chatTitle *string
+	var chatID, chatTitle *string
 	var notifyMessages, notifyHandoff, notifyAnnouncements bool
 	err := p.DB.QueryRow(ctx,
-		"SELECT bot_token_enc, chat_id, chat_title, notify_messages, notify_handoff, notify_announcements "+
+		"SELECT chat_id, chat_title, notify_messages, notify_handoff, notify_announcements "+
 			"FROM telegram_notify_settings WHERE user_id = $1", userID).
-		Scan(&tokenEnc, &chatID, &chatTitle, &notifyMessages, &notifyHandoff, &notifyAnnouncements)
+		Scan(&chatID, &chatTitle, &notifyMessages, &notifyHandoff, &notifyAnnouncements)
 	if err != nil || chatID == nil || *chatID == "" {
 		return nil
 	}
-	// A NULL token means the merchant linked through the platform bot (054);
-	// the credential comes from the operator config instead of their own row.
-	// A non-NULL one keeps the original per-merchant bot working untouched.
-	token := ""
-	if tokenEnc != nil && *tokenEnc != "" {
-		dec, decErr := p.Sealer.Decrypt(*tokenEnc)
-		if decErr != nil || dec == "" {
-			return nil
-		}
-		token = dec
-	} else {
-		token = strings.TrimSpace(p.Cfg.PlatformBot.Token)
-		if token == "" {
-			return nil
-		}
+	// 056: every notification goes out through the platform bot. The
+	// per-merchant token column is no longer read — it could not work anyway,
+	// since the platform bot cannot address a chat the merchant started with a
+	// different bot. A blank platform token means the feature is unavailable,
+	// not that there is a fallback.
+	token := strings.TrimSpace(p.Cfg.PlatformBot.Token)
+	if token == "" {
+		return nil
 	}
 	return &TelegramNotifyConfig{
 		BotToken:            token,
@@ -196,6 +188,10 @@ func (p *Pipeline) bumpMessagesUsed(ctx context.Context, userID int32) {
 // NotifyHandoffRequest — Telegram ping for one handoff request, with inline
 // buttons so the owner can take over or resolve right from the phone.
 //
+// The button presses come back through the platform bot's webhook (see
+// handlePlatformCallback) rather than a getUpdates poll: since 056 this is the
+// only bot that sends them, and the operator bot is webhook-driven.
+//
 // The HTTP send runs in the background with its own timeout: this is called
 // from request handlers (widget/handoff/feedback), and a slow Telegram API
 // must not add up to 15s of latency to the caller.
@@ -204,84 +200,54 @@ func (p *Pipeline) NotifyHandoffRequest(ctx context.Context, userID int32, sessi
 	if cfg == nil || !cfg.NotifyHandoff {
 		return
 	}
+	lang := p.merchantLang(ctx, userID, "")
 	buttons := [][2]string{
-		{"🧑‍💼 接管", "ho:takeover:" + sessionID},
-		{"✅ 解决", "ho:resolve:" + sessionID},
+		{merchantText(lang, "btn_takeover"), "ho:takeover:" + sessionID},
+		{merchantText(lang, "btn_resolve"), "ho:resolve:" + sessionID},
 	}
+	text := merchantText(lang, "handoff_header") + "\n" + reason
 	botToken, chatID := cfg.BotToken, cfg.ChatID
 	SpawnCritical(func() {
 		sendCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cancel()
-		if _, err := NewTelegramClient(botToken).SendMessage(sendCtx, chatID, "🔔 "+reason, buttons); err != nil {
+		if _, err := NewTelegramClient(botToken).SendMessage(sendCtx, chatID, text, buttons); err != nil {
 			p.Logger.Warn("telegram notify send failed", "user_id", userID, "error", err.Error())
 		}
 	})
 }
 
-// ProcessNotifyCallbacks — poll the notify bot's getUpdates and handle the
-// inline-button presses (接管 / 解决). Runs on a background ticker; the notify
-// bot has no webhook, so getUpdates is the delivery path. Per-tenant offset
-// lives in Redis.
-func (p *Pipeline) ProcessNotifyCallbacks(ctx context.Context, userID int32) {
-	cfg := p.LoadTelegramNotify(ctx, userID)
-	if cfg == nil {
-		return
-	}
-	offsetKey := "tg-notify-offset:" + strconv.FormatInt(int64(userID), 10)
-	offset := int64(0)
-	if v, err := p.Redis.GetString(ctx, offsetKey); err == nil {
-		offset, _ = strconv.ParseInt(v, 10, 64)
-	}
-	updates, err := NewTelegramClient(cfg.BotToken).GetUpdates(ctx, offset)
-	if err != nil {
-		return
-	}
-	maxUpdate := offset - 1
-	for _, u := range updates {
-		idF, _ := u["update_id"].(float64)
-		updateID := int64(idF)
-		if updateID >= maxUpdate {
-			maxUpdate = updateID
-		}
-		cb, _ := u["callback_query"].(map[string]any)
-		if cb == nil {
-			continue
-		}
-		cbID, _ := cb["id"].(string)
-		data, _ := cb["data"].(string)
-		msg, _ := cb["message"].(map[string]any)
-		chat, _ := msg["chat"].(map[string]any)
-		chatID, _ := chat["id"].(string)
-		if f, ok := chat["id"].(float64); ok {
-			chatID = strconv.FormatFloat(f, 'f', -1, 64)
-		}
-		msgIDF, _ := msg["message_id"].(float64)
-		// Only the owner's configured chat may act on these buttons.
-		if chatID != cfg.ChatID {
-			NewTelegramClient(cfg.BotToken).AnswerCallback(ctx, cbID, "无权操作")
-			continue
-		}
-		parts := strings.Split(data, ":")
-		if len(parts) != 3 || parts[0] != "ho" || (parts[1] != "takeover" && parts[1] != "resolve") {
-			continue
-		}
-		sid := parts[2]
-		action := parts[1]
-		done := p.applyNotifyAction(ctx, userID, action, sid)
-		if done {
-			NewTelegramClient(cfg.BotToken).AnswerCallback(ctx, cbID,
-				map[string]string{"takeover": "已接管 — 会话已分配给你", "resolve": "已解决 ✅"}[action])
-			// Remove the buttons so the action cannot repeat.
-			if msgIDF > 0 {
-				NewTelegramClient(cfg.BotToken).EditMessageReplyMarkup(ctx, cfg.ChatID, int64(msgIDF))
-			}
-		} else {
-			NewTelegramClient(cfg.BotToken).AnswerCallback(ctx, cbID, "请求不存在或已被处理")
+// merchantLang resolves which language to speak to a merchant in.
+//
+// users.language is the merchant's explicit AI-reply-language preference; an
+// empty value means "auto-detect per message" and carries no signal, so it
+// falls through to the caller's hint — normally the Telegram client's own
+// language_code, which is the only thing known before an account is linked.
+func (p *Pipeline) merchantLang(ctx context.Context, userID int32, fallback string) string {
+	var lang string
+	if err := p.DB.QueryRow(ctx, "SELECT language FROM users WHERE user_id = $1", userID).Scan(&lang); err == nil {
+		if strings.TrimSpace(lang) != "" {
+			return botLang(lang)
 		}
 	}
-	if maxUpdate >= offset {
-		_ = p.Redis.SetString(ctx, offsetKey, strconv.FormatInt(maxUpdate+1, 10), 7*24*time.Hour)
+	if strings.TrimSpace(fallback) != "" {
+		return botLang(fallback)
 	}
+	return "en"
+}
+
+// UnlinkMerchant removes the binding between a Telegram chat and its account.
+// Clears chat_id so delivery stops and the settings page reports "not
+// connected" — leaving it behind would let the page claim "connected" while
+// every send silently failed.
+func (p *Pipeline) UnlinkMerchant(ctx context.Context, userID int32) bool {
+	tag, err := p.DB.Exec(ctx,
+		"UPDATE telegram_notify_settings SET chat_id = '', chat_title = '', updated_at = NOW() "+
+			"WHERE user_id = $1 AND chat_id <> ''", userID)
+	if err != nil || tag.RowsAffected() == 0 {
+		return false
+	}
+	InvalidateTelegramNotify(userID)
+	return true
 }
 
 // applyNotifyAction executes one notify-bot button action. Returns false when
@@ -346,13 +312,14 @@ func (p *Pipeline) SendDailyDigest(ctx context.Context, userID int32) {
 		}
 	}
 
+	lang := p.merchantLang(ctx, userID, "")
 	var b strings.Builder
-	b.WriteString("📊 过去 24 小时经营摘要\n")
-	b.WriteString(fmt.Sprintf("• 新会话：%d\n", newSessions))
-	b.WriteString(fmt.Sprintf("• 转人工：%d\n", handoffs))
-	b.WriteString(fmt.Sprintf("• AI 独立解决：%d\n", aiResolved))
+	b.WriteString(merchantText(lang, "digest_title") + "\n")
+	b.WriteString(fmt.Sprintf("• %s: %d\n", merchantText(lang, "digest_new"), newSessions))
+	b.WriteString(fmt.Sprintf("• %s: %d\n", merchantText(lang, "digest_handoff"), handoffs))
+	b.WriteString(fmt.Sprintf("• %s: %d\n", merchantText(lang, "digest_ai"), aiResolved))
 	if len(top) > 0 {
-		b.WriteString("客户最常问：\n" + strings.Join(top, "\n"))
+		b.WriteString(merchantText(lang, "digest_top") + "\n" + strings.Join(top, "\n"))
 	}
 	p.SendTelegramNotify(ctx, userID, b.String())
 }
