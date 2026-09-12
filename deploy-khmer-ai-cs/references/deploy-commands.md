@@ -48,6 +48,17 @@ B64=$(echo "$SCRIPT" | base64)
 ```bash
 cd <仓库>/backend-go
 go vet ./... && go test ./...                                   # 发布前质量门
+
+# SQL 引用检查 —— 强烈建议每次发布前跑。它把源码里每条 SQL 拿去 prepare,
+# 能挡住「SQL 引用了不存在的列/类型 → 整个接口 100% 失败」这类编译器看不见的
+# bug(已发生过两次: /tenants 的 message_quota、createSLA 的 sla_priority)。
+# 只解析不执行、每条都在回滚的事务里, 所以可以直接指向生产库。
+# 未设 DATABASE_URL 时它会 skip —— 也就是说常规 go test 覆盖不到它。
+set -a; . ./.env-go; set +a; go test ./internal/sqlcheck/ -v
+# 本机没有库时用隧道(把 DSN 的 5432 换成隧道端口):
+#   ssh -f -N -L 15432:127.0.0.1:5432 root@38.55.192.90
+#   DATABASE_URL=$(echo "$DATABASE_URL" | sed 's|:5432/|:15432/|') go test ./internal/sqlcheck/ -v
+
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/khmer-deploy/server-go  ./cmd/server
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/khmer-deploy/migrate-go ./cmd/migrate
 file /tmp/khmer-deploy/server-go   # 确认 "ELF 64-bit ... x86-64"

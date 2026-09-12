@@ -53,7 +53,7 @@ description: 将「Khmer AI 客服系统 (khmer-ai-cs-go, Go 后端 + Next.js �
 
 ## 部署工作流（迭代发布）
 
-1. **构建后端** (本地, 需 go ≥1.26, `brew install go`): `backend-go/` 下交叉编译 `server-go` 与 `migrate-go` (命令见 references/deploy-commands.md §1)
+1. **构建后端** (本地, 需 go ≥1.26, `brew install go`): `backend-go/` 下交叉编译 `server-go` 与 `migrate-go`; 发布前跑一次 SQL 引用检查 (`go test ./internal/sqlcheck/`, 需 `DATABASE_URL`, 未设会 skip) 质量门 —— 它挡的是编译器看不见的那类 bug (命令见 references/deploy-commands.md §1)
 2. **构建前端**: `NEXT_PUBLIC_API_URL=https://cs.wanfanginsulationmaterial.com/api/v1 npm run build`, 组装 standalone + `.next/static` + `public` 打 tar (§2)
 3. **上传**: scp 到 `root@38.55.192.90:/root/khmer-deploy/` (§3)
 4. **后端发布**: 备份旧二进制 → `systemctl stop khmer-ai-cs-go` → (有迁移则) 跑 `migrate-go` → cp 新二进制 → `chown khmerai` → start (§4; 先 stop 再 cp, 否则 Text file busy)
