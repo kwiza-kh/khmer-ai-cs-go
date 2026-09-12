@@ -52,10 +52,17 @@ func (p *Pipeline) adminStatusReport(ctx context.Context) string {
 }
 
 // adminTenantsReport — merchants ranked by activity.
+//
+// Reads tenant_billing DIRECTLY, so it must use the column's real name. The
+// platform-admin page queries the tenant_overview VIEW, which aliases
+// monthly_message_quota to message_quota — copying that alias here produced a
+// query that failed at prepare ("column b.message_quota does not exist") and
+// made /tenants unusable. The COALESCE default matches the view's, so a
+// merchant with no billing row shows the free-plan quota rather than 0.
 func (p *Pipeline) adminTenantsReport(ctx context.Context) string {
 	rows, err := p.DB.Query(ctx,
 		`SELECT u.user_id, u.username, COALESCE(b.plan,'free'), u.is_active,
-		        COALESCE(b.messages_used,0), COALESCE(b.message_quota,0),
+		        COALESCE(b.messages_used,0), COALESCE(b.monthly_message_quota,500),
 		        (SELECT COUNT(*) FROM sessions s WHERE s.user_id = u.user_id AND s.is_test = false)
 		 FROM users u
 		 LEFT JOIN tenant_billing b ON b.user_id = u.user_id

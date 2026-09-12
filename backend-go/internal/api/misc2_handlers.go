@@ -59,9 +59,13 @@ func (a *App) upsertSLA(w http.ResponseWriter, r *http.Request) (any, error) {
 		req.Priority = "normal"
 	}
 	var id int
+	// priority is a plain varchar column with a 'normal' default — there is no
+	// sla_priority type in this schema. Casting to one made the statement fail
+	// at PREPARE ("type sla_priority does not exist"), so every attempt to
+	// create an SLA policy returned 创建失败.
 	if err := a.DB.QueryRow(r.Context(),
 		"INSERT INTO sla_policies (user_id, name, first_response_secs, resolution_secs, business_hours_only, priority, is_active) "+
-			"VALUES ($1,$2,$3,$4,$5,$6::sla_priority,true) RETURNING sla_id",
+			"VALUES ($1,$2,$3,$4,$5,$6::varchar,true) RETURNING sla_id",
 		user.UserID, req.Name, req.FirstResponseSecs, req.ResolutionSecs, req.BusinessHoursOnly, req.Priority).Scan(&id); err != nil {
 		return nil, ErrInternal("创建失败")
 	}
