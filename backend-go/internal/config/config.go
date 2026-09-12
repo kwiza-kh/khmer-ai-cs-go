@@ -48,13 +48,13 @@ type JwtConfig struct {
 }
 
 type MetaConfig struct {
-	AppID                             string
-	AppSecret                         string
-	OAuthRedirectURL                  string
-	OAuthFrontendURL                  string
-	GraphAPIVersion                   string
-	WhatsAppEmbeddedSignupConfigID    string
-	OAuthScopes                       string // META_OAUTH_SCOPES — optional override of the Facebook Login scope list
+	AppID                          string
+	AppSecret                      string
+	OAuthRedirectURL               string
+	OAuthFrontendURL               string
+	GraphAPIVersion                string
+	WhatsAppEmbeddedSignupConfigID string
+	OAuthScopes                    string // META_OAUTH_SCOPES — optional override of the Facebook Login scope list
 }
 
 type EmailConfig struct {
@@ -68,10 +68,10 @@ type EmailConfig struct {
 }
 
 type VoiceConfig struct {
-	Enabled            bool
-	TwilioAccountSID   string
-	TwilioAuthToken    string
-	FromNumber         string
+	Enabled          bool
+	TwilioAccountSID string
+	TwilioAuthToken  string
+	FromNumber       string
 }
 
 type SSOConfig struct {
@@ -92,6 +92,57 @@ type SSOConfig struct {
 	AllowSignup bool
 }
 
+// TelegramLoginConfig — "Log in with Telegram" via Telegram's OpenID Connect
+// flow, configured in @BotFather (Bot Settings → Web Login).
+//
+// Deliberately separate from SSOConfig: that one is Google-specific (its
+// default issuer and endpoints are hard-coded), and a deployment may well run
+// both at once. The bot used here must be a dedicated platform-level bot —
+// the per-tenant bots in platform_configs / telegram_notify_settings belong to
+// individual merchants and must not be repurposed for sign-in.
+type TelegramLoginConfig struct {
+	Enabled      bool
+	ClientID     string
+	ClientSecret string // NOT the bot token — BotFather issues a separate secret
+	// RedirectURL is the public callback registered in BotFather's
+	// "Redirect URIs" list. Must match exactly, or Telegram refuses to redirect.
+	RedirectURL string
+	// FrontendURL receives the one-time login code after a successful exchange.
+	FrontendURL string
+	AllowSignup bool
+	// RequestPhone adds the `phone` scope, returning Telegram's verified phone
+	// number. SMS verification is expensive in this market, so it is worth
+	// capturing at sign-in even before anything consumes it.
+	RequestPhone bool
+}
+
+// PlatformBotConfig — the operator-owned Telegram bot.
+//
+// Distinct from every other bot in the system: the ones in platform_configs
+// and telegram_notify_settings belong to individual merchants. This one is
+// yours, it is the only one, and it serves the whole installation — operator
+// alerts, merchant account-linking, the admin command console and the support
+// inbox all arrive here.
+//
+// Its token is a platform credential: it can message every linked merchant, so
+// it warrants the same care as the JWT secret.
+type PlatformBotConfig struct {
+	Token string // PLATFORM_TELEGRAM_BOT_TOKEN (BotFather)
+	// WebhookSecret is passed to Telegram as secret_token and comes back on
+	// every delivery as X-Telegram-Bot-Api-Secret-Token. Without it the
+	// webhook endpoint would accept updates from anyone who knows the URL.
+	WebhookSecret string
+	// AdminIDs are the Telegram user ids allowed to run operator commands.
+	// Telegram asserts from.id, so this list is an identity check — but the
+	// handler still re-checks the linked account is a platform_admin.
+	AdminIDs []int64 // PLATFORM_TELEGRAM_ADMINS, comma-separated
+	// AlertChatID receives operational alerts. Defaults to the first admin id.
+	AlertChatID string // PLATFORM_TELEGRAM_ALERT_CHAT
+	// PublicBotUsername is the @handle, used to build the t.me deep link for
+	// merchant account-linking (e.g. "relaychat_bot").
+	PublicBotUsername string // PLATFORM_TELEGRAM_BOT_USERNAME
+}
+
 // TTSConfig gates voice replies (Gemini TTS → R2 → platform audio message).
 // Requires R2 so the synthesized WAV has somewhere providers can download.
 type TTSConfig struct {
@@ -99,24 +150,26 @@ type TTSConfig struct {
 }
 
 type Config struct {
-	Server                  ServerConfig
-	DatabaseURL             string
-	Redis                   RedisConfig
-	Gemini                  GeminiConfig
-	R2                      R2Config
-	JWT                     JwtConfig
-	PlatformCredentialKey   string
-	AllowedOrigins          []string
-	Meta                    MetaConfig
-	MetaVerifyToken         string
-	TelegramBotToken        string
-	InitialAdminPassword    string
-	Email                   EmailConfig
-	Voice                   VoiceConfig
-	SSO                     SSOConfig
-	TTS                     TTSConfig
-	AllowRegistration       bool
-	RegistrationInviteCode  string
+	Server                 ServerConfig
+	DatabaseURL            string
+	Redis                  RedisConfig
+	Gemini                 GeminiConfig
+	R2                     R2Config
+	JWT                    JwtConfig
+	PlatformCredentialKey  string
+	AllowedOrigins         []string
+	Meta                   MetaConfig
+	MetaVerifyToken        string
+	TelegramBotToken       string
+	InitialAdminPassword   string
+	Email                  EmailConfig
+	Voice                  VoiceConfig
+	SSO                    SSOConfig
+	TelegramLogin          TelegramLoginConfig
+	PlatformBot            PlatformBotConfig
+	TTS                    TTSConfig
+	AllowRegistration      bool
+	RegistrationInviteCode string
 }
 
 // Load reads .env from the working directory (real environment variables win)
@@ -180,6 +233,22 @@ func Load() (*Config, error) {
 			TwilioAccountSID: env("TWILIO_ACCOUNT_SID", ""),
 			TwilioAuthToken:  env("TWILIO_AUTH_TOKEN", ""),
 			FromNumber:       env("TWILIO_FROM_NUMBER", ""),
+		},
+		TelegramLogin: TelegramLoginConfig{
+			Enabled:      envBool("TELEGRAM_LOGIN_ENABLED", false),
+			ClientID:     env("TELEGRAM_LOGIN_CLIENT_ID", ""),
+			ClientSecret: env("TELEGRAM_LOGIN_CLIENT_SECRET", ""),
+			RedirectURL:  env("TELEGRAM_LOGIN_REDIRECT_URL", ""),
+			FrontendURL:  env("TELEGRAM_LOGIN_FRONTEND_URL", ""),
+			AllowSignup:  envBool("TELEGRAM_LOGIN_ALLOW_SIGNUP", true),
+			RequestPhone: envBool("TELEGRAM_LOGIN_REQUEST_PHONE", true),
+		},
+		PlatformBot: PlatformBotConfig{
+			Token:             env("PLATFORM_TELEGRAM_BOT_TOKEN", ""),
+			WebhookSecret:     env("PLATFORM_TELEGRAM_WEBHOOK_SECRET", ""),
+			AdminIDs:          envInt64List("PLATFORM_TELEGRAM_ADMINS"),
+			AlertChatID:       env("PLATFORM_TELEGRAM_ALERT_CHAT", ""),
+			PublicBotUsername: env("PLATFORM_TELEGRAM_BOT_USERNAME", ""),
 		},
 		SSO: SSOConfig{
 			Enabled:          envBool("SSO_ENABLED", false),
@@ -282,6 +351,24 @@ func envInt(key string, fallback int) int {
 		}
 	}
 	return fallback
+}
+
+// envInt64List parses a comma-separated list of integers (Telegram user ids,
+// which exceed int32 on some accounts). Blank entries and unparsable values are
+// skipped rather than aborting startup — a typo in the allow-list should not
+// take the service down, it should just not grant anyone access.
+func envInt64List(key string) []int64 {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return nil
+	}
+	var out []int64
+	for _, part := range strings.Split(raw, ",") {
+		if n, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64); err == nil {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 func envBool(key string, fallback bool) bool {

@@ -27,6 +27,14 @@ func (a *App) StartBackgroundTasks(ctx context.Context) {
 	// Telegram notify bots: poll inline-button presses (接管/解决) and send
 	// the 08:00 Phnom Penh daily digest.
 	go a.loop(ctx, 12*time.Second, a.pollNotifyBotCallbacks)
+	// Watchdog: nothing else notices a degraded dependency. The process keeps
+	// running, the HTTP port stays open, and customers simply stop getting
+	// answers — the operator finds out from a complaint.
+	go a.loop(ctx, 60*time.Second, a.checkPlatformHealth)
+	// Support relays only matter while the operator might still hit reply.
+	// Every merchant message creates one, so without this they accumulate
+	// forever.
+	go a.loop(ctx, 6*time.Hour, a.pruneStaleSupportRelays)
 	go a.loop(ctx, 15*time.Minute, a.sendDueDigests)
 }
 
@@ -47,6 +55,43 @@ func (a *App) pollNotifyBotCallbacks(ctx context.Context) {
 	}
 	for _, id := range ids {
 		a.Pipe.ProcessNotifyCallbacks(ctx, id)
+	}
+}
+
+// checkPlatformHealth pages the operator when a dependency is down, and clears
+// the alert once it recovers so a later outage pages again.
+func (a *App) checkPlatformHealth(ctx context.Context) {
+	if a.Pipe == nil || !a.Pipe.PlatformBotEnabled() {
+		return
+	}
+	dbOK := a.DB.Ping(ctx) == nil
+	redisOK := a.Redis != nil && a.Redis.Ping(ctx)
+
+	if dbOK {
+		a.Pipe.PlatformAlertResolved(ctx, "health-db")
+	} else {
+		a.Pipe.PlatformAlert(ctx, "health-db", "数据库不可用",
+			"Postgres 连接失败 — 登录、收件箱、消息管道全部受影响")
+	}
+	if redisOK {
+		a.Pipe.PlatformAlertResolved(ctx, "health-redis")
+	} else {
+		a.Pipe.PlatformAlert(ctx, "health-redis", "Redis 不可用",
+			"限流、实时推送、会话缓存受影响")
+	}
+}
+
+// pruneStaleSupportRelays drops reply mappings nobody ever answered. 30 days is
+// far beyond any realistic reply window, and the inbox row itself is kept — the
+// mapping is just dead weight once it can no longer be replied to.
+func (a *App) pruneStaleSupportRelays(ctx context.Context) {
+	res, err := a.DB.Exec(ctx,
+		"DELETE FROM platform_support_relay WHERE created_at < NOW() - INTERVAL '30 days'")
+	if err != nil {
+		return
+	}
+	if n := res.RowsAffected(); n > 0 {
+		a.Logger.Info("pruned stale support relays", "count", n)
 	}
 }
 
@@ -94,7 +139,7 @@ func (a *App) loop(ctx context.Context, every time.Duration, fn func(context.Con
 }
 
 type campRow struct {
-	id, userID, configID             int32
+	id, userID, configID                                                             int32
 	platform, templateName, templateLanguage, recipientFilter, tagFilter, bodyParams string
 }
 
@@ -199,9 +244,9 @@ func (a *App) dispatchOneCampaign(ctx context.Context, c campRow) int {
 }
 
 type slaPol struct {
-	userID, slaID    int32
-	firstSecs        int
-	resolutionSecs   *int
+	userID, slaID     int32
+	firstSecs         int
+	resolutionSecs    *int
 	businessHoursOnly bool
 }
 

@@ -16,11 +16,11 @@ import (
 // ============================================
 
 type slaRequest struct {
-	Name               string `json:"name"`
-	FirstResponseSecs  int    `json:"first_response_secs"`
-	ResolutionSecs     *int   `json:"resolution_secs"`
-	BusinessHoursOnly  bool   `json:"business_hours_only"`
-	Priority           string `json:"priority"`
+	Name              string `json:"name"`
+	FirstResponseSecs int    `json:"first_response_secs"`
+	ResolutionSecs    *int   `json:"resolution_secs"`
+	BusinessHoursOnly bool   `json:"business_hours_only"`
+	Priority          string `json:"priority"`
 }
 
 func (a *App) listSLA(w http.ResponseWriter, r *http.Request) (any, error) {
@@ -316,8 +316,15 @@ func (a *App) assignRole(w http.ResponseWriter, r *http.Request, roleID int32) (
 	if err := a.DB.QueryRow(r.Context(), "SELECT role_id FROM roles WHERE role_id = $1 AND user_id = $2", roleID, user.UserID).Scan(&rid); err != nil {
 		return nil, ErrNotFound("角色不存在")
 	}
-	_, _ = a.DB.Exec(r.Context(),
-		"INSERT INTO user_roles (role_id, user_id) VALUES ($1,$2) ON CONFLICT (user_id, role_id) DO NOTHING", roleID, req.UserID)
+	if ok, err := a.userInCallerTenant(r.Context(), user, req.UserID); err != nil {
+		return nil, ErrInternal("查询失败")
+	} else if !ok {
+		return nil, ErrForbidden("无权操作该用户")
+	}
+	if _, err := a.DB.Exec(r.Context(),
+		"INSERT INTO user_roles (role_id, user_id) VALUES ($1,$2) ON CONFLICT (user_id, role_id) DO NOTHING", roleID, req.UserID); err != nil {
+		return nil, ErrInternal("分配失败")
+	}
 	return map[string]string{"message": "已分配"}, nil
 }
 
@@ -327,8 +334,21 @@ func (a *App) unassignRole(w http.ResponseWriter, r *http.Request, roleID int32)
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		return nil, ErrBadRequest("请求格式错误")
 	}
-	_, _ = a.DB.Exec(r.Context(), "DELETE FROM user_roles WHERE role_id = $1 AND user_id = $2", roleID, req.UserID)
-	_ = user
+	// The role must belong to the caller — the previous version deleted any
+	// (role_id, user_id) pair a caller named, so one tenant could strip role
+	// assignments off another tenant's roles.
+	var rid int
+	if err := a.DB.QueryRow(r.Context(), "SELECT role_id FROM roles WHERE role_id = $1 AND user_id = $2", roleID, user.UserID).Scan(&rid); err != nil {
+		return nil, ErrNotFound("角色不存在")
+	}
+	if ok, err := a.userInCallerTenant(r.Context(), user, req.UserID); err != nil {
+		return nil, ErrInternal("查询失败")
+	} else if !ok {
+		return nil, ErrForbidden("无权操作该用户")
+	}
+	if _, err := a.DB.Exec(r.Context(), "DELETE FROM user_roles WHERE role_id = $1 AND user_id = $2", roleID, req.UserID); err != nil {
+		return nil, ErrInternal("取消失败")
+	}
 	return map[string]string{"message": "已取消"}, nil
 }
 
@@ -701,7 +721,7 @@ func (a *App) setPlan(w http.ResponseWriter, r *http.Request) (any, error) {
 func (a *App) listTeam(w http.ResponseWriter, r *http.Request) (any, error) {
 	user, _ := UserFrom(r)
 	rows, err := a.DB.Query(r.Context(),
-		"SELECT t.team_id, t.agent_user_id, t.display_name, t.skills, t.is_active, u.username, u.email "+
+		"SELECT t.team_id, t.agent_user_id, t.display_name, t.skills, t.is_active, u.username, COALESCE(u.email,'') "+
 			"FROM agent_teams t JOIN users u ON u.user_id = t.agent_user_id WHERE t.owner_user_id = $1 ORDER BY t.team_id", user.UserID)
 	if err != nil {
 		return nil, ErrInternal("查询失败")
@@ -736,10 +756,28 @@ func (a *App) addTeamAgent(w http.ResponseWriter, r *http.Request) (any, error) 
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		return nil, ErrBadRequest("请求格式错误")
 	}
-	// Verify the agent user exists.
-	var uid int
-	if err := a.DB.QueryRow(r.Context(), "SELECT user_id FROM users WHERE user_id = $1", req.AgentUserID).Scan(&uid); err != nil {
+	// Verify the agent user exists and can join this tenant. Membership is
+	// exclusive: agent_teams doubles as the tenant boundary for every
+	// foreign-user-id handler (see userInCallerTenant), so a user already
+	// owned by another merchant must not be claimable here — that would hand
+	// the claiming tenant management rights over a competitor's account.
+	var targetRole string
+	var claimedElsewhere bool
+	if err := a.DB.QueryRow(r.Context(),
+		"SELECT u.role::text, EXISTS (SELECT 1 FROM agent_teams t "+
+			"WHERE t.agent_user_id = u.user_id AND t.owner_user_id <> $2) "+
+			"FROM users u WHERE u.user_id = $1",
+		req.AgentUserID, user.UserID).Scan(&targetRole, &claimedElsewhere); err != nil {
 		return nil, ErrNotFound("用户不存在")
+	}
+	if req.AgentUserID == user.UserID {
+		return nil, ErrBadRequest("不能将自己添加为客服")
+	}
+	if targetRole == "platform_admin" {
+		return nil, ErrForbidden("无权添加该用户")
+	}
+	if claimedElsewhere {
+		return nil, ErrConflict("该用户已属于其他商家")
 	}
 	if req.Skills == nil {
 		req.Skills = []string{}

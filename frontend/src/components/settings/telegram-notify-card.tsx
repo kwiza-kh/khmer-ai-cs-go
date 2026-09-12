@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   getTelegramNotify, putTelegramNotify, postTelegramNotifyTest,
-  postTelegramNotifyUpdates, type TelegramChat,
+  postTelegramNotifyUpdates, postTelegramNotifyLink, type TelegramChat,
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -18,12 +18,14 @@ export function TelegramNotifyCard() {
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [pulling, setPulling] = useState(false);
+  const [linking, setLinking] = useState(false);
   const [configured, setConfigured] = useState(false);
   const [botToken, setBotToken] = useState("");
   const [chatId, setChatId] = useState("");
   const [chatTitle, setChatTitle] = useState("");
   const [notifyMessages, setNotifyMessages] = useState(true);
   const [notifyHandoff, setNotifyHandoff] = useState(true);
+  const [notifyAnnouncements, setNotifyAnnouncements] = useState(true);
   const [chats, setChats] = useState<TelegramChat[]>([]);
 
   const load = useCallback(async () => {
@@ -35,6 +37,7 @@ export function TelegramNotifyCard() {
       setChatTitle(cfg.chat_title || "");
       setNotifyMessages(cfg.notify_messages);
       setNotifyHandoff(cfg.notify_handoff);
+      setNotifyAnnouncements(cfg.notify_announcements !== false);
     } catch {
       toast.error(t("settings.tgLoadFailed"));
     } finally {
@@ -56,6 +59,7 @@ export function TelegramNotifyCard() {
         chat_title: chatTitle || undefined,
         notify_messages: notifyMessages,
         notify_handoff: notifyHandoff,
+        notify_announcements: notifyAnnouncements,
       });
       toast.success(t("settings.tgSaved"));
       setConfigured(true);
@@ -65,6 +69,21 @@ export function TelegramNotifyCard() {
       toast.error((err as Error).message || t("settings.tgSaveFailed"));
     } finally {
       setSaving(false);
+    }
+  };
+
+  // One-tap binding through the platform bot. Opens in a new tab so the
+  // dashboard stays put — on mobile t.me hands off to the Telegram app.
+  const connectTelegram = async () => {
+    setLinking(true);
+    try {
+      const res = await postTelegramNotifyLink();
+      window.open(res.link, "_blank", "noopener,noreferrer");
+      toast.success(t("settings.tgLinkOpened"));
+    } catch (err: unknown) {
+      toast.error((err as Error).message || t("settings.tgPullFailed"));
+    } finally {
+      setLinking(false);
     }
   };
 
@@ -102,6 +121,15 @@ export function TelegramNotifyCard() {
       </CardHeader>
       <CardContent className="space-y-3">
         <p className="text-xs leading-5 text-muted-foreground">{t("settings.tgDesc")}</p>
+
+        {/* One-tap path. The manual bot-token fields below stay as a fallback
+            for merchants who want notifications under their own bot's name. */}
+        <Button className="h-9 w-full gap-1.5" onClick={connectTelegram} disabled={linking}>
+          {linking ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
+          {t("settings.tgConnect")}
+        </Button>
+        <p className="text-[11px] leading-4 text-muted-foreground">{t("settings.tgConnectHint")}</p>
+
         {loading ? (
           <Loader2 className="size-4 animate-spin text-muted-foreground" />
         ) : (
@@ -149,6 +177,10 @@ export function TelegramNotifyCard() {
               <label className="flex cursor-pointer items-center gap-2">
                 <input type="checkbox" checked={notifyHandoff} onChange={(e) => setNotifyHandoff(e.target.checked)} className="size-4 accent-primary" />
                 {t("settings.tgNotifyHandoff")}
+              </label>
+              <label className="flex cursor-pointer items-center gap-2">
+                <input type="checkbox" checked={notifyAnnouncements} onChange={(e) => setNotifyAnnouncements(e.target.checked)} className="size-4 accent-primary" />
+                {t("settings.tgNotifyAnnouncements")}
               </label>
             </div>
             <div className="flex gap-2">

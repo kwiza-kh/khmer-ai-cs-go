@@ -181,7 +181,7 @@ func (a *App) topQueries(w http.ResponseWriter, r *http.Request) (any, error) {
 		limit = 10
 	}
 	rows, err := a.DB.Query(r.Context(),
-		"SELECT query, COUNT(*)::bigint AS hits FROM rag_query_logs WHERE user_id=$1 AND created_at > NOW() - ($2 || ' days')::interval GROUP BY query ORDER BY hits DESC LIMIT $3",
+		"SELECT query, COUNT(*)::bigint AS hits FROM rag_query_logs WHERE user_id=$1 AND created_at > NOW() - make_interval(days => $2) GROUP BY query ORDER BY hits DESC LIMIT $3",
 		user.UserID, days, limit)
 	if err != nil {
 		return nil, ErrInternal("查询失败")
@@ -204,7 +204,7 @@ func (a *App) languageBreakdown(w http.ResponseWriter, r *http.Request) (any, er
 	days := daysParam(r, 30)
 	rows, err := a.DB.Query(r.Context(),
 		`SELECT COALESCE(NULLIF(language,''),'km'), COUNT(*) FROM sessions
-		 WHERE user_id=$1 AND is_test=FALSE AND created_at > NOW() - ($2 || ' days')::interval GROUP BY 1 ORDER BY 2 DESC`,
+		 WHERE user_id=$1 AND is_test=FALSE AND created_at > NOW() - make_interval(days => $2) GROUP BY 1 ORDER BY 2 DESC`,
 		user.UserID, days)
 	if err != nil {
 		return nil, ErrInternal("查询失败")
@@ -329,12 +329,12 @@ func (a *App) agentPerformance(w http.ResponseWriter, r *http.Request) (any, err
 	rows, err := a.DB.Query(r.Context(), `
 		SELECT u.user_id, u.username,
 			COALESCE(at.display_name, u.username) AS display_name,
-			(SELECT COUNT(*) FROM sessions s WHERE s.user_id=$1 AND s.assigned_agent_id=u.user_id AND s.resolved_at IS NOT NULL AND s.resolved_at >= NOW() - ($2 || ' days')::interval) AS resolved_count,
-			(SELECT COUNT(*) FROM sessions s WHERE s.user_id=$1 AND s.assigned_agent_id=u.user_id AND s.created_at >= NOW() - ($2 || ' days')::interval) AS handled_count,
-			(SELECT COALESCE(AVG(EXTRACT(EPOCH FROM (COALESCE(s.resolved_at, NOW()) - COALESCE(s.escalated_at, s.created_at)))),0) FROM sessions s WHERE s.user_id=$1 AND s.assigned_agent_id=u.user_id AND s.escalated_at IS NOT NULL AND s.escalated_at >= NOW() - ($2 || ' days')::interval) AS avg_handle_secs,
+			(SELECT COUNT(*) FROM sessions s WHERE s.user_id=$1 AND s.assigned_agent_id=u.user_id AND s.resolved_at IS NOT NULL AND s.resolved_at >= NOW() - make_interval(days => $2)) AS resolved_count,
+			(SELECT COUNT(*) FROM sessions s WHERE s.user_id=$1 AND s.assigned_agent_id=u.user_id AND s.created_at >= NOW() - make_interval(days => $2)) AS handled_count,
+			(SELECT COALESCE(AVG(EXTRACT(EPOCH FROM (COALESCE(s.resolved_at, NOW()) - COALESCE(s.escalated_at, s.created_at)))),0) FROM sessions s WHERE s.user_id=$1 AND s.assigned_agent_id=u.user_id AND s.escalated_at IS NOT NULL AND s.escalated_at >= NOW() - make_interval(days => $2)) AS avg_handle_secs,
 			(SELECT COALESCE(AVG(cm.feedback_rating),0) FROM chat_messages cm JOIN sessions s ON s.session_id = cm.session_id
-				WHERE s.user_id=$1 AND s.assigned_agent_id=u.user_id AND cm.role='model' AND cm.feedback_rating IS NOT NULL AND cm.created_at >= NOW() - ($2 || ' days')::interval) AS avg_csat,
-			(SELECT COUNT(*) FROM chat_messages cm WHERE cm.role='agent' AND cm.content <> '' AND cm.created_at >= NOW() - ($2 || ' days')::interval
+				WHERE s.user_id=$1 AND s.assigned_agent_id=u.user_id AND cm.role='model' AND cm.feedback_rating IS NOT NULL AND cm.created_at >= NOW() - make_interval(days => $2)) AS avg_csat,
+			(SELECT COUNT(*) FROM chat_messages cm WHERE cm.role='agent' AND cm.content <> '' AND cm.created_at >= NOW() - make_interval(days => $2)
 				AND cm.session_id IN (SELECT session_id FROM sessions WHERE user_id=$1 AND assigned_agent_id=u.user_id)) AS reply_count
 		FROM users u
 		LEFT JOIN agent_teams at ON at.agent_user_id = u.user_id AND at.owner_user_id = $1
@@ -350,10 +350,10 @@ func (a *App) agentPerformance(w http.ResponseWriter, r *http.Request) (any, err
 	out := make([]map[string]any, 0)
 	for rows.Next() {
 		var (
-			uid                             int32
-			username, displayName            string
-			resolved, handled, reply         int64
-			avgHandle, avgCsat               float64
+			uid                      int32
+			username, displayName    string
+			resolved, handled, reply int64
+			avgHandle, avgCsat       float64
 		)
 		if err := rows.Scan(&uid, &username, &displayName, &resolved, &handled, &avgHandle, &avgCsat, &reply); err != nil {
 			continue
@@ -374,7 +374,7 @@ func (a *App) intentAnalytics(w http.ResponseWriter, r *http.Request) (any, erro
 	rows, err := a.DB.Query(r.Context(),
 		`SELECT intent, COUNT(*)::bigint, AVG(confidence) FROM sessions
 		 WHERE user_id=$1 AND is_test=FALSE AND intent IS NOT NULL AND intent <> ''
-		 AND created_at > NOW() - ($2 || ' days')::interval
+		 AND created_at > NOW() - make_interval(days => $2)
 		 GROUP BY intent ORDER BY 2 DESC LIMIT 20`, user.UserID, days)
 	if err != nil {
 		return nil, ErrInternal("查询失败")
@@ -486,15 +486,15 @@ func (a *App) reportCSV(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			for rows.Next() {
 				var (
-					mid                 int64
-					sid, role, mtype    string
-					content             string
-					tokens              int32
-					model               string
-					usedMock            bool
-					rating              *int16
-					comment             string
-					createdAt           time.Time
+					mid              int64
+					sid, role, mtype string
+					content          string
+					tokens           int32
+					model            string
+					usedMock         bool
+					rating           *int16
+					comment          string
+					createdAt        time.Time
 				)
 				if rows.Scan(&mid, &sid, &role, &mtype, &content, &tokens, &model, &usedMock, &rating, &comment, &createdAt) == nil {
 					r := ""
@@ -515,10 +515,10 @@ func (a *App) reportCSV(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			for rows.Next() {
 				var (
-					createdAt            time.Time
-					model                string
-					pt, ct, tt, cached     int32
-					cost                 float64
+					createdAt          time.Time
+					model              string
+					pt, ct, tt, cached int32
+					cost               float64
 				)
 				if rows.Scan(&createdAt, &model, &pt, &ct, &tt, &cached, &cost) == nil {
 					_ = cw.Write([]string{createdAt.Format(time.RFC3339), model,

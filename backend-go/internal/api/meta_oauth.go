@@ -179,10 +179,10 @@ func (a *App) metaOAuthSession(w http.ResponseWriter, r *http.Request, sessionID
 }
 
 type completeMetaOAuthRequest struct {
-	SessionID        string `json:"session_id"`
-	PageID           string `json:"page_id"`
-	EnableMessenger  bool   `json:"enable_messenger"`
-	EnableInstagram  bool   `json:"enable_instagram"`
+	SessionID       string `json:"session_id"`
+	PageID          string `json:"page_id"`
+	EnableMessenger bool   `json:"enable_messenger"`
+	EnableInstagram bool   `json:"enable_instagram"`
 }
 
 // metaOAuthComplete — subscribe chosen page(s), save configs, consume session.

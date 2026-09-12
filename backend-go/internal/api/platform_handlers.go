@@ -82,15 +82,15 @@ func (a *App) listPlatformConfigs(w http.ResponseWriter, r *http.Request) (any, 
 // attachPlatformStatus adds health + outbox/inbound counts (credentials never serialized).
 func (a *App) attachPlatformStatus(ctx context.Context, c *platformConfigRow) map[string]any {
 	base := map[string]any{
-		"config_id":                     c.ConfigID,
-		"user_id":                       c.UserID,
-		"platform":                      c.Platform,
-		"page_id":                       c.PageID,
-		"instagram_business_id":         c.InstagramBusinessID,
-		"whatsapp_business_account_id":  c.WhatsAppBusinessAccountID,
-		"is_active":                     c.IsActive,
-		"created_at":                    c.CreatedAt,
-		"updated_at":                    c.UpdatedAt,
+		"config_id":                    c.ConfigID,
+		"user_id":                      c.UserID,
+		"platform":                     c.Platform,
+		"page_id":                      c.PageID,
+		"instagram_business_id":        c.InstagramBusinessID,
+		"whatsapp_business_account_id": c.WhatsAppBusinessAccountID,
+		"is_active":                    c.IsActive,
+		"created_at":                   c.CreatedAt,
+		"updated_at":                   c.UpdatedAt,
 	}
 	// Health.
 	var status, detail string
@@ -402,10 +402,14 @@ func (a *App) verifyPlatformConfig(w http.ResponseWriter, r *http.Request, confi
 	case "line":
 		access, _ := a.Sealer.Decrypt(c.AccessToken)
 		client := platform.NewLineClient(access)
-		name, _, _, err := client.GetBotInfo(r.Context())
+		name, _, botUserID, err := client.GetBotInfo(r.Context())
 		if err != nil {
 			return nil, &ApiError{http.StatusBadGateway, "connection check failed: " + err.Error()}
 		}
+		// Store the bot's userId: LINE stamps it on every webhook as
+		// "destination", and it is the only key that routes an inbound event
+		// to this tenant rather than to whichever LINE config came first.
+		_ = a.setChannelIdentity(r.Context(), configID, botUserID)
 		// Auto-register + self-test the webhook: the merchant never has to
 		// touch the LINE Developers console for webhook configuration.
 		detail := "Connection verified via LINE Messaging API"
@@ -425,15 +429,32 @@ func (a *App) verifyPlatformConfig(w http.ResponseWriter, r *http.Request, confi
 	case "zalo":
 		access, _ := a.Sealer.Decrypt(c.AccessToken)
 		client := platform.NewZaloClient(access)
-		name, err := client.VerifyOA(r.Context())
+		name, oaID, err := client.VerifyOA(r.Context())
 		if err != nil {
 			return nil, &ApiError{http.StatusBadGateway, "connection check failed: " + err.Error()}
 		}
+		// oa_id is the routing identity carried on every Zalo webhook.
+		_ = a.setChannelIdentity(r.Context(), configID, oaID)
 		_ = a.recordHealth(r.Context(), configID, "connected", name, "Connection verified via Zalo OA API")
 		return map[string]any{"config_id": configID, "health": map[string]any{"config_id": configID, "status": "connected", "account_name": name}}, nil
 	default:
 		return nil, ErrBadRequest("unsupported platform: " + c.Platform)
 	}
+}
+
+// setChannelIdentity records the provider-side routing identity learned from
+// the provider API at connect time (LINE bot userId / Zalo OA id), so inbound
+// webhooks can be matched to this tenant instead of to the first active config
+// of that platform. Best-effort: verification still succeeds if the write
+// fails, and the webhook resolver will adopt a lone unbound config instead.
+func (a *App) setChannelIdentity(ctx context.Context, configID int32, identity string) error {
+	if identity == "" {
+		return nil
+	}
+	_, err := a.DB.Exec(ctx,
+		"UPDATE platform_configs SET channel_identity = $1 WHERE config_id = $2",
+		identity, configID)
+	return err
 }
 
 // deactivatePlatformConfig — deactivate a config (Telegram webhook removed first).

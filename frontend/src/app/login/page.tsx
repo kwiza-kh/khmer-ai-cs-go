@@ -15,9 +15,10 @@ import { AnimatePresence, motion } from "motion/react";
 import { Eye, EyeOff, Lock, Mail, UserRound, ShieldCheck, ArrowRight, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { LANGS, useI18n } from "@/lib/i18n";
+import { TelegramIcon } from "@/components/platform-icons";
 
 export default function LoginPage() {
-  const { login, register, completeGoogleLogin } = useAuth();
+  const { login, register, completeGoogleLogin, completeTelegramLogin } = useAuth();
   const router = useRouter();
   const { lang, setLang, t } = useI18n();
   const [loading, setLoading] = useState(false);
@@ -25,6 +26,7 @@ export default function LoginPage() {
   const [tab, setTab] = useState<"login" | "register">("login");
   const [showPassword, setShowPassword] = useState(false);
   const [googleEnabled, setGoogleEnabled] = useState(false);
+  const [telegramEnabled, setTelegramEnabled] = useState(false);
 
   const [loginUser, setLoginUser] = useState("");
   const [loginPass, setLoginPass] = useState("");
@@ -34,14 +36,16 @@ export default function LoginPage() {
   const [regEmail, setRegEmail] = useState("");
   const [regPass, setRegPass] = useState("");
 
-  // OAuth return: the callback redirects here with ?google_code= (success) or
-  // ?google_error= (failure). Swap the one-time code for a session, then clean
-  // the URL so a refresh cannot replay it.
+  // OAuth return: the callback redirects here with ?<provider>_code= (success)
+  // or ?<provider>_error= (failure). Swap the one-time code for a session, then
+  // clean the URL so a refresh cannot replay it. Google and Telegram share this
+  // path — same one-time-code shape on both sides.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const code = params.get("google_code");
-    const errReason = params.get("google_error");
-    if (!code && !errReason) return;
+    const googleCode = params.get("google_code");
+    const telegramCode = params.get("telegram_code");
+    const errReason = params.get("google_error") || params.get("telegram_error");
+    if (!googleCode && !telegramCode && !errReason) return;
     window.history.replaceState({}, "", window.location.pathname);
     if (errReason) {
       const key = `login.googleErr.${errReason}`;
@@ -52,19 +56,27 @@ export default function LoginPage() {
     setLoading(true);
     // The state travels with the code; the server rejects a code whose state
     // did not originate from this browser (login-CSRF guard).
-    void completeGoogleLogin(code!, params.get("state") ?? "")
+    const state = params.get("state") ?? "";
+    const exchange = telegramCode
+      ? completeTelegramLogin(telegramCode, state)
+      : completeGoogleLogin(googleCode!, state);
+    void exchange
       .then(() => router.push("/ai-test"))
       .catch((err: unknown) => setError((err as Error).message))
       .finally(() => setLoading(false));
-  }, [completeGoogleLogin, router, t]);
+  }, [completeGoogleLogin, completeTelegramLogin, router, t]);
 
-  // Probe whether the deployment has Google sign-in configured.
+  // Probe which sign-in providers this deployment has configured.
   useEffect(() => {
     let cancelled = false;
     void fetch(`${API_BASE}/auth/methods`)
       .then((res) => res.json())
-      .then((data: { google?: boolean }) => { if (!cancelled) setGoogleEnabled(Boolean(data.google)); })
-      .catch(() => { /* keep the button hidden */ });
+      .then((data: { google?: boolean; telegram?: boolean }) => {
+        if (cancelled) return;
+        setGoogleEnabled(Boolean(data.google));
+        setTelegramEnabled(Boolean(data.telegram));
+      })
+      .catch(() => { /* keep the buttons hidden */ });
     return () => { cancelled = true; };
   }, []);
 
@@ -200,7 +212,7 @@ export default function LoginPage() {
 
       {/* Header */}
       <header className="absolute inset-x-0 top-0 z-10 flex items-center justify-between border-b border-zinc-800/80 px-6 py-4">
-        <span className="text-xs uppercase tracking-[0.14em] text-zinc-400">Khmer AI</span>
+        <span className="text-xs uppercase tracking-[0.14em] text-zinc-400">RelayChat</span>
         <div className="flex items-center gap-1 rounded-lg border border-zinc-800 bg-zinc-900/70 p-0.5">
           {LANGS.map((opt) => (
             <button
@@ -341,6 +353,18 @@ export default function LoginPage() {
                     >
                       <GoogleMark />
                       {t("login.googleSignIn")}
+                    </button>
+                  )}
+
+                  {telegramEnabled && (
+                    <button
+                      type="button"
+                      onClick={() => window.location.assign(`${API_BASE}/auth/telegram/start`)}
+                      disabled={loading}
+                      className="inline-flex h-10 w-full items-center justify-center gap-2.5 rounded-lg border border-zinc-800 bg-zinc-950 text-sm text-zinc-50 transition-colors hover:bg-zinc-900/80 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      <TelegramIcon className="size-4 text-brand-telegram" />
+                      {t("login.telegramSignIn")}
                     </button>
                   )}
 

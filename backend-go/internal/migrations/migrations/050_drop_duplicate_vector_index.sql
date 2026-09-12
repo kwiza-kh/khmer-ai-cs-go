@@ -1,0 +1,24 @@
+-- ============================================
+-- 050 — drop the superseded ivfflat vector index.
+--
+-- 001 created idx_chunks_embedding (ivfflat, lists=100) because that was the
+-- only pgvector index type available then. 032 added the HNSW index
+-- idx_knowledge_chunks_embedding_hnsw but never removed the ivfflat one, so
+-- knowledge_chunks.embedding has been carrying BOTH indexes ever since: every
+-- chunk insert, update and delete maintains two vector indexes, and the
+-- planner has a second, strictly worse candidate to consider on every search.
+--
+-- HNSW dominates ivfflat here — better recall at comparable speed, and no
+-- lists/probes tuning or training step — and it is the one the service's
+-- dense-search path is written against.
+--
+-- NOTE: this is a plain DROP INDEX, not DROP INDEX CONCURRENTLY. The runner
+-- executes each migration inside a transaction (migrations.go applyOne) and
+-- CONCURRENTLY cannot run in one. The statement therefore takes an ACCESS
+-- EXCLUSIVE lock on knowledge_chunks for the duration, which is a metadata
+-- operation plus file unlink — fast even for a large table, but it will block
+-- concurrent chunk writes until it finishes. Run it during a quiet window on
+-- a busy instance.
+-- ============================================
+
+DROP INDEX IF EXISTS idx_chunks_embedding;

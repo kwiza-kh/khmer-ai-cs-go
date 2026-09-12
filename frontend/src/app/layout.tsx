@@ -25,7 +25,7 @@ const notoSansKhmer = Noto_Sans_Khmer({
 });
 
 export const metadata = {
-  title: "Khmer AI Customer Service",
+  title: "RelayChat",
   description: "ប្រព័ន្ធ AI បម្រើអតិថិជនភាសាខ្មែរ · 高棉语AI客服系统",
 };
 

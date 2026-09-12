@@ -24,9 +24,9 @@ import (
 
 // Webhooks bundles webhook dependencies.
 type Webhooks struct {
-	DB     *pgxpool.Pool
-	Pipe   *Pipeline
-	Sealer *security.Sealer
+	DB              *pgxpool.Pool
+	Pipe            *Pipeline
+	Sealer          *security.Sealer
 	MetaVerifyToken string
 }
 
@@ -37,6 +37,7 @@ type webhookConfig struct {
 	Platform        string
 	WebhookSecret   string
 	BotTokenHash    string
+	ChannelIdentity string
 }
 
 // recordHealth upserts connection health (a signed webhook event is live proof
@@ -331,7 +332,14 @@ func (wh *Webhooks) LineWebhook(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(io.LimitReader(r.Body, 8*1024*1024))
 	signature := r.Header.Get("X-Line-Signature")
 
-	cfg := wh.resolveLineConfig(r.Context())
+	// LINE puts the bot's own userId in the top-level "destination" — the only
+	// per-tenant routing key in the payload.
+	var envelope struct {
+		Destination string `json:"destination"`
+	}
+	_ = json.Unmarshal(body, &envelope)
+
+	cfg, adoptable := wh.resolveLineConfig(r.Context(), envelope.Destination)
 	if cfg == nil {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -339,6 +347,11 @@ func (wh *Webhooks) LineWebhook(w http.ResponseWriter, r *http.Request) {
 	if !LineVerifySignature(cfg.WebhookSecret, signature, body) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
+	}
+	// Signature verified: the sender holds this channel's secret, so it is
+	// safe to latch the routing identity onto the config.
+	if adoptable {
+		wh.bindChannelIdentity(r.Context(), cfg.ConfigID, envelope.Destination)
 	}
 	wh.recordHealth(r.Context(), cfg.ConfigID, "connected", "", "Receiving signed LINE webhook events")
 	var payload map[string]any
@@ -394,7 +407,13 @@ func (wh *Webhooks) ZaloWebhook(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(io.LimitReader(r.Body, 8*1024*1024))
 	signature := r.Header.Get("X-ZEvent-Signature")
 
-	cfg := wh.resolveZaloConfig(r.Context())
+	// Zalo identifies the receiving Official Account with a top-level "oa_id".
+	var envelope struct {
+		OAID string `json:"oa_id"`
+	}
+	_ = json.Unmarshal(body, &envelope)
+
+	cfg, adoptable := wh.resolveZaloConfig(r.Context(), envelope.OAID)
 	if cfg == nil {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -402,6 +421,10 @@ func (wh *Webhooks) ZaloWebhook(w http.ResponseWriter, r *http.Request) {
 	if !ZaloVerifySignature(cfg.WebhookSecret, signature, body) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
+	}
+	// Signature verified: safe to latch the routing identity.
+	if adoptable {
+		wh.bindChannelIdentity(r.Context(), cfg.ConfigID, envelope.OAID)
 	}
 	wh.recordHealth(r.Context(), cfg.ConfigID, "connected", "", "Receiving signed Zalo webhook events")
 	var payload map[string]any
@@ -691,12 +714,19 @@ func (wh *Webhooks) resolveTelegramConfig(ctx context.Context, providedSecret st
 	return &cfg
 }
 
-func (wh *Webhooks) resolveLineConfig(ctx context.Context) *webhookConfig {
+// resolveChannelByIdentity looks up the active config owning a provider-side
+// routing identity (column added in migration 051).
+func (wh *Webhooks) resolveChannelByIdentity(ctx context.Context, platform, identity string) *webhookConfig {
+	if identity == "" {
+		return nil
+	}
 	var cfg webhookConfig
 	var secretEnc *string
 	err := wh.DB.QueryRow(ctx,
-		"SELECT config_id, user_id, platform::text, webhook_secret FROM platform_configs WHERE platform = 'line'::platform_type AND is_active = true LIMIT 1").
-		Scan(&cfg.ConfigID, &cfg.UserID, &cfg.Platform, &secretEnc)
+		"SELECT config_id, user_id, platform::text, webhook_secret, channel_identity "+
+			"FROM platform_configs WHERE platform = $1::platform_type AND is_active = true AND channel_identity = $2",
+		platform, identity).
+		Scan(&cfg.ConfigID, &cfg.UserID, &cfg.Platform, &secretEnc, &cfg.ChannelIdentity)
 	if err != nil {
 		return nil
 	}
@@ -706,19 +736,78 @@ func (wh *Webhooks) resolveLineConfig(ctx context.Context) *webhookConfig {
 	return &cfg
 }
 
-func (wh *Webhooks) resolveZaloConfig(ctx context.Context) *webhookConfig {
-	var cfg webhookConfig
-	var secretEnc *string
-	err := wh.DB.QueryRow(ctx,
-		"SELECT config_id, user_id, platform::text, webhook_secret FROM platform_configs WHERE platform = 'zalo'::platform_type AND is_active = true LIMIT 1").
-		Scan(&cfg.ConfigID, &cfg.UserID, &cfg.Platform, &secretEnc)
+// resolveChannelForAdoption finds the one active config of a platform that has
+// not learned its routing identity yet — channels connected before migration
+// 051. It returns nil when the choice is ambiguous: with two or more
+// candidates there is no safe guess, and guessing is precisely the bug this
+// replaces. The caller must verify the webhook signature before binding.
+func (wh *Webhooks) resolveChannelForAdoption(ctx context.Context, platform string) *webhookConfig {
+	rows, err := wh.DB.Query(ctx,
+		"SELECT config_id, user_id, platform::text, webhook_secret, channel_identity "+
+			"FROM platform_configs WHERE platform = $1::platform_type AND is_active = true AND channel_identity = ''",
+		platform)
 	if err != nil {
 		return nil
 	}
-	if secretEnc != nil {
-		cfg.WebhookSecret, _ = wh.Sealer.Decrypt(*secretEnc)
+	defer rows.Close()
+	var found *webhookConfig
+	n := 0
+	for rows.Next() {
+		var cfg webhookConfig
+		var secretEnc *string
+		if err := rows.Scan(&cfg.ConfigID, &cfg.UserID, &cfg.Platform, &secretEnc, &cfg.ChannelIdentity); err != nil {
+			continue
+		}
+		if secretEnc != nil {
+			cfg.WebhookSecret, _ = wh.Sealer.Decrypt(*secretEnc)
+		}
+		n++
+		found = &cfg
 	}
-	return &cfg
+	if n != 1 {
+		return nil
+	}
+	return found
+}
+
+// bindChannelIdentity records a config's routing identity, so subsequent
+// webhooks route directly. Only ever called after the signature has been
+// verified: binding from an unauthenticated payload would let anyone claim a
+// tenant's channel by sending one forged request ahead of the real first
+// webhook.
+func (wh *Webhooks) bindChannelIdentity(ctx context.Context, configID int32, identity string) {
+	if identity == "" {
+		return
+	}
+	_, _ = wh.DB.Exec(ctx,
+		"UPDATE platform_configs SET channel_identity = $1 WHERE config_id = $2 AND channel_identity = ''",
+		identity, configID)
+}
+
+// resolveLineConfig routes a LINE webhook by the payload's top-level
+// "destination" (the bot's own userId). adoptable reports that the config has
+// no identity yet, so the caller may bind it once the signature checks out.
+func (wh *Webhooks) resolveLineConfig(ctx context.Context, destination string) (cfg *webhookConfig, adoptable bool) {
+	if c := wh.resolveChannelByIdentity(ctx, "line", destination); c != nil {
+		return c, false
+	}
+	c := wh.resolveChannelForAdoption(ctx, "line")
+	if c == nil {
+		return nil, false
+	}
+	return c, destination != ""
+}
+
+// resolveZaloConfig routes a Zalo webhook by the payload's "oa_id".
+func (wh *Webhooks) resolveZaloConfig(ctx context.Context, oaID string) (cfg *webhookConfig, adoptable bool) {
+	if c := wh.resolveChannelByIdentity(ctx, "zalo", oaID); c != nil {
+		return c, false
+	}
+	c := wh.resolveChannelForAdoption(ctx, "zalo")
+	if c == nil {
+		return nil, false
+	}
+	return c, oaID != ""
 }
 
 // resolveWhatsAppConfig routes a WhatsApp webhook to its tenant by the

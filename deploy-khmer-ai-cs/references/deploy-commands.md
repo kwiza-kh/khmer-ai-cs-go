@@ -265,6 +265,6 @@ EOS
 ```
 
 然后: 写 `/opt/khmer-ai-cs/.env-go` (键名清单见 dev-guide「环境变量」; 权限 chown khmerai) →
-上传 `server-go`/`migrate-go` → `migrate-go` (001~034 全量 + `INITIAL_ADMIN_PASSWORD` 建管理员) →
+上传 `server-go`/`migrate-go` → `migrate-go` (全量迁移 + `INITIAL_ADMIN_PASSWORD` 建管理员) →
 落 systemd unit (SKILL.md 模板) → `systemctl daemon-reload && systemctl enable --now khmer-ai-cs-go khmer-ai-cs-web` →
 nginx 站点 (§8) + 自签证书 (复用 `/etc/nginx/ssl/wms.*` 或 openssl 新签) → Cloudflare 加 `cs` A 记录 + SSL Full (见 cloudflare.md) → 前端发布 (§5)。

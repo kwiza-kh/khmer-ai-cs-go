@@ -24,6 +24,7 @@ import (
 	"khmer-ai-cs-go/internal/redisstore"
 	"khmer-ai-cs-go/internal/security"
 	"khmer-ai-cs-go/internal/storager2"
+	"khmer-ai-cs-go/internal/usage"
 )
 
 func main() {
@@ -72,6 +73,16 @@ func main() {
 
 	ragService := &rag.Service{DB: pool, Gemini: gem, Redis: redisClient, Logger: logger}
 	ragService.SpawnIndexWorkers(ctx)
+
+	// Attribute auxiliary model spend to whichever tenant tagged the context.
+	// Previously only the four main chat paths recorded usage, so the
+	// auxiliary calls — the ingest-time compile above all, a 4096-token call
+	// per document — were invisible to every cost dashboard.
+	gemini.AuxUsageObserver = func(ctx context.Context, model string, prompt, completion, cached int) {
+		if uid, ok := usage.UserFrom(ctx); ok {
+			usage.Record(ctx, pool, uid, nil, model, prompt, completion, cached)
+		}
+	}
 
 	// Platform credential sealer.
 	sealer, err := security.NewSealer(cfg.PlatformCredentialKey)
@@ -126,6 +137,10 @@ func main() {
 	whMux.HandleFunc("/api/v1/webhook/telegram", webhooks.TelegramWebhook)
 	whMux.HandleFunc("/api/v1/webhook/line", webhooks.LineWebhook)
 	whMux.HandleFunc("/api/v1/webhook/zalo", webhooks.ZaloWebhook)
+	// Operator bot — merchant account-linking, the admin console and the
+	// merchant support inbox. Authenticated by Telegram's secret_token header,
+	// not by the tenant signature scheme the routes above use.
+	whMux.HandleFunc("/api/v1/webhook/telegram-platform", pipe.PlatformBotWebhook)
 	// Meta OAuth browser callback (public, redirects to frontend). The
 	// /platforms path is the one typically configured in the Meta dashboard
 	// and META_OAUTH_REDIRECT_URL; keep both alive so either works.

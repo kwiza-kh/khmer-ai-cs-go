@@ -20,14 +20,26 @@ frontend/            # Next.js 16 (App Router) + Tailwind + shadcn; output: stan
 deploy-khmer-ai-cs/  # 本技能仓库内副本 (改完记得同步回 ~/.config/opencode/skill/)
 ```
 
-## 2. 迁移机制（当前 001~034）
+## 2. 迁移机制（NNN_name.sql 递增, 当前见仓库）
 
 -  runner: `internal/migrations/migrations.go` — `//go:embed migrations/*.sql` 按文件名序逐条执行, **每条独立事务**, 成功后写入 `schema_migrations(version)` (version = 文件名)
 - 失败自动回滚该条, 服务不启动; **forward-only, 没有 down 脚本** — 迁移必须向后兼容旧代码 (只加表/加列, 少删)
 - 新增迁移: 建 `backend-go/internal/migrations/migrations/0NN_名字.sql` (三位数递增), **同时复制到 `backend-go/migrations/`**, 然后 `go test ./internal/migrations/` (有对账测试)
 - 首次启动/迁移时引导管理员: `INITIAL_ADMIN_PASSWORD` 必设; 001 内置的默认 admin bcrypt 哈希 (`InsecureDefaultAdminHash`) 是不安全占位, 生产靠该 env 顶掉
 - 已应用到线上库的迁移**永远不要改文件内容** (checksum 无校验, 但改了会造成新库与老库 schema 分叉)
-- 特殊版本速记: 010 混合知识检索 (pg_trgm+vector), 012/014/015~019 渠道平台与凭据, 025 租户计费, 026 marketing, 027/028 管理员角色, 030 企业 agent 平台, 031 无人工知识库→转人工, 032 RAG 升级, 033 客户头像, 034 用户偏好
+- 特殊版本速记: 010 混合知识检索 (pg_trgm+vector), 012/014/015~019 渠道平台与凭据, 025 租户计费, 026 marketing, 027/028 管理员角色, 030 企业 agent 平台, 031 无人工知识库→转人工, 032 RAG 升级, 033 客户头像, 034 用户偏好, 042 Google SSO, 046 会话归档, 047 widget 建议问题, 048/049 知识编译 + 矛盾评审, 050 删除冗余 ivfflat 向量索引, 051 渠道路由标识, 052 会话吊销 + TOTP 密钥加密
+
+### ⚠️ 050 会在知识库表上取排他锁
+
+050 执行 `DROP INDEX idx_chunks_embedding`。runner 每条迁移跑在事务里, 而 `DROP INDEX CONCURRENTLY` 不能在事务中执行, 所以这条是普通 `DROP INDEX` —— 会对 `knowledge_chunks` 取 **ACCESS EXCLUSIVE 锁** 直到完成 (元数据操作 + 删文件, 大表也很快, 但期间阻塞分块写入)。**挑低峰期发布**。
+
+### 镜像目录有测试兜底
+
+`backend-go/migrations/` 是供 psql 手查的镜像 (真源是 `internal/migrations/migrations/`)。`TestMirrorDirectoryIsInSync` 会逐字节比对两处, 内容或数量不一致即测试失败 —— 新增迁移后忘记复制会在 `go test ./...` 就暴露, 不会像 037~049 那样静默落后 13 个文件。
+
+### 051 的渠道标识是自动学习的
+
+LINE/Zalo 的 webhook 按 `platform_configs.channel_identity` (LINE = 机器人 userId, Zalo = OA id) 路由到租户。连接/验证渠道时自动从 provider API 拉取写入; 迁移前已连接的渠道 (identity 为空) 会在**第一条签名校验通过的 webhook** 上绑定 —— 但仅当该平台只有一个未绑定配置时才这么做, 有歧义就拒绝而不是猜。CLI 无法覆盖这一点, 若某渠道在高棉语环境下收不到消息, 先查 `SELECT config_id, platform, channel_identity FROM platform_configs WHERE platform IN ('line','zalo')`。
 
 ## 3. 环境变量（服务器上用 `.env-go`, 本地参考 `.env.example`）
 

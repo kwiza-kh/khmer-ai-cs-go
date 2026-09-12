@@ -12,11 +12,11 @@ import (
 	"net/url"
 	"strings"
 	"time"
-
 )
 
 const googleAuthEndpoint = "https://accounts.google.com/o/oauth2/v2/auth"
 const googleTokenEndpoint = "https://oauth2.googleapis.com/token"
+
 // googleSSOEnabled — all four settings must be present.
 func (a *App) googleSSOEnabled() bool {
 	c := a.Cfg.SSO
@@ -122,7 +122,9 @@ func (a *App) googleCallback(w http.ResponseWriter, r *http.Request) {
 		a.googleRedirectError(w, r, "totp_required")
 		return
 	}
-	token, err := a.JWT.GenerateToken(userID, username, role)
+	var tokenVersion int
+	_ = a.DB.QueryRow(ctx, "SELECT token_version FROM users WHERE user_id = $1", userID).Scan(&tokenVersion)
+	token, err := a.JWT.GenerateToken(userID, username, role, tokenVersion)
 	if err != nil {
 		a.googleRedirectError(w, r, "failed")
 		return
@@ -284,12 +286,15 @@ func (a *App) findOrCreateGoogleUser(ctx context.Context, sub, email, name strin
 }
 
 // googleAuthMethods — GET /api/v1/auth/methods: public capability probe the
-// login page uses to decide whether to render the Google button.
+// login page uses to decide which sign-in buttons to render. Covers every
+// provider, despite the name.
 func (a *App) googleAuthMethods(w http.ResponseWriter, r *http.Request) (any, error) {
 	return map[string]any{
 		"google":             a.googleSSOEnabled(),
 		"allow_registration": a.Cfg.AllowRegistration,
 		"google_signup":      a.Cfg.SSO.AllowSignup,
+		"telegram":           a.telegramSSOEnabled(),
+		"telegram_signup":    a.Cfg.TelegramLogin.AllowSignup,
 	}, nil
 }
 

@@ -9,9 +9,54 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+// TestTokenIssuer checks both halves of the rename window: tokens minted now
+// carry the RelayChat issuer, tokens minted before it still parse (so the
+// rename does not sign every logged-in user out), and a token from an
+// unrelated issuer is still rejected.
+func TestTokenIssuer(t *testing.T) {
+	const secret = "0123456789abcdef0123456789abcdef"
+	a := NewJWT(secret, 24)
+
+	fresh, err := a.GenerateToken(7, "alice", "user", 0)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if claims, err := a.ParseToken(fresh); err != nil {
+		t.Fatalf("fresh token rejected: %v", err)
+	} else if claims.Issuer != JWTIssuer {
+		t.Fatalf("new tokens must carry issuer %q, got %q", JWTIssuer, claims.Issuer)
+	}
+
+	sign := func(issuer string) string {
+		t.Helper()
+		claims := Claims{
+			UserID: 5, Username: "legacy", Role: "user",
+			RegisteredClaims: jwt.RegisteredClaims{
+				ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+				Issuer:    issuer,
+			},
+		}
+		signed, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(secret))
+		if err != nil {
+			t.Fatalf("sign %q: %v", issuer, err)
+		}
+		return signed
+	}
+
+	if claims, err := a.ParseToken(sign(legacyJWTIssuer)); err != nil {
+		t.Fatalf("pre-rename token rejected — the deploy would log everyone out: %v", err)
+	} else if claims.UserID != 5 {
+		t.Fatalf("legacy token parsed to the wrong user: %d", claims.UserID)
+	}
+
+	if _, err := a.ParseToken(sign("some-other-service")); err == nil {
+		t.Fatal("token from an unrelated issuer was accepted")
+	}
+}
+
 func TestTokenRoundtripAndClaims(t *testing.T) {
 	a := NewJWT("0123456789abcdef0123456789abcdef", 24)
-	token, err := a.GenerateToken(7, "alice", "user")
+	token, err := a.GenerateToken(7, "alice", "user", 0)
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
@@ -22,7 +67,7 @@ func TestTokenRoundtripAndClaims(t *testing.T) {
 	if claims.UserID != 7 || claims.Username != "alice" || claims.Role != "user" {
 		t.Fatalf("claims mismatch: %+v", claims)
 	}
-	if claims.Issuer != "khmer-ai-cs" {
+	if claims.Issuer != JWTIssuer {
 		t.Fatalf("issuer mismatch: %s", claims.Issuer)
 	}
 	if claims.ExpiresAt == nil || claims.ExpiresAt.Before(time.Now()) {
@@ -33,7 +78,7 @@ func TestTokenRoundtripAndClaims(t *testing.T) {
 func TestRejectsWrongSecretAndGarbage(t *testing.T) {
 	a := NewJWT("0123456789abcdef0123456789abcdef", 24)
 	other := NewJWT("fedcba9876543210fedcba9876543210", 24)
-	token, err := a.GenerateToken(1, "bob", "user")
+	token, err := a.GenerateToken(1, "bob", "user", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +92,7 @@ func TestRejectsWrongSecretAndGarbage(t *testing.T) {
 
 func TestRejectsAlgorithmConfusion(t *testing.T) {
 	a := NewJWT("0123456789abcdef0123456789abcdef", 24)
-	token, _ := a.GenerateToken(1, "eve", "admin")
+	token, _ := a.GenerateToken(1, "eve", "admin", 0)
 	// Craft a token signed with alg=none: must be rejected.
 	parts := strings.Split(token, ".")
 	forged := jwt.NewWithClaims(jwt.SigningMethodNone, jwt.MapClaims{"user_id": 1})

@@ -158,7 +158,7 @@ func EnsureBootstrapAdmin(ctx context.Context, pool *pgxpool.Pool, initialPasswo
 		if needsCreate {
 			// Fresh DB: create the bootstrap admin directly as platform_admin.
 			if _, err := pool.Exec(ctx,
-				"INSERT INTO users (username, email, password_hash, role) VALUES ('admin', 'admin@khmer-ai-cs.com', $1, 'platform_admin')",
+				"INSERT INTO users (username, email, password_hash, role) VALUES ('admin', 'admin@relaychat.app', $1, 'platform_admin')",
 				newHash); err != nil {
 				return fmt.Errorf("create admin user: %w", err)
 			}

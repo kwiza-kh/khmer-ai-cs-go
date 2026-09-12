@@ -7,9 +7,11 @@ package platform
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -43,8 +45,18 @@ func EnsureReplyWindow(ctx context.Context, db *pgxpool.Pool, platform string, c
 	err := db.QueryRow(ctx,
 		"SELECT last_inbound_at FROM platform_user_sessions WHERE config_id = $1 AND session_id = $2",
 		configID, sessionID).Scan(&raw)
-	if err == nil {
+	switch {
+	case err == nil:
+		// raw stays nil when the column itself is NULL — no inbound recorded.
 		lastInbound = raw
+	case errors.Is(err, pgx.ErrNoRows):
+		// Genuinely no row: fall through to the terminal policy decision.
+	default:
+		// A transient lookup failure is not a policy decision. Classifying it
+		// as terminal (PolicyError) made the delivery non-retryable, so a
+		// brief database blip silently dropped the reply forever. Return a
+		// plain error so the outbox retries it.
+		return time.Time{}, false, fmt.Errorf("look up reply window: %w", err)
 	}
 	if lastInbound == nil {
 		if platform == "whatsapp" {

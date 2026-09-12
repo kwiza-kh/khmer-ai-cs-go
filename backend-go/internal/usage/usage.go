@@ -31,6 +31,26 @@ func EstimateCost(prompt, completion, cached int) float64 {
 		float64(completion)/1e6*outputPer1M
 }
 
+// ctxKey tags a context with the user a model call should be billed to.
+type ctxKey int
+
+const userKey ctxKey = 1
+
+// WithUser attributes any model spend incurred under ctx to userID. The
+// auxiliary Gemini calls (compile, translate, rerank, rewrite, classify,
+// transcribe, describe, TTS) happen deep inside packages that have no notion
+// of a tenant, so the owner travels on the context instead of through every
+// signature.
+func WithUser(ctx context.Context, userID int32) context.Context {
+	return context.WithValue(ctx, userKey, userID)
+}
+
+// UserFrom returns the user tagged by WithUser.
+func UserFrom(ctx context.Context) (int32, bool) {
+	id, ok := ctx.Value(userKey).(int32)
+	return id, ok
+}
+
 // Record inserts one token_usage row (user, optional session, model, counts).
 // prompt includes the cached portion (Gemini semantics); cached is the subset
 // served from the context cache.

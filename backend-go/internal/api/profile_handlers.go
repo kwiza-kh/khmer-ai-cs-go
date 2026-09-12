@@ -99,8 +99,9 @@ type profileFields struct {
 	Timezone    string `json:"timezone"`
 	AvatarURL   string `json:"avatar_url"`
 	// Linked login methods (read-only, derived).
-	HasPassword bool `json:"has_password"`
-	HasGoogle   bool `json:"has_google"`
+	HasPassword bool   `json:"has_password"`
+	HasGoogle   bool   `json:"has_google"`
+	HasTelegram bool   `json:"has_telegram"`
 	CreatedAt   string `json:"created_at"`
 }
 
@@ -108,13 +109,16 @@ type profileFields struct {
 func (a *App) getProfile(w http.ResponseWriter, r *http.Request) (any, error) {
 	user, _ := UserFrom(r)
 	var p profileFields
-	var displayName, jobTitle, phone, timezone, avatarURL, passwordHash, googleSub *string
+	var displayName, jobTitle, phone, timezone, avatarURL, passwordHash, googleSub, telegramSub *string
 	var createdAt string
+	// email is nullable since 053 (Telegram sign-in supplies none) — scanning a
+	// NULL into the string field would fail the whole query and surface as
+	// "用户不存在" for an account that plainly exists.
 	err := a.DB.QueryRow(r.Context(),
-		"SELECT user_id, username, email, role::text, display_name, job_title, phone, timezone, avatar_url, "+
-			"password_hash, google_sub, created_at::text FROM users WHERE user_id = $1", user.UserID).
+		"SELECT user_id, username, COALESCE(email,''), role::text, display_name, job_title, phone, timezone, avatar_url, "+
+			"password_hash, google_sub, telegram_sub, created_at::text FROM users WHERE user_id = $1", user.UserID).
 		Scan(&p.UserID, &p.Username, &p.Email, &p.Role, &displayName, &jobTitle, &phone, &timezone, &avatarURL,
-			&passwordHash, &googleSub, &createdAt)
+			&passwordHash, &googleSub, &telegramSub, &createdAt)
 	if err != nil {
 		return nil, ErrNotFound("用户不存在")
 	}
@@ -125,6 +129,7 @@ func (a *App) getProfile(w http.ResponseWriter, r *http.Request) (any, error) {
 	p.AvatarURL = derefStr(avatarURL)
 	p.HasPassword = passwordHash != nil && *passwordHash != ""
 	p.HasGoogle = googleSub != nil && *googleSub != ""
+	p.HasTelegram = telegramSub != nil && *telegramSub != ""
 	p.CreatedAt = createdAt
 	return p, nil
 }

@@ -442,7 +442,7 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 		// instead; throttled per session; background).
 		if a.Pipe != nil {
 			ownerID, sessID, visitorMsg := t.ownerID, sid, req.Message
-			platform.SpawnClassifier(func() {
+			platform.SpawnCritical(func() {
 				a.Pipe.NotifyNewCustomerMessage(ctx, ownerID, sessID, "web", "", visitorMsg)
 			})
 		}

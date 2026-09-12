@@ -21,10 +21,10 @@ import (
 // ============================================
 
 type chatRequest struct {
-	Message   string   `json:"message"`
-	SessionID *string  `json:"session_id"`
-	Language  *string  `json:"language"`
-	Test      bool     `json:"test"`
+	Message   string  `json:"message"`
+	SessionID *string `json:"session_id"`
+	Language  *string `json:"language"`
+	Test      bool    `json:"test"`
 	History   []struct {
 		Role    string `json:"role"`
 		Content string `json:"content"`
@@ -224,11 +224,11 @@ func (a *App) chatPlain(w http.ResponseWriter, r *http.Request) (any, error) {
 	a.persistChatTurn(r.Context(), user.UserID, sessionID, req.Message, result, reply, &groundCtx, language)
 
 	resp := map[string]any{
-		"reply":        reply,
-		"session_id":   sessionID,
-		"tokens_used":  result.PromptTokens + result.OutputTokens,
+		"reply":         reply,
+		"session_id":    sessionID,
+		"tokens_used":   result.PromptTokens + result.OutputTokens,
 		"cached_tokens": result.CachedTokens,
-		"used_mock":    result.UsedMock,
+		"used_mock":     result.UsedMock,
 	}
 	if groundCtx.HasMatch {
 		resp["sources"] = groundCtx.Sources
@@ -404,11 +404,11 @@ func (a *App) listSessions(w http.ResponseWriter, r *http.Request) (any, error) 
 	sessions := make([]map[string]any, 0)
 	for rows.Next() {
 		var (
-			sid, status, language string
+			sid, status, language    string
 			platformVal, puid, title *string
-			uid                       int32
-			umc, mmc                  int32
-			createdAt                 time.Time
+			uid                      int32
+			umc, mmc                 int32
+			createdAt                time.Time
 		)
 		if err := rows.Scan(&sid, &uid, &platformVal, &puid, &status, &language, &title, &umc, &mmc, &createdAt); err != nil {
 			continue
@@ -571,19 +571,19 @@ func (a *App) listSessionMessages(w http.ResponseWriter, r *http.Request, sessio
 	msgs := make([]map[string]any, 0)
 	for rows.Next() {
 		var (
-			mid                                     int64
-			role, mtype, content                    string
-			createdAt                               time.Time
-			tokensUsed                              *int32
-			modelName                               *string
-			usedMock                                *bool
-			feedbackRating                          *int16
-			feedbackComment                         *string
-			feedbackAt                              *time.Time
-			sourcesJSON, mediaURL, metadataText     *string
-			delStatus, delProviderStatus, delError  *string
-			sentAt, deliveredAt, readAt             *time.Time
-			deliveryPayload                         *string
+			mid                                    int64
+			role, mtype, content                   string
+			createdAt                              time.Time
+			tokensUsed                             *int32
+			modelName                              *string
+			usedMock                               *bool
+			feedbackRating                         *int16
+			feedbackComment                        *string
+			feedbackAt                             *time.Time
+			sourcesJSON, mediaURL, metadataText    *string
+			delStatus, delProviderStatus, delError *string
+			sentAt, deliveredAt, readAt            *time.Time
+			deliveryPayload                        *string
 		)
 		if err := rows.Scan(&mid, &role, &mtype, &content, &createdAt,
 			&tokensUsed, &modelName, &usedMock, &feedbackRating, &feedbackComment, &feedbackAt,

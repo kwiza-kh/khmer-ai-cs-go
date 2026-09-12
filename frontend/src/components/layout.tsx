@@ -159,7 +159,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               </defs>
             </svg>
           </span>
-          <span className="text-[15px] font-semibold tracking-tight text-foreground">Khmer AI</span>
+          <span className="text-[15px] font-semibold tracking-tight text-foreground">RelayChat</span>
         </Link>
         {/* Search — jumps to the inbox with the query pre-applied */}
         <div className="relative hidden md:block w-72">

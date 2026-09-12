@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "Privacy Policy | Khmer AI Customer Service",
-  description: "How Khmer AI Customer Service collects, uses, and deletes data.",
+  title: "Privacy Policy | RelayChat",
+  description: "How RelayChat collects, uses, and deletes data.",
 };
 
 function H({ children }: { children: React.ReactNode }) {
@@ -24,10 +24,10 @@ function L({ children }: { children: React.ReactNode }) {
 export default function PrivacyPolicyPage() {
   return (
     <main className="mx-auto max-w-3xl px-5 py-12">
-      <p className="text-sm font-medium text-muted-foreground">Khmer AI Customer Service</p>
+      <p className="text-sm font-medium text-muted-foreground">RelayChat</p>
       <h1 className="mt-2 text-3xl font-bold text-foreground">Privacy Policy / គោលការណ៍ភាពឯកជន / 隐私政策</h1>
       <P>
-        Last updated: September 6, 2026 · This policy explains how the Khmer AI Customer Service
+        Last updated: September 6, 2026 · This policy explains how the RelayChat
         platform (&quot;we&quot;, &quot;our service&quot;) processes data when businesses connect their
         Facebook Pages and Instagram professional accounts, and when customers message those
         accounts. / គោលការណ៍នេះពន្យល់ពីរបៀបដែលយើងដំណើរការទិន្នន័យ។ / 本政策说明我们如何处理通过本平台收发的数据。
@@ -35,7 +35,7 @@ export default function PrivacyPolicyPage() {
 
       <H>1. Who we are / អំពីយើង / 关于我们</H>
       <P>
-        Khmer AI Customer Service is a customer-service platform that lets businesses answer
+        RelayChat is a customer-service platform that lets businesses answer
         Messenger and Instagram messages with AI assistance and human agents. Contact:
         b1783467220@gmail.com
       </P>

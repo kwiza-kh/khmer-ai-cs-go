@@ -25,8 +25,14 @@ const (
 
 	// ProtocolName is the WebSocket subprotocol. Browsers cannot set custom
 	// headers on the handshake, so the JWT rides as the second subprotocol
-	// value (the frontend sends ["khmer-ai-cs", token]).
-	ProtocolName = "khmer-ai-cs"
+	// value (the frontend sends ["relaychat", token]).
+	ProtocolName = "relaychat"
+
+	// legacyProtocolName is the pre-rename subprotocol ("khmer-ai-cs"). It is
+	// still accepted for the handshake so a browser running cached JS from
+	// before the rename can upgrade instead of silently dropping to the
+	// polling fallback. Removable once no cached bundle can still be in use.
+	legacyProtocolName = "khmer-ai-cs"
 
 	// Event types understood by the frontend (lib/realtime.ts).
 	EventMessage      = "inbox.message"
@@ -98,7 +104,7 @@ func NewHub(jwt *auth.JWT, rdb *redisstore.Client, logger *slog.Logger,
 	h.upgrader = websocket.Upgrader{
 		ReadBufferSize:  1024,
 		WriteBufferSize: 4096,
-		Subprotocols:    []string{ProtocolName},
+		Subprotocols:    []string{ProtocolName, legacyProtocolName},
 		CheckOrigin: func(r *http.Request) bool {
 			if h.OriginOK == nil {
 				return true
@@ -147,7 +153,7 @@ func (h *Hub) authenticate(r *http.Request) (int32, bool) {
 	token := ""
 	protos := websocket.Subprotocols(r)
 	for i, p := range protos {
-		if p == ProtocolName && i+1 < len(protos) {
+		if (p == ProtocolName || p == legacyProtocolName) && i+1 < len(protos) {
 			token = protos[i+1]
 			break
 		}

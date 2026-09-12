@@ -16,15 +16,68 @@ import (
 // ============================================
 
 // totpSetup — begin 2FA enrollment (returns secret + provisioning URI).
+// sealTOTP encrypts a TOTP secret with the platform sealer, so a database read
+// (backup, replica, logged query) does not hand over a working second factor.
+func (a *App) sealTOTP(secret string) string {
+	if a.Sealer == nil || secret == "" {
+		return secret
+	}
+	enc, err := a.Sealer.Encrypt(secret)
+	if err != nil {
+		return secret
+	}
+	return enc
+}
+
+// openTOTP decrypts a stored TOTP secret. Rows written before migration 052
+// hold plaintext, which the sealer passes through unchanged, so existing
+// enrolments keep working without a backfill.
+func (a *App) openTOTP(stored string) string {
+	if a.Sealer == nil || stored == "" {
+		return stored
+	}
+	plain, err := a.Sealer.Decrypt(stored)
+	if err != nil {
+		return stored
+	}
+	return plain
+}
+
+// totpSetup issues a new TOTP secret (stored disabled until verified).
+//
+// Re-enrolling an account that already has 2FA enabled requires the current
+// password: without it, anyone holding a stolen session could silently swap
+// the second factor for their own authenticator and keep access after the
+// password is changed.
 func (a *App) totpSetup(w http.ResponseWriter, r *http.Request) (any, error) {
 	user, _ := UserFrom(r)
+	var req struct {
+		Password string `json:"password"`
+	}
+	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req)
+
+	var alreadyEnabled bool
+	_ = a.DB.QueryRow(r.Context(),
+		"SELECT enabled FROM user_totp WHERE user_id = $1", user.UserID).Scan(&alreadyEnabled)
+	if alreadyEnabled {
+		if req.Password == "" {
+			return nil, ErrBadRequest("请先验证当前密码")
+		}
+		var hash *string
+		if err := a.DB.QueryRow(r.Context(),
+			"SELECT password_hash FROM users WHERE user_id = $1", user.UserID).Scan(&hash); err != nil ||
+			hash == nil || !auth.VerifyPassword(req.Password, *hash) {
+			return nil, ErrForbidden("密码错误")
+		}
+	}
+
 	secret := generateTOTPSecret()
-	uri := "otpauth://totp/khmer-ai-cs:" + user.Username + "?secret=" + secret + "&issuer=khmer-ai-cs"
-	// Store pending (disabled until verified).
+	uri := "otpauth://totp/relaychat:" + user.Username + "?secret=" + secret + "&issuer=relaychat"
+	// Store pending (disabled until verified), sealed at rest.
 	_, _ = a.DB.Exec(r.Context(),
 		"INSERT INTO user_totp (user_id, secret, enabled) VALUES ($1,$2,false) "+
 			"ON CONFLICT (user_id) DO UPDATE SET secret = EXCLUDED.secret, enabled = false",
-		user.UserID, secret)
+		user.UserID, a.sealTOTP(secret))
 	return map[string]any{"secret": secret, "otpauth_uri": uri}, nil
 }
 
@@ -43,11 +96,14 @@ func (a *App) totpVerify(w http.ResponseWriter, r *http.Request) (any, error) {
 	if err := a.DB.QueryRow(r.Context(), "SELECT secret FROM user_totp WHERE user_id = $1", user.UserID).Scan(&secret); err != nil {
 		return nil, ErrNotFound("请先调用 setup")
 	}
-	if !auth.VerifyTOTP(secret, req.Code) {
+	if !auth.VerifyTOTP(a.openTOTP(secret), req.Code) {
 		return nil, ErrBadRequest("验证码错误")
 	}
 	_, _ = a.DB.Exec(r.Context(), "UPDATE user_totp SET enabled = true WHERE user_id = $1", user.UserID)
-	return map[string]any{"message": "两步验证已启用"}, nil
+	// A change to the second factor retires existing sessions; this one gets a
+	// token carrying the new version so the person who just enrolled 2FA is
+	// not immediately signed out.
+	return map[string]any{"message": "两步验证已启用", "token": a.refreshedToken(r, user)}, nil
 }
 
 // totpStatus — whether 2FA is enabled.
@@ -69,11 +125,29 @@ func (a *App) totpDisable(w http.ResponseWriter, r *http.Request) (any, error) {
 	if err := a.DB.QueryRow(r.Context(), "SELECT secret FROM user_totp WHERE user_id = $1", user.UserID).Scan(&secret); err != nil {
 		return nil, ErrNotFound("未启用两步验证")
 	}
-	if !auth.VerifyTOTP(secret, req.Code) {
+	if !auth.VerifyTOTP(a.openTOTP(secret), req.Code) {
 		return nil, ErrBadRequest("验证码错误")
 	}
 	_, _ = a.DB.Exec(r.Context(), "DELETE FROM user_totp WHERE user_id = $1", user.UserID)
-	return map[string]any{"message": "两步验证已关闭"}, nil
+	return map[string]any{"message": "两步验证已关闭", "token": a.refreshedToken(r, user)}, nil
+}
+
+// refreshedToken bumps the caller's token version and returns a fresh JWT for
+// their current session, so a credential change terminates every other session
+// without signing out the person who made the change. Returns "" when the bump
+// or signing fails — callers treat that as "re-login required".
+func (a *App) refreshedToken(r *http.Request, user *CurrentUser) string {
+	a.bumpTokenVersion(r.Context(), user.UserID)
+	var version int
+	if err := a.DB.QueryRow(r.Context(),
+		"SELECT token_version FROM users WHERE user_id = $1", user.UserID).Scan(&version); err != nil {
+		return ""
+	}
+	token, err := a.JWT.GenerateToken(user.UserID, user.Username, user.Role, version)
+	if err != nil {
+		return ""
+	}
+	return token
 }
 
 func generateTOTPSecret() string {
@@ -147,7 +221,19 @@ func (a *App) listAPIKeys(w http.ResponseWriter, r *http.Request) (any, error) {
 
 type createAPIKeyRequest struct {
 	Name string `json:"name"`
+	// ExpiresInDays is optional; 0 means the default below. Capped at one year.
+	ExpiresInDays int `json:"expires_in_days"`
 }
+
+const (
+	// apiKeyDefaultTTLDays — new keys expire after a year. A key with no
+	// expiry is a credential that outlives the person who created it, and
+	// because API keys authenticate without a second factor (see the API-key
+	// note in resolveAPIKey) there was previously nothing bounding their
+	// lifetime at all.
+	apiKeyDefaultTTLDays = 365
+	apiKeyMaxTTLDays     = 365
+)
 
 // createAPIKey — generate a new API key (plaintext shown once).
 func (a *App) createAPIKey(w http.ResponseWriter, r *http.Request) (any, error) {
@@ -159,14 +245,25 @@ func (a *App) createAPIKey(w http.ResponseWriter, r *http.Request) (any, error) 
 	if req.Name == "" {
 		return nil, ErrBadRequest("key name is required")
 	}
+	ttlDays := req.ExpiresInDays
+	if ttlDays <= 0 {
+		ttlDays = apiKeyDefaultTTLDays
+	}
+	if ttlDays > apiKeyMaxTTLDays {
+		ttlDays = apiKeyMaxTTLDays
+	}
+	expiresAt := time.Now().AddDate(0, 0, ttlDays)
 	plain, hash := generateAPIKey()
 	var keyID int
 	if err := a.DB.QueryRow(r.Context(),
-		"INSERT INTO api_keys (user_id, name, key_prefix, key_hash, is_active) VALUES ($1,$2,$3,$4,true) RETURNING key_id",
-		user.UserID, req.Name, "kcs_", hash).Scan(&keyID); err != nil {
+		"INSERT INTO api_keys (user_id, name, key_prefix, key_hash, is_active, expires_at) VALUES ($1,$2,$3,$4,true,$5) RETURNING key_id",
+		user.UserID, req.Name, "kcs_", hash, expiresAt).Scan(&keyID); err != nil {
 		return nil, ErrInternal("创建失败")
 	}
-	return map[string]any{"key_id": keyID, "key": plain, "message": "请保存此密钥,只显示一次"}, nil
+	return map[string]any{
+		"key_id": keyID, "key": plain, "expires_at": expiresAt,
+		"message": "请保存此密钥,只显示一次",
+	}, nil
 }
 
 // deleteAPIKey — revoke an API key.

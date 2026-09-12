@@ -142,7 +142,7 @@ func (a *App) translateBatch(w http.ResponseWriter, r *http.Request) (any, error
 	out := make([]string, len(req.Texts))
 	missIdx := make([]int, 0, len(req.Texts))
 	missTexts := make([]string, 0, len(req.Texts))
-	seen := map[string]int{}    // text → first index awaiting translation
+	seen := map[string]int{}     // text → first index awaiting translation
 	dupIdx := map[string][]int{} // text → other indices to backfill
 
 	for i, raw := range req.Texts {

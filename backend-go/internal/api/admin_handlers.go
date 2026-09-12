@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -207,14 +208,14 @@ func (a *App) listModelConfigs(w http.ResponseWriter, r *http.Request) (any, err
 }
 
 type updateModelRequest struct {
-	Name          *string  `json:"name"`
-	ModelName     *string  `json:"model_name"`
-	SystemPrompt  *string  `json:"system_prompt"`
-	Temperature   *float64 `json:"temperature"`
-	MaxTokens     *int     `json:"max_tokens"`
-	ContextCache  *int     `json:"context_cache_ttl"`
-	IsDefault     *bool    `json:"is_default"`
-	APIKey        *string  `json:"api_key"`
+	Name         *string  `json:"name"`
+	ModelName    *string  `json:"model_name"`
+	SystemPrompt *string  `json:"system_prompt"`
+	Temperature  *float64 `json:"temperature"`
+	MaxTokens    *int     `json:"max_tokens"`
+	ContextCache *int     `json:"context_cache_ttl"`
+	IsDefault    *bool    `json:"is_default"`
+	APIKey       *string  `json:"api_key"`
 }
 
 // updateModelConfig — update one model config (admin).
@@ -324,12 +325,39 @@ func (a *App) listAvailableModels(w http.ResponseWriter, r *http.Request, config
 // Users + analytics (admin)
 // ============================================
 
-// listUsers — all users (admin), paginated with the same {data,total,...}
-// envelope every other list endpoint uses; the admin users page reads
-// .data/.total, so a bare array rendered the whole list (Google sign-ups
-// included) as empty. Supports ?search= over username/email and reports
-// per-user token consumption plus global header stats for the stat cards.
+// tenantUserScope builds the WHERE fragment restricting a `users u` query to
+// the caller's tenant, i.e. the caller plus the agents they own through
+// agent_teams. Returns the SQL, the args it consumes (appended to args) and
+// the next free placeholder number.
+//
+// A platform_admin is the cross-tenant role and keeps an unrestricted view.
+// Every other admin is confined to their own tenant — without this, any
+// tenant's admin could enumerate the whole platform's user list (usernames,
+// e-mails, token spend) through the admin users page.
+func tenantUserScope(caller *CurrentUser, args []any) (string, []any) {
+	if caller == nil || caller.IsPlatformAdmin() {
+		return "", args
+	}
+	args = append(args, caller.UserID)
+	n := len(args)
+	return fmt.Sprintf(
+		"(u.user_id = $%d OR u.user_id IN (SELECT agent_user_id FROM agent_teams WHERE owner_user_id = $%d))",
+		n, n), args
+}
+
+// listUsers — the caller's tenant's users, paginated with the same
+// {data,total,...} envelope every other list endpoint uses; the admin users
+// page reads .data/.total, so a bare array rendered the whole list (Google
+// sign-ups included) as empty. Supports ?search= over username/email and
+// reports per-user token consumption plus header stats for the stat cards.
+//
+// Scope is the caller's tenant; a platform_admin sees every user. See
+// tenantUserScope.
 func (a *App) listUsers(w http.ResponseWriter, r *http.Request) (any, error) {
+	caller, ok := UserFrom(r)
+	if !ok {
+		return nil, ErrUnauthorized("未提供认证令牌")
+	}
 	page := parseIntOr(r.URL.Query().Get("page"), 1)
 	pageSize := parseIntOr(r.URL.Query().Get("page_size"), 100)
 	if pageSize > 200 {
@@ -338,43 +366,46 @@ func (a *App) listUsers(w http.ResponseWriter, r *http.Request) (any, error) {
 	offset := (page - 1) * pageSize
 	search := strings.TrimSpace(r.URL.Query().Get("search"))
 
-	whereClause, likePattern := "", ""
-	if search != "" {
-		whereClause = " WHERE username ILIKE $1 OR email ILIKE $1"
-		likePattern = "%" + search + "%"
+	conds := []string{}
+	args := []any{}
+	if scope, scopedArgs := tenantUserScope(caller, args); scope != "" {
+		conds = append(conds, scope)
+		args = scopedArgs
 	}
-	countArgs := []any{}
 	if search != "" {
-		countArgs = append(countArgs, likePattern)
+		args = append(args, "%"+search+"%")
+		n := len(args)
+		conds = append(conds, fmt.Sprintf("(u.username ILIKE $%d OR COALESCE(u.email,'') ILIKE $%d)", n, n))
+	}
+	whereClause := ""
+	if len(conds) > 0 {
+		whereClause = " WHERE " + strings.Join(conds, " AND ")
 	}
 
 	var total int64
-	if err := a.DB.QueryRow(r.Context(), "SELECT COUNT(*) FROM users"+whereClause, countArgs...).Scan(&total); err != nil {
+	if err := a.DB.QueryRow(r.Context(), "SELECT COUNT(*) FROM users u"+whereClause, args...).Scan(&total); err != nil {
 		return nil, ErrInternal("查询失败")
 	}
 
-	// Global (unfiltered) stats for the header cards.
+	// Stats for the header cards — same tenant scope as the list itself.
 	var stats struct {
-		Total    int64
-		Active   int64
-		NewWeek  int64
-		Admins   int64
+		Total   int64
+		Active  int64
+		NewWeek int64
+		Admins  int64
 	}
 	if err := a.DB.QueryRow(r.Context(),
-		"SELECT COUNT(*), COUNT(*) FILTER (WHERE is_active), "+
-			"COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '7 days'), "+
-			"COUNT(*) FILTER (WHERE role IN ('admin','platform_admin')) FROM users").
+		"SELECT COUNT(*), COUNT(*) FILTER (WHERE u.is_active), "+
+			"COUNT(*) FILTER (WHERE u.created_at >= NOW() - INTERVAL '7 days'), "+
+			"COUNT(*) FILTER (WHERE u.role IN ('admin','platform_admin')) FROM users u"+whereClause,
+		args...).
 		Scan(&stats.Total, &stats.Active, &stats.NewWeek, &stats.Admins); err != nil {
 		return nil, ErrInternal("查询失败")
 	}
 
-	selArgs := []any{}
-	if search != "" {
-		selArgs = append(selArgs, likePattern)
-	}
-	selArgs = append(selArgs, pageSize, offset)
+	selArgs := append(append([]any{}, args...), pageSize, offset)
 	rows, err := a.DB.Query(r.Context(),
-		"SELECT u.user_id, u.username, u.email, u.role::text, u.is_active, u.created_at, "+
+		"SELECT u.user_id, u.username, COALESCE(u.email,''), u.role::text, u.is_active, u.created_at, "+
 			"u.google_sub IS NOT NULL, COALESCE(t.total_tokens, 0), COALESCE(t.cost_estimate, 0) "+
 			"FROM users u LEFT JOIN LATERAL ("+
 			"SELECT SUM(total_tokens) AS total_tokens, SUM(cost_estimate) AS cost_estimate "+
@@ -416,6 +447,27 @@ func (a *App) listUsers(w http.ResponseWriter, r *http.Request) (any, error) {
 	}, nil
 }
 
+// userInCallerTenant reports whether targetID belongs to caller's tenant: the
+// caller themselves, or an agent they own through agent_teams. A platform_admin
+// is the cross-tenant role and matches anyone.
+//
+// This is the guard for every handler that takes a foreign user id — role and
+// status changes, session assignment, role grants. See tenantUserScope for the
+// matching read-side boundary.
+func (a *App) userInCallerTenant(ctx context.Context, caller *CurrentUser, targetID int32) (bool, error) {
+	if caller == nil {
+		return false, nil
+	}
+	if caller.IsPlatformAdmin() || caller.UserID == targetID {
+		return true, nil
+	}
+	var ok bool
+	err := a.DB.QueryRow(ctx,
+		"SELECT EXISTS (SELECT 1 FROM agent_teams WHERE owner_user_id = $1 AND agent_user_id = $2)",
+		caller.UserID, targetID).Scan(&ok)
+	return ok, err
+}
+
 // updateUserRole — change a user's role / active state (admin).
 // platform_admin is the cross-tenant super role: a tenant admin must never
 // be able to grant it to themselves or demote a real platform admin.
@@ -434,6 +486,16 @@ func (a *App) updateUserRole(w http.ResponseWriter, r *http.Request, userID int3
 	var targetRole string
 	if err := a.DB.QueryRow(r.Context(), "SELECT role::text FROM users WHERE user_id = $1", userID).Scan(&targetRole); err != nil {
 		return nil, ErrNotFound("用户不存在")
+	}
+	// Tenant boundary: an admin may only touch their own tenant's users.
+	// Without this, a tenant admin could demote or disable any non-platform
+	// admin account on the platform — including a competitor's.
+	allowed, err := a.userInCallerTenant(r.Context(), caller, userID)
+	if err != nil {
+		return nil, ErrInternal("查询失败")
+	}
+	if !allowed {
+		return nil, ErrForbidden("无权修改该用户")
 	}
 	// Super-admin accounts must stay loginable — disabling one (especially
 	// by accident, e.g. clicking the wrong row's status pill) locks the
@@ -471,6 +533,11 @@ func (a *App) updateUserRole(w http.ResponseWriter, r *http.Request, userID int3
 			return nil, ErrInternal("更新失败")
 		}
 	}
+	// Role and activation changes retire the target's existing sessions, so a
+	// demotion or disable takes effect at once rather than whenever their
+	// current JWT happens to expire. The role lives in the token, so without
+	// this the old privileges kept working for up to 24h.
+	a.bumpTokenVersion(r.Context(), userID)
 	return map[string]string{"message": "已更新"}, nil
 }
 

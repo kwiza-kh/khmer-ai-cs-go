@@ -20,6 +20,8 @@ interface AuthContextType {
   register: (username: string, email: string, password: string) => Promise<void>;
   /** Exchange a one-time Google sign-in code (from ?google_code=) for a session. */
   completeGoogleLogin: (code: string, state: string) => Promise<void>;
+  /** Exchange a one-time Telegram sign-in code (from ?telegram_code=). */
+  completeTelegramLogin: (code: string, state: string) => Promise<void>;
   logout: () => void;
   isLoading: boolean;
 }
@@ -42,6 +44,20 @@ export function signalAuthExpired() {
   localStorage.removeItem("token");
   localStorage.removeItem("user");
   window.dispatchEvent(new Event("khmer:auth-expired"));
+}
+
+/**
+ * Persist a token returned by an endpoint that changed a credential.
+ *
+ * The server bumps the account's token version on password and 2FA changes,
+ * which retires every session issued with the old version — including the one
+ * making the request. Those endpoints return a freshly signed token for the
+ * current session so the user isn't signed out by their own action. Call this
+ * with the response body; a missing/absent token is a no-op (the session will
+ * simply end at the next request).
+ */
+export function adoptRefreshedToken(res: { token?: string } | null | undefined) {
+  if (res?.token) localStorage.setItem("token", res.token);
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -118,6 +134,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.setItem("user", JSON.stringify(data.user));
   };
 
+  // completeTelegramLogin — same one-time-code exchange as Google, against the
+  // Telegram (OIDC) callback. Telegram supplies no e-mail address, so the user
+  // payload carries an empty one.
+  const completeTelegramLogin = async (code: string, state: string) => {
+    const res = await settle(fetch(`${API_BASE}/auth/telegram/exchange`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code, state }),
+    }));
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(localizeCurrentLang(data.error || "Telegram 登录失败"));
+    setToken(data.token);
+    setUser(data.user);
+    localStorage.setItem("token", data.token);
+    localStorage.setItem("user", JSON.stringify(data.user));
+  };
+
   const logout = () => {
     setToken(null);
     setUser(null);
@@ -136,7 +169,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, token, login, register, completeGoogleLogin, logout, isLoading }}>
+    <AuthContext.Provider value={{ user, token, login, register, completeGoogleLogin, completeTelegramLogin, logout, isLoading }}>
       {children}
     </AuthContext.Provider>
   );

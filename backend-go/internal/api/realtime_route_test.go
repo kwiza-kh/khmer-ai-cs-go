@@ -22,7 +22,7 @@ import (
 // must win over the "/api/v1/" catch-all.
 func TestRealtimeRouteBypassesAuthChain(t *testing.T) {
 	jwt := auth.NewJWT(strings.Repeat("z", 32), 1)
-	token, err := jwt.GenerateToken(7, "agent", "admin")
+	token, err := jwt.GenerateToken(7, "agent", "admin", 0)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -49,24 +49,42 @@ func (c *Client) Ping(ctx context.Context) bool {
 	return c.rdb.Ping(ctx).Err() == nil
 }
 
-// CheckRateLimit implements the fixed window: the key is created atomically
-// with its 60s TTL (SET NX), then INCR'd — count over max means "blocked".
-// The old INCR-then-EXPIRE pattern could leak a TTL-less key on a crash and
-// block the caller permanently.
+// incrWindowScript increments a fixed-window counter and manages its TTL in a
+// single atomic step:
+//
+//	count == 1        → brand-new window, arm the TTL
+//	TTL  < 0          → poison key (no expiry, leaked by the pre-2026-09
+//	                    INCR-then-EXPIRE pattern), arm the TTL to self-heal
+//	otherwise         → leave the TTL alone
+//
+// That last branch is the whole point. Re-arming the TTL on *every* call — as
+// an earlier "self-heal" fix did — means the window never closes for a caller
+// that keeps sending: the count only grows, so once it passes max the caller
+// is rate-limited for as long as it keeps retrying, and every retry pushes the
+// deadline out another full window. Fixed windows must expire on schedule.
+//
+// Doing it in Lua keeps the check-and-arm atomic, so two concurrent requests
+// on a fresh key can't both observe count==1 and race on the TTL.
+var incrWindowScript = redis.NewScript(`
+local count = redis.call('INCR', KEYS[1])
+if count == 1 then
+  redis.call('PEXPIRE', KEYS[1], ARGV[1])
+elseif redis.call('PTTL', KEYS[1]) < 0 then
+  redis.call('PEXPIRE', KEYS[1], ARGV[1])
+end
+return count
+`)
+
+// incrWindow returns the post-increment count for key, arming ttl only when
+// the window is new or the key had lost its expiry.
+func (c *Client) incrWindow(ctx context.Context, key string, ttl time.Duration) (int64, error) {
+	return incrWindowScript.Run(ctx, c.rdb, []string{key}, ttl.Milliseconds()).Int64()
+}
+
+// CheckRateLimit implements the 60s fixed window: count over max means
+// "blocked". Returns the caller's count within the current window.
 func (c *Client) CheckRateLimit(ctx context.Context, key string, max uint32) (bool, error) {
-	rk := "ratelimit:" + key
-	if err := c.rdb.SetNX(ctx, rk, 0, time.Minute).Err(); err != nil {
-		return false, err
-	}
-	// Self-heal poison keys: a window left without a TTL (leaked by the old
-	// INCR-then-EXPIRE pattern) never expires, and SET NX is a no-op on an
-	// existing key — its owner stays rate-limited forever once the count
-	// passes max. Re-asserting the TTL on every check bounds such a key to
-	// one extra window.
-	if err := c.rdb.Expire(ctx, rk, time.Minute).Err(); err != nil {
-		return false, err
-	}
-	count, err := c.rdb.Incr(ctx, rk).Result()
+	count, err := c.incrWindow(ctx, "ratelimit:"+key, time.Minute)
 	if err != nil {
 		return false, err
 	}
@@ -75,17 +93,8 @@ func (c *Client) CheckRateLimit(ctx context.Context, key string, max uint32) (bo
 
 // IncrWindow — fixed-window counter with a custom expiry (e.g. daily or
 // hourly caps). Reports whether the incremented count stays within max.
-// Key creation and TTL are atomic (SET NX) — no TTL-less leak on crash.
 func (c *Client) IncrWindow(ctx context.Context, key string, max int64, ttl time.Duration) (bool, error) {
-	rk := "ratelimit:" + key
-	if err := c.rdb.SetNX(ctx, rk, 0, ttl).Err(); err != nil {
-		return false, err
-	}
-	// Same poison-key self-heal as CheckRateLimit: re-assert the window TTL.
-	if err := c.rdb.Expire(ctx, rk, ttl).Err(); err != nil {
-		return false, err
-	}
-	count, err := c.rdb.Incr(ctx, rk).Result()
+	count, err := c.incrWindow(ctx, "ratelimit:"+key, ttl)
 	if err != nil {
 		return false, err
 	}

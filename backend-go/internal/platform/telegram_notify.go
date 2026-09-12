@@ -18,6 +18,9 @@ type TelegramNotifyConfig struct {
 	ChatTitle      string
 	NotifyMessages bool
 	NotifyHandoff  bool
+	// NotifyAnnouncements gates platform-wide broadcasts (055). Opt-OUT: a
+	// broadcast reaches every linked merchant, so they must be able to refuse.
+	NotifyAnnouncements bool
 }
 
 // notifyCache memoizes decrypted notify configs briefly — this is on the
@@ -60,24 +63,37 @@ func (p *Pipeline) LoadTelegramNotify(ctx context.Context, userID int32) *Telegr
 
 func (p *Pipeline) loadTelegramNotifyUncached(ctx context.Context, userID int32) *TelegramNotifyConfig {
 	var tokenEnc, chatID, chatTitle *string
-	var notifyMessages, notifyHandoff bool
+	var notifyMessages, notifyHandoff, notifyAnnouncements bool
 	err := p.DB.QueryRow(ctx,
-		"SELECT bot_token_enc, chat_id, chat_title, notify_messages, notify_handoff "+
+		"SELECT bot_token_enc, chat_id, chat_title, notify_messages, notify_handoff, notify_announcements "+
 			"FROM telegram_notify_settings WHERE user_id = $1", userID).
-		Scan(&tokenEnc, &chatID, &chatTitle, &notifyMessages, &notifyHandoff)
-	if err != nil || tokenEnc == nil || *tokenEnc == "" || chatID == nil || *chatID == "" {
+		Scan(&tokenEnc, &chatID, &chatTitle, &notifyMessages, &notifyHandoff, &notifyAnnouncements)
+	if err != nil || chatID == nil || *chatID == "" {
 		return nil
 	}
-	token, decErr := p.Sealer.Decrypt(*tokenEnc)
-	if decErr != nil || token == "" {
-		return nil
+	// A NULL token means the merchant linked through the platform bot (054);
+	// the credential comes from the operator config instead of their own row.
+	// A non-NULL one keeps the original per-merchant bot working untouched.
+	token := ""
+	if tokenEnc != nil && *tokenEnc != "" {
+		dec, decErr := p.Sealer.Decrypt(*tokenEnc)
+		if decErr != nil || dec == "" {
+			return nil
+		}
+		token = dec
+	} else {
+		token = strings.TrimSpace(p.Cfg.PlatformBot.Token)
+		if token == "" {
+			return nil
+		}
 	}
 	return &TelegramNotifyConfig{
-		BotToken:       token,
-		ChatID:         *chatID,
-		ChatTitle:      deref(chatTitle),
-		NotifyMessages: notifyMessages,
-		NotifyHandoff:  notifyHandoff,
+		BotToken:            token,
+		ChatID:              *chatID,
+		ChatTitle:           deref(chatTitle),
+		NotifyMessages:      notifyMessages,
+		NotifyHandoff:       notifyHandoff,
+		NotifyAnnouncements: notifyAnnouncements,
 	}
 }
 
@@ -193,7 +209,7 @@ func (p *Pipeline) NotifyHandoffRequest(ctx context.Context, userID int32, sessi
 		{"✅ 解决", "ho:resolve:" + sessionID},
 	}
 	botToken, chatID := cfg.BotToken, cfg.ChatID
-	SpawnClassifier(func() {
+	SpawnCritical(func() {
 		sendCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cancel()
 		if _, err := NewTelegramClient(botToken).SendMessage(sendCtx, chatID, "🔔 "+reason, buttons); err != nil {

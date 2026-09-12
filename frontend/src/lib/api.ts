@@ -31,9 +31,13 @@ export async function apiFetch<T = unknown>(path: string, options: RequestInit =
   if (contentType.includes("application/json")) {
     data = await res.json();
   } else {
-    // 非 JSON 响应 (HTML 502 网关错误, 纯文本等), 仍要让调用方看到状态码.
-    const text = await res.text().catch(() => "");
-    throw new ApiError(localizeCurrentLang(text) || localizeCurrentLang("请求失败") + ` (HTTP ${res.status})`, res.status);
+    // 非 JSON 响应 (HTML 502 网关错误, 纯文本等), 状态码必须始终可见.
+    // 注意: 原写法 `a || b + \`...\`` 里 `+` 优先级高于 `||`, 实际是
+    // `a || (b + status)` — text 非空时状态码被整个吞掉, 502 网关页会被
+    // 原样丢进 toast. 这里显式拼接, 并把噪声正文截断.
+    const raw = (await res.text().catch(() => "")).trim();
+    const detail = raw ? localizeCurrentLang(raw.slice(0, 200)) : localizeCurrentLang("请求失败");
+    throw new ApiError(`${detail} (HTTP ${res.status})`, res.status);
   }
 
   if (!res.ok) {
@@ -658,6 +662,7 @@ export async function getTelegramNotify() {
     chat_title: string;
     notify_messages: boolean;
     notify_handoff: boolean;
+    notify_announcements: boolean;
   }>("/settings/telegram-notify");
 }
 
@@ -667,6 +672,7 @@ export async function putTelegramNotify(data: {
   chat_title?: string;
   notify_messages?: boolean;
   notify_handoff?: boolean;
+  notify_announcements?: boolean;
 }) {
   return apiFetch<{ message: string; configured: boolean }>("/settings/telegram-notify", {
     method: "PUT",
@@ -683,6 +689,15 @@ export async function postTelegramNotifyUpdates(botToken?: string) {
 
 export async function postTelegramNotifyTest() {
   return apiFetch<{ message: string }>("/settings/telegram-notify/test", { method: "POST" });
+}
+
+/**
+ * Mint a one-time deep link that binds this account's Telegram chat through the
+ * platform bot. Replaces the bring-your-own-bot setup: the merchant taps once
+ * instead of creating a bot in BotFather and pasting its token.
+ */
+export async function postTelegramNotifyLink() {
+  return apiFetch<{ link: string; expires_in_seconds: number }>("/settings/telegram-notify/link", { method: "POST" });
 }
 
 // Agent copilot: one-shot translation into an agent-picked language.
@@ -1052,11 +1067,11 @@ export interface BusinessHours {
 }
 
 export async function listBusinessHours() {
-  return apiFetch<BusinessHours[]>("/admin/business-hours");
+  return apiFetch<BusinessHours[]>("/settings/business-hours");
 }
 
 export async function upsertBusinessHours(entries: BusinessHours[]) {
-  return apiFetch<{ message: string }>("/admin/business-hours", {
+  return apiFetch<{ message: string }>("/settings/business-hours", {
     method: "PUT",
     body: JSON.stringify({ entries }),
   });
@@ -1064,7 +1079,7 @@ export async function upsertBusinessHours(entries: BusinessHours[]) {
 
 export async function isBusinessOpen(platform?: string) {
   const qs = platform ? `?platform=${platform}` : "";
-  return apiFetch<{ open: boolean; reason?: string; weekday: number; time: string; open_time?: string; close_time?: string }>(`/admin/business-hours/open${qs}`);
+  return apiFetch<{ open: boolean; reason?: string; weekday: number; time: string; open_time?: string; close_time?: string }>(`/settings/business-hours/open${qs}`);
 }
 
 export interface CannedResponse {
@@ -1081,18 +1096,18 @@ export async function listCannedResponses(category?: string, language?: string) 
   if (category) qs.set("category", category);
   if (language) qs.set("language", language);
   const suffix = qs.toString() ? `?${qs}` : "";
-  return apiFetch<CannedResponse[]>(`/admin/canned-responses${suffix}`);
+  return apiFetch<CannedResponse[]>(`/settings/canned-responses${suffix}`);
 }
 
 export async function createCannedResponse(data: { title: string; body: string; category?: string; language?: string }) {
-  return apiFetch<CannedResponse>("/admin/canned-responses", {
+  return apiFetch<CannedResponse>("/settings/canned-responses", {
     method: "POST",
     body: JSON.stringify(data),
   });
 }
 
 export async function deleteCannedResponse(id: number) {
-  return apiFetch<{ message: string }>(`/admin/canned-responses/${id}`, { method: "DELETE" });
+  return apiFetch<{ message: string }>(`/settings/canned-responses/${id}`, { method: "DELETE" });
 }
 
 export async function setSessionTags(sessionId: string, tags: string[]) {
@@ -1199,13 +1214,13 @@ export function updateCustomerNotes(profileId: number, notes: string) {
 }
 export function listFaqSuggestions(status?: string) {
   const qs = status ? `?status=${status}` : "";
-  return apiFetch<FaqSuggestion[]>(`/admin/faq/suggestions${qs}`);
+  return apiFetch<FaqSuggestion[]>(`/settings/faq/suggestions${qs}`);
 }
 export function acceptFaqSuggestion(id: number, title: string) {
-  return apiFetch<unknown>(`/admin/faq/suggestions/${id}/accept`, { method: "POST", body: JSON.stringify({ title }) });
+  return apiFetch<unknown>(`/settings/faq/suggestions/${id}/accept`, { method: "POST", body: JSON.stringify({ title }) });
 }
 export function dismissFaqSuggestion(id: number) {
-  return apiFetch<{ message: string }>(`/admin/faq/suggestions/${id}/dismiss`, { method: "POST" });
+  return apiFetch<{ message: string }>(`/settings/faq/suggestions/${id}/dismiss`, { method: "POST" });
 }
 export function listTeam() {
   return apiFetch<AgentMember[]>("/team");
@@ -1494,14 +1509,24 @@ export interface IntegrationStatus {
 export function totpStatus() {
   return apiFetch<{ enabled: boolean }>("/auth/totp/status");
 }
-export function totpSetup() {
-  return apiFetch<{ secret: string; otpauth_uri: string }>("/auth/totp/setup", { method: "POST" });
+/**
+ * Begin TOTP enrolment. `password` is required only when 2FA is already
+ * enabled — re-enrolling replaces the second factor and so needs re-auth.
+ *
+ * verify/disable bump the account's token version and return a fresh `token`
+ * for the current session; persist it with adoptRefreshedToken.
+ */
+export function totpSetup(password?: string) {
+  return apiFetch<{ secret: string; otpauth_uri: string }>("/auth/totp/setup", {
+    method: "POST",
+    body: JSON.stringify({ password: password ?? "" }),
+  });
 }
 export function totpVerify(code: string) {
-  return apiFetch<{ message: string }>("/auth/totp/verify", { method: "POST", body: JSON.stringify({ code }) });
+  return apiFetch<{ message: string; token?: string }>("/auth/totp/verify", { method: "POST", body: JSON.stringify({ code }) });
 }
 export function totpDisable(code: string) {
-  return apiFetch<{ message: string }>("/auth/totp/disable", { method: "POST", body: JSON.stringify({ code }) });
+  return apiFetch<{ message: string; token?: string }>("/auth/totp/disable", { method: "POST", body: JSON.stringify({ code }) });
 }
 
 // SLA

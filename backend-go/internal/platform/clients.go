@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -43,16 +44,16 @@ type MetaClient struct {
 
 // SendRequest is a provider-neutral outbound message.
 type SendRequest struct {
-	Platform             string
-	RecipientID          string
-	Text                 string
-	Kind                 string // text | media | buttons | template
-	MediaURL             string
-	MediaType            string
-	Buttons              [][2]string
-	TemplateName         string
-	TemplateLanguage     string
-	TemplateBodyParams   []string
+	Platform           string
+	RecipientID        string
+	Text               string
+	Kind               string // text | media | buttons | template
+	MediaURL           string
+	MediaType          string
+	Buttons            [][2]string
+	TemplateName       string
+	TemplateLanguage   string
+	TemplateBodyParams []string
 	// Tag carries the Meta message tag (e.g. HUMAN_AGENT) that extends the
 	// 24-hour window to 7 days for human-agent replies on Messenger/IG.
 	Tag string
@@ -382,8 +383,8 @@ func buildWhatsAppBody(req *SendRequest) map[string]any {
 		}
 		base["type"] = "interactive"
 		base["interactive"] = map[string]any{
-			"type": "button",
-			"body": map[string]any{"text": req.Text},
+			"type":   "button",
+			"body":   map[string]any{"text": req.Text},
 			"action": map[string]any{"buttons": btns},
 		}
 		return base
@@ -908,14 +909,25 @@ func (z *ZaloClient) GetProfile(ctx context.Context, userID string) (string, str
 }
 
 // VerifyOA validates the OA access token and returns the OA display name.
-func (z *ZaloClient) VerifyOA(ctx context.Context) (string, error) {
+// VerifyOA returns the Official Account's display name and its oa_id. The id
+// is the routing identity Zalo stamps on every webhook, so the caller stores
+// it to route inbound events to the right tenant.
+func (z *ZaloClient) VerifyOA(ctx context.Context) (name, oaID string, err error) {
 	v, err := z.do(ctx, http.MethodGet, "/v2.0/oa/getoa", nil)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	inner, _ := v["data"].(map[string]any)
-	name, _ := inner["name"].(string)
-	return name, nil
+	name, _ = inner["name"].(string)
+	// Zalo returns oa_id as a string, but a numeric-typed JSON field would
+	// decode as float64.
+	switch id := inner["oa_id"].(type) {
+	case string:
+		oaID = id
+	case float64:
+		oaID = strconv.FormatInt(int64(id), 10)
+	}
+	return name, oaID, nil
 }
 
 // ZaloVerifySignature — X-ZEvent-Signature HMAC-SHA256 hex check. An empty

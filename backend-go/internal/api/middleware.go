@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"khmer-ai-cs-go/internal/usage"
 )
 
 // requestID assigns a request id (inbound or generated) and echoes it via
@@ -156,6 +158,9 @@ func (a *App) authMiddleware(next http.Handler) http.Handler {
 		}
 
 		var user *CurrentUser
+		// API keys carry no token version — they are revoked by is_active or
+		// expiry instead. -1 marks "not applicable".
+		jwtVersion := -1
 		if strings.HasPrefix(token, "kcs_") {
 			resolved, err := a.resolveAPIKey(r.Context(), token)
 			if err != nil {
@@ -174,11 +179,18 @@ func (a *App) authMiddleware(next http.Handler) http.Handler {
 				return
 			}
 			user = &CurrentUser{UserID: claims.UserID, Username: claims.Username, Role: claims.Role}
+			jwtVersion = claims.TokenVersion
 		}
 
-		// Production guard: a disabled tenant is rejected on every request.
+		// Production guard: a disabled tenant is rejected on every request, and
+		// a JWT whose version no longer matches the account's has been revoked
+		// (password change, role change, or a 2FA change). Both checks ride on
+		// the one query this middleware already made.
 		var isActive bool
-		err := a.DB.QueryRow(r.Context(), "SELECT is_active FROM users WHERE user_id = $1", user.UserID).Scan(&isActive)
+		var currentVersion int
+		err := a.DB.QueryRow(r.Context(),
+			"SELECT is_active, token_version FROM users WHERE user_id = $1", user.UserID).
+			Scan(&isActive, &currentVersion)
 		if err != nil {
 			WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "用户查询失败"})
 			return
@@ -187,8 +199,17 @@ func (a *App) authMiddleware(next http.Handler) http.Handler {
 			WriteJSON(w, http.StatusForbidden, map[string]string{"error": "账户已被禁用"})
 			return
 		}
+		if jwtVersion >= 0 && jwtVersion != currentVersion {
+			WriteJSON(w, http.StatusUnauthorized, map[string]string{"error": "会话已失效，请重新登录"})
+			return
+		}
 
-		r = r.WithContext(context.WithValue(r.Context(), userKey, user))
+		// Tag the context with the caller so auxiliary model spend incurred
+		// while serving this request (translation, RAG rerank and rewrite,
+		// transcription, image description) is billed to their tenant via
+		// gemini.AuxUsageObserver.
+		ctx := usage.WithUser(r.Context(), user.UserID)
+		r = r.WithContext(context.WithValue(ctx, userKey, user))
 		next.ServeHTTP(w, r)
 	})
 }

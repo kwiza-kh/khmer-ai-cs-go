@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { useAuth } from "@/lib/auth-client";
+import { useAuth, adoptRefreshedToken } from "@/lib/auth-client";
 import { apiFetch, ApiError, totpStatus, totpSetup, totpVerify, totpDisable } from "@/lib/api";
 import { PageHeader } from "@/components/page-header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -141,10 +141,13 @@ function ChangePasswordCard() {
     if (next.length < 6) { toast.error(t("settings.pwdTooShort")); return; }
     setSaving(true);
     try {
-      await apiFetch("/auth/password", {
+      const res = await apiFetch<{ message: string; token?: string }>("/auth/password", {
         method: "PUT",
         body: JSON.stringify({ old_password: old, new_password: next }),
       });
+      // The password change retired every session including this one; adopt
+      // the replacement token so the user isn't bounced to the login page.
+      adoptRefreshedToken(res);
       toast.success(t("settings.pwdUpdated"));
       setOld(""); setNext(""); setConfirm("");
     } catch (err) {
@@ -223,7 +226,8 @@ function TwoFactorCard() {
     if (!code.trim()) { toast.error(t("settings.totpEnterCode")); return; }
     setBusy(true);
     try {
-      await totpVerify(code);
+      // Changing 2FA retires existing sessions; keep this one alive.
+      adoptRefreshedToken(await totpVerify(code));
       setEnabled(true);
       setSecret(""); setCode(""); setOtpauthUri(""); setQrDataUrl("");
       toast.success(t("settings.totpEnabledToast"));
@@ -234,7 +238,7 @@ function TwoFactorCard() {
     if (!code.trim()) { toast.error(t("settings.totpEnterCode")); return; }
     setBusy(true);
     try {
-      await totpDisable(code);
+      adoptRefreshedToken(await totpDisable(code));
       setEnabled(false);
       setCode("");
       toast.success(t("settings.totpDisabledToast"));

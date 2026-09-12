@@ -25,6 +25,12 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("GET /api/v1/auth/google/start", a.googleStart)
 	mux.HandleFunc("GET /api/v1/auth/google/callback", a.googleCallback)
 	mux.Handle("POST /api/v1/auth/google/exchange", a.rateLimit(20)(a.handle(a.googleLoginExchange)))
+	// Telegram (OIDC) sign-in — public for the same reason: the browser arrives
+	// from Telegram with no JWT, and the callback validates a one-time state
+	// token that also carries the PKCE verifier.
+	mux.HandleFunc("GET /api/v1/auth/telegram/start", a.telegramStart)
+	mux.HandleFunc("GET /api/v1/auth/telegram/callback", a.telegramCallback)
+	mux.Handle("POST /api/v1/auth/telegram/exchange", a.rateLimit(20)(a.handle(a.telegramLoginExchange)))
 	mux.Handle("GET /api/v1/auth/methods", a.handle(a.googleAuthMethods))
 
 	// Website chat widget — public, authenticated by the embed token only
@@ -65,6 +71,9 @@ func (a *App) Router() http.Handler {
 	authed.Handle("PUT /api/v1/settings/telegram-notify", a.handle(a.putTelegramNotify))
 	authed.Handle("POST /api/v1/settings/telegram-notify/updates", a.handle(a.postTelegramNotifyUpdates))
 	authed.Handle("POST /api/v1/settings/telegram-notify/test", a.handle(a.postTelegramNotifyTest))
+	// One-tap account linking through the platform bot (replaces the old
+	// bring-your-own-bot setup).
+	authed.Handle("POST /api/v1/settings/telegram-notify/link", a.handle(a.postTelegramNotifyLink))
 	// Agent copilot: one-shot translation (Khmer ↔ 中文 ↔ English).
 	authed.Handle("POST /api/v1/translate", a.handle(a.translateText))
 	authed.Handle("POST /api/v1/translate/batch", a.handle(a.translateBatch))
@@ -96,13 +105,18 @@ func (a *App) Router() http.Handler {
 	authed.HandleFunc("GET /api/v1/inbox/sessions/{id}/summary", a.handleSession(a.sessionSummary))
 	authed.Handle("GET /api/v1/inbox/messages/{id}/media-url", a.handle(a.getInboundMediaURL))
 
-	// Admin — business hours, canned, models, users, analytics, rag gaps.
-	authed.Handle("GET /api/v1/admin/business-hours", a.handle(a.listBusinessHours))
-	authed.Handle("PUT /api/v1/admin/business-hours", a.handle(a.upsertBusinessHours))
-	authed.Handle("GET /api/v1/admin/business-hours/open", a.handle(a.isBusinessOpen))
-	authed.Handle("GET /api/v1/admin/canned-responses", a.handle(a.listCannedResponses))
-	authed.Handle("POST /api/v1/admin/canned-responses", a.handle(a.createCannedResponse))
-	authed.HandleFunc("DELETE /api/v1/admin/canned-responses/{id}", a.handleDoc(a.deleteCannedResponse))
+	// Tenant self-service settings — every registered user manages their own
+	// business hours and canned responses (migration 021 scopes both by
+	// user_id). These live under /settings/ rather than /admin/ because they
+	// are caller-scoped, not privileged: the /admin/ prefix implied an
+	// adminOnly gate they never had and made the audit middleware record
+	// every merchant's own schedule edit as an administrative action.
+	authed.Handle("GET /api/v1/settings/business-hours", a.handle(a.listBusinessHours))
+	authed.Handle("PUT /api/v1/settings/business-hours", a.handle(a.upsertBusinessHours))
+	authed.Handle("GET /api/v1/settings/business-hours/open", a.handle(a.isBusinessOpen))
+	authed.Handle("GET /api/v1/settings/canned-responses", a.handle(a.listCannedResponses))
+	authed.Handle("POST /api/v1/settings/canned-responses", a.handle(a.createCannedResponse))
+	authed.HandleFunc("DELETE /api/v1/settings/canned-responses/{id}", a.handleDoc(a.deleteCannedResponse))
 	authed.Handle("GET /api/v1/admin/models", a.adminOnly(a.handle(a.listModelConfigs)))
 	authed.Handle("PUT /api/v1/admin/models/{id}", a.adminOnly(a.handleDoc(a.updateModelConfig)))
 	authed.Handle("POST /api/v1/admin/models/{id}/test", a.adminOnly(a.handleDoc(a.testModelConfig)))
@@ -194,10 +208,11 @@ func (a *App) Router() http.Handler {
 	authed.HandleFunc("GET /api/v1/customers/{id}", a.handleDoc(a.customer360))
 	authed.HandleFunc("PUT /api/v1/customers/{id}/notes", a.handleDoc(a.updateCustomerNotes))
 
-	// FAQ suggestions.
-	authed.Handle("GET /api/v1/admin/faq/suggestions", a.handle(a.listFaqSuggestions))
-	authed.HandleFunc("POST /api/v1/admin/faq/suggestions/{id}/accept", a.handleDoc(a.acceptFaqSuggestion))
-	authed.HandleFunc("POST /api/v1/admin/faq/suggestions/{id}/dismiss", a.handleDoc(a.dismissFaqSuggestion))
+	// FAQ suggestions — self-scoped like the settings above (faq_suggestions
+	// is keyed by user_id), so it belongs in the tenant namespace too.
+	authed.Handle("GET /api/v1/settings/faq/suggestions", a.handle(a.listFaqSuggestions))
+	authed.HandleFunc("POST /api/v1/settings/faq/suggestions/{id}/accept", a.handleDoc(a.acceptFaqSuggestion))
+	authed.HandleFunc("POST /api/v1/settings/faq/suggestions/{id}/dismiss", a.handleDoc(a.dismissFaqSuggestion))
 
 	// Billing.
 	authed.Handle("GET /api/v1/billing", a.handle(a.getBilling))

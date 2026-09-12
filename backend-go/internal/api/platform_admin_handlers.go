@@ -49,9 +49,9 @@ func (a *App) queryTenantOverview(r *http.Request, pattern string, size, offset 
 	rows := make([]map[string]any, 0)
 	var query string
 	if pattern == "" {
-		query = "SELECT user_id, username, email, role, is_active, created_at, plan, messages_used, message_quota, docs_used, doc_quota, total_sessions, total_messages, total_documents FROM tenant_overview WHERE role <> 'platform_admin' ORDER BY created_at DESC LIMIT $1 OFFSET $2"
+		query = "SELECT user_id, username, COALESCE(email,''), role, is_active, created_at, plan, messages_used, message_quota, docs_used, doc_quota, total_sessions, total_messages, total_documents FROM tenant_overview WHERE role <> 'platform_admin' ORDER BY created_at DESC LIMIT $1 OFFSET $2"
 	} else {
-		query = "SELECT user_id, username, email, role, is_active, created_at, plan, messages_used, message_quota, docs_used, doc_quota, total_sessions, total_messages, total_documents FROM tenant_overview WHERE role <> 'platform_admin' AND (username ILIKE $3 OR email ILIKE $3) ORDER BY created_at DESC LIMIT $1 OFFSET $2"
+		query = "SELECT user_id, username, COALESCE(email,''), role, is_active, created_at, plan, messages_used, message_quota, docs_used, doc_quota, total_sessions, total_messages, total_documents FROM tenant_overview WHERE role <> 'platform_admin' AND (username ILIKE $3 OR email ILIKE $3) ORDER BY created_at DESC LIMIT $1 OFFSET $2"
 	}
 	var rws pgx.Rows
 	var qerr error
@@ -92,7 +92,7 @@ func (a *App) tenantDetail(w http.ResponseWriter, r *http.Request, userID int32)
 	var createdAt time.Time
 	var messagesUsed, messageQuota, docsUsed, docQuota, totalSessions, totalMessages, totalDocuments int64
 	err := a.DB.QueryRow(r.Context(),
-		"SELECT user_id, username, email, role, is_active, created_at, plan, messages_used, message_quota, docs_used, doc_quota, total_sessions, total_messages, total_documents FROM tenant_overview WHERE user_id = $1", userID).
+		"SELECT user_id, username, COALESCE(email,''), role, is_active, created_at, plan, messages_used, message_quota, docs_used, doc_quota, total_sessions, total_messages, total_documents FROM tenant_overview WHERE user_id = $1", userID).
 		Scan(&tUserID, &username, &email, &role, &isActive, &createdAt, &plan, &messagesUsed, &messageQuota, &docsUsed, &docQuota, &totalSessions, &totalMessages, &totalDocuments)
 	if err != nil {
 		return nil, ErrNotFound("tenant not found")

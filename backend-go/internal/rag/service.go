@@ -21,6 +21,7 @@ import (
 
 	"khmer-ai-cs-go/internal/gemini"
 	"khmer-ai-cs-go/internal/redisstore"
+	"khmer-ai-cs-go/internal/usage"
 )
 
 const (
@@ -253,8 +254,11 @@ func (s *Service) indexNextPending(ctx context.Context) bool {
 	}
 	// Ingest-time compile (llm-wiki pattern): distill the freshly indexed
 	// source into an FAQ/summary child document and flag contradictions with
-	// the existing KB. Never blocks or fails the indexing itself.
-	s.maybeCompileDocument(ctx, docID, userID, title, content, language, origin)
+	// the existing KB. Dispatched to its own lane — see spawnCompile — because
+	// running it here held one of only two index workers for up to a minute
+	// per document, so a queue of uploads indexed serially behind the slowest
+	// LLM call. The document is already indexed and retrievable either way.
+	s.spawnCompile(ctx, docID, userID, title, content, language, origin)
 	return true
 }
 
@@ -357,6 +361,42 @@ type compileResult struct {
 	Contradictions []compileContradiction `json:"contradictions"`
 }
 
+// compileSem bounds concurrent ingest-time compiles. Each holds a slot for up
+// to ~90s (a 4096-token LLM call plus a nested hybrid search that may itself
+// rerank), so this lane is deliberately small; index throughput matters more
+// than eager summaries.
+var compileSem = make(chan struct{}, 3)
+
+// spawnCompile hands a freshly indexed document to the compile lane and
+// returns immediately, so the index worker can claim the next pending doc.
+// When the lane is saturated the compile is skipped rather than queued: the
+// document is already searchable, and only the summary is lost.
+func (s *Service) spawnCompile(ctx context.Context, docID, userID int32, title, content, language, origin string) {
+	// Tag the owner so the compile's LLM spend is billed to the right tenant
+	// (see gemini.AuxUsageObserver).
+	ctx = usage.WithUser(ctx, userID)
+	select {
+	case compileSem <- struct{}{}:
+	default:
+		ctx := context.WithoutCancel(ctx)
+		s.setCompileStatus(ctx, docID, "skipped")
+		return
+	}
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				s.Logger.Warn("knowledge compile panic recovered", "doc_id", docID, "panic", r)
+			}
+			<-compileSem
+		}()
+		// Detached from the worker's lifecycle so a shutdown or request
+		// cancellation doesn't abort a compile that already holds a slot.
+		runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 90*time.Second)
+		defer cancel()
+		s.maybeCompileDocument(runCtx, docID, userID, title, content, language, origin)
+	}()
+}
+
 // maybeCompileDocument distills a freshly indexed source document into an
 // FAQ/summary child document (queued through the normal indexing path) and
 // records contradictions against the existing KB for human review. Indexing
@@ -384,10 +424,11 @@ func (s *Service) setCompileStatus(ctx context.Context, docID int32, status stri
 }
 
 func (s *Service) compileDocument(ctx context.Context, docID, userID int32, title, content, language string) error {
-	// Idempotency: a re-indexed source replaces its previous compiled child.
-	if _, err := s.DB.Exec(ctx, "DELETE FROM knowledge_documents WHERE compiled_from = $1", docID); err != nil {
-		return fmt.Errorf("clear old compiled doc: %w", err)
-	}
+	// NOTE: the previous compiled child is replaced at the END of this
+	// function, in one transaction with the new insert — not here. Deleting up
+	// front meant a failed or timed-out LLM call (the likely outcome for a
+	// 60s / 4096-token request) destroyed the existing summary and left the
+	// source with none until an operator noticed and re-indexed it.
 
 	// Existing KB excerpts feed the contradiction check (self and compiled
 	// children excluded).
@@ -447,18 +488,36 @@ func (s *Service) compileDocument(ctx context.Context, docID, userID int32, titl
 	var tags []string
 	_ = s.DB.QueryRow(ctx, "SELECT category, tags FROM knowledge_documents WHERE doc_id = $1", docID).Scan(&category, &tags)
 	compiledTags := append(append([]string{}, tags...), "auto-compiled")
+
+	// Swap the old compiled child for the new one atomically. The insert is
+	// guarded by the unique partial index from migration 049, so if a
+	// concurrent compile already produced a child the insert reports no rows —
+	// in that case we return without committing, which rolls the DELETE back
+	// and leaves the other compile's child in place.
+	tx, err := s.DB.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin compiled doc swap: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, "DELETE FROM knowledge_documents WHERE compiled_from = $1", docID); err != nil {
+		return fmt.Errorf("clear old compiled doc: %w", err)
+	}
 	var compiledID int32
-	err := s.DB.QueryRow(ctx,
+	err = tx.QueryRow(ctx,
 		"INSERT INTO knowledge_documents (title, content, language, category, tags, uploaded_by, index_status, source, origin, compiled_from, compile_status) "+
 			"VALUES ($1, $2, $3, $4, $5::text[], $6, 'pending', 'manual', 'compiled', $7, 'none') "+
 			"ON CONFLICT (compiled_from) WHERE compiled_from IS NOT NULL DO NOTHING RETURNING doc_id",
 		title+compiledTitleSuffix, faq, language, category, compiledTags, userID, docID).Scan(&compiledID)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			// Another compile already produced the child — nothing more to do.
+			// Another compile already produced the child — roll back our
+			// delete so that child survives.
 			return nil
 		}
 		return fmt.Errorf("insert compiled doc: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit compiled doc: %w", err)
 	}
 	s.Logger.Info("knowledge document compiled", "doc_id", docID, "compiled_id", compiledID)
 

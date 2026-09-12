@@ -5,8 +5,8 @@ package platform
 
 import (
 	"context"
-	"errors"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -27,35 +27,64 @@ import (
 )
 
 const (
-	maxAttempts       = 5
-	workerCount       = 4
-	staleLockMinutes  = 2
-	inboundRateLimit  = 15
+	maxAttempts      = 5
+	workerCount      = 4
+	staleLockMinutes = 2
+	inboundRateLimit = 15
 )
 
-// classifySem caps concurrent background classification turns (each does a
-// Gemini call + several DB writes); unbounded goroutines could exhaust the
-// pgx pool and pile 429 retries on Gemini during bursts.
-var classifySem = make(chan struct{}, 8)
+// Two background lanes, because the work they carry has opposite failure modes.
+//
+// classifySem caps concurrent classification turns (each an LLM call plus
+// several DB writes); unbounded goroutines could exhaust the pgx pool and pile
+// 429 retries on Gemini during bursts. Losing a classification is survivable —
+// the reply itself is already delivered, and a missed escalation just means
+// the session stays with the AI.
+//
+// criticalSem carries work that must never be lost: message-quota accounting
+// and owner notifications (new-customer and handoff alerts). These used to
+// share the classifier's 8 slots, so a burst of LLM classifications silently
+// discarded billing increments and escalation alerts — the one moment an
+// owner most needs to be told a customer is waiting.
+var (
+	classifySem = make(chan struct{}, 8)
+	criticalSem = make(chan struct{}, 64)
+)
 
-// SpawnClassifier runs fn in the background with the semaphore held and a
-// panic guard — a bug in a classifier must never take down the server.
+// SpawnClassifier runs fn in the background on the best-effort lane. When the
+// lane is saturated the work is DROPPED — only pass work that is safe to lose.
 // Exported so the web-chat path shares the same guard and concurrency cap.
-func SpawnClassifier(fn func()) {
+func SpawnClassifier(fn func()) { spawnAsync(classifySem, fn, true) }
+
+// SpawnCritical runs fn in the background on the never-drop lane, for work
+// whose loss would be user-visible: quota accounting and owner notifications.
+func SpawnCritical(fn func()) { spawnAsync(criticalSem, fn, false) }
+
+// spawnAsync runs fn in a guarded goroutine holding a slot in sem. Droppable
+// lanes give up when saturated; non-droppable lanes run anyway and log the
+// overload, because losing the work is worse than a brief goroutine spike.
+func spawnAsync(sem chan struct{}, fn func(), droppable bool) {
+	acquired := false
 	select {
-	case classifySem <- struct{}{}:
-		go func() {
-			defer func() {
-				if r := recover(); r != nil {
-					slog.Default().Warn("classifier panic recovered", "panic", r)
-				}
-				<-classifySem
-			}()
-			fn()
-		}()
+	case sem <- struct{}{}:
+		acquired = true
 	default:
-		// Overloaded: drop the classification, the reply itself is delivered.
+		if droppable {
+			return
+		}
+		slog.Default().Warn("critical background lane saturated; running unbounded")
 	}
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Default().Warn("background task panic recovered", "panic", r)
+			}
+			if acquired {
+				<-sem
+			}
+		}()
+		fn()
+	}()
 }
 
 // Pipeline bundles pipeline dependencies.
@@ -380,7 +409,7 @@ func (p *Pipeline) processInboundEvent(ctx context.Context, ev *InboundEvent) er
 	tgName := ev.UserDisplayName
 	tgContent := content
 	tgSession := sessionID
-	SpawnClassifier(func() {
+	SpawnCritical(func() {
 		p.bumpMessagesUsed(ctx, tgUserID)
 		p.NotifyNewCustomerMessage(ctx, tgUserID, tgSession, tgPlatform, tgName, tgContent)
 	})
@@ -407,6 +436,14 @@ func (p *Pipeline) processInboundEvent(ctx context.Context, ev *InboundEvent) er
 	}
 	result, err := p.Gemini.Chat(ctx, message, history, replyLang)
 	if err != nil {
+		// An exhausted quota or a drained prepaid balance is not a transient
+		// failure: the retry loop below will burn its attempts and the inbound
+		// event ends up 'failed' with the customer unanswered. Nothing else in
+		// the system notices, so page the operator now.
+		if isQuotaExhausted(err) {
+			p.PlatformAlert(ctx, "gemini-quota", "Gemini 配额/余额耗尽",
+				"AI 回复已停止。检查 Google AI Studio 的配额与预付款余额。\n"+truncateRunes(err.Error(), 300))
+		}
 		return fmt.Errorf("AI 响应失败: %w", err)
 	}
 	usage.Record(ctx, p.DB, cfg.UserID, &sessionID, p.Gemini.ModelName(), result.PromptTokens, result.OutputTokens, result.CachedTokens)
@@ -602,6 +639,9 @@ func (p *Pipeline) storeTelegramAvatar(ctx context.Context, cfg *configCred, pla
 // the file in R2, and folds the extracted text into the message content.
 // Returns (content, storageKey, platformMedia).
 func (p *Pipeline) prepareMedia(ctx context.Context, ev *InboundEvent, cfg *configCred, content string) (string, string, map[string]any) {
+	// Worker contexts carry no HTTP request, so tag the tenant here for the
+	// transcription / image-description spend below.
+	ctx = usage.WithUser(ctx, cfg.UserID)
 	kind, _ := ev.Media["kind"].(string)
 	providerID, _ := ev.Media["provider_media_id"].(string)
 	sourceURL, _ := ev.Media["source_url"].(string)
@@ -1134,6 +1174,8 @@ func (p *Pipeline) sendTyping(ctx context.Context, cfg *configCred, recipientID 
 // enqueueVoiceReply synthesizes the model reply as audio and queues it as a
 // follow-up media delivery. Fully best-effort — any failure is just "no audio".
 func (p *Pipeline) enqueueVoiceReply(ctx context.Context, ev *InboundEvent, cfg *configCred, sessionID, reply string) {
+	// Bill the TTS synthesis to the owning tenant (no HTTP request here).
+	ctx = usage.WithUser(ctx, cfg.UserID)
 	text := truncateStr(stripMarkdown(reply), 400)
 	if text == "" {
 		return
@@ -1260,10 +1302,20 @@ func (p *Pipeline) claimOutbound(ctx context.Context) (*outboundDelivery, error)
 	defer func() { _ = tx.Rollback(ctx) }()
 	var d outboundDelivery
 	var payloadJSON []byte
+	// Same head-of-line guard the inbound claim uses (claimInbound): only take
+	// a delivery when no earlier one for the same session is still in flight.
+	// Without it the four outbound workers could pick two queued replies to one
+	// customer concurrently and send them out of order — the inbound side has
+	// always serialised per customer, so replies were being ordered correctly
+	// only until a burst put two in the queue at once.
 	err = tx.QueryRow(ctx,
 		"UPDATE platform_outbox SET status='processing', attempts = attempts + 1, locked_at=$1 "+
 			"WHERE delivery_id = (SELECT delivery_id FROM platform_outbox "+
-			"WHERE (status = 'pending' AND next_attempt_at <= $2) OR (status = 'processing' AND locked_at < $3) "+
+			"WHERE ((status = 'pending' AND next_attempt_at <= $2) OR (status = 'processing' AND locked_at < $3)) "+
+			"AND NOT EXISTS (SELECT 1 FROM platform_outbox earlier "+
+			"WHERE earlier.session_id = platform_outbox.session_id "+
+			"AND earlier.delivery_id < platform_outbox.delivery_id "+
+			"AND earlier.status IN ('pending','processing')) "+
 			"ORDER BY created_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED) "+
 			"RETURNING delivery_id, config_id, session_id, platform::text, recipient_id, content, payload, status, attempts, chat_message_id",
 		now, now, stale).Scan(&d.DeliveryID, &d.ConfigID, &d.SessionID, &d.Platform, &d.RecipientID, &d.Content, &payloadJSON, &d.Status, &d.Attempts, &d.LastMessageID)

@@ -106,7 +106,7 @@ func TestDeliverDropsSlowConsumers(t *testing.T) {
 
 func TestAuthenticateSubprotocolToken(t *testing.T) {
 	jwt := auth.NewJWT(strings.Repeat("s", 32), 1)
-	token, err := jwt.GenerateToken(11, "agent", "admin")
+	token, err := jwt.GenerateToken(11, "agent", "admin", 0)
 	if err != nil {
 		t.Fatal(err)
 	}

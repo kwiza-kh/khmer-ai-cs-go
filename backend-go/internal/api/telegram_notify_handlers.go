@@ -14,11 +14,12 @@ import (
 )
 
 type telegramNotifyPayload struct {
-	BotToken       string `json:"bot_token"`
-	ChatID         string `json:"chat_id"`
-	ChatTitle      string `json:"chat_title"`
-	NotifyMessages *bool  `json:"notify_messages"`
-	NotifyHandoff  *bool  `json:"notify_handoff"`
+	BotToken            string `json:"bot_token"`
+	ChatID              string `json:"chat_id"`
+	ChatTitle           string `json:"chat_title"`
+	NotifyMessages      *bool  `json:"notify_messages"`
+	NotifyHandoff       *bool  `json:"notify_handoff"`
+	NotifyAnnouncements *bool  `json:"notify_announcements"`
 }
 
 // getTelegramNotify — current setup (token never returned, only metadata).
@@ -26,11 +27,12 @@ func (a *App) getTelegramNotify(w http.ResponseWriter, r *http.Request) (any, er
 	user, _ := UserFrom(r)
 	cfg := a.Pipe.LoadTelegramNotify(r.Context(), user.UserID)
 	out := map[string]any{
-		"configured":      false,
-		"chat_id":         "",
-		"chat_title":      "",
-		"notify_messages": true,
-		"notify_handoff":  true,
+		"configured":           false,
+		"chat_id":              "",
+		"chat_title":           "",
+		"notify_messages":      true,
+		"notify_handoff":       true,
+		"notify_announcements": true,
 	}
 	if cfg == nil {
 		return out, nil
@@ -40,6 +42,7 @@ func (a *App) getTelegramNotify(w http.ResponseWriter, r *http.Request) (any, er
 	out["chat_title"] = cfg.ChatTitle
 	out["notify_messages"] = cfg.NotifyMessages
 	out["notify_handoff"] = cfg.NotifyHandoff
+	out["notify_announcements"] = cfg.NotifyAnnouncements
 	return out, nil
 }
 
@@ -54,11 +57,12 @@ func (a *App) putTelegramNotify(w http.ResponseWriter, r *http.Request) (any, er
 
 	var existingTokenEnc *string
 	var existingChatID, existingChatTitle string
-	var notifyMessages, notifyHandoff = true, true
+	var notifyMessages, notifyHandoff, notifyAnnouncements = true, true, true
 	var hasRow bool
 	err := a.DB.QueryRow(ctx,
-		"SELECT bot_token_enc, chat_id, chat_title, notify_messages, notify_handoff FROM telegram_notify_settings WHERE user_id = $1",
-		user.UserID).Scan(&existingTokenEnc, &existingChatID, &existingChatTitle, &notifyMessages, &notifyHandoff)
+		"SELECT bot_token_enc, chat_id, chat_title, notify_messages, notify_handoff, notify_announcements "+
+			"FROM telegram_notify_settings WHERE user_id = $1",
+		user.UserID).Scan(&existingTokenEnc, &existingChatID, &existingChatTitle, &notifyMessages, &notifyHandoff, &notifyAnnouncements)
 	hasRow = err == nil
 
 	tokenEnc := ""
@@ -91,22 +95,41 @@ func (a *App) putTelegramNotify(w http.ResponseWriter, r *http.Request) (any, er
 	if req.NotifyHandoff != nil {
 		notifyHandoff = *req.NotifyHandoff
 	}
-	if tokenEnc == "" || chatID == "" {
+	if req.NotifyAnnouncements != nil {
+		notifyAnnouncements = *req.NotifyAnnouncements
+	}
+	// An empty token is legitimate for a merchant who linked through the
+	// platform bot (054): NULL means "deliver via the platform bot". Requiring
+	// a token here would lock exactly those merchants out of their own
+	// settings — including the broadcast opt-out, which only they would need.
+	// A token is therefore only mandatory when there is no platform bot to
+	// fall back on.
+	if chatID == "" {
+		return nil, ErrBadRequest("需要 chat_id")
+	}
+	if tokenEnc == "" && (a.Pipe == nil || !a.Pipe.PlatformBotEnabled()) {
 		return nil, ErrBadRequest("需要 bot_token 和 chat_id")
 	}
 
+	var tokenArg any
+	if tokenEnc != "" {
+		tokenArg = tokenEnc
+	}
 	if hasRow {
 		_, _ = a.DB.Exec(ctx,
-			"UPDATE telegram_notify_settings SET bot_token_enc=$1, chat_id=$2, chat_title=$3, notify_messages=$4, notify_handoff=$5, updated_at=NOW() WHERE user_id=$6",
-			tokenEnc, chatID, chatTitle, notifyMessages, notifyHandoff, user.UserID)
+			"UPDATE telegram_notify_settings SET bot_token_enc=$1, chat_id=$2, chat_title=$3, notify_messages=$4, "+
+				"notify_handoff=$5, notify_announcements=$6, updated_at=NOW() WHERE user_id=$7",
+			tokenArg, chatID, chatTitle, notifyMessages, notifyHandoff, notifyAnnouncements, user.UserID)
 	} else {
 		_, _ = a.DB.Exec(ctx,
-			"INSERT INTO telegram_notify_settings (user_id, bot_token_enc, chat_id, chat_title, notify_messages, notify_handoff) VALUES ($1,$2,$3,$4,$5,$6)",
-			user.UserID, tokenEnc, chatID, chatTitle, notifyMessages, notifyHandoff)
+			"INSERT INTO telegram_notify_settings (user_id, bot_token_enc, chat_id, chat_title, notify_messages, notify_handoff, notify_announcements) "+
+				"VALUES ($1,$2,$3,$4,$5,$6,$7)",
+			user.UserID, tokenArg, chatID, chatTitle, notifyMessages, notifyHandoff, notifyAnnouncements)
 	}
 	platform.InvalidateTelegramNotify(user.UserID)
 	return map[string]any{"message": "已保存", "configured": true, "chat_id": chatID, "chat_title": chatTitle,
-		"notify_messages": notifyMessages, "notify_handoff": notifyHandoff}, nil
+		"notify_messages": notifyMessages, "notify_handoff": notifyHandoff,
+		"notify_announcements": notifyAnnouncements}, nil
 }
 
 // postTelegramNotifyUpdates — pull recent bot chats via getUpdates so the
@@ -170,9 +193,31 @@ func (a *App) postTelegramNotifyUpdates(w http.ResponseWriter, r *http.Request) 
 }
 
 // postTelegramNotifyTest — send a test message through the saved/new config.
+// postTelegramNotifyLink — mint a one-time deep link the merchant taps to bind
+// their Telegram chat to this account.
+//
+// This is the whole replacement for the old five-step setup (create a bot in
+// BotFather, copy its token, paste it, message the bot, wait for a poll to
+// discover the chat id). The merchant taps once.
+func (a *App) postTelegramNotifyLink(w http.ResponseWriter, r *http.Request) (any, error) {
+	user, _ := UserFrom(r)
+	if a.Pipe == nil || !a.Pipe.PlatformBotEnabled() {
+		return nil, ErrBadRequest("平台 Telegram bot 未配置，无法使用一键连接")
+	}
+	token, err := a.Pipe.IssueLinkToken(r.Context(), user.UserID)
+	if err != nil {
+		return nil, ErrInternal("生成连接链接失败")
+	}
+	link := a.Pipe.PlatformBotLink(token)
+	if link == "" {
+		return nil, ErrBadRequest("平台 bot 用户名未配置 (PLATFORM_TELEGRAM_BOT_USERNAME)")
+	}
+	return map[string]any{"link": link, "expires_in_seconds": 600}, nil
+}
+
 func (a *App) postTelegramNotifyTest(w http.ResponseWriter, r *http.Request) (any, error) {
 	user, _ := UserFrom(r)
-	if err := a.Pipe.SendTelegramNotifyChecked(r.Context(), user.UserID, "✅ Khmer AI 通知测试成功 — Telegram 通知已就绪 / Telegram notify test"); err != nil {
+	if err := a.Pipe.SendTelegramNotifyChecked(r.Context(), user.UserID, "✅ RelayChat 通知测试成功 — Telegram 通知已就绪 / Telegram notify test"); err != nil {
 		return nil, &ApiError{http.StatusBadGateway, "测试发送失败: " + err.Error()}
 	}
 	return map[string]string{"message": "已发送"}, nil

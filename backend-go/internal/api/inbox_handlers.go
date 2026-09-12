@@ -104,29 +104,29 @@ func (a *App) listInbox(w http.ResponseWriter, r *http.Request) (any, error) {
 		}
 		items = append(items, map[string]any{
 			"session_id": sid, "user_id": uid, "platform": derefStr(platform), "platform_user_id": derefStr(puid),
-			"user_display_name":     displayName,
-			"avatar_url":            avatarURL,
+			"user_display_name":       displayName,
+			"avatar_url":              avatarURL,
 			"reply_window_expires_at": replyWindow,
-			"status":                status,
-			"language":              language,
-			"title":                 title,
-			"user_message_count":    umc,
-			"model_message_count":   mmc,
-			"assigned_agent_id":     assignedAgent,
-			"assigned_agent_name":   agentName,
-			"first_response_at":     firstResp,
-			"escalated_at":          escalated,
-			"created_at":            createdAt,
-			"archived_at":           archivedAt,
-			"last_message":          lastMsg,
-			"last_message_at":       lastMsgAt,
-			"last_inbound_at":       replyWindow, // approximation: reply window derives from last inbound
-			"sentiment":             derefStr(sentiment),
-			"tags":                  tags,
-			"intent":                derefStr(intent),
+			"status":                  status,
+			"language":                language,
+			"title":                   title,
+			"user_message_count":      umc,
+			"model_message_count":     mmc,
+			"assigned_agent_id":       assignedAgent,
+			"assigned_agent_name":     agentName,
+			"first_response_at":       firstResp,
+			"escalated_at":            escalated,
+			"created_at":              createdAt,
+			"archived_at":             archivedAt,
+			"last_message":            lastMsg,
+			"last_message_at":         lastMsgAt,
+			"last_inbound_at":         replyWindow, // approximation: reply window derives from last inbound
+			"sentiment":               derefStr(sentiment),
+			"tags":                    tags,
+			"intent":                  derefStr(intent),
 		})
 	}
-		// Surface how many rows could not be decoded: a non-zero value means the
+	// Surface how many rows could not be decoded: a non-zero value means the
 	// client is seeing fewer conversations than `total`, which used to happen
 	// silently (NULL platform_user_id on web sessions) and looked like data
 	// vanishing.
@@ -151,6 +151,15 @@ func (a *App) assignSession(w http.ResponseWriter, r *http.Request, sessionID st
 	}
 	if err := a.ensureSessionOwner(r.Context(), sessionID, user.UserID); err != nil {
 		return nil, err
+	}
+	// The target agent must belong to the caller's tenant — otherwise any
+	// tenant could park its sessions on another tenant's user.
+	ok, err := a.userInCallerTenant(r.Context(), user, req.AgentID)
+	if err != nil {
+		return nil, ErrInternal("查询失败")
+	}
+	if !ok {
+		return nil, ErrForbidden("无权指派给该客服")
 	}
 	if _, err := a.DB.Exec(r.Context(),
 		"UPDATE sessions SET assigned_agent_id = $1, status = 'handoff', escalated_at = COALESCE(escalated_at, NOW()) WHERE session_id = $2",

@@ -35,7 +35,7 @@ description: 将「Khmer AI 客服系统 (khmer-ai-cs-go, Go 后端 + Next.js �
 | 域名 | **cs**.wanfanginsulationmaterial.com (Cloudflare A 记录 → 38.55.192.90, 橙色云朵代理) |
 | 后端 | Go (go.mod 声明 go 1.26; 线上二进制 go1.26.5) `server-go` → :8081, 二进制内 `/health` `/ready`; **服务器上没装 Go, 二进制在构建机交叉编译后上传** |
 | 前端 | Next.js 16 standalone (`node server.js`) → 127.0.0.1:3001; `API_BASE` 在**构建时**烘焙 (见下) |
-| 数据库 | 系统级 Postgres 17 (apt, 非 Docker), 扩展 **pgvector 0.8.0 + pg_trgm**, 迁移表 `schema_migrations` (001~034) |
+| 数据库 | 系统级 Postgres 17 (apt, 非 Docker), 扩展 **pgvector 0.8.0 + pg_trgm**, 迁移表 `schema_migrations` (见 `internal/migrations/migrations/` 当前文件数) |
 | 缓存 | 系统级 Redis (apt, requirepass), 会话/缓存/Gemini 结果缓存 |
 | 运行用户 | `khmerai` (系统用户), 应用目录 `/opt/khmer-ai-cs` |
 | systemd | `khmer-ai-cs-go.service` (现行 Go 后端, env=`.env-go`) / `khmer-ai-cs-web.service` (前端) / `khmer-ai-cs.service` (**旧后端, 已 disable, 留作回滚**) |
@@ -144,7 +144,7 @@ journalctl 里周期性 `/api/v1/realtime/inbox 401 WARN` = 未带 token 的 WS 
 - `references/deploy-commands.md` — 完整命令手册: 交叉编译/standalone 打包/上传/迁移/发布/回滚/首次搭建/nginx 全文
 - `references/cloudflare.md` — cs 子域名接入、SSL Full 缘由、521 排查、CF API 操作
 - `references/troubleshooting.md` — 踩坑实录 (askpass/迁移 env 陷阱/Flexible 重定向环/备份目录权限等)
-- `references/dev-guide.md` — **开发迭代指南**: 迁移机制 (001~034)、环境变量全表、API 面、渠道 webhook、与 WMS 同机共存、回滚点管理
+- `references/dev-guide.md` — **开发迭代指南**: 迁移机制 (NNN_name.sql 递增, 当前见仓库)、环境变量全表、API 面、渠道 webhook、与 WMS 同机共存、回滚点管理
 
 ## 交付后提醒用户
 

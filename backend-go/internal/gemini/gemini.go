@@ -234,6 +234,9 @@ func (s *Service) postWithRetry(ctx context.Context, target string, body any) (i
 		return 0, "", fmt.Errorf("marshal request: %w", err)
 	}
 	lastErr := ""
+	// Snapshot once: Reload swaps client under the mutex when an admin saves a
+	// new model config, so reading s.client per attempt would race.
+	client := s.snapshot().client
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
 			select {
@@ -247,7 +250,7 @@ func (s *Service) postWithRetry(ctx context.Context, target string, body any) (i
 			return 0, "", err
 		}
 		req.Header.Set("Content-Type", "application/json")
-		resp, err := s.client.Do(req)
+		resp, err := client.Do(req)
 		if err != nil {
 			lastErr = fmt.Sprintf("request: %v", err)
 			continue
@@ -269,6 +272,19 @@ func (s *Service) Chat(ctx context.Context, message string, history []HistoryIte
 	return s.chatWithModel(ctx, message, history, language, "")
 }
 
+// chatWithModel runs one turn. Two distinct outcomes produce a mock reply, and
+// they must not be conflated:
+//
+//   - No API key configured → deliberate mock mode (demos, CI). Returns the
+//     template reply with a nil error; this is the documented behaviour.
+//   - Configured but the call failed → returns the template reply *and* an
+//     error. Callers must surface or retry it.
+//
+// The second case previously returned a nil error too, which made a live
+// Gemini outage indistinguishable from mock mode: the platform pipeline
+// persisted the template reply and delivered it to real customers, with no
+// alert anywhere. The result is still populated so a caller may choose to
+// degrade deliberately, but the error makes that an explicit decision.
 func (s *Service) chatWithModel(ctx context.Context, message string, history []HistoryItem, language, model string) (ChatResult, error) {
 	if !s.IsConfigured() {
 		return s.chatMock(message, language), nil
@@ -284,14 +300,14 @@ func (s *Service) chatWithModel(ctx context.Context, message string, history []H
 		status, text, err = s.postWithRetry(ctx, s.generateURLFor(s.fastModelName()), body)
 	}
 	if err != nil {
-		return s.chatMock(message, language), nil
+		return s.chatMock(message, language), fmt.Errorf("gemini request failed: %w", err)
 	}
 	if status != http.StatusOK {
-		return s.chatMock(message, language), nil
+		return s.chatMock(message, language), fmt.Errorf("gemini returned HTTP %d: %s", status, truncateRunes(text, 300))
 	}
 	var v map[string]any
-	if json.Unmarshal([]byte(text), &v) != nil {
-		return s.chatMock(message, language), nil
+	if err := json.Unmarshal([]byte(text), &v); err != nil {
+		return s.chatMock(message, language), fmt.Errorf("gemini returned unparsable JSON: %w", err)
 	}
 	return s.resultFromValue(v), nil
 }
@@ -373,12 +389,15 @@ func (s *Service) ChatStream(ctx context.Context, message string, history []Hist
 	if err != nil {
 		return s.chatWithModel(ctx, message, history, language, "")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.streamURLFor(s.modelName), bytes.NewReader(payload))
+	// Read the serving config through the mutex: an admin saving a new model
+	// config calls Reload, which rewrites modelName/client under the lock.
+	cfg := s.snapshot()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.streamURLFor(cfg.modelName), bytes.NewReader(payload))
 	if err != nil {
 		return s.chatWithModel(ctx, message, history, language, "")
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := s.client.Do(req)
+	resp, err := cfg.client.Do(req)
 	if err != nil {
 		return s.chatWithModel(ctx, message, history, language, "")
 	}
@@ -451,6 +470,8 @@ func (s *Service) DescribeImage(ctx context.Context, data []byte, mimeType strin
 	if json.Unmarshal([]byte(text), &v) != nil {
 		return "", fmt.Errorf("describe image: invalid response")
 	}
+	auxPrompt, auxCompletion, auxCached := usageFromValue(v)
+	reportAuxUsage(ctx, s.fastModelName(), auxPrompt, auxCompletion, auxCached)
 	return strings.TrimSpace(ExtractTextFromValue(v)), nil
 }
 
@@ -562,6 +583,24 @@ func (s *Service) GenerateFast(ctx context.Context, prompt string, timeout time.
 	return s.GenerateFastMax(ctx, prompt, timeout, 2048)
 }
 
+// AuxUsageObserver, when set, receives token counts for every auxiliary model
+// call. The main chat path records through usage.Record directly — it has the
+// session in hand — but the auxiliary calls (ingest-time compile, translation,
+// rerank, query rewrite, turn classification, transcription, image
+// description, TTS) happen deep inside packages with no notion of a tenant.
+// Those were entirely unmetered, which hid the single largest LLM expense
+// (the compile's 4096-token call) from every cost dashboard.
+//
+// Callers attribute the spend by tagging ctx with usage.WithUser; an observer
+// that finds no user simply skips the row.
+var AuxUsageObserver func(ctx context.Context, model string, prompt, completion, cached int)
+
+func reportAuxUsage(ctx context.Context, model string, prompt, completion, cached int) {
+	if AuxUsageObserver != nil && prompt+completion > 0 {
+		AuxUsageObserver(ctx, model, prompt, completion, cached)
+	}
+}
+
 // GenerateFastMax is GenerateFast with an explicit output-token budget for
 // prompts that emit longer structured payloads (e.g. the ingest-time compile,
 // whose JSON is truncated into invalid syntax at the default 2048).
@@ -589,6 +628,10 @@ func (s *Service) GenerateFastMax(ctx context.Context, prompt string, timeout ti
 	if json.Unmarshal([]byte(text), &v) != nil {
 		return "", false
 	}
+	// Bill the call even when the reply turns out unusable: the tokens were
+	// spent either way.
+	auxPrompt, auxCompletion, auxCached := usageFromValue(v)
+	reportAuxUsage(ctx, s.fastModelName(), auxPrompt, auxCompletion, auxCached)
 	reply := strings.TrimSpace(StripSourceMarkers(ExtractTextFromValue(v)))
 	if reply == "" {
 		return "", false
@@ -905,6 +948,8 @@ func (s *Service) transcribeOnce(ctx context.Context, audio []byte, mimeType, pr
 	if json.Unmarshal([]byte(text), &v) != nil {
 		return "", fmt.Errorf("transcribe: invalid response")
 	}
+	auxPrompt, auxCompletion, auxCached := usageFromValue(v)
+	reportAuxUsage(ctx, s.fastModelName(), auxPrompt, auxCompletion, auxCached)
 	transcript := strings.TrimSpace(ExtractTextFromValue(v))
 	if isTranscriptionRefusal(transcript) {
 		return "", fmt.Errorf("transcribe: model could not decode audio (mime=%s): %s", mimeType, truncateRunes(transcript, 160))

@@ -61,9 +61,10 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) (any, error) {
 	var username, email, role string
 	var passwordHash *string // NULL for Google-provisioned accounts
 	var isActive bool
+	var tokenVersion int
 	err := a.DB.QueryRow(ctx,
-		"SELECT user_id, username, email, password_hash, role::text, is_active FROM users WHERE username = $1",
-		req.Username).Scan(&userID, &username, &email, &passwordHash, &role, &isActive)
+		"SELECT user_id, username, COALESCE(email,''), password_hash, role::text, is_active, token_version FROM users WHERE username = $1",
+		req.Username).Scan(&userID, &username, &email, &passwordHash, &role, &isActive, &tokenVersion)
 	if err != nil {
 		if strings.Contains(err.Error(), "no rows") {
 			a.recordLoginFailure(ctx, failKey, lockKey)
@@ -102,7 +103,10 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) (any, error) {
 	var secret string
 	err = a.DB.QueryRow(ctx, "SELECT secret FROM user_totp WHERE user_id = $1 AND enabled = true", userID).Scan(&secret)
 	if err == nil {
-		totpSecret = &secret
+		// Secrets are sealed at rest (migration 052); pre-052 rows are
+		// plaintext and pass through the sealer unchanged.
+		opened := a.openTOTP(secret)
+		totpSecret = &opened
 	} else if !strings.Contains(err.Error(), "no rows") {
 		return nil, ErrInternal("2FA 查询失败")
 	}
@@ -122,7 +126,7 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) (any, error) {
 		}
 	}
 
-	token, err := a.JWT.GenerateToken(userID, username, role)
+	token, err := a.JWT.GenerateToken(userID, username, role, tokenVersion)
 	if err != nil {
 		return nil, ErrInternal("令牌生成失败")
 	}
@@ -206,7 +210,8 @@ func (a *App) register(w http.ResponseWriter, r *http.Request) (any, error) {
 		return nil, ErrInternal("注册失败")
 	}
 
-	token, err := a.JWT.GenerateToken(userID, username, "user")
+	// A brand-new account starts at token_version 0 (the column default).
+	token, err := a.JWT.GenerateToken(userID, username, "user", 0)
 	if err != nil {
 		return nil, ErrInternal("令牌生成失败")
 	}
@@ -222,6 +227,13 @@ func (a *App) register(w http.ResponseWriter, r *http.Request) (any, error) {
 }
 
 // ChangePassword verifies the old password then rotates the hash.
+// bumpTokenVersion invalidates every JWT already issued for userID. Called
+// whenever a credential or privilege changes, so a token minted before the
+// change cannot outlive it.
+func (a *App) bumpTokenVersion(ctx context.Context, userID int32) {
+	_, _ = a.DB.Exec(ctx, "UPDATE users SET token_version = token_version + 1 WHERE user_id = $1", userID)
+}
+
 func (a *App) changePassword(w http.ResponseWriter, r *http.Request) (any, error) {
 	user, _ := UserFrom(r)
 	var req changePasswordRequest
@@ -254,10 +266,22 @@ func (a *App) changePassword(w http.ResponseWriter, r *http.Request) (any, error
 	if err != nil {
 		return nil, ErrInternal("密码处理失败")
 	}
-	if _, err := a.DB.Exec(ctx, "UPDATE users SET password_hash = $1 WHERE user_id = $2", newHash, user.UserID); err != nil {
+	// Bump the token version in the same statement: changing a password must
+	// terminate every session minted with the old one, otherwise a token
+	// stolen before the change stays valid for the rest of its 24h lifetime.
+	var newVersion int
+	if err := a.DB.QueryRow(ctx,
+		"UPDATE users SET password_hash = $1, token_version = token_version + 1 WHERE user_id = $2 RETURNING token_version",
+		newHash, user.UserID).Scan(&newVersion); err != nil {
 		return nil, ErrInternal("更新失败")
 	}
-	return map[string]string{"message": "密码已更新"}, nil
+	// Hand this session a token carrying the new version so the person who
+	// just changed their password is not logged out along with the attackers.
+	token, err := a.JWT.GenerateToken(user.UserID, user.Username, user.Role, newVersion)
+	if err != nil {
+		return map[string]string{"message": "密码已更新，请重新登录"}, nil
+	}
+	return map[string]any{"message": "密码已更新", "token": token}, nil
 }
 
 // GetPreferences returns the caller's saved language + notification settings.
@@ -327,7 +351,7 @@ func (a *App) health(w http.ResponseWriter, r *http.Request) (any, error) {
 	}
 	body := map[string]any{
 		"status":  status,
-		"service": "khmer-ai-cs",
+		"service": "relaychat",
 		"version": "2.0.0-go",
 		"checks":  map[string]bool{"database": dbOK, "redis": redisOK},
 	}

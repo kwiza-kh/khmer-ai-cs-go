@@ -40,7 +40,7 @@ export function useInboxRealtime(token: string | null, onEvent: (event: InboxRea
     const connect = () => {
       // Bind handlers to THIS socket instance — a late error from a stale
       // socket must not close the freshly reconnected one.
-      const s = new WebSocket(inboxWebSocketURL(), ["khmer-ai-cs", token]);
+      const s = new WebSocket(inboxWebSocketURL(), ["relaychat", token]);
       socket = s;
       s.onopen = () => {
         reconnectAttempts = 0;
