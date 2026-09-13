@@ -312,6 +312,25 @@ func (s *Service) chatWithModel(ctx context.Context, message string, history []H
 	return s.resultFromValue(v), nil
 }
 
+// historyRuneBudget bounds the prompt side of a turn at roughly 8k tokens
+// (~24k runes). Long agent replies or RAG-heavy turns could otherwise grow the
+// request without limit; the window query caps message COUNT, not size.
+const historyRuneBudget = 24000
+
+// TrimHistoryBudget drops the oldest turns until the history fits the budget,
+// always keeping the four newest items so the current exchange has context.
+func TrimHistoryBudget(items []HistoryItem) []HistoryItem {
+	total := 0
+	for _, h := range items {
+		total += len([]rune(h.Content))
+	}
+	for total > historyRuneBudget && len(items) > 4 {
+		total -= len([]rune(items[0].Content))
+		items = items[1:]
+	}
+	return items
+}
+
 func (s *Service) buildRequestBody(message string, history []HistoryItem, language string) map[string]any {
 	system := s.snapshot().systemPrompt
 	if system == "" {
@@ -321,12 +340,22 @@ func (s *Service) buildRequestBody(message string, history []HistoryItem, langua
 	contents := make([]map[string]any, 0, len(history)+1)
 	for _, h := range history {
 		role := h.Role
-		if role != "user" {
+		content := h.Content
+		switch role {
+		case "user":
+			// customer turn, pass through
+		case "agent":
+			// Human-agent turns stay user-role but carry a marker: mapped to
+			// plain "model" the AI could not tell staff answers from its own
+			// and would re-promise or contradict what a human already said.
+			role = "user"
+			content = "[Human agent reply] " + content
+		default:
 			role = "model"
 		}
 		contents = append(contents, map[string]any{
 			"role":  role,
-			"parts": []map[string]any{{"text": h.Content}},
+			"parts": []map[string]any{{"text": content}},
 		})
 	}
 	contents = append(contents, map[string]any{

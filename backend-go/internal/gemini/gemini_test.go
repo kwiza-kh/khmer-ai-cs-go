@@ -94,3 +94,63 @@ func TestNormalizeModelName(t *testing.T) {
 		t.Errorf("plain name must pass through: %q", got)
 	}
 }
+
+func TestBuildRequestBodyMarksAgentTurns(t *testing.T) {
+	s := &Service{}
+	body := s.buildRequestBody("hello", []HistoryItem{
+		{Role: "user", Content: "q1"},
+		{Role: "model", Content: "a1"},
+		{Role: "agent", Content: "human said this"},
+	}, "km")
+	contents, ok := body["contents"].([]map[string]any)
+	if !ok || len(contents) != 4 {
+		t.Fatalf("contents = %v, want 4 turns", body["contents"])
+	}
+	text := func(c map[string]any) string {
+		return c["parts"].([]map[string]any)[0]["text"].(string)
+	}
+	if contents[2]["role"] != "user" || !strings.HasPrefix(text(contents[2]), "[Human agent reply] ") {
+		t.Errorf("agent turn not marked as human: role=%v text=%q", contents[2]["role"], text(contents[2]))
+	}
+	if contents[1]["role"] != "model" || text(contents[1]) != "a1" {
+		t.Errorf("model turn altered: %v %q", contents[1]["role"], text(contents[1]))
+	}
+	if last := contents[3]; last["role"] != "user" || text(last) != "hello" {
+		t.Errorf("current message must be appended once verbatim: %v %q", last["role"], text(last))
+	}
+}
+
+func TestTrimHistoryBudgetDropsOldestKeepsRecent(t *testing.T) {
+	big := strings.Repeat("x", 10000)
+	items := []HistoryItem{
+		{Role: "user", Content: big},
+		{Role: "model", Content: big},
+		{Role: "user", Content: big},
+		{Role: "model", Content: big},
+		{Role: "user", Content: "recent1"},
+		{Role: "model", Content: "recent2"},
+	}
+	got := TrimHistoryBudget(items)
+	if len(got) >= len(items) {
+		t.Fatalf("over-budget history was not trimmed: %d items", len(got))
+	}
+	for i, h := range got[len(got)-2:] {
+		want := []string{"recent1", "recent2"}[i]
+		if h.Content != want {
+			t.Errorf("newest turns must survive trimming: got %q want %q", h.Content, want)
+		}
+	}
+	// Even an all-huge history keeps the four newest items.
+	allBig := []HistoryItem{}
+	for i := 0; i < 6; i++ {
+		allBig = append(allBig, HistoryItem{Role: "user", Content: big})
+	}
+	if got := TrimHistoryBudget(allBig); len(got) != 4 {
+		t.Errorf("floor of 4 newest items violated: %d items", len(got))
+	}
+	// Under-budget history passes through untouched.
+	small := []HistoryItem{{Role: "user", Content: "a"}, {Role: "model", Content: "b"}}
+	if got := TrimHistoryBudget(small); len(got) != 2 {
+		t.Errorf("small history must not be trimmed: %d items", len(got))
+	}
+}

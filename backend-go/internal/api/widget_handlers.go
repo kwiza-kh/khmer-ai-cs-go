@@ -401,26 +401,39 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	history := a.chatHistory(ctx, sid, nil)
+	history := a.chatHistory(ctx, sid, nil, userMsgID)
 	groundCtx := a.RAG.Ground(ctx, t.ownerID, &sid, req.Message, language, history, 0)
 	message := req.Message
 	if groundCtx.HasMatch {
 		message = rag.AugmentMessage(req.Message, &groundCtx)
 		sendEvent("sources", groundCtx.Sources)
 	}
+	// Reply persistence must survive a visitor hangup: r.Context() dies with
+	// the connection, and a lost model row erases the answer from every later
+	// turn's context and from the agent inbox.
+	persistCtx := context.WithoutCancel(ctx)
+	var streamed strings.Builder
 	result, cerr := a.Gemini.ChatStream(ctx, message, history, language, func(chunk string) {
+		streamed.WriteString(chunk)
 		sendEvent("token", map[string]string{"text": chunk})
 	})
 	if cerr != nil {
 		sendEvent("error", map[string]string{"message": "生成回答失败"})
+		// Keep whatever already streamed: the visitor may have read part of
+		// it, and the next turn must not see a question with no answer.
+		if partial := strings.TrimSpace(streamed.String()); partial != "" {
+			a.persistModelReply(persistCtx, t.ownerID, sid, gemini.ChatResult{}, partial, &groundCtx, language, time.Now())
+		}
 		return
 	}
 	reply := result.Reply
 	if !result.UsedMock {
 		reply = gemini.StripSourceMarkers(reply)
 	}
-	usage.Record(ctx, a.DB, t.ownerID, &sid, a.Gemini.ModelName(), result.PromptTokens, result.OutputTokens, result.CachedTokens)
-	a.persistChatTurn(ctx, t.ownerID, sid, req.Message, result, reply, &groundCtx, language)
+	usage.Record(persistCtx, a.DB, t.ownerID, &sid, a.Gemini.ModelName(), result.PromptTokens, result.OutputTokens, result.CachedTokens)
+	// The visitor row was persisted above; persistChatTurn would store it a
+	// second time (and double-count it), so persist only the model turn.
+	a.persistModelReply(persistCtx, t.ownerID, sid, result, reply, &groundCtx, language, time.Now())
 	// The reply announced a handoff ("已为您转接人工…") — create the real
 	// request so an agent is actually notified. No canned ack: the reply
 	// itself already told the customer.

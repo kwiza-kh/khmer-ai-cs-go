@@ -83,13 +83,21 @@ func truncateForTitle(s string, n int) string {
 
 // chatHistory loads the newest 20 persisted turns (chronological) so web/test
 // sessions keep multi-turn memory without trusting client-sent history.
-func (a *App) chatHistory(ctx context.Context, sessionID string, reqHistory []gemini.HistoryItem) []gemini.HistoryItem {
+// excludeMessageID drops the triggering message when the caller persisted it
+// before loading (it is appended to the request separately). TTS echo rows and
+// cancelled deliveries are excluded — see Pipeline.loadHistory for why.
+func (a *App) chatHistory(ctx context.Context, sessionID string, reqHistory []gemini.HistoryItem, excludeMessageID int64) []gemini.HistoryItem {
 	if sessionID == "" {
 		return reqHistory
 	}
 	rows, err := a.DB.Query(ctx,
-		"SELECT role, content FROM chat_messages WHERE session_id = $1 AND role IN ('user','model','agent') ORDER BY message_id DESC LIMIT 20", sessionID)
+		"SELECT role, content FROM chat_messages WHERE session_id = $1 AND role IN ('user','model','agent') "+
+			"AND message_id <> $2 AND NOT (role = 'model' AND message_type = 'audio') AND cancelled_at IS NULL "+
+			"ORDER BY message_id DESC LIMIT 20", sessionID, excludeMessageID)
 	if err != nil {
+		// Do not fail the turn over a history read, but never lose the signal:
+		// a silent nil here used to look like the AI "forgetting".
+		a.Logger.Error("load history failed; AI will answer without context", "session_id", sessionID, "error", err.Error())
 		return reqHistory
 	}
 	defer rows.Close()
@@ -106,18 +114,27 @@ func (a *App) chatHistory(ctx context.Context, sessionID string, reqHistory []ge
 	for i, j := 0, len(rev)-1; i < j; i, j = i+1, j-1 {
 		rev[i], rev[j] = rev[j], rev[i]
 	}
-	return rev
+	return gemini.TrimHistoryBudget(rev)
 }
 
 // persistChatTurn stores the user message + model reply for one web/test chat
 // turn and updates session counters. Best-effort: failures are logged, not
-// surfaced (the customer already has their answer).
+// surfaced (the customer already has their answer). Callers that persist the
+// visitor message themselves (widget) must call persistModelReply instead —
+// going through here would store the customer message twice.
 func (a *App) persistChatTurn(ctx context.Context, userID int32, sessionID, message string, result gemini.ChatResult, reply string, groundCtx *rag.GroundingContext, language string) {
 	now := time.Now()
 	_, _ = a.DB.Exec(ctx,
 		"INSERT INTO chat_messages (session_id, role, message_type, content, created_at) VALUES ($1,'user','text',$2,$3)",
 		sessionID, message, now)
 	_, _ = a.DB.Exec(ctx, "UPDATE sessions SET user_message_count = user_message_count + 1 WHERE session_id = $1", sessionID)
+	a.persistModelReply(ctx, userID, sessionID, result, reply, groundCtx, language, now)
+}
+
+// persistModelReply stores only the model turn of a chat exchange whose user
+// row already exists. Split out of persistChatTurn so streaming handlers can
+// persist the reply on a request-detached context after the client hangs up.
+func (a *App) persistModelReply(ctx context.Context, userID int32, sessionID string, result gemini.ChatResult, reply string, groundCtx *rag.GroundingContext, language string, now time.Time) {
 	if language != "" {
 		_, _ = a.DB.Exec(ctx, "UPDATE sessions SET language = $2 WHERE session_id = $1 AND (language = '' OR language IS NULL)", sessionID, language)
 	}
@@ -196,6 +213,15 @@ func (a *App) chatPlain(w http.ResponseWriter, r *http.Request) (any, error) {
 		return nil, err
 	}
 
+	// Persist the customer message before any early return (escalation ack,
+	// AI failure) so the transcript and future AI context never lose it.
+	var userMsgID int64
+	_ = a.DB.QueryRow(r.Context(),
+		"INSERT INTO chat_messages (session_id, role, message_type, content, created_at) VALUES ($1,'user','text',$2,NOW()) RETURNING message_id",
+		sessionID, req.Message).Scan(&userMsgID)
+	_, _ = a.DB.Exec(r.Context(), "UPDATE sessions SET user_message_count = user_message_count + 1 WHERE session_id = $1", sessionID)
+	a.publishMessageEvent(r.Context(), user.UserID, sessionID, userMsgID, "user")
+
 	// Human request keywords → handoff ack instead of an AI answer.
 	if esc, ack := a.webHandoffCheck(r.Context(), user.UserID, sessionID, req.Message); esc {
 		a.persistSystemReply(r.Context(), user.UserID, sessionID, ack)
@@ -205,7 +231,7 @@ func (a *App) chatPlain(w http.ResponseWriter, r *http.Request) (any, error) {
 		}, nil
 	}
 
-	history := a.chatHistory(r.Context(), sessionID, historyFromRequest(req))
+	history := a.chatHistory(r.Context(), sessionID, historyFromRequest(req), userMsgID)
 	sid := sessionID
 	groundCtx := a.RAG.Ground(r.Context(), user.UserID, &sid, req.Message, language, history, 0)
 	message := req.Message
@@ -221,7 +247,7 @@ func (a *App) chatPlain(w http.ResponseWriter, r *http.Request) (any, error) {
 	if !result.UsedMock {
 		reply = gemini.StripSourceMarkers(reply)
 	}
-	a.persistChatTurn(r.Context(), user.UserID, sessionID, req.Message, result, reply, &groundCtx, language)
+	a.persistModelReply(r.Context(), user.UserID, sessionID, result, reply, &groundCtx, language, time.Now())
 
 	resp := map[string]any{
 		"reply":         reply,
@@ -295,7 +321,17 @@ func (a *App) chatStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	history := a.chatHistory(r.Context(), sessionID, historyFromRequest(req))
+	// The user row is persisted on every path below, so record it before the
+	// AI turn and keep that id out of the history window.
+	var userMsgID int64
+	userNow := time.Now()
+	_ = a.DB.QueryRow(r.Context(),
+		"INSERT INTO chat_messages (session_id, role, message_type, content, created_at) VALUES ($1,'user','text',$2,$3) RETURNING message_id",
+		sessionID, req.Message, userNow).Scan(&userMsgID)
+	_, _ = a.DB.Exec(r.Context(), "UPDATE sessions SET user_message_count = user_message_count + 1 WHERE session_id = $1", sessionID)
+	a.publishMessageEvent(r.Context(), user.UserID, sessionID, userMsgID, "user")
+
+	history := a.chatHistory(r.Context(), sessionID, historyFromRequest(req), userMsgID)
 	sid := sessionID
 	groundCtx := a.RAG.Ground(r.Context(), user.UserID, &sid, req.Message, language, history, 0)
 	message := req.Message
@@ -304,19 +340,28 @@ func (a *App) chatStream(w http.ResponseWriter, r *http.Request) {
 		sendEvent("sources", groundCtx.Sources)
 	}
 
+	// Reply persistence must survive a client hangup: the visitor closing the
+	// tab cancels r.Context(), and losing the model row would erase the answer
+	// from every later turn's context and from the agent inbox.
+	persistCtx := context.WithoutCancel(r.Context())
+	var streamed strings.Builder
 	result, err := a.Gemini.ChatStream(r.Context(), message, history, language, func(chunk string) {
+		streamed.WriteString(chunk)
 		sendEvent("token", map[string]string{"text": chunk})
 	})
 	if err != nil {
 		sendEvent("error", map[string]string{"message": "生成回答失败"})
+		if partial := strings.TrimSpace(streamed.String()); partial != "" {
+			a.persistModelReply(persistCtx, user.UserID, sessionID, gemini.ChatResult{}, partial, &groundCtx, language, time.Now())
+		}
 		return
 	}
-	usage.Record(r.Context(), a.DB, user.UserID, &sid, a.Gemini.ModelName(), result.PromptTokens, result.OutputTokens, result.CachedTokens)
+	usage.Record(persistCtx, a.DB, user.UserID, &sid, a.Gemini.ModelName(), result.PromptTokens, result.OutputTokens, result.CachedTokens)
 	reply := result.Reply
 	if !result.UsedMock {
 		reply = gemini.StripSourceMarkers(reply)
 	}
-	a.persistChatTurn(r.Context(), user.UserID, sessionID, req.Message, result, reply, &groundCtx, language)
+	a.persistModelReply(persistCtx, user.UserID, sessionID, result, reply, &groundCtx, language, time.Now())
 
 	sendEvent("done", map[string]any{
 		"reply":         reply,

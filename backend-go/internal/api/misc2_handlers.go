@@ -857,8 +857,11 @@ func (a *App) copilotKnowledge(w http.ResponseWriter, r *http.Request, sessionID
 // loadSessionLatest returns the latest customer message + history.
 func (a *App) loadSessionLatest(ctx context.Context, sessionID string) (string, []gemini.HistoryItem) {
 	rows, err := a.DB.Query(ctx,
-		"SELECT role, content FROM chat_messages WHERE session_id = $1 AND role IN ('user','model','agent') ORDER BY message_id DESC LIMIT 20", sessionID)
+		"SELECT role, content FROM chat_messages WHERE session_id = $1 AND role IN ('user','model','agent') "+
+			"AND NOT (role = 'model' AND message_type = 'audio') AND cancelled_at IS NULL "+
+			"ORDER BY message_id DESC LIMIT 20", sessionID)
 	if err != nil {
+		a.Logger.Error("load session latest failed", "session_id", sessionID, "error", err.Error())
 		return "", nil
 	}
 	defer rows.Close()

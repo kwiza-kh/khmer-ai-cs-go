@@ -57,10 +57,27 @@ func (p *Pipeline) ensureSession(ctx context.Context, ev *InboundEvent, cfg *con
 		}
 		metadata = toJSON(map[string]any{"platform_media": platformMedia})
 	}
+	// A retry re-runs ensureSession for the same event after any post-insert
+	// failure (AI error, persist error, delivery enqueue error); without this
+	// guard the customer message lands in the transcript once per attempt.
+	var eventIDArg any
+	if ev.EventID > 0 {
+		var existing int64
+		if err := p.DB.QueryRow(ctx,
+			"SELECT message_id FROM chat_messages WHERE inbound_event_id = $1", ev.EventID).Scan(&existing); err == nil {
+			var status string
+			_ = p.DB.QueryRow(ctx, "SELECT status::text FROM sessions WHERE session_id = $1", sessionID).Scan(&status)
+			if status == "" {
+				status = "active"
+			}
+			return sessionID, existing, false, status, nil
+		}
+		eventIDArg = ev.EventID
+	}
 	var userMessageID int64
 	err = p.DB.QueryRow(ctx,
-		"INSERT INTO chat_messages (session_id, role, message_type, content, media_url, metadata, created_at) VALUES ($1,'user','text',$2,$3,$4,$5) RETURNING message_id",
-		sessionID, content, nullIfEmpty(mediaURL), metadata, time.Now()).Scan(&userMessageID)
+		"INSERT INTO chat_messages (session_id, role, message_type, content, media_url, metadata, inbound_event_id, created_at) VALUES ($1,'user','text',$2,$3,$4,$5,$6,$7) RETURNING message_id",
+		sessionID, content, nullIfEmpty(mediaURL), metadata, eventIDArg, time.Now()).Scan(&userMessageID)
 	if err != nil {
 		return "", 0, false, "", fmt.Errorf("persist user message: %w", err)
 	}

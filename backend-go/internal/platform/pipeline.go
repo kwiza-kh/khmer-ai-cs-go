@@ -364,7 +364,7 @@ func (p *Pipeline) processInboundEvent(ctx context.Context, ev *InboundEvent) er
 	}
 
 	// Ensure session (create/resume) and persist the user message.
-	sessionID, _, isNew, sessionStatus, err := p.ensureSession(ctx, ev, cfg, content, avatar, mediaURL, platformMedia)
+	sessionID, userMessageID, isNew, sessionStatus, err := p.ensureSession(ctx, ev, cfg, content, avatar, mediaURL, platformMedia)
 	if err != nil {
 		return err
 	}
@@ -428,7 +428,7 @@ func (p *Pipeline) processInboundEvent(ctx context.Context, ev *InboundEvent) er
 		}
 	}
 
-	history := p.loadHistory(ctx, sessionID)
+	history := p.loadHistory(ctx, sessionID, userMessageID)
 	groundCtx := p.RAG.Ground(ctx, cfg.UserID, &sessionID, content, replyLang, history, 0)
 	message := content
 	if groundCtx.HasMatch {
@@ -561,10 +561,23 @@ func phnomPenhLoc() *time.Location {
 	return ppLoc
 }
 
-func (p *Pipeline) loadHistory(ctx context.Context, sessionID string) []gemini.HistoryItem {
+// loadHistory returns the session's AI-visible turns in chronological order.
+// excludeMessageID drops the triggering customer message (it was persisted
+// before this call and is appended to the request separately — without the
+// exclusion the model sees it twice). TTS echo rows (model/audio restate an
+// existing model turn) and cancelled deliveries (the customer never saw them)
+// are excluded so they neither duplicate turns nor feed false context.
+func (p *Pipeline) loadHistory(ctx context.Context, sessionID string, excludeMessageID int64) []gemini.HistoryItem {
 	rows, err := p.DB.Query(ctx,
-		"SELECT role, content FROM chat_messages WHERE session_id = $1 AND role IN ('user','model','agent') ORDER BY message_id DESC LIMIT 20", sessionID)
+		"SELECT role, content FROM chat_messages WHERE session_id = $1 AND role IN ('user','model','agent') "+
+			"AND message_id <> $2 AND NOT (role = 'model' AND message_type = 'audio') AND cancelled_at IS NULL "+
+			"ORDER BY message_id DESC LIMIT 20", sessionID, excludeMessageID)
 	if err != nil {
+		// Answering with zero context is better than not answering, but a
+		// silent amnesia made DB hiccups look like AI memory bugs.
+		p.Logger.Error("load history failed; AI will answer without context", "session_id", sessionID, "error", err.Error())
+		p.PlatformAlert(ctx, "history-load", "会话历史加载失败",
+			"AI 本轮将在无上下文状态下回复。session="+sessionID+" err="+truncateRunes(err.Error(), 200))
 		return nil
 	}
 	defer rows.Close()
@@ -578,7 +591,7 @@ func (p *Pipeline) loadHistory(ctx context.Context, sessionID string) []gemini.H
 	for i, j := 0, len(rev)-1; i < j; i, j = i+1, j-1 {
 		rev[i], rev[j] = rev[j], rev[i]
 	}
-	return rev
+	return gemini.TrimHistoryBudget(rev)
 }
 
 // fetchMessengerProfile returns (name, avatarURL) via the Graph API.
@@ -1354,6 +1367,10 @@ func (p *Pipeline) deliver(ctx context.Context, d *outboundDelivery) {
 			reason = "Automatic reply cancelled because the conversation was closed"
 		}
 		_, _ = p.DB.Exec(ctx, "UPDATE platform_outbox SET status='cancelled', locked_at=NULL, last_error=$1, updated_at=NOW() WHERE delivery_id=$2", reason, d.DeliveryID)
+		// Keep the row for the transcript but hide it from future AI context:
+		// the customer never received this reply, so the model must not
+		// believe they did.
+		_, _ = p.DB.Exec(ctx, "UPDATE chat_messages SET cancelled_at = NOW() WHERE message_id = $1 AND cancelled_at IS NULL", d.LastMessageID)
 		return
 	}
 	if d.Status == "cancelled" {
