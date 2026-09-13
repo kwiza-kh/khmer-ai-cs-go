@@ -71,6 +71,26 @@ function parseLine(raw: string): { event: string; data: unknown } | null {
   try { return { event, data: JSON.parse(dataLines.join("\n")) }; } catch { return { event, data: {} }; }
 }
 
+// Session-id fallback for when localStorage is unavailable or cleared:
+// losing the id strands a returning visitor in a brand-new session whose AI
+// has zero prior context. Cookies survive localStorage clears (and vice
+// versa), so the two together cover most data-wiping scenarios.
+const widgetSidCookieName = (token: string) => `khmer_widget_sid_${token.replace(/[^a-zA-Z0-9]/g, "").slice(0, 32)}`;
+
+function readWidgetSidCookie(token: string): string | null {
+  const name = `${widgetSidCookieName(token)}=`;
+  for (const part of document.cookie.split("; ")) {
+    if (part.startsWith(name)) return decodeURIComponent(part.slice(name.length));
+  }
+  return null;
+}
+
+function writeWidgetSidCookie(token: string, sid: string) {
+  try {
+    document.cookie = `${widgetSidCookieName(token)}=${encodeURIComponent(sid)}; path=/; max-age=31536000; samesite=lax`;
+  } catch { /* cookies unavailable (e.g. blocked in third-party iframe) */ }
+}
+
 function WidgetInner() {
   const params = useSearchParams();
   const token = params.get("t") || "";
@@ -133,11 +153,13 @@ function WidgetInner() {
 
   // Persist the session id per token so a reload continues the conversation.
   React.useEffect(() => {
+    let saved: string | null = null;
     try {
-      const saved = localStorage.getItem(`khmer-widget-sid:${token}`);
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      if (saved) setSessionId(saved);
+      saved = localStorage.getItem(`khmer-widget-sid:${token}`);
     } catch { /* ignore */ }
+    if (!saved) saved = readWidgetSidCookie(token);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (saved) setSessionId(saved);
   }, [token]);
 
   // Fetch the persisted transcript (gives real dbIds + agent replies). Skips
@@ -224,6 +246,7 @@ function WidgetInner() {
             sid = (evt.data as { session_id: string }).session_id;
             setSessionId(sid);
             try { localStorage.setItem(`khmer-widget-sid:${token}`, sid); } catch { /* ignore */ }
+            writeWidgetSidCookie(token, sid);
           } else if (evt.event === "token") {
             acc += (evt.data as { text: string }).text;
             setMessages((cur) => cur.map((m) => (m.id === pendingId ? { ...m, content: acc } : m)));

@@ -466,7 +466,7 @@ export default function InboxPage() {
 
       <div className="flex-1 flex overflow-hidden">
         {/* Left: conversation list */}
-        <aside className={cn("w-80 shrink-0 flex-col border-r border-border bg-card text-card-foreground", mobileView === "chat" ? "hidden lg:flex" : "flex")}>
+        <aside className={cn("w-full lg:w-80 shrink-0 flex-col border-r border-border bg-card text-card-foreground", mobileView === "chat" ? "hidden lg:flex" : "flex")}>
           <div className="space-y-3 border-b border-border p-3">
             <div className="flex items-center justify-between">
               <button
@@ -611,29 +611,32 @@ export default function InboxPage() {
                           </span>
                         )}
                         <div className="min-w-0 flex-1">
-                          <div className="mb-1 flex items-center justify-between gap-2">
-                            <p className="min-w-0 flex-1 truncate text-[13px] font-semibold text-foreground">
-                              {item.user_display_name || item.title || item.platform_user_id || t("inbox.anonymous")}
-                            </p>
-                            <div className="flex items-center gap-1.5">
-                              {item.last_message_at && item.last_message_at > (lastSeenMap[item.session_id] ?? "") && (
-                                <span className="size-1.5 shrink-0 rounded-full bg-primary" aria-label={t("inbox.newMessages")} />
-                              )}
-                              {item.last_message_at && <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{fmtRelTime(item.last_message_at, t("inbox.timeNow"))}</span>}
-                              {item.sentiment === "negative" && (
-                                <Badge variant="destructive" className="h-4 px-1.5 text-[10px] gap-0.5">
-                                  <AlertTriangle className="size-2.5" /> {t("inbox.angry")}
-                                </Badge>
-                              )}
-                              {item.sentiment === "positive" && (
-                                <Badge variant="success" className="h-4 px-1.5 text-[10px]">😊</Badge>
-                              )}
-                              <Badge variant={STATUS_BADGE[item.status].variant} className="h-4 px-1.5 text-[10px]">
-                                {t(STATUS_BADGE[item.status].labelKey)}
+                          {/* 名字单独占一行: 徽标多的时候 (Angry + Agent + 状态) 不再把
+                              名字挤成 "Sok ..."。时间与徽标下移到第二行。 */}
+                          <p
+                            className="truncate text-[13px] font-semibold text-foreground"
+                            title={item.user_display_name || item.title || item.platform_user_id || t("inbox.anonymous")}
+                          >
+                            {item.user_display_name || item.title || item.platform_user_id || t("inbox.anonymous")}
+                          </p>
+                          <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                            {item.last_message_at && item.last_message_at > (lastSeenMap[item.session_id] ?? "") && (
+                              <span className="size-1.5 shrink-0 rounded-full bg-primary" aria-label={t("inbox.newMessages")} />
+                            )}
+                            {item.last_message_at && <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{fmtRelTime(item.last_message_at, t("inbox.timeNow"))}</span>}
+                            {item.sentiment === "negative" && (
+                              <Badge variant="destructive" className="h-4 px-1.5 text-[11px] gap-0.5">
+                                <AlertTriangle className="size-2.5" /> {t("inbox.angry")}
                               </Badge>
-                            </div>
+                            )}
+                            {item.sentiment === "positive" && (
+                              <Badge variant="success" className="h-4 px-1.5 text-[11px]">😊</Badge>
+                            )}
+                            <Badge variant={STATUS_BADGE[item.status].variant} className="h-4 px-1.5 text-[11px]">
+                              {t(STATUS_BADGE[item.status].labelKey)}
+                            </Badge>
                           </div>
-                          <p className="truncate text-xs leading-5 text-muted-foreground">{item.last_message || t("inbox.noMessagesPreview")}</p>
+                          <p className="mt-1 truncate text-xs leading-5 text-muted-foreground">{item.last_message || t("inbox.noMessagesPreview")}</p>
                           <p className="mt-1 text-[11px] text-muted-foreground">
                             {tf("inbox.messagesCount", { n: item.user_message_count + item.model_message_count })}
                           </p>
@@ -657,7 +660,7 @@ export default function InboxPage() {
                             title={t("inbox.deletePermanently")}
                             aria-label={t("inbox.deletePermanently")}
                             onClick={(e) => { e.stopPropagation(); void handleHardDelete(item.session_id, item.user_display_name || item.title || ""); }}
-                            className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                            className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-danger"
                           >
                             <Trash2 className="size-3.5" />
                           </button>
@@ -839,7 +842,7 @@ function TestChatDialog({ open, onOpenChange }: {
 										{message.pending ? <Loader2 className="size-4 animate-spin text-muted-foreground" /> : message.role === "user" ? (
 											<p className="whitespace-pre-wrap leading-relaxed">{message.content}</p>
 										) : <Markdown>{message.content}</Markdown>}
-										{message.usedMock && <Badge variant="warning" className="mt-2 h-4 px-1.5 text-[10px]">{t("testchat.mockReply")}</Badge>}
+										{message.usedMock && <Badge variant="warning" className="mt-2 h-4 px-1.5 text-[11px]">{t("testchat.mockReply")}</Badge>}
 										{message.sources && message.sources.length > 0 && (
 											<div className="mt-3 flex flex-wrap gap-1.5 border-t border-border pt-2">
 												{message.sources.map((source) => (
@@ -1313,7 +1316,7 @@ function ConversationDetail({
                 {item.platform ? (PLATFORM_LABELS[item.platform] || item.platform) : t("inbox.anonymous")}
               </span>
             )}
-            <Badge variant={STATUS_BADGE[item.status].variant} className="h-4 px-1.5 text-[10px]">
+            <Badge variant={STATUS_BADGE[item.status].variant} className="h-4 px-1.5 text-[11px]">
               {t(STATUS_BADGE[item.status].labelKey)}
             </Badge>
             <span className="inline-flex items-center gap-1 rounded-full border border-border/70 px-1.5 py-0.5 tabular-nums" title={t("inbox.messageCountTitle")}>
@@ -1688,7 +1691,7 @@ function ConversationDetail({
                     size="icon"
                     disabled={sending || isReplyBlocked || buttons.length === 1}
                     onClick={() => setButtons((current) => current.filter((_, entryIndex) => entryIndex !== index))}
-                    className="size-8 shrink-0 text-muted-foreground hover:text-destructive"
+                    className="size-8 shrink-0 text-muted-foreground hover:text-danger"
                     title={t("inbox.removeButton")}
                     aria-label={t("inbox.removeButton")}
                   >
@@ -1733,7 +1736,7 @@ function ConversationDetail({
                 </SelectContent>
               </Select>
               {whatsAppTemplateError ? (
-                <p className="text-[11px] text-destructive">{t("inbox.templateError")}</p>
+                <p className="text-[11px] text-danger">{t("inbox.templateError")}</p>
               ) : !isLoadingWhatsAppTemplates && whatsAppTemplates.length === 0 ? (
                 <p className="text-[11px] text-warning">{t("inbox.templateNone")}</p>
               ) : selectedTemplate ? (
@@ -2087,10 +2090,18 @@ function MessagePayloadPreview({ messageID, content, metadata, payload }: { mess
     || content === `[${mediaLabel} sent]`
     || content === `[WhatsApp template: ${payload.template_name}]`
   );
+  // On a successful ASR the pipeline stores the transcript as BOTH the message
+  // body and extracted_text (pipeline.go). The voice bubble already docks the
+  // transcript under the waveform, so showing the body too duplicates it. A
+  // differing body (e.g. a caption sent with the audio) still renders.
+  const isVoice = inboundMedia?.kind === "audio" || inboundMedia?.kind === "voice";
+  const transcriptDuplicated = isVoice
+    && !!inboundMedia?.extracted_text?.trim()
+    && content.trim() === inboundMedia.extracted_text.trim();
 
   return (
     <>
-      {!isStoredPreview && content && <p className="text-sm leading-normal whitespace-pre-wrap">{content}</p>}
+      {!isStoredPreview && content && !transcriptDuplicated && <p className="text-sm leading-normal whitespace-pre-wrap">{content}</p>}
       {inboundMedia && <InboundPlatformMediaPreview messageID={messageID} media={inboundMedia} />}
       {payload?.kind === "media" && payload.media_url && (
         <div className="mt-1.5">
@@ -2134,7 +2145,7 @@ function MessageDeliveryState({ delivery }: { delivery: NonNullable<ChatMessageI
   const state = delivery.status === "cancelled"
     ? { label: t("inbox.deliveryNotSent"), detail: delivery.last_error || t("inbox.deliveryNotSentDetail"), icon: CircleAlert, className: "text-warning" }
     : delivery.status === "failed" || delivery.provider_status === "failed"
-    ? { label: t("inbox.deliveryFailed"), detail: delivery.last_error || t("inbox.deliveryFailedDetail"), icon: CircleAlert, className: "text-destructive" }
+    ? { label: t("inbox.deliveryFailed"), detail: delivery.last_error || t("inbox.deliveryFailedDetail"), icon: CircleAlert, className: "text-danger" }
     : delivery.provider_status === "read"
       ? { label: t("inbox.deliveryRead"), detail: delivery.read_at ? new Date(delivery.read_at).toLocaleString('en-US') : t("inbox.deliveryReadFallback"), icon: CheckCheck, className: "text-info" }
       : delivery.provider_status === "delivered"
@@ -2205,7 +2216,7 @@ function TagsBar({ sessionId, initial, onMutate }: {
           {tag}
           <button
             onClick={() => removeTag(tag)}
-            className="text-muted-foreground hover:text-destructive ml-0.5"
+            className="text-muted-foreground hover:text-danger ml-0.5"
             title={t("inbox.tagRemove")}
             disabled={saving}
           >
@@ -2401,7 +2412,7 @@ function AiSidePanel({ item, lastUserMessageId, summaryData, summaryLoading, onR
               </div>
             </div>
           ))}
-          {suggestError && <p className="text-[11px] leading-relaxed text-destructive">{suggestError}</p>}
+          {suggestError && <p className="text-[11px] leading-relaxed text-danger">{suggestError}</p>}
           {suggestions.length === 0 && !suggestLoading && !suggestError && (
             <p className="text-[11px] leading-relaxed text-muted-foreground">{t("inbox.suggestEmpty")}</p>
           )}
@@ -2435,12 +2446,12 @@ function AiSidePanel({ item, lastUserMessageId, summaryData, summaryLoading, onR
               {((item.sentiment && item.sentiment !== "neutral") || item.intent) && (
                 <div className="flex flex-wrap gap-1">
                   {item.sentiment === "negative" && (
-                    <Badge variant="destructive" className="h-4 gap-0.5 px-1.5 text-[10px]"><AlertTriangle className="size-2.5" /> {t("inbox.angry")}</Badge>
+                    <Badge variant="destructive" className="h-4 gap-0.5 px-1.5 text-[11px]"><AlertTriangle className="size-2.5" /> {t("inbox.angry")}</Badge>
                   )}
                   {item.sentiment === "positive" && (
-                    <Badge variant="success" className="h-4 px-1.5 text-[10px]">😊</Badge>
+                    <Badge variant="success" className="h-4 px-1.5 text-[11px]">😊</Badge>
                   )}
-                  {item.intent && <Badge variant="outline" className="h-4 px-1.5 text-[10px]">{item.intent}</Badge>}
+                  {item.intent && <Badge variant="outline" className="h-4 px-1.5 text-[11px]">{item.intent}</Badge>}
                 </div>
               )}
 
@@ -2465,7 +2476,7 @@ function AiSidePanel({ item, lastUserMessageId, summaryData, summaryLoading, onR
               {(c360?.profile?.tags ?? profile.tags ?? []).length > 0 && (
                 <div className="flex flex-wrap gap-1">
                   {(c360?.profile?.tags ?? profile.tags ?? []).map((tag) => (
-                    <Badge key={tag} variant="secondary" className="h-4 px-1.5 text-[10px]">{tag}</Badge>
+                    <Badge key={tag} variant="secondary" className="h-4 px-1.5 text-[11px]">{tag}</Badge>
                   ))}
                 </div>
               )}
