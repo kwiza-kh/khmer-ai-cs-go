@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { EmptyState } from "@/components/empty-state";
 import { ThumbsUp, ThumbsDown, MessageSquare } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
+import { fmtDateTime } from "@/lib/format";
 
 export function FeedbackTab() {
   const { t, tf } = useI18n();
@@ -68,7 +69,7 @@ export function FeedbackTab() {
                     <span className="line-clamp-2">{m.feedback_comment || "—"}</span>
                   </TableCell>
                   <TableCell className="text-xs text-muted-foreground">
-                    {m.feedback_at ? new Date(m.feedback_at).toLocaleString() : "—"}
+                    {m.feedback_at ? fmtDateTime(m.feedback_at) : "—"}
                   </TableCell>
                 </TableRow>
               ))}

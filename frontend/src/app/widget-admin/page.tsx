@@ -151,9 +151,9 @@ export default function WidgetAdminPage() {
                   <div className="flex items-center justify-between gap-3">
                     <div className="flex items-center gap-2">
                       <p className="text-sm font-medium">{tk.name}</p>
-                      <Badge variant="success" className="h-4 text-[10px]">{t("widget.active")}</Badge>
+                      <Badge variant="success" className="h-4 text-[11px]">{t("widget.active")}</Badge>
                     </div>
-                    <Button size="sm" variant="ghost" className="h-7 text-xs gap-1 text-destructive" onClick={() => void remove(tk.token_id)}>
+                    <Button size="sm" variant="ghost" className="h-7 text-xs gap-1 text-danger" onClick={() => void remove(tk.token_id)}>
                       <Trash2 className="size-3" />{t("widget.delete")}
                     </Button>
                   </div>

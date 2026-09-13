@@ -205,14 +205,14 @@ export function CannedResponsesCard() {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5">
                       <p className="text-xs font-medium truncate">{r.title}</p>
-                      {r.category && <Badge variant="outline" className="h-4 px-1 text-[10px]">{r.category}</Badge>}
-                      <Badge variant="secondary" className="h-4 px-1 text-[10px] uppercase">{r.language}</Badge>
+                      {r.category && <Badge variant="outline" className="h-4 px-1 text-[11px]">{r.category}</Badge>}
+                      <Badge variant="secondary" className="h-4 px-1 text-[11px] uppercase">{r.language}</Badge>
                     </div>
                     <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{r.body}</p>
                   </div>
                   <button
                     onClick={() => handleDelete(r.id)}
-                    className="opacity-100 transition-opacity text-muted-foreground hover:text-destructive sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100 flex-shrink-0"
+                    className="opacity-100 transition-opacity text-muted-foreground hover:text-danger sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100 flex-shrink-0"
                     title={t("kb.delete")}
                   >
                     <Trash2 className="size-3.5" />

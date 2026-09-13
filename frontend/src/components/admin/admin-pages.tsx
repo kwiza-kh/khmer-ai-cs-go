@@ -22,6 +22,7 @@ import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
+import { fmtDate, fmtInt, fmtMoney } from "@/lib/format";
 import { EmptyState } from "@/components/empty-state";
 import { PageHeader } from "@/components/page-header";
 import { AnalyticsPanel } from "@/components/admin/analytics-panel";
@@ -43,19 +44,22 @@ function AdminPageFrame({
   description,
   children,
   actions,
+  maxWidth = "max-w-6xl",
 }: {
   icon: LucideIcon;
   title: string;
   description?: string;
   children: React.ReactNode;
   actions?: React.ReactNode;
+  /** 内容列宽。表单为主的页面用 max-w-4xl —— 一行 150 字符的输入框没法读。 */
+  maxWidth?: string;
 }) {
   const { t } = useI18n();
   return (
     <div className="flex h-full flex-col">
       <PageHeader icon={icon} kicker={t("nav.administration")} title={title} description={description} actions={actions} />
       <div className="flex-1 overflow-auto p-5 sm:p-8">
-        <div className="mx-auto max-w-6xl">{children}</div>
+        <div className={cn("mx-auto w-full", maxWidth)}>{children}</div>
       </div>
     </div>
   );
@@ -149,7 +153,7 @@ function UserStatCard({
         <div className="min-w-0">
           <p className="truncate text-[11px] font-medium text-muted-foreground">{label}</p>
           <p className="text-xl font-semibold tabular-nums text-foreground">
-            {value == null ? "—" : `${prefix}${value.toLocaleString()}`}
+            {value == null ? "—" : `${prefix}${fmtInt(value)}`}
           </p>
         </div>
       </CardContent>
@@ -157,10 +161,15 @@ function UserStatCard({
   );
 }
 
+// 最高权限用 ink 实心胶囊, 不再借用 warning(琥珀) —— 那会让“最高权限”读成“警告”。
+//
+// ⚠️ 必须成对写 light / dark: SelectTrigger 基类带 `dark:bg-input/30`, 它在
+// 构建产物里的顺序晚于基础 `bg-*`, 深色下会直接盖掉只写了 light 的写法
+// (曾导致 platform_admin 变成深底 + 深字, 对比度 1.01:1 完全不可见)。
 const ROLE_PILL: Record<string, string> = {
-  platform_admin: "bg-warning/15 text-warning",
-  admin: "bg-primary/10 text-primary",
-  user: "bg-muted text-muted-foreground",
+  platform_admin: "bg-ink text-ink-foreground dark:bg-ink dark:text-ink-foreground",
+  admin: "bg-primary/12 text-primary dark:bg-primary/15 dark:text-primary",
+  user: "bg-muted text-muted-foreground dark:bg-muted/60 dark:text-muted-foreground",
 };
 
 // Sign-in methods an account can carry. A user may have several at once — a
@@ -275,7 +284,7 @@ export function UsersAdminPage() {
                                 <Badge
                                   key={method}
                                   variant="outline"
-                                  className="h-4 shrink-0 gap-1 px-1.5 text-[10px] font-normal text-muted-foreground"
+                                  className="h-4 shrink-0 gap-1 px-1.5 text-[11px] font-normal text-muted-foreground"
                                 >
                                   {AUTH_LABEL[method] ? t(AUTH_LABEL[method]) : method}
                                 </Badge>
@@ -332,7 +341,7 @@ export function UsersAdminPage() {
                         </div>
                       </TableCell>
                       <TableCell className="whitespace-nowrap text-[11px] text-muted-foreground">
-                        {user.created_at ? new Date(user.created_at).toLocaleDateString() : "—"}
+                        {user.created_at ? fmtDate(user.created_at) : "—"}
                       </TableCell>
                     </TableRow>
                   );
@@ -459,6 +468,7 @@ export function ModelsAdminPage() {
     <AdminPageFrame
       icon={Zap}
       title={t("admin.modelsTitle")}
+      maxWidth="max-w-4xl"
       actions={<RefreshAction onClick={() => void mutate()} refreshing={isLoading} />}
     >
       {isLoading ? <PageLoadingState /> : models.length === 0 ? (
@@ -530,7 +540,7 @@ export function ModelsAdminPage() {
                         <p className="mt-1 text-xs text-muted-foreground">
                           {isLoadingModels ? t("admin.checkingGemini") : isConnected ? tf("admin.connectedGemini", { n: modelOptions.length }) : model.has_api_key ? t("admin.geminiNeedsVerify") : t("admin.saveKeyToLoad")}
                         </p>
-                        {modelListError && <p role="alert" className="mt-1 text-xs text-destructive">{modelListError}</p>}
+                        {modelListError && <p role="alert" className="mt-1 text-xs text-danger">{modelListError}</p>}
                       </div>
                       <div className="sm:col-span-2">
                         <label className="mb-1 block text-xs text-muted-foreground">{t("admin.geminiApiKey")}</label>
@@ -592,7 +602,7 @@ export function ModelsAdminPage() {
                       </Button>
                       {!model.has_api_key && <span className="text-xs text-muted-foreground">{t("admin.saveKeyToTest")}</span>}
                     </div>
-                    {testResult?.error && <p role="alert" className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{testResult.error}</p>}
+                    {testResult?.error && <p role="alert" className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-danger">{testResult.error}</p>}
                     {testResult?.reply && (
                       <div aria-live="polite" className="mt-3 rounded-md border border-border bg-muted/40 p-3">
                         <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
@@ -643,8 +653,8 @@ export function TokensAdminPage() {
                   {usage.map((day) => (
                     <TableRow key={day.date}>
                       <TableCell className="text-xs">{day.date}</TableCell>
-                      <TableCell className="text-xs font-medium">{day.tokens?.toLocaleString()}</TableCell>
-                      <TableCell className="text-xs text-success">${day.cost?.toFixed(6)}</TableCell>
+                      <TableCell className="text-xs font-medium tabular-nums">{fmtInt(day.tokens)}</TableCell>
+                      <TableCell className="text-xs text-success tabular-nums">{fmtMoney(day.cost, 4)}</TableCell>
                     </TableRow>
                   ))}
                 </TableBody>

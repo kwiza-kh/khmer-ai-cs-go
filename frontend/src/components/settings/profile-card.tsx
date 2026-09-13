@@ -147,18 +147,28 @@ export function ProfileCard() {
               </div>
             </div>
 
-            {/* Read-only identity */}
+            {/* Read-only identity — 用文本行而不是 disabled input:
+                输入框里的长邮箱/用户名会被硬切且无法横向滚动, 且 disabled
+                样式让它们读起来像坏掉的表单。改为带 title 的省略号文本行。 */}
             <div className="grid gap-3 sm:grid-cols-2">
-              <div>
-                <Label className="text-xs text-muted-foreground">{t("settings.username")}</Label>
-                <Input value={profile.username} disabled className="mt-1 h-9 text-sm" />
+              <div className="min-w-0">
+                <p className="text-xs text-muted-foreground">{t("settings.username")}</p>
+                <p
+                  className="mt-1 truncate rounded-lg border border-border bg-muted/40 px-2.5 py-2 text-sm font-medium"
+                  title={profile.username}
+                >
+                  {profile.username}
+                </p>
               </div>
-              <div>
-                <Label className="text-xs text-muted-foreground">{t("settings.email")}</Label>
-                <div className="relative mt-1">
-                  <Mail className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-                  <Input value={profile.email} disabled className="h-9 pl-8 text-sm" />
-                </div>
+              <div className="min-w-0">
+                <p className="text-xs text-muted-foreground">{t("settings.email")}</p>
+                <p
+                  className="mt-1 flex min-w-0 items-center gap-2 rounded-lg border border-border bg-muted/40 px-2.5 py-2 text-sm font-medium"
+                  title={profile.email}
+                >
+                  <Mail className="size-3.5 shrink-0 text-muted-foreground" />
+                  <span className="truncate">{profile.email}</span>
+                </p>
               </div>
             </div>
 
@@ -166,7 +176,7 @@ export function ProfileCard() {
             <div className="space-y-3 border-t border-border pt-4">
               <p className="text-xs font-medium text-muted-foreground">{t("settings.editableInfo")}</p>
               <div className="grid gap-3 sm:grid-cols-2">
-                <div>
+                <div className="min-w-0 sm:col-span-2">
                   <Label className="text-xs text-muted-foreground">{t("settings.displayName")}</Label>
                   <Input
                     value={displayName}
@@ -262,7 +272,7 @@ export function ProfileCard() {
                           variant="ghost"
                           onClick={removeAvatar}
                           disabled={uploading || saving}
-                          className="h-8 gap-1.5 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
+                          className="h-8 gap-1.5 text-xs text-danger hover:bg-destructive/10 hover:text-danger"
                         >
                           <Trash2 className="size-3.5" />
                           {t("settings.avatarRemove")}

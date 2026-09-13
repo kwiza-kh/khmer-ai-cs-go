@@ -341,7 +341,7 @@ export default function KnowledgePage() {
                 disabled={toggleSaving}
                 title={t("kb.compileToggleHint")}
                 className={cn(
-                  "inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2 text-xs transition-colors disabled:opacity-50",
+                  "inline-flex h-8 items-center gap-2 rounded-md border border-border bg-card py-0 pr-2.5 pl-2 text-xs transition-colors disabled:opacity-50",
                   compileEnabled ? "text-foreground" : "text-muted-foreground",
                 )}
               >
@@ -409,7 +409,7 @@ export default function KnowledgePage() {
                     <CardContent className="p-3">
                       <div className="mb-1 flex items-center justify-between gap-2">
                         <p className="truncate text-xs font-medium">{source.title}</p>
-                        <Badge variant="secondary" className="h-4 px-1.5 text-[10px]">{((source.score ?? 0) * 100).toFixed(0)}%</Badge>
+                        <Badge variant="secondary" className="h-4 px-1.5 text-[11px]">{((source.score ?? 0) * 100).toFixed(0)}%</Badge>
                       </div>
                       <p className="line-clamp-2 text-xs leading-5 text-muted-foreground">{source.content}</p>
                     </CardContent>
@@ -433,7 +433,7 @@ export default function KnowledgePage() {
                   <CardHeader className="border-b border-border pb-2">
                     <CardTitle className="flex items-center gap-2 text-sm">
                       <GitCompareArrows className="size-3.5 text-warning" />{t("kb.contradictionTitle")}
-                      <Badge variant="warning" className="h-4 px-1.5 text-[10px]">{contradictions.length}</Badge>
+                      <Badge variant="warning" className="h-4 px-1.5 text-[11px]">{contradictions.length}</Badge>
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-2 pt-4">
@@ -462,7 +462,7 @@ export default function KnowledgePage() {
                                 <span className="font-medium text-success">{t("kb.contradictionNew")}：</span>{item.new_claim}
                               </p>
                               <p className="rounded border border-border/60 bg-background/60 px-2 py-1 text-[11px] leading-relaxed">
-                                <span className="font-medium text-destructive">{t("kb.contradictionOld")}：</span>{item.old_claim}
+                                <span className="font-medium text-muted-foreground">{t("kb.contradictionOld")}：</span>{item.old_claim}
                                 {item.old_doc_title && <span className="block text-[10px] text-muted-foreground">{item.old_doc_title}</span>}
                               </p>
                             </div>
@@ -492,7 +492,7 @@ export default function KnowledgePage() {
                           <div className="flex shrink-0 items-center gap-2 text-[11px] text-muted-foreground">
                             <span>{tf("kb.qualityUses", { n: q.uses })}</span>
                             <span className="text-success">👍{q.thumbs_up}</span>
-                            <span className={q.thumbs_down > 0 ? "font-medium text-destructive" : ""}>👎{q.thumbs_down}</span>
+                            <span className={q.thumbs_down > 0 ? "font-medium text-danger" : ""}>👎{q.thumbs_down}</span>
                           </div>
                         </div>
                       ))
@@ -514,7 +514,7 @@ export default function KnowledgePage() {
                       <div key={gap.query} className="flex items-center justify-between gap-2 rounded-lg border border-border/60 px-3 py-1.5">
                         <p className="min-w-0 truncate text-xs">{gap.query}</p>
                         <div className="flex shrink-0 items-center gap-2">
-                          <Badge variant="secondary" className="h-4 px-1.5 text-[10px]">{tf("kb.qualityUses", { n: gap.hits })}</Badge>
+                          <Badge variant="secondary" className="h-4 px-1.5 text-[11px]">{tf("kb.qualityUses", { n: gap.hits })}</Badge>
                           <Button
                             variant="outline"
                             size="sm"
@@ -604,14 +604,14 @@ export default function KnowledgePage() {
                                 <div className="mt-3 flex flex-wrap items-center gap-1.5">
                                   <IndexStatusBadge status={doc.index_status} />
                                   {doc.origin === "compiled" && (
-                                    <Badge variant="info" className="h-4 gap-1 px-1.5 text-[10px]">
+                                    <Badge variant="info" className="h-4 gap-1 px-1.5 text-[11px]">
                                       <Wand2 className="size-2.5" />{t("kb.compiledBadge")}
                                     </Badge>
                                   )}
                                   {doc.compile_status === "failed" && (
-                                    <Badge variant="secondary" className="h-4 px-1.5 text-[10px]">{t("kb.compileFailed")}</Badge>
+                                    <Badge variant="secondary" className="h-4 px-1.5 text-[11px]">{t("kb.compileFailed")}</Badge>
                                   )}
-                                  {doc.category && <Badge variant="secondary" className="h-4 px-1.5 text-[10px]">{doc.category}</Badge>}
+                                  {doc.category && <Badge variant="secondary" className="h-4 px-1.5 text-[11px]">{doc.category}</Badge>}
                                   <span className="text-[11px] text-muted-foreground">{tf("kb.chunks", { n: doc.chunk_count })}</span>
                                 </div>
                               </button>
@@ -621,7 +621,7 @@ export default function KnowledgePage() {
                                 aria-label={tf("kb.deleteTitle", { title: doc.title })}
                                 onClick={() => { void handleDelete(doc); }}
                                 disabled={deletingDocId === doc.doc_id}
-                                className="absolute right-2 top-2 flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
+                                className="absolute right-2 top-2 flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-danger disabled:opacity-50"
                               >
                                 {deletingDocId === doc.doc_id ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
                               </button>
@@ -696,7 +696,7 @@ export default function KnowledgePage() {
               <Button
                 variant="ghost"
                 size="sm"
-                className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+                className="text-danger hover:bg-destructive/10 hover:text-danger"
                 onClick={() => { void handleDelete(previewDoc); }}
                 disabled={deletingDocId === previewDoc.doc_id}
               >
@@ -757,5 +757,5 @@ function IndexStatusBadge({ status }: { status: KnowledgeDocument["index_status"
     failed: ["kb.statusFailed", "destructive"],
   };
   const [labelKey, variant] = labels[status] ?? ["kb.statusUnknown", "secondary"];
-  return <Badge variant={variant} className="h-4 px-1.5 text-[10px]">{t(labelKey)}</Badge>;
+  return <Badge variant={variant} className="h-4 px-1.5 text-[11px]">{t(labelKey)}</Badge>;
 }

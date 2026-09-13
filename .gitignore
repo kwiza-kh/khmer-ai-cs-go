@@ -17,6 +17,11 @@ node_modules/
 .next/
 frontend/.next-dev.log
 
+# Visual audit harness + screenshot output (local only)
+.visual-audit/
+frontend/.visual-audit/
+frontend/shots/
+
 # Local agent and code indexes
 .agents/
 .claude/

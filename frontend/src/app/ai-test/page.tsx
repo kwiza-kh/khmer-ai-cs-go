@@ -130,11 +130,11 @@ export default function AiTestPage() {
                     ) : (
                       <>
                         <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-                          <Badge variant="outline" className="h-4 px-1 text-[10px]">
+                          <Badge variant="outline" className="h-4 px-1 text-[11px]">
                             {t("aitest.aiReply")}
                           </Badge>
                           {m.usedMock && (
-                            <Badge variant="destructive" className="h-4 px-1 text-[10px]">
+                            <Badge variant="destructive" className="h-4 px-1 text-[11px]">
                               {t("aitest.mockBadge")}
                             </Badge>
                           )}

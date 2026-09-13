@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { useI18n } from "@/lib/i18n";
+import { fmtDateTime, fmtInt } from "@/lib/format";
 
 /**
  * Platform super-admin console: cross-tenant management.
@@ -63,12 +64,15 @@ function OverviewPanel() {
   const { data } = useSWR<PlatformAnalytics>("platform-analytics", getPlatformAnalytics);
   if (!data) return <EmptyState icon={BarChart3} title={t("pa.loadingStats")} />;
   const stats = [
-    { label: t("pa.statTenants"), value: data.total_tenants, icon: Building2, sub: tf("pa.activeCount", { n: data.active_tenants }) },
-    { label: t("pa.statSessions"), value: data.total_sessions, icon: MessageSquare },
-    { label: t("pa.statMessages"), value: data.total_messages, icon: MessageSquare },
-    { label: t("pa.statTokens"), value: data.total_tokens.toLocaleString(), icon: Coins },
-    { label: t("pa.statKbDocs"), value: data.total_documents, icon: FileText },
+    { label: t("pa.statTenants"), value: fmtInt(data.total_tenants), icon: Building2, sub: tf("pa.activeCount", { n: data.active_tenants }) },
+    { label: t("pa.statSessions"), value: fmtInt(data.total_sessions), icon: MessageSquare },
+    { label: t("pa.statMessages"), value: fmtInt(data.total_messages), icon: MessageSquare },
+    { label: t("pa.statTokens"), value: fmtInt(data.total_tokens), icon: Coins },
+    { label: t("pa.statKbDocs"), value: fmtInt(data.total_documents), icon: FileText },
   ];
+  // 柱子百分比高度需要一个确定高度的父级 —— 提前算好窗口最大值。
+  const window14 = data.daily_messages.slice(-14);
+  const maxMessages = Math.max(...window14.map((x) => x.messages), 1);
   return (
     <Card>
       <CardHeader className="pb-2">
@@ -98,20 +102,21 @@ function OverviewPanel() {
             <p className="text-[11px] text-muted-foreground">{t("pa.noActivity")}</p>
           ) : (
             <div className="flex items-end gap-1.5 h-24">
-              {data.daily_messages.slice(-14).map((d) => {
+              {window14.map((d) => {
                 // Normalize bar height to the window maximum so the tallest day
                 // fills the chart and low-volume days stay proportionally short.
-                const max = Math.max(...data.daily_messages.slice(-14).map((x) => x.messages), 1);
-                const pct = Math.round((d.messages / max) * 100);
+                const pct = Math.round((d.messages / maxMessages) * 100);
                 const height = Math.max(2, pct); // floor at 2% so 0-days stay visible
                 return (
-                  <div key={d.date} className="flex-1 flex flex-col items-center gap-1 group">
+                  // h-full + justify-end: 给柱子一个确定高度, 百分比才能解析
+                  // (items-end 只会让列按内容收缩 → height:X% 解析为 0)。
+                  <div key={d.date} className="flex-1 h-full flex flex-col items-center justify-end gap-1 group">
                     <div
                       className="w-full rounded-t bg-primary/70 transition-all group-hover:bg-primary"
                       style={{ height: `${height}%` }}
                       title={tf("pa.chartTitle", { date: d.date, n: d.messages })}
                     />
-                    <span className="text-[9px] text-muted-foreground tabular-nums">{d.date.slice(5)}</span>
+                    <span className="text-[10px] text-muted-foreground tabular-nums">{d.date.slice(5)}</span>
                   </div>
                 );
               })}
@@ -172,18 +177,18 @@ function TenantsPanel() {
                     <div className="flex-1 min-w-0">
                       <p className="text-xs font-medium truncate">{tenant.username} <span className="text-muted-foreground font-normal">· {tenant.email}</span></p>
                     </div>
-                    <Badge variant={tenant.is_active ? "success" : "destructive"} className="h-4 px-1.5 text-[10px]">{tenant.is_active ? t("pa.badgeActive") : t("pa.badgeDisabled")}</Badge>
+                    <Badge variant={tenant.is_active ? "success" : "destructive"} className="h-4 px-1.5 text-[11px]">{tenant.is_active ? t("pa.badgeActive") : t("pa.badgeDisabled")}</Badge>
                   </div>
                   <div className="flex items-center gap-1.5 flex-wrap">
                     <select value={tenant.plan} onChange={(e) => changePlan(tenant, e.target.value)} className="h-6 text-[11px] rounded border border-input bg-transparent px-1.5 capitalize">
                       <option value="free">free</option><option value="pro">pro</option><option value="enterprise">enterprise</option>
                     </select>
-                    <Badge variant="outline" className="h-4 px-1 text-[10px]">{tf("pa.msgsBadge", { used: tenant.messages_used, quota: tenant.message_quota })}</Badge>
-                    <Badge variant="outline" className="h-4 px-1 text-[10px]">{tf("pa.docsBadge", { used: tenant.docs_used, quota: tenant.doc_quota })}</Badge>
+                    <Badge variant="outline" className="h-4 px-1 text-[11px]">{tf("pa.msgsBadge", { used: tenant.messages_used, quota: tenant.message_quota })}</Badge>
+                    <Badge variant="outline" className="h-4 px-1 text-[11px]">{tf("pa.docsBadge", { used: tenant.docs_used, quota: tenant.doc_quota })}</Badge>
                     <div className="flex-1" />
                     <Button size="icon-sm" variant="ghost" className="h-6 w-6" title={t("pa.view")} onClick={() => openDetail(tenant)}><Eye className="size-3.5" /></Button>
                     <Button size="icon-sm" variant="ghost" className="h-6 w-6" title={tenant.is_active ? t("pa.disable") : t("pa.enable")} onClick={() => toggle(tenant)}>
-                      <Power className={`size-3.5 ${tenant.is_active ? "text-destructive" : "text-success"}`} />
+                      <Power className={`size-3.5 ${tenant.is_active ? "text-danger" : "text-success"}`} />
                     </Button>
                   </div>
                 </div>
@@ -216,8 +221,8 @@ function TenantsPanel() {
                 {detail.sessions.slice(0, 8).map((sess) => (
                   <div key={sess.session_id} className="rounded border border-border p-2 flex items-center gap-2">
                     <p className="text-[11px] truncate flex-1">{sess.title || sess.platform || t("gr.untitled")}</p>
-                    {sess.sentiment === "negative" && <Badge variant="destructive" className="h-3.5 px-1 text-[9px]">{t("inbox.angry")}</Badge>}
-                    <Badge variant="outline" className="h-3.5 px-1 text-[9px]">{sess.status}</Badge>
+                    {sess.sentiment === "negative" && <Badge variant="destructive" className="h-3.5 px-1 text-[10px]">{t("inbox.angry")}</Badge>}
+                    <Badge variant="outline" className="h-3.5 px-1 text-[10px]">{sess.status}</Badge>
                     <span className="text-[10px] text-muted-foreground">{tf("pa.msgsCount", { n: sess.user_message_count + sess.model_message_count })}</span>
                   </div>
                 ))}
@@ -356,7 +361,7 @@ function AuditLogsPanel() {
                   return (
                     <tr key={row.log_id} className="border-b border-border/50 align-top hover:bg-muted/40">
                       <td className="whitespace-nowrap py-2 pr-3 tabular-nums text-muted-foreground">
-                        {row.created_at ? new Date(row.created_at).toLocaleString("en-US", { hour12: false }) : "—"}
+                        {row.created_at ? fmtDateTime(row.created_at) : "—"}
                       </td>
                       <td className="py-2 pr-3 font-medium">{row.username || <span className="text-muted-foreground">{t("pa.system")}</span>}</td>
                       <td className="py-2 pr-3">

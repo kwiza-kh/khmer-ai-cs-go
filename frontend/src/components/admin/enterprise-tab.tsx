@@ -39,10 +39,20 @@ const EVENT_OPTIONS = [
   "handoff.assigned", "session.resolved", "sentiment.negative",
 ];
 
+/** 小号可见标签 + 控件, 用于紧凑表单行。 */
+function LabeledField({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="flex min-w-0 flex-col gap-1">
+      <span className="truncate text-[11px] font-medium text-muted-foreground">{label}</span>
+      {children}
+    </label>
+  );
+}
+
 function SectionCard({ title, children, action }: { title: string; children: React.ReactNode; action?: React.ReactNode }) {
   return (
     <Card>
-      <CardHeader className="pb-3 flex-row items-center justify-between">
+      <CardHeader className="flex flex-row items-center justify-between gap-2 pb-3">
         <CardTitle className="text-sm">{title}</CardTitle>
         {action}
       </CardHeader>
@@ -74,10 +84,18 @@ function SlaPanel() {
   return (
     <div className="space-y-4">
       <SectionCard title={t("ent.slaTitle")} action={<AlarmClock className="size-4 text-muted-foreground" />}>
-        <div className="mb-3 grid gap-2 sm:grid-cols-4">
-          <Input placeholder={t("ent.namePh")} value={name} onChange={(e) => setName(e.target.value)} className="h-8 text-xs" />
-          <Input type="number" placeholder={t("ent.firstRespPh")} value={first} onChange={(e) => setFirst(Number(e.target.value))} className="h-8 text-xs" />
-          <Input type="number" placeholder={t("ent.resolutionPh")} value={resolution} onChange={(e) => setResolution(Number(e.target.value))} className="h-8 text-xs" />
+        {/* 这三个输入框都有预填值, 所以 placeholder 不会显示 —— 必须有可见标签,
+            否则用户只看到裸的 300 / 3600, 不知道单位。 */}
+        <div className="mb-3 grid items-end gap-2 sm:grid-cols-2 lg:grid-cols-4">
+          <LabeledField label={t("ent.colName")}>
+            <Input placeholder={t("ent.namePh")} value={name} onChange={(e) => setName(e.target.value)} className="h-8 text-xs" />
+          </LabeledField>
+          <LabeledField label={t("ent.firstRespPh")}>
+            <Input type="number" value={first} onChange={(e) => setFirst(Number(e.target.value))} className="h-8 text-xs" />
+          </LabeledField>
+          <LabeledField label={t("ent.resolutionPh")}>
+            <Input type="number" value={resolution} onChange={(e) => setResolution(Number(e.target.value))} className="h-8 text-xs" />
+          </LabeledField>
           <Button size="sm" onClick={submit} className="h-8 gap-1.5 text-xs"><Plus className="size-3" />{t("ent.add")}</Button>
         </div>
         {policies.length === 0 ? <EmptyState icon={AlarmClock} title={t("ent.noSla")} /> : (
@@ -93,7 +111,7 @@ function SlaPanel() {
                   <TableCell className="text-xs">{p.first_response_secs}s</TableCell>
                   <TableCell className="text-xs">{p.resolution_secs ? `${p.resolution_secs}s` : "—"}</TableCell>
                   <TableCell>
-                    <Button size="sm" variant="ghost" onClick={() => confirmDelete(t("ent.deleteSlaConfirm"), () => deleteSlaPolicy(p.sla_id), mutate)} className="h-7 text-xs text-destructive"><Trash2 className="size-3" /></Button>
+                    <Button size="sm" variant="ghost" onClick={() => confirmDelete(t("ent.deleteSlaConfirm"), () => deleteSlaPolicy(p.sla_id), mutate)} className="h-7 text-xs text-danger"><Trash2 className="size-3" /></Button>
                   </TableCell>
                 </TableRow>
               ))}
@@ -151,7 +169,7 @@ function RoutingPanel() {
                 <TableCell className="text-xs">{JSON.stringify(r.conditions)}</TableCell>
                 <TableCell className="text-xs">{(r.target_skills ?? []).join(", ") || "—"}</TableCell>
                 <TableCell>
-                  <Button size="sm" variant="ghost" onClick={() => confirmDelete(t("ent.deleteRuleConfirm"), () => deleteRoutingRule(r.rule_id), mutate)} className="h-7 text-xs text-destructive"><Trash2 className="size-3" /></Button>
+                  <Button size="sm" variant="ghost" onClick={() => confirmDelete(t("ent.deleteRuleConfirm"), () => deleteRoutingRule(r.rule_id), mutate)} className="h-7 text-xs text-danger"><Trash2 className="size-3" /></Button>
                 </TableCell>
               </TableRow>
             ))}
@@ -196,7 +214,7 @@ function MacrosPanel() {
                 <TableCell className="text-xs font-medium">{m.title}</TableCell>
                 <TableCell className="text-xs">{m.steps.length}</TableCell>
                 <TableCell>
-                  <Button size="sm" variant="ghost" onClick={() => confirmDelete(t("ent.deleteMacroConfirm"), () => deleteMacro(m.macro_id), mutate)} className="h-7 text-xs text-destructive"><Trash2 className="size-3" /></Button>
+                  <Button size="sm" variant="ghost" onClick={() => confirmDelete(t("ent.deleteMacroConfirm"), () => deleteMacro(m.macro_id), mutate)} className="h-7 text-xs text-danger"><Trash2 className="size-3" /></Button>
                 </TableCell>
               </TableRow>
             ))}
@@ -247,7 +265,7 @@ function RolesPanel() {
                 <TableCell className="text-xs font-medium">{r.name}</TableCell>
                 <TableCell className="text-xs">{r.permissions.join(", ")}</TableCell>
                 <TableCell>
-                  <Button size="sm" variant="ghost" onClick={() => confirmDelete(t("ent.deleteRoleConfirm"), () => deleteRole(r.role_id), mutate)} className="h-7 text-xs text-destructive"><Trash2 className="size-3" /></Button>
+                  <Button size="sm" variant="ghost" onClick={() => confirmDelete(t("ent.deleteRoleConfirm"), () => deleteRole(r.role_id), mutate)} className="h-7 text-xs text-danger"><Trash2 className="size-3" /></Button>
                 </TableCell>
               </TableRow>
             ))}
@@ -300,7 +318,7 @@ function WebhooksPanel() {
                 <TableCell className="text-xs font-medium truncate max-w-[200px]">{s.url}</TableCell>
                 <TableCell className="text-xs">{s.events.join(", ")}</TableCell>
                 <TableCell>
-                  <Button size="sm" variant="ghost" onClick={() => confirmDelete(t("ent.deleteWebhookConfirm"), () => deleteWebhookSubscription(s.subscription_id), mutate)} className="h-7 text-xs text-destructive"><Trash2 className="size-3" /></Button>
+                  <Button size="sm" variant="ghost" onClick={() => confirmDelete(t("ent.deleteWebhookConfirm"), () => deleteWebhookSubscription(s.subscription_id), mutate)} className="h-7 text-xs text-danger"><Trash2 className="size-3" /></Button>
                 </TableCell>
               </TableRow>
             ))}
@@ -381,15 +399,18 @@ function AnalyticsPanel() {
 }
 
 export function EnterpriseTab() {
+  const { t } = useI18n();
   return (
     <Tabs defaultValue="sla">
+      {/* 二级导航与 Growth / 一级导航共用同一套 Tabs 视觉. 最后一项原名
+          "Analytics" 与一级 Tab 重名, 改为 "Performance". */}
       <TabsList className="h-auto w-auto flex-wrap">
-        <TabsTrigger value="sla" className="gap-1.5 text-xs"><AlarmClock className="size-3" />SLA</TabsTrigger>
-        <TabsTrigger value="routing" className="gap-1.5 text-xs"><GitBranch className="size-3" />Routing</TabsTrigger>
-        <TabsTrigger value="macros" className="gap-1.5 text-xs"><ListChecks className="size-3" />Macros</TabsTrigger>
-        <TabsTrigger value="roles" className="gap-1.5 text-xs"><ShieldCheck className="size-3" />Roles</TabsTrigger>
-        <TabsTrigger value="webhooks" className="gap-1.5 text-xs"><Webhook className="size-3" />Webhooks</TabsTrigger>
-        <TabsTrigger value="analytics" className="gap-1.5 text-xs"><BarChart3 className="size-3" />Analytics</TabsTrigger>
+        <TabsTrigger value="sla" className="gap-1.5 text-xs"><AlarmClock className="size-3" />{t("ent.tabSla")}</TabsTrigger>
+        <TabsTrigger value="routing" className="gap-1.5 text-xs"><GitBranch className="size-3" />{t("ent.tabRouting")}</TabsTrigger>
+        <TabsTrigger value="macros" className="gap-1.5 text-xs"><ListChecks className="size-3" />{t("ent.tabMacros")}</TabsTrigger>
+        <TabsTrigger value="roles" className="gap-1.5 text-xs"><ShieldCheck className="size-3" />{t("ent.tabRoles")}</TabsTrigger>
+        <TabsTrigger value="webhooks" className="gap-1.5 text-xs"><Webhook className="size-3" />{t("ent.tabWebhooks")}</TabsTrigger>
+        <TabsTrigger value="analytics" className="gap-1.5 text-xs"><BarChart3 className="size-3" />{t("ent.tabPerformance")}</TabsTrigger>
       </TabsList>
       <TabsContent value="sla" className="mt-4"><SlaPanel /></TabsContent>
       <TabsContent value="routing" className="mt-4"><RoutingPanel /></TabsContent>

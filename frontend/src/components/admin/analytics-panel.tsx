@@ -14,6 +14,7 @@ import { StatCard } from "@/components/stat-card";
 import { EmptyState } from "@/components/empty-state";
 import { Zap, TrendingUp, BarChart3, Users, Clock, Smile, ThumbsUp, ThumbsDown, Activity, ShieldCheck } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
+import { fmtInt, fmtMoney } from "@/lib/format";
 
 // 6 distinct token-driven colors (cycle through semantic tokens).
 const PIE_COLORS = ["var(--color-primary)", "var(--color-info)", "var(--color-warning)", "var(--color-success)", "var(--color-danger)", "var(--color-muted-foreground)"];
@@ -29,10 +30,10 @@ export function AnalyticsPanel({ days = 30 }: { days?: number }) {
     <div className="space-y-4">
       {/* KPI cards — exactly 8 so the 4-col grid never leaves an orphan row. */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <StatCard icon={Zap} label={t("an.totalTokens")} value={(overview?.total_tokens ?? 0).toLocaleString()} tone="success" />
+        <StatCard icon={Zap} label={t("an.totalTokens")} value={fmtInt(overview?.total_tokens)} tone="success" />
         <StatCard icon={TrendingUp} label={t("an.cacheHit")} value={`${(overview?.cache_hit_rate ?? 0).toFixed(1)}%`} tone="info" />
-        <StatCard icon={BarChart3} label={t("an.estCost")} value={`$${(overview?.total_cost ?? 0).toFixed(4)}`} tone="warning" />
-        <StatCard icon={Users} label={t("an.sessions")} value={(overview?.total_sessions ?? 0).toLocaleString()} tone="default" />
+        <StatCard icon={BarChart3} label={t("an.estCost")} value={fmtMoney(overview?.total_cost, 4)} tone="warning" />
+        <StatCard icon={Users} label={t("an.sessions")} value={fmtInt(overview?.total_sessions)} tone="default" />
         <StatCard icon={Clock} label={t("an.avgFirstResp")} value={fmtMs(overview?.avg_first_response_ms)} tone="info" />
         <StatCard icon={Activity} label={t("an.avgResolution")} value={fmtMs(overview?.avg_resolution_ms)} tone="warning" />
         <StatCard icon={Smile} label="CSAT" value={overview?.csat != null ? `${(overview.csat * 100).toFixed(0)}%` : "—"} tone="success" />

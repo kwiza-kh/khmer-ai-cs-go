@@ -16,6 +16,8 @@ import { PLATFORM_ICONS } from "@/components/platform-icons";
 import { Globe, MessageCircle, ExternalLink, CheckCircle2, Loader2, Link2, Camera, Plus, RefreshCw, Unplug, CircleAlert, Radio, Clock3, Inbox, Send, RotateCcw, Copy, type LucideIcon } from "lucide-react";
 import { toast } from "sonner";
 import { useI18n } from "@/lib/i18n";
+import { fmtDateTime } from "@/lib/format";
+import { cn } from "@/lib/utils";
 
 type PlatformKey = "meta" | "instagram" | "telegram" | "whatsapp" | "line" | "zalo";
 
@@ -330,14 +332,14 @@ export default function PlatformsPage() {
       />
 
       <div className="flex-1 overflow-auto px-4 py-5 sm:px-6">
-        <div className="mx-auto max-w-6xl space-y-6">
+        <div className="mx-auto w-full max-w-5xl space-y-6">
           {/* Operational status first — the at-a-glance health row belongs at
               the top of the page. */}
-          <div className="grid overflow-hidden border border-border bg-card sm:grid-cols-2 xl:grid-cols-5">
+          <div className="grid grid-cols-2 overflow-hidden border border-border bg-card lg:grid-cols-5">
             <StatusMetric icon={Radio} label={t("pf.verified")} value={operationalSummary.connected} tone="text-success" />
             <StatusMetric icon={Inbox} label={t("pf.inboundQueue")} value={operationalSummary.inboundPending} tone="text-info" />
             <StatusMetric icon={Clock3} label={t("pf.outboundQueue")} value={operationalSummary.outboundPending} tone="text-info" />
-            <StatusMetric icon={CircleAlert} label={t("pf.failures")} value={operationalSummary.failed} tone={operationalSummary.failed > 0 ? "text-destructive" : "text-muted-foreground"} />
+            <StatusMetric icon={CircleAlert} label={t("pf.failures")} value={operationalSummary.failed} tone={operationalSummary.failed > 0 ? "text-danger" : "text-muted-foreground"} />
             <StatusMetric icon={CheckCircle2} label={t("pf.aiHeld")} value={operationalSummary.cancelled} tone={operationalSummary.cancelled > 0 ? "text-warning" : "text-muted-foreground"} />
           </div>
           <MetaOAuthConnectCard
@@ -412,11 +414,11 @@ function PlatformGroup({ meta, configs }: { meta: PlatformMeta; configs: Platfor
               <CapabilityGroup label={t("pf.capReceipts")} values={[t(`pf.${meta.label}.receipts`)]} />
             </div>
             <p className="mt-1 text-[11px] leading-4 text-muted-foreground">{t(`pf.${meta.label}.limitation`)}</p>
+            <Button size="sm" variant="outline" onClick={() => setAdding(true)} disabled={adding} className="mt-3 h-8 gap-1.5 text-xs">
+              <Plus className="size-3.5" /> {t("pf.addAccount")}
+            </Button>
           </div>
         </div>
-        <Button size="sm" variant="outline" onClick={() => setAdding(true)} disabled={adding} className="h-8 gap-1.5 text-xs">
-          <Plus className="size-3.5" /> {t("pf.addAccount")}
-        </Button>
       </div>
 
       {configs.length === 0 && !adding ? (
@@ -425,7 +427,7 @@ function PlatformGroup({ meta, configs }: { meta: PlatformMeta; configs: Platfor
           <span className="hidden text-right sm:block">{t(`pf.${meta.label}.webhookInfo`)}</span>
         </div>
       ) : (
-        <div className="grid gap-3 lg:grid-cols-2">
+        <div className={cn("grid gap-3", configs.length + (adding ? 1 : 0) > 1 && "lg:grid-cols-2")}>
           {configs.map((config) => <PlatformCard key={config.config_id} meta={meta} initial={config} />)}
           {adding && <PlatformCard meta={meta} onClose={() => setAdding(false)} />}
         </div>
@@ -448,7 +450,7 @@ function GroupConnectionBadge({ configs }: { configs: PlatformConfig[] }) {
   const errored = active.filter((c) => c.health?.status === "error").length;
   if (errored > 0) {
     return (
-      <Badge variant="outline" className="h-5 gap-1.5 border-destructive/40 px-1.5 text-[10px] font-medium text-destructive">
+      <Badge variant="outline" className="h-5 gap-1.5 border-destructive/40 px-1.5 text-[10px] font-medium text-danger">
         <span className="size-1.5 rounded-full bg-destructive animate-pulse" /> {t("pf.needsAttention")}
       </Badge>
     );
@@ -684,7 +686,7 @@ function WhatsAppEmbeddedSignupCard({ connected }: { connected: ConnectedAccount
   };
 
   return (
-    <Card className={connected.length > 0 ? "border-success/40 bg-success/[0.04]" : "border-success/30"}>
+    <Card className={connected.length > 0 ? "border-success/40 bg-success/[0.04]" : undefined}>
       <CardContent className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex min-w-0 items-start gap-3">
           <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-success/15 text-success">
@@ -938,7 +940,7 @@ function PlatformCard({ meta, initial, onClose }: { meta: PlatformMeta; initial?
         </div>
 
         {health?.detail && (
-          <div className={`mb-3 flex items-start gap-2 border px-2.5 py-2 text-xs ${health.status === "error" ? "border-destructive/30 bg-destructive/5 text-destructive" : "border-border text-muted-foreground"}`}>
+          <div className={`mb-3 flex items-start gap-2 border px-2.5 py-2 text-xs ${health.status === "error" ? "border-destructive/30 bg-destructive/5 text-danger" : "border-border text-muted-foreground"}`}>
             <CircleAlert className="mt-0.5 size-3 shrink-0" />
             <span className="min-w-0 break-words">{health.detail}</span>
           </div>
@@ -953,7 +955,7 @@ function PlatformCard({ meta, initial, onClose }: { meta: PlatformMeta; initial?
             <ol className="space-y-1.5">
               {meta.guide.map((key, index) => (
                 <li key={key} className="flex items-start gap-2 text-xs leading-relaxed text-foreground">
-                  <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full bg-info/15 text-[9px] font-bold text-info">{index + 1}</span>
+                  <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full bg-info/15 text-[10px] font-bold text-info">{index + 1}</span>
                   <span className="min-w-0">{t(key)}</span>
                 </li>
               ))}
@@ -994,7 +996,7 @@ function PlatformCard({ meta, initial, onClose }: { meta: PlatformMeta; initial?
             <div className="flex items-center justify-between gap-2">
               <p className="text-[11px] font-medium text-muted-foreground">{t("pf.webhookUrl")}</p>
               {meta.webhookMode === "auto" ? (
-                <Badge variant="outline" className="h-4 gap-1 border-success/40 px-1.5 text-[10px] text-success">
+                <Badge variant="outline" className="h-4 gap-1 border-success/40 px-1.5 text-[11px] text-success">
                   <CheckCircle2 className="size-2.5" /> {t("pf.webhookAuto")}
                 </Badge>
               ) : (
@@ -1049,7 +1051,7 @@ function PlatformCard({ meta, initial, onClose }: { meta: PlatformMeta; initial?
               <ExternalLink className="size-3" />{t("pf.docs")}
             </Button>
             {initial?.config_id && initial.is_active && (
-              <Button variant="ghost" size="sm" onClick={disconnect} disabled={disconnecting} className="h-8 gap-1 text-destructive hover:text-destructive">
+              <Button variant="ghost" size="sm" onClick={disconnect} disabled={disconnecting} className="h-8 gap-1 text-danger hover:text-danger">
                 {disconnecting ? <Loader2 className="size-3 animate-spin" /> : <Unplug className="size-3" />} {t("pf.disconnect")}
               </Button>
             )}
@@ -1090,7 +1092,7 @@ function WorkMetric({ label, value, destructive = false }: { label: string; valu
   return (
     <div className="bg-card px-2.5 py-2">
       <span className="block text-[10px] text-muted-foreground">{label}</span>
-      <span className={`font-semibold tabular-nums ${destructive && value > 0 ? "text-destructive" : ""}`}>{value}</span>
+      <span className={`font-semibold tabular-nums ${destructive && value > 0 ? "text-danger" : ""}`}>{value}</span>
     </div>
   );
 }
@@ -1225,7 +1227,7 @@ function FailureSection<T extends { attempts: number; created_at: string }>({
                   {retrying === retryKey ? <Loader2 className="size-3 animate-spin" /> : <RotateCcw className="size-3" />} {t("pf.retry")}
                 </Button>
               </div>
-              <p className="break-words text-[11px] text-destructive">{getError(item) || t("pf.noProviderError")}</p>
+              <p className="break-words text-[11px] text-danger">{getError(item) || t("pf.noProviderError")}</p>
               <p className="text-[10px] tabular-nums text-muted-foreground">{tf("pf.attempts", { n: getAttempts(item), time: formatTimestamp(getCreated(item)) })}</p>
             </div>;
           })}
@@ -1237,7 +1239,7 @@ function FailureSection<T extends { attempts: number; created_at: string }>({
 
 function formatTimestamp(value: string) {
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString("en-US");
+  return Number.isNaN(date.getTime()) ? value : fmtDateTime(date);
 }
 
 // stripPresent returns only the set scalar fields of a config, ignoring

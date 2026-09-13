@@ -297,7 +297,7 @@ export function KnowledgeUploadDialog({ onUploaded, trigger }: Props) {
         {accepted && (
           <div className="flex flex-wrap gap-1 pt-1 border-t border-border">
             {Object.entries(accepted.extensions).map(([ext, label]) => (
-              <Badge key={ext} variant="outline" className="text-[10px] h-4 px-1.5 font-mono">
+              <Badge key={ext} variant="outline" className="text-[11px] h-4 px-1.5 font-mono">
                 {ext} <span className="text-muted-foreground ml-1 font-sans">{label}</span>
               </Badge>
             ))}

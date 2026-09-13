@@ -21,6 +21,9 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { useI18n } from "@/lib/i18n";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { fmtDate, fmtDateTime } from "@/lib/format";
+import { cn } from "@/lib/utils";
 
 /**
  * Growth tab: customers 360 (F1/F6), FAQ mining (F3), agent team (F4),
@@ -30,8 +33,10 @@ export function GrowthTab() {
   const { t } = useI18n();
   const [section, setSection] = React.useState("customers");
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap gap-2">
+    // 二级导航统一用与 Enterprise 相同的 Tabs 组件 —— 此前这里是手写
+    // Button 组(实心紫活动态), 导致同一个仪表盘里出现 3 种 tab 视觉。
+    <Tabs value={section} onValueChange={(v) => setSection(String(v))}>
+      <TabsList className="h-auto w-auto flex-wrap">
         {[
           { key: "customers", labelKey: "gr.customers", icon: Users },
           { key: "faq", labelKey: "gr.faq", icon: Lightbulb },
@@ -39,23 +44,17 @@ export function GrowthTab() {
           { key: "campaigns", labelKey: "gr.campaigns", icon: Megaphone },
           { key: "billing", labelKey: "gr.billing", icon: CreditCard },
         ].map((s) => (
-          <Button
-            key={s.key}
-            size="sm"
-            variant={section === s.key ? "default" : "outline"}
-            className="gap-1.5 text-xs"
-            onClick={() => setSection(s.key)}
-          >
+          <TabsTrigger key={s.key} value={s.key} className="gap-1.5 text-xs">
             <s.icon className="size-3" /> {t(s.labelKey)}
-          </Button>
+          </TabsTrigger>
         ))}
-      </div>
-      {section === "customers" && <CustomersCard />}
-      {section === "faq" && <FaqCard />}
-      {section === "team" && <TeamCard />}
-      {section === "campaigns" && <CampaignsCard />}
-      {section === "billing" && <BillingCard />}
-    </div>
+      </TabsList>
+      <TabsContent value="customers" className="mt-4"><CustomersCard /></TabsContent>
+      <TabsContent value="faq" className="mt-4"><FaqCard /></TabsContent>
+      <TabsContent value="team" className="mt-4"><TeamCard /></TabsContent>
+      <TabsContent value="campaigns" className="mt-4"><CampaignsCard /></TabsContent>
+      <TabsContent value="billing" className="mt-4"><BillingCard /></TabsContent>
+    </Tabs>
   );
 }
 
@@ -86,7 +85,7 @@ function CustomersCard() {
     <Card>
       <CardHeader className="pb-2">
         <CardTitle className="text-sm flex items-center gap-2">
-          <Users className="size-4 text-primary" /> {t("gr.customers")} <span className="text-[10px] text-muted-foreground">{t("gr.customers360")}</span>
+          <Users className="size-4 text-primary" /> {t("gr.customers")} <span className="text-[11px] text-muted-foreground">{t("gr.customers360")}</span>
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
@@ -97,7 +96,8 @@ function CustomersCard() {
         {!customers || customers.length === 0 ? (
           <EmptyState icon={Users} title={t("gr.noCustomers")} description={t("gr.noCustomersDesc")} />
         ) : (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+          // 未选中客户时不摆两列 —— 否则列表只占左半, 右侧留一片空白
+          <div className={cn("grid grid-cols-1 gap-3", selected && "lg:grid-cols-2")}>
             <div className="space-y-1.5">
               {(customers as CustomerProfile[]).map((c) => (
                 <button
@@ -107,7 +107,7 @@ function CustomersCard() {
                 >
                   <div className="flex items-center justify-between gap-2">
                     <p className="text-xs font-medium truncate">{c.display_name || c.platform_user_id}</p>
-                    <Badge variant="outline" className="h-4 px-1 text-[10px] uppercase">{c.platform}</Badge>
+                    <Badge variant="outline" className="h-4 px-1 text-[11px] uppercase">{c.platform}</Badge>
                   </div>
                   <p className="text-[11px] text-muted-foreground mt-0.5">{c.platform_user_id} · {tf("gr.sessionsCount", { n: c.total_sessions })}</p>
                 </button>
@@ -117,9 +117,9 @@ function CustomersCard() {
               <div className="space-y-2 rounded-md border border-border p-3">
                 <div className="flex items-center justify-between">
                   <p className="text-xs font-semibold">{detail.profile.display_name || detail.profile.platform_user_id}</p>
-                  <Badge variant="outline" className="h-4 px-1 text-[10px] uppercase">{detail.profile.platform}</Badge>
+                  <Badge variant="outline" className="h-4 px-1 text-[11px] uppercase">{detail.profile.platform}</Badge>
                 </div>
-                <p className="text-[11px] text-muted-foreground">{detail.profile.platform_user_id} · {tf("gr.seen", { time: detail.profile.last_seen_at ? new Date(detail.profile.last_seen_at).toLocaleString() : "—" })}</p>
+                <p className="text-[11px] text-muted-foreground">{detail.profile.platform_user_id} · {tf("gr.seen", { time: detail.profile.last_seen_at ? fmtDateTime(detail.profile.last_seen_at) : "—" })}</p>
                 <div className="grid grid-cols-3 gap-1.5 text-center">
                   {(["total_sessions", "total_messages"] as const).map((k) => (
                     <div key={k} className="rounded bg-muted/40 py-1.5">
@@ -137,8 +137,8 @@ function CustomersCard() {
                       <div key={sess.session_id} className="rounded border border-border p-2">
                         <div className="flex items-center gap-1.5">
                           <p className="text-[11px] font-medium truncate flex-1">{sess.title || t("gr.untitled")}</p>
-                          {sess.sentiment === "negative" && <Badge variant="destructive" className="h-3.5 px-1 text-[9px]">{t("inbox.angry")}</Badge>}
-                          <Badge variant="outline" className="h-3.5 px-1 text-[9px]">{sess.status}</Badge>
+                          {sess.sentiment === "negative" && <Badge variant="destructive" className="h-3.5 px-1 text-[10px]">{t("inbox.angry")}</Badge>}
+                          <Badge variant="outline" className="h-3.5 px-1 text-[10px]">{sess.status}</Badge>
                         </div>
                         {sess.summary && <p className="text-[10px] text-muted-foreground mt-1 line-clamp-2">{sess.summary}</p>}
                       </div>
@@ -195,7 +195,7 @@ function FaqCard() {
               <div key={f.suggestion_id} className="rounded-md border border-border p-3 space-y-1.5">
                 <div className="flex items-start justify-between gap-2">
                   <p className="text-xs font-medium flex-1">{f.question}</p>
-                  <Badge variant="secondary" className="h-4 px-1 text-[10px]">{f.frequency}×</Badge>
+                  <Badge variant="secondary" className="h-4 px-1 text-[11px]">{f.frequency}×</Badge>
                 </div>
                 {f.answer && <p className="text-[11px] text-muted-foreground line-clamp-2">{f.answer}</p>}
                 <div className="flex gap-1.5">
@@ -272,10 +272,10 @@ function TeamCard() {
                   <p className="text-xs font-medium">{a.display_name || a.username}</p>
                   <p className="text-[11px] text-muted-foreground">{a.email}</p>
                   <div className="flex gap-1 mt-1 flex-wrap">
-                    {a.skills.map((sk) => <Badge key={sk} variant="outline" className="h-4 px-1 text-[10px]">{sk}</Badge>)}
+                    {a.skills.map((sk) => <Badge key={sk} variant="outline" className="h-4 px-1 text-[11px]">{sk}</Badge>)}
                   </div>
                 </div>
-                <button onClick={() => handleRemove(a.team_id)} className="text-muted-foreground hover:text-destructive" title={t("gr.remove")}><Trash2 className="size-3.5" /></button>
+                <button onClick={() => handleRemove(a.team_id)} className="text-muted-foreground hover:text-danger" title={t("gr.remove")}><Trash2 className="size-3.5" /></button>
               </div>
             ))}
           </div>
@@ -347,14 +347,14 @@ function CampaignsCard() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-1.5">
                     <p className="text-xs font-medium truncate">{c.name}</p>
-                    <Badge variant={c.status === "done" ? "success" : c.status === "scheduled" ? "secondary" : "outline"} className="h-4 px-1 text-[10px]">{c.status}</Badge>
+                    <Badge variant={c.status === "done" ? "success" : c.status === "scheduled" ? "secondary" : "outline"} className="h-4 px-1 text-[11px]">{c.status}</Badge>
                   </div>
                   <p className="text-[11px] text-muted-foreground mt-0.5">
-                    {c.template_name} · {new Date(c.scheduled_at).toLocaleString()} · {tf("gr.sentCount", { n: c.sent_count })}
+                    {c.template_name} · {fmtDateTime(c.scheduled_at)} · {tf("gr.sentCount", { n: c.sent_count })}
                   </p>
                 </div>
                 {c.status === "scheduled" && (
-                  <button onClick={() => handleCancel(c.campaign_id)} className="text-muted-foreground hover:text-destructive" title={t("common.cancel")}><XCircle className="size-3.5" /></button>
+                  <button onClick={() => handleCancel(c.campaign_id)} className="text-muted-foreground hover:text-danger" title={t("common.cancel")}><XCircle className="size-3.5" /></button>
                 )}
               </div>
             ))}
@@ -420,7 +420,7 @@ function BillingCard() {
               </div>
             </div>
             <div className="text-[11px] text-muted-foreground">
-              {tf("gr.docsLine", { used: info.docs_used, quota: info.monthly_doc_quota, date: new Date(info.cycle_end).toLocaleDateString() })}
+              {tf("gr.docsLine", { used: info.docs_used, quota: info.monthly_doc_quota, date: fmtDate(info.cycle_end) })}
             </div>
           </div>
         )}

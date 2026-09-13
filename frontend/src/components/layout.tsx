@@ -55,7 +55,7 @@ function NavItem({
       <Icon className={cn("size-4 shrink-0", active ? "text-primary" : "text-sidebar-foreground/60 group-hover:text-sidebar-foreground")} />
       <span className="flex-1 truncate">{label}</span>
       {count != null && count > 0 && (
-        <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-bold tabular-nums text-white shadow-[0_2px_8px_-2px_color-mix(in_oklch,var(--color-destructive)_60%,transparent)]">
+        <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[11px] font-bold tabular-nums text-white shadow-[0_2px_8px_-2px_color-mix(in_oklch,var(--color-destructive)_60%,transparent)]">
           {count > 99 ? "99+" : count}
         </span>
       )}
@@ -197,7 +197,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                 <p className="text-xs font-medium truncate">{user?.username}</p>
                 <p className="text-[10px] text-muted-foreground">{t(ROLE_KEYS[user?.role ?? "user"] ?? "role.member")}</p>
               </div>
-              <DropdownMenuItem onClick={logout} className="text-destructive cursor-pointer text-xs">
+              <DropdownMenuItem onClick={logout} className="text-danger cursor-pointer text-xs">
                 <LogOut className="size-3.5 mr-2" />{t("nav.signOut")}
               </DropdownMenuItem>
             </DropdownMenuContent>
@@ -210,7 +210,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
         {/* ===== Sidebar ===== */}
         <aside className={cn(
-          "flex flex-col bg-sidebar border-r border-sidebar-border",
+          "flex flex-col overflow-hidden bg-sidebar border-r border-sidebar-border",
           sidebarOpen ? "fixed inset-y-0 left-0 z-50 w-[232px] shadow-2xl" : "hidden lg:flex lg:w-[224px]"
         )}>
           <nav className="flex-1 overflow-auto px-3 py-3">
@@ -241,9 +241,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               <NavItem href="/help" icon={HelpCircle} label={t("nav.help")} active={isActive("/help")} onNavigate={close} />
             </NavSection>
           </nav>
-          <div className="flex items-center justify-between border-t border-sidebar-border/80 px-3 py-2">
-            <ThemeToggle />
-            <div className="flex items-center gap-1">
+          <div className="flex items-center justify-between gap-1 border-t border-sidebar-border/80 px-2 py-2">
+            <ThemeToggle className="min-w-0 flex-1" />
+            <div className="flex shrink-0 items-center gap-0.5">
               <LanguageSwitcher />
               <NotificationBell />
             </div>

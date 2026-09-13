@@ -63,7 +63,7 @@ export default function SettingsPage() {
         description={t("settings.description")}
       />
       <div className="flex-1 overflow-auto p-5 sm:p-8">
-        <div className="max-w-2xl mx-auto space-y-5">
+        <div className="mx-auto w-full max-w-3xl space-y-5">
 
           {/* Personal profile */}
           <ProfileCard />

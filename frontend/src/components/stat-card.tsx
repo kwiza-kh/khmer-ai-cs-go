@@ -56,7 +56,7 @@ export function StatCard({
           <Icon className="size-[18px]" />
         </div>
         <div className="min-w-0">
-          <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-[0.12em] truncate leading-none">
+          <p className="truncate text-[11px] leading-none font-medium text-muted-foreground uppercase tracking-[0.12em]">
             {label}
           </p>
           <p className="mt-1.5 text-[19px] font-semibold tracking-[-0.015em] leading-none tabular-nums truncate">

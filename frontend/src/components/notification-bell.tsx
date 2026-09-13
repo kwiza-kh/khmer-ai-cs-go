@@ -10,6 +10,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@/compon
 import { Bell, CheckCheck, MessageSquare, Headset, AlertTriangle, Coins, Info } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
+import { fmtDateTime } from "@/lib/format";
 
 const KIND_ICON: Record<string, typeof Bell> = {
   session: MessageSquare,
@@ -63,7 +64,7 @@ export function NotificationBell() {
       <DropdownMenuTrigger className="relative h-7 w-7 rounded-md hover:bg-sidebar-accent/50 transition-colors flex items-center justify-center text-sidebar-foreground" title={t("notif.title")}>
         <Bell className="size-4" />
         {unreadCount > 0 && (
-          <span className="absolute -top-0.5 -right-0.5 min-w-4 h-4 px-1 rounded-full bg-destructive text-[9px] font-bold text-white flex items-center justify-center">
+          <span className="absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[11px] leading-none font-bold text-white">
             {unreadCount > 99 ? "99+" : unreadCount}
           </span>
         )}
@@ -90,7 +91,7 @@ export function NotificationBell() {
                     !n.is_read && "bg-primary/5",
                   )}
                 >
-                  <Icon className={cn("size-4 mt-0.5 shrink-0", n.kind === "sentiment" ? "text-destructive" : "text-muted-foreground")} />
+                  <Icon className={cn("size-4 mt-0.5 shrink-0", n.kind === "sentiment" ? "text-danger" : "text-muted-foreground")} />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5">
                       <p className="text-xs font-medium truncate">{n.title}</p>
@@ -98,7 +99,7 @@ export function NotificationBell() {
                     </div>
                     <p className="text-[11px] text-muted-foreground line-clamp-2 mt-0.5">{n.body}</p>
                     <p className="text-[10px] text-muted-foreground/70 mt-0.5">
-                      {new Date(n.created_at).toLocaleString("en-US")}
+                      {fmtDateTime(n.created_at)}
                     </p>
                   </div>
                 </button>

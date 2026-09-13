@@ -156,7 +156,7 @@ export function MarkdownKnowledgeEditor({
                 <Input value={tags} onChange={(e) => setTags(e.target.value)} placeholder={t("kbe.tagsPh")} className="h-9 text-sm" />
                 {parsedTags.length > 0 && (
                   <div className="mt-1.5 flex flex-wrap gap-1.5">
-                    {parsedTags.map((t) => <Badge key={t} variant="secondary" className="h-4 px-1.5 text-[10px]">{t}</Badge>)}
+                    {parsedTags.map((t) => <Badge key={t} variant="secondary" className="h-4 px-1.5 text-[11px]">{t}</Badge>)}
                   </div>
                 )}
               </div>
@@ -223,7 +223,7 @@ export function MarkdownKnowledgeEditor({
                     <div key={`${s.title}-${i}`} className="rounded-md border border-border bg-background p-2.5">
                       <div className="mb-1 flex items-center justify-between">
                         <p className="truncate text-xs font-medium">{s.title}</p>
-                        <Badge variant="secondary" className="h-4 px-1.5 text-[10px]">{((s.score ?? 0) * 100).toFixed(0)}%</Badge>
+                        <Badge variant="secondary" className="h-4 px-1.5 text-[11px]">{((s.score ?? 0) * 100).toFixed(0)}%</Badge>
                       </div>
                       <p className="line-clamp-2 text-xs leading-5 text-muted-foreground">{s.content}</p>
                     </div>

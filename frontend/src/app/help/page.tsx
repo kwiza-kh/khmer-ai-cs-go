@@ -18,7 +18,7 @@ export default function HelpPage() {
       />
 
       <div className="flex-1 overflow-auto p-5 sm:p-8">
-        <div className="max-w-3xl mx-auto space-y-5">
+        <div className="mx-auto w-full max-w-3xl space-y-5">
 
           {/* Quickstart */}
           <Card>

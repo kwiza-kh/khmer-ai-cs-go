@@ -5,6 +5,7 @@ import { useTheme } from "next-themes";
 import { Button } from "@/components/ui/button";
 import { SunIcon, MoonIcon, MonitorIcon } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
+import { cn } from "@/lib/utils";
 
 type ResolvedTheme = "light" | "dark" | "system";
 
@@ -20,7 +21,7 @@ const LABEL_KEY: Record<ResolvedTheme, string> = {
  * Cycles light → dark → system on click. Renders nothing on the server
  * to avoid a hydration mismatch (theme is only known client-side).
  */
-export function ThemeToggle() {
+export function ThemeToggle({ className }: { className?: string }) {
   const { theme, setTheme } = useTheme();
   const { t, tf } = useI18n();
   const [mounted, setMounted] = React.useState(false);
@@ -33,7 +34,7 @@ export function ThemeToggle() {
 
   if (!mounted) {
     // Placeholder keeps layout stable during SSR + first paint.
-    return <div className="size-7" aria-hidden />;
+    return <div className={cn("size-7", className)} aria-hidden />;
   }
 
   const current = (theme as ResolvedTheme) || "system";
@@ -46,7 +47,7 @@ export function ThemeToggle() {
       variant="ghost"
       size="sm"
       onClick={() => setTheme(next)}
-      className="w-full justify-start gap-2 h-9 text-sm"
+      className={cn("h-8 justify-start gap-2 px-2 text-[13px]", className)}
       title={tf("theme.title", { cur: t(LABEL_KEY[current]), next: t(LABEL_KEY[next]) })}
       aria-label={tf("theme.aria", { cur: t(LABEL_KEY[current]) })}
     >

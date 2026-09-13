@@ -35,10 +35,12 @@
   --app-ink-foreground: hsl(0 0% 100%);
   --app-success: hsl(152 62% 30%);
   --app-success-foreground: hsl(0 0% 100%);
-  --app-warning: hsl(36 92% 42%);
+  /* warning/info 压深到在纯白与画布灰上都 ≥ 4.5:1 (WCAG AA 正文) */
+  --app-warning: hsl(32 92% 32%);
   --app-warning-foreground: hsl(0 0% 100%);
-  --app-info: hsl(210 90% 44%);
+  --app-info: hsl(210 90% 42%);
   --app-info-foreground: hsl(0 0% 100%);
+  /* danger = 可读的“危险前景色” (文字/图标); destructive = 实心危险面 (配白字) */
   --app-danger: hsl(0 72% 45%);
   --app-danger-foreground: hsl(0 0% 100%);
   --app-font-sans: var(--font-sans), var(--font-khmer), system-ui, -apple-system, sans-serif;
@@ -129,12 +131,13 @@
   --color-ink-foreground: var(--app-ink-foreground);
 
   --font-sans: var(--app-font-sans);
+  /* 标准字号阶梯: 12 / 14 / 16 — 恢复可辨识的层级差 */
   --text-base: 1rem;
   --text-base--line-height: 1.6;
-  --text-sm: 0.9375rem;
-  --text-sm--line-height: 1.6;
-  --text-xs: 0.875rem;
-  --text-xs--line-height: 1.5;
+  --text-sm: 0.875rem;
+  --text-sm--line-height: 1.45;
+  --text-xs: 0.75rem;
+  --text-xs--line-height: 1.35;
   --leading-base: 1.6;
   --tracking-tight: -0.011em;
 
@@ -236,6 +239,20 @@
 
   --app-danger: hsl(0 72% 64%);
   --app-danger-foreground: hsl(0 0% 100%);
+}
+
+/* ============================================
+   Base layer
+   - Tailwind v4 把裸 `border-*` 的默认色改成了 currentColor (v3 是 gray-200)。
+     没有这层兜底, 所有 `border-b` / `border-t` 都会用文字色画线 —— 浅色主题下
+     表格分隔线变近黑, 深色主题下变近白, 与 --color-border 完全脱节。
+   ============================================ */
+@layer base {
+  *,
+  ::before,
+  ::after {
+    border-color: var(--color-border);
+  }
 }
 
 /* Ambient 环境光 — 浅色: 极淡的紫/蓝双色晕染; 深色: 紫罗兰极光.

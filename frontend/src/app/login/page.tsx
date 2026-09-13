@@ -160,7 +160,7 @@ export default function LoginPage() {
   };
 
   return (
-    <section className="fixed inset-0 overflow-y-auto bg-zinc-950 text-zinc-50">
+    <section className="fixed inset-0 overflow-y-auto bg-background text-foreground">
       <style>{`
         .accent-lines{position:absolute;inset:0;pointer-events:none;opacity:.7}
         .hline,.vline{position:absolute;background:#27272a;will-change:transform,opacity}
@@ -211,16 +211,16 @@ export default function LoginPage() {
       />
 
       {/* Header */}
-      <header className="absolute inset-x-0 top-0 z-10 flex items-center justify-between border-b border-zinc-800/80 px-6 py-4">
-        <span className="text-xs uppercase tracking-[0.14em] text-zinc-400">RelayChat</span>
-        <div className="flex items-center gap-1 rounded-lg border border-zinc-800 bg-zinc-900/70 p-0.5">
+      <header className="absolute inset-x-0 top-0 z-10 flex items-center justify-between border-b border-border px-6 py-4">
+        <span className="text-xs uppercase tracking-[0.14em] text-muted-foreground">RelayChat</span>
+        <div className="flex items-center gap-1 rounded-lg border border-border bg-card p-0.5">
           {LANGS.map((opt) => (
             <button
               key={opt.key}
               onClick={() => setLang(opt.key)}
               className={cn(
                 "rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors",
-                lang === opt.key ? "bg-zinc-50 text-zinc-900" : "text-zinc-400 hover:text-zinc-100",
+                lang === opt.key ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground",
               )}
             >
               {opt.label}
@@ -233,19 +233,19 @@ export default function LoginPage() {
           text colour is set explicitly — inheriting card-foreground would
           render dark-on-dark when the app theme is light. */}
       <div className="grid min-h-full w-full place-items-center px-4 py-6">
-        <Card className="card-animate w-full max-w-sm border-zinc-800 bg-zinc-900/70 text-zinc-50 backdrop-blur supports-[backdrop-filter]:bg-zinc-900/60">
+        <Card className="card-animate w-full max-w-sm border-border bg-card/95 text-card-foreground backdrop-blur">
           <CardHeader className="space-y-1">
-            <CardTitle className="text-2xl text-zinc-50">
+            <CardTitle className="text-2xl text-foreground">
               {tab === "login" ? t("login.title") : t("login.registerTitle")}
             </CardTitle>
-            <CardDescription className="text-zinc-400">
+            <CardDescription className="text-muted-foreground">
               {tab === "login" ? t("login.desc") : t("login.registerDesc")}
             </CardDescription>
           </CardHeader>
 
           <CardContent className="grid gap-5">
             {/* Segmented control */}
-            <div className="grid grid-cols-2 gap-1 rounded-lg border border-zinc-800 bg-zinc-950 p-1">
+            <div className="grid grid-cols-2 gap-1 rounded-lg border border-border bg-muted/50 p-1">
               {(["login", "register"] as const).map((key) => (
                 <button
                   key={key}
@@ -253,7 +253,7 @@ export default function LoginPage() {
                   onClick={() => { setError(""); setTab(key); }}
                   className={cn(
                     "h-8 rounded-md text-[13px] font-medium transition-colors",
-                    tab === key ? "bg-zinc-800 text-zinc-50" : "text-zinc-400 hover:text-zinc-200",
+                    tab === key ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
                   )}
                 >
                   {key === "login" ? t("login.tab") : t("login.registerTab")}
@@ -264,8 +264,8 @@ export default function LoginPage() {
             <AnimatePresence>
               {error && (
                 <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}>
-                  <div role="alert" aria-live="assertive" className="rounded-lg border border-red-900/60 bg-red-950/40 px-3 py-2">
-                    <p className="text-sm text-red-300">{error}</p>
+                  <div role="alert" aria-live="assertive" className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2">
+                    <p className="text-sm text-danger">{error}</p>
                   </div>
                 </motion.div>
               )}
@@ -273,11 +273,11 @@ export default function LoginPage() {
 
             <AnimatePresence mode="wait">
               {tab === "login" ? (
-                <motion.form key="login" initial={{ opacity: 0, x: -4 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 4 }} transition={{ duration: 0.15 }} onSubmit={handleLogin} className="grid gap-5">
+                <motion.form key="login" initial={false} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 4 }} transition={{ duration: 0.15 }} onSubmit={handleLogin} className="grid gap-5">
                   <div className="grid gap-2">
-                    <Label htmlFor="login-user" className="text-zinc-300">{t("login.username")}</Label>
+                    <Label htmlFor="login-user" className="text-foreground">{t("login.username")}</Label>
                     <div className="relative">
-                      <UserRound className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-zinc-500" />
+                      <UserRound className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground/70" />
                       <Input
                         id="login-user"
                         value={loginUser}
@@ -285,15 +285,15 @@ export default function LoginPage() {
                         placeholder={t("login.userPlaceholder")}
                         required
                         autoComplete="username"
-                        className="border-zinc-800 bg-zinc-950 pl-10 text-zinc-50 placeholder:text-zinc-600"
+                        className="border-input bg-background pl-10 text-foreground placeholder:text-muted-foreground/60"
                       />
                     </div>
                   </div>
 
                   <div className="grid gap-2">
-                    <Label htmlFor="login-pass" className="text-zinc-300">{t("login.password")}</Label>
+                    <Label htmlFor="login-pass" className="text-foreground">{t("login.password")}</Label>
                     <div className="relative">
-                      <Lock className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-zinc-500" />
+                      <Lock className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground/70" />
                       <Input
                         id="login-pass"
                         type={showPassword ? "text" : "password"}
@@ -302,12 +302,12 @@ export default function LoginPage() {
                         placeholder="••••••••"
                         required
                         autoComplete="current-password"
-                        className="border-zinc-800 bg-zinc-950 pl-10 pr-10 text-zinc-50 placeholder:text-zinc-600"
+                        className="border-input bg-background pl-10 pr-10 text-foreground placeholder:text-muted-foreground/60"
                       />
                       <button
                         type="button"
                         aria-label={showPassword ? t("login.hidePassword") : t("login.showPassword")}
-                        className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-2 text-zinc-400 hover:text-zinc-200"
+                        className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-2 text-muted-foreground hover:text-foreground"
                         onClick={() => setShowPassword((v) => !v)}
                       >
                         {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
@@ -317,9 +317,9 @@ export default function LoginPage() {
 
                   {need2fa && (
                     <div className="grid gap-2">
-                      <Label htmlFor="login-code" className="text-zinc-300">{t("login.totp")}</Label>
+                      <Label htmlFor="login-code" className="text-foreground">{t("login.totp")}</Label>
                       <div className="relative">
-                        <ShieldCheck className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-zinc-500" />
+                        <ShieldCheck className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground/70" />
                         <Input
                           id="login-code"
                           value={loginCode}
@@ -330,7 +330,7 @@ export default function LoginPage() {
                           maxLength={6}
                           required
                           autoFocus
-                          className="border-zinc-800 bg-zinc-950 pl-10 text-center tracking-[0.4em] text-zinc-50 placeholder:text-zinc-600"
+                          className="border-input bg-background pl-10 text-center tracking-[0.4em] text-foreground placeholder:text-muted-foreground/60"
                         />
                       </div>
                     </div>
@@ -339,7 +339,7 @@ export default function LoginPage() {
                   <button
                     type="submit"
                     disabled={loading || (need2fa && loginCode.trim().length !== 6)}
-                    className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-zinc-50 text-sm font-medium text-zinc-900 transition-colors hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-60"
+                    className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-primary text-sm font-medium text-primary-foreground transition-colors hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {loading ? <Loader2 className="size-4 animate-spin" /> : t("login.submit")}
                   </button>
@@ -349,7 +349,7 @@ export default function LoginPage() {
                       type="button"
                       onClick={() => window.location.assign(`${API_BASE}/auth/google/start`)}
                       disabled={loading}
-                      className="inline-flex h-10 w-full items-center justify-center gap-2.5 rounded-lg border border-zinc-800 bg-zinc-950 text-sm text-zinc-50 transition-colors hover:bg-zinc-900/80 disabled:cursor-not-allowed disabled:opacity-60"
+                      className="inline-flex h-10 w-full items-center justify-center gap-2.5 rounded-lg border border-border bg-card text-sm text-foreground transition-colors hover:bg-muted/70 disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       <GoogleMark />
                       {t("login.googleSignIn")}
@@ -361,7 +361,7 @@ export default function LoginPage() {
                       type="button"
                       onClick={() => window.location.assign(`${API_BASE}/auth/telegram/start`)}
                       disabled={loading}
-                      className="inline-flex h-10 w-full items-center justify-center gap-2.5 rounded-lg border border-zinc-800 bg-zinc-950 text-sm text-zinc-50 transition-colors hover:bg-zinc-900/80 disabled:cursor-not-allowed disabled:opacity-60"
+                      className="inline-flex h-10 w-full items-center justify-center gap-2.5 rounded-lg border border-border bg-card text-sm text-foreground transition-colors hover:bg-muted/70 disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       <TelegramIcon className="size-4 text-brand-telegram" />
                       {t("login.telegramSignIn")}
@@ -369,8 +369,8 @@ export default function LoginPage() {
                   )}
 
                   <div className="relative">
-                    <Separator className="bg-zinc-800" />
-                    <span className="absolute left-1/2 -top-3 -translate-x-1/2 bg-zinc-900/70 px-2 text-[11px] uppercase tracking-widest text-zinc-500">
+                    <Separator />
+                    <span className="absolute left-1/2 -top-3 -translate-x-1/2 bg-card px-2 text-[11px] uppercase tracking-widest text-muted-foreground/70">
                       {t("login.or")}
                     </span>
                   </div>
@@ -378,18 +378,18 @@ export default function LoginPage() {
                   <button
                     type="button"
                     onClick={() => { setError(""); setTab("register"); }}
-                    className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg border border-zinc-800 bg-zinc-950 text-sm text-zinc-50 transition-colors hover:bg-zinc-900/80"
+                    className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg border border-border bg-card text-sm text-foreground transition-colors hover:bg-muted/70"
                   >
                     {t("login.registerSubmit")}
                     <ArrowRight className="size-4" />
                   </button>
                 </motion.form>
               ) : (
-                <motion.form key="register" initial={{ opacity: 0, x: -4 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 4 }} transition={{ duration: 0.15 }} onSubmit={handleRegister} className="grid gap-5">
+                <motion.form key="register" initial={false} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 4 }} transition={{ duration: 0.15 }} onSubmit={handleRegister} className="grid gap-5">
                   <div className="grid gap-2">
-                    <Label htmlFor="reg-user" className="text-zinc-300">{t("login.username")}</Label>
+                    <Label htmlFor="reg-user" className="text-foreground">{t("login.username")}</Label>
                     <div className="relative">
-                      <UserRound className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-zinc-500" />
+                      <UserRound className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground/70" />
                       <Input
                         id="reg-user"
                         value={regUser}
@@ -397,15 +397,15 @@ export default function LoginPage() {
                         placeholder={t("login.userPlaceholder")}
                         required
                         autoComplete="username"
-                        className="border-zinc-800 bg-zinc-950 pl-10 text-zinc-50 placeholder:text-zinc-600"
+                        className="border-input bg-background pl-10 text-foreground placeholder:text-muted-foreground/60"
                       />
                     </div>
                   </div>
 
                   <div className="grid gap-2">
-                    <Label htmlFor="reg-email" className="text-zinc-300">{t("login.email")}</Label>
+                    <Label htmlFor="reg-email" className="text-foreground">{t("login.email")}</Label>
                     <div className="relative">
-                      <Mail className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-zinc-500" />
+                      <Mail className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground/70" />
                       <Input
                         id="reg-email"
                         type="email"
@@ -414,15 +414,15 @@ export default function LoginPage() {
                         placeholder={t("login.emailPlaceholder")}
                         required
                         autoComplete="email"
-                        className="border-zinc-800 bg-zinc-950 pl-10 text-zinc-50 placeholder:text-zinc-600"
+                        className="border-input bg-background pl-10 text-foreground placeholder:text-muted-foreground/60"
                       />
                     </div>
                   </div>
 
                   <div className="grid gap-2">
-                    <Label htmlFor="reg-pass" className="text-zinc-300">{t("login.password")}</Label>
+                    <Label htmlFor="reg-pass" className="text-foreground">{t("login.password")}</Label>
                     <div className="relative">
-                      <Lock className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-zinc-500" />
+                      <Lock className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground/70" />
                       <Input
                         id="reg-pass"
                         type={showPassword ? "text" : "password"}
@@ -431,12 +431,12 @@ export default function LoginPage() {
                         placeholder="••••••••"
                         required
                         autoComplete="new-password"
-                        className="border-zinc-800 bg-zinc-950 pl-10 pr-10 text-zinc-50 placeholder:text-zinc-600"
+                        className="border-input bg-background pl-10 pr-10 text-foreground placeholder:text-muted-foreground/60"
                       />
                       <button
                         type="button"
                         aria-label={showPassword ? t("login.hidePassword") : t("login.showPassword")}
-                        className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-2 text-zinc-400 hover:text-zinc-200"
+                        className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-2 text-muted-foreground hover:text-foreground"
                         onClick={() => setShowPassword((v) => !v)}
                       >
                         {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
@@ -447,14 +447,14 @@ export default function LoginPage() {
                   <button
                     type="submit"
                     disabled={loading}
-                    className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-zinc-50 text-sm font-medium text-zinc-900 transition-colors hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-60"
+                    className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-primary text-sm font-medium text-primary-foreground transition-colors hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {loading ? <Loader2 className="size-4 animate-spin" /> : t("login.registerSubmit")}
                   </button>
 
                   <div className="relative">
-                    <Separator className="bg-zinc-800" />
-                    <span className="absolute left-1/2 -top-3 -translate-x-1/2 bg-zinc-900/70 px-2 text-[11px] uppercase tracking-widest text-zinc-500">
+                    <Separator />
+                    <span className="absolute left-1/2 -top-3 -translate-x-1/2 bg-card px-2 text-[11px] uppercase tracking-widest text-muted-foreground/70">
                       {t("login.or")}
                     </span>
                   </div>
@@ -463,7 +463,7 @@ export default function LoginPage() {
                     type="button"
                     variant="outline"
                     onClick={() => { setError(""); setTab("login"); }}
-                    className="h-10 w-full rounded-lg border-zinc-800 bg-zinc-950 text-zinc-50 hover:bg-zinc-900/80"
+                    className="h-10 w-full rounded-lg border-border bg-card text-foreground hover:bg-muted/70"
                   >
                     {t("login.tab")}
                     <ArrowRight className="size-4" />
@@ -473,18 +473,18 @@ export default function LoginPage() {
             </AnimatePresence>
           </CardContent>
 
-          <CardFooter className="flex flex-col items-center gap-3 border-t-0 bg-transparent pt-0 text-sm text-zinc-400">
+          <CardFooter className="flex flex-col items-center gap-3 border-t-0 bg-transparent pt-0 text-sm text-muted-foreground">
             <div>
               {tab === "login" ? t("login.noAccount") : t("login.haveAccount")}
               <button
                 type="button"
                 onClick={() => { setError(""); setTab(tab === "login" ? "register" : "login"); }}
-                className="ml-1 text-zinc-200 hover:underline"
+                className="ml-1 font-medium text-primary hover:underline"
               >
                 {tab === "login" ? t("login.registerTab") : t("login.tab")}
               </button>
             </div>
-            <span className="text-[11px] tracking-wide text-zinc-500">{t("login.footer")}</span>
+            <span className="text-[11px] tracking-wide text-muted-foreground/70">{t("login.footer")}</span>
           </CardFooter>
         </Card>
       </div>
