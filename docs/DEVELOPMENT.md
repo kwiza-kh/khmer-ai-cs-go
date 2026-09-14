@@ -465,3 +465,26 @@ psql "$DATABASE_URL" -c "SELECT version FROM schema_migrations ORDER BY version 
    自托管（服务器 4 vCPU/7.8GB、无 GPU）或第三方依赖，且高棉语效果未验证。
    重新评估的触发条件：用评估集证明失败案例集中在语义改写（dense 漏召），
    届时按 Phase 4 的新列回填方案执行并重校准阈值。
+
+#### 关键修复（2026-09-14）：RRF 融合丢失 DenseSim → rerank 误触发
+
+`fuseSearchResults` 合并同一 chunk 的多腿命中时，用跨腿**不可比**的 `Similarity` 决定保留哪份
+（trigram 是命中计数 1–8，dense 是 0–1 余弦），于是一个 trigram 命中会覆盖 dense 版本并清空
+`DenseSim`。后果：`topDense` 被拉低 → `leaderClear`/`signalsAgree` 失真 → rerank 在本该跳过的
+查询上触发；rerank 的 `rerankMin` 过滤又把来源从 5 条削到 1–3 条，同配置两次跑结果还不一致。
+修复：融合时保留任一存在的 `DenseSim`（+`fuse_test.go`）。用 `rageval` 在真实 KB 上验证：
+修复前管线 3.6 来源、44/45；修复后 skip=0.60 为 45/45、5.00 来源；线上同一查询来源 1→5。
+
+#### 真实商家知识库 + dense 阈值校准（2026-09-14）
+
+- 数据：19 篇长文档（多章节/表格/规格页/生效与过期促销/FAQ/2102-rune 手册多 chunk）+ 9 篇编译
+  子文档；45 题评估集（含修好的批发运费冲突题）。
+- 分腿（生产库 + 真 Gemini dense）：dense recall@5 45/45、MRR 0.856；lexical 41/45、0.673；
+  trigram 43/45、0.809；fused 45/45、MRR 0.911。
+- floor/ratio 扫描：安全区到 0.60/0.90（候选 24→10.5，指标不降）；0.70/0.95 崩到 28/45。
+  保持默认 `0.35/0.75`（提高只减少 rerank 输入；0.50/0.85 时管线反而略降到 43/45）。
+- rerank 扫描：skip=0.60（0 次 rerank）45/45、MRR 0.911、5.00 来源；skip=0.70（11 次）
+  44/45、0.904、4.13；skip=0.90（35 次）42/45、0.900、2.76。结论：本数据上 rerank 有害，
+  将生产 `RAG_RERANK_SKIP` 从 0.70 下调为 **0.60**（弱查询仍会 rerank）。
+- 工具：`backend-go/cmd/rageval`（在服务器上运行，复用 DATABASE_URL 与 model_configs，
+  一次嵌入遍历 + 内存门控扫描；`-pipeline` 额外跑含 rerank 的生产路径）。

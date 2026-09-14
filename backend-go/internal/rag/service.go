@@ -1008,9 +1008,20 @@ func fuseSearchResults(dense, lexical, trigram []SearchChunk) []SearchChunk {
 				entry = &fusedEntry{chunk: chunk}
 				fused[chunk.ChunkID] = entry
 			}
+			// Similarity is only comparable inside one leg (dense cosine 0..1,
+			// lexical ts_rank, trigram hit count up to 8), so the cross-leg
+			// "keep the larger Similarity" must NOT decide which representation
+			// survives: a trigram count of 3 would overwrite the dense hit and
+			// clear DenseSim, which the similarity gate and the rerank-skip
+			// check depend on. Keep whichever DenseSim exists.
+			denseSim := entry.chunk.DenseSim
+			if chunk.DenseSim != nil {
+				denseSim = chunk.DenseSim
+			}
 			if chunk.Similarity > entry.chunk.Similarity {
 				entry.chunk = chunk
 			}
+			entry.chunk.DenseSim = denseSim
 			entry.rrf += 1.0 / (rrfRankConstant + float64(rank) + 1.0)
 		}
 	}
