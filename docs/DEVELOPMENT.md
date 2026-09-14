@@ -465,6 +465,8 @@ psql "$DATABASE_URL" -c "SELECT version FROM schema_migrations ORDER BY version 
    自托管（服务器 4 vCPU/7.8GB、无 GPU）或第三方依赖，且高棉语效果未验证。
    重新评估的触发条件：用评估集证明失败案例集中在语义改写（dense 漏召），
    届时按 Phase 4 的新列回填方案执行并重校准阈值。
+3. **阈值（2026-09-14 实测）**：floor/ratio 保持 0.35/0.75；`RAG_RERANK_SKIP` 从 0.70
+   下调为 0.60（本数据上 rerank 有害）；topK=5、来源 800/2000 保持。真实流量分布变化时重测。
 
 #### 关键修复（2026-09-14）：RRF 融合丢失 DenseSim → rerank 误触发
 
@@ -488,3 +490,28 @@ psql "$DATABASE_URL" -c "SELECT version FROM schema_migrations ORDER BY version 
   将生产 `RAG_RERANK_SKIP` 从 0.70 下调为 **0.60**（弱查询仍会 rerank）。
 - 工具：`backend-go/cmd/rageval`（在服务器上运行，复用 DATABASE_URL 与 model_configs，
   一次嵌入遍历 + 内存门控扫描；`-pipeline` 额外跑含 rerank 的生产路径）。
+
+#### topK / 来源长度实验（2026-09-14）
+
+针对真实 KB 的多跳题 r41（长手册里的型号价格 + 另一篇的区域运费）测了三档：
+
+| 配置 | 全量 45 题 | r41 | 单题 tokens |
+|---|---|---|---|
+| **topK=5 · 来源 800/表格 2000（默认）** | **44/45 (97.8%)** | 答"查不到"并安全转人工 | 2899（均值） |
+| topK=8 · 来源 800/2000 | 未跑全量 | 修复（899+7天） | 3124 → 4644（+49%） |
+| topK=8 · 来源 450/表格 1200 | 43/45 (95.6%) | 修复 | 3586 |
+
+topK=8 能补上长文档覆盖，但成本 +49%；缩短每条来源虽控制住 token，却把营业时间、E1 等
+**文档后段事实**截掉，反而多丢两题。结论：维持 topK=5 与 800/2000；
+`RAG_TOP_K` / `RAG_SOURCE_LIMIT_RUNES` / `RAG_TABLE_LIMIT_RUNES` 保留为可调旋钮（默认即当前值）。
+已知局限：长文档跨主题多跳在 5 个来源槽位下可能漏答，模型会安全地转人工；若真实流量中
+此类占比高，再评估提高 topK 或按章节检索。
+
+#### 最终阈值决策（2026-09-14）
+
+- `RAG_SIMILARITY_FLOOR=0.35`、`RAG_SIMILARITY_RATIO=0.75`：**保持**（安全区到 0.60/0.90，
+  再高在 0.70/0.95 崩到 28/45；提高只减少 rerank 输入）。
+- `RAG_RERANK_SKIP=0.60`（原 0.70）：**调整**。本数据上 rerank 单调有害
+  （skip 0.60→45/45·0.911·5.0 来源；0.70→44/45·0.904·4.13；0.90→42/45·0.900·2.76），
+  弱查询（dense top < 0.60）仍会走 rerank。
+- 真实 KB 46 题端到端复测：**44/45（97.8%）**、grounded 100%、平均 4.5s、0 mock、0 error。

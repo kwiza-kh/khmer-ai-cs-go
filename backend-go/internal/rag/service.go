@@ -651,7 +651,7 @@ func (s *Service) findSimilarDocs(ctx context.Context, userID int32, sample stri
 func (s *Service) Search(ctx context.Context, userID int32, query string, topK int64) ([]Source, error) {
 	query = NormalizeText(query)
 	if topK <= 0 {
-		topK = DefaultTopK
+		topK = int64(envI("RAG_TOP_K", int(DefaultTopK)))
 	}
 	candidateLimit := searchCandidateLimit(topK)
 	if int64(rerankWindow) > candidateLimit {
@@ -1087,15 +1087,19 @@ func (s *Service) Ground(ctx context.Context, userID int32, sessionID *string, m
 	return GroundingContext{Sources: sources, ContextStr: b.String(), HasMatch: true}
 }
 
-// groundSourceLimit — price lists and tables need more room than prose
-// (800 runes cuts tables mid-row and the model then hallucinates the rest).
+// groundSourceLimit — how much of each grounding source reaches the prompt.
+// Price lists and tables need more room than prose (a hard cut mid-row makes the
+// model hallucinate the rest). Both limits are env-tunable so the source-count /
+// source-length tradeoff can be calibrated with rageval.
 func groundSourceLimit(content string) int {
+	plain := envI("RAG_SOURCE_LIMIT_RUNES", 800)
+	table := envI("RAG_TABLE_LIMIT_RUNES", 2000)
 	for _, line := range strings.Split(content, "\n") {
 		if isTableRow(line) {
-			return 2000
+			return table
 		}
 	}
-	return 800
+	return plain
 }
 
 func (s *Service) logRAGQuery(ctx context.Context, userID int32, sessionID *string, query string, rewritten *string, hitCount int, topScore *float32, usedInReply bool) {
