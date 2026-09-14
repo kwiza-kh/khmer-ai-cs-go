@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // MaxUploadBytes — single-file cap (Go rag.MaxUploadBytes = 10 MB).
@@ -29,6 +30,10 @@ func AcceptedExtensions() map[string]string {
 		".csv":  "CSV",
 		".pdf":  "PDF",
 		".docx": "Microsoft Word",
+		".jpg":  "JPEG image (OCR)",
+		".jpeg": "JPEG image (OCR)",
+		".png":  "PNG image (OCR)",
+		".webp": "WebP image (OCR)",
 	}
 }
 
@@ -349,4 +354,40 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// imageExtensions — formats routed through the vision OCR path instead of the
+// native text extractors. Gemini accepts these MIME types directly; HEIC is
+// absent because the API does not accept it.
+var imageExtensions = map[string]string{
+	".jpg":  "image/jpeg",
+	".jpeg": "image/jpeg",
+	".png":  "image/png",
+	".webp": "image/webp",
+}
+
+// IsImage reports whether filename should be handled by OCR rather than
+// ExtractText.
+func IsImage(filename string) bool {
+	_, ok := imageExtensions[strings.ToLower(filepath.Ext(filename))]
+	return ok
+}
+
+// ImageMimeType returns the MIME type to send the vision model for filename.
+func ImageMimeType(filename string) string {
+	return imageExtensions[strings.ToLower(filepath.Ext(filename))]
+}
+
+// LooksLikeBadExtraction reports whether native extraction produced something
+// unusable — empty, very short, or littered with U+FFFD replacement characters
+// (the classic symptom of a PDF whose embedded Khmer font has no ToUnicode
+// map). It is the trigger for the vision-OCR fallback.
+func LooksLikeBadExtraction(text string) bool {
+	t := strings.TrimSpace(text)
+	runes := utf8.RuneCountInString(t)
+	if runes < 40 {
+		return true
+	}
+	bad := strings.Count(t, "\uFFFD")
+	return bad*20 >= runes
 }

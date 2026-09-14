@@ -69,6 +69,17 @@ func envF64(name string, fallback float64) float64 {
 	return fallback
 }
 
+// envI — positive integer env override; unset, malformed or non-positive
+// values fall back to the default.
+func envI(name string, fallback int) int {
+	if v := os.Getenv(name); v != "" {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n > 0 {
+			return n
+		}
+	}
+	return fallback
+}
+
 // SearchChunk is one candidate chunk from any retrieval path.
 type SearchChunk struct {
 	ChunkID    int32
@@ -323,9 +334,17 @@ func (s *Service) markDocumentFailed(ctx context.Context, docID int32, message s
 // Ingest-time compile (llm-wiki pattern)
 // ============================================
 
+// Compile thresholds are env-overridable because short documents are skipped
+// entirely: a 400-rune FAQ page never reaches the contradiction check, so an
+// operator who wants small pages compiled lowers RAG_COMPILE_MIN_RUNES.
+var (
+	compileMinRunes = envI("RAG_COMPILE_MIN_RUNES", compileMinDefault)
+	compileMaxRunes = envI("RAG_COMPILE_MAX_RUNES", compileMaxDefault)
+)
+
 const (
-	compileMinRunes     = 600
-	compileMaxRunes     = 60000
+	compileMinDefault   = 600
+	compileMaxDefault   = 60000
 	compileRedisKey     = "rag:compile_enabled"
 	compiledTitleSuffix = " · AI 编译摘要"
 )
@@ -719,6 +738,7 @@ func (s *Service) Search(ctx context.Context, userID int32, query string, topK i
 	// every fused candidate (up to candidateLimit, 4x topK) lands in the grounding
 	// prompt — measured at 12+ sources and ~3.1k tokens per Khmer turn on the test
 	// KB. fused is already rank-ordered, so truncation degrades gracefully.
+	fused = diversifyByDoc(fused, maxChunksPerDoc)
 	if int64(len(fused)) > topK {
 		fused = fused[:topK]
 	}
@@ -728,6 +748,29 @@ func (s *Service) Search(ctx context.Context, userID int32, query string, topK i
 		out = append(out, Source{DocID: c.DocID, Title: c.Title, Content: c.Content, Score: c.Similarity})
 	}
 	return out, nil
+}
+
+// maxChunksPerDoc — cap on how many chunks of one document may enter the
+// grounding window. Without it a long, multi-chunk document can occupy every
+// slot once the fused list is truncated to topK, crowding out other documents.
+const maxChunksPerDoc = 2
+
+// diversifyByDoc keeps rank order but allows at most maxPerDoc chunks per
+// document.
+func diversifyByDoc(chunks []SearchChunk, maxPerDoc int) []SearchChunk {
+	if maxPerDoc <= 0 {
+		return chunks
+	}
+	count := make(map[int32]int, len(chunks))
+	out := make([]SearchChunk, 0, len(chunks))
+	for _, c := range chunks {
+		if count[c.DocID] >= maxPerDoc {
+			continue
+		}
+		count[c.DocID]++
+		out = append(out, c)
+	}
+	return out
 }
 
 // rerankCache memoizes LLM rerank scores per (query, candidate ids) so

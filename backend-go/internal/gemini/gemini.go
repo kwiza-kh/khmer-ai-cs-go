@@ -504,6 +504,48 @@ func (s *Service) DescribeImage(ctx context.Context, data []byte, mimeType strin
 	return strings.TrimSpace(ExtractTextFromValue(v)), nil
 }
 
+// ExtractDocumentText transcribes a document verbatim (image or PDF). It is
+// the OCR fallback for knowledge ingestion when native text extraction fails:
+// Khmer PDFs whose fonts carry no ToUnicode map, or photos of printed
+// material. Returns the transcribed text or an error; the caller decides
+// whether OCR text is better than what it already has.
+func (s *Service) ExtractDocumentText(ctx context.Context, data []byte, mimeType string) (string, error) {
+	if !s.IsConfigured() {
+		return "", fmt.Errorf("Gemini not configured; document OCR unavailable")
+	}
+	if mimeType == "" {
+		mimeType = "image/jpeg"
+	}
+	body := map[string]any{
+		"contents": []map[string]any{{
+			"role": "user",
+			"parts": []map[string]any{
+				{"text": "Transcribe ALL text in this document verbatim, preserving the original language and reading order. Khmer text must stay Khmer script - never transliterate and never translate. Do not describe the image, do not add commentary. Output only the transcribed text, with blank lines between blocks."},
+				{"inlineData": map[string]any{"mimeType": mimeType, "data": base64.StdEncoding.EncodeToString(data)}},
+			},
+		}},
+		"generationConfig": map[string]any{"temperature": 0.0, "maxOutputTokens": 8192},
+	}
+	status, text, err := s.postWithRetry(ctx, s.generateURLFor(s.fastModelName()), body)
+	if err != nil {
+		return "", fmt.Errorf("document OCR request: %w", err)
+	}
+	if status != http.StatusOK {
+		return "", fmt.Errorf("document OCR failed (%d): %s", status, truncateRunes(text, 300))
+	}
+	var v map[string]any
+	if json.Unmarshal([]byte(text), &v) != nil {
+		return "", fmt.Errorf("document OCR: invalid response")
+	}
+	auxPrompt, auxCompletion, auxCached := usageFromValue(v)
+	reportAuxUsage(ctx, s.fastModelName(), auxPrompt, auxCompletion, auxCached)
+	out := strings.TrimSpace(ExtractTextFromValue(v))
+	if out == "" {
+		return "", fmt.Errorf("document OCR returned no text")
+	}
+	return out, nil
+}
+
 // ttsModel / ttsVoice — speech-synthesis settings (env-overridable).
 func TTSModel() string {
 	if v := strings.TrimSpace(os.Getenv("GEMINI_TTS_MODEL")); v != "" {

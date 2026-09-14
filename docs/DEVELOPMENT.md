@@ -312,7 +312,6 @@ curl -X POST "https://api.telegram.org/bot${PLATFORM_TELEGRAM_BOT_TOKEN}/setWebh
 
 | 项 | 说明 |
 |---|---|
-| 出站投递失败激增告警 | 其他告警信号都接了，这条没接 |
 | 前端 13 个零消费者导出 | `streamChat` / `streamWidgetChat` / `chatVoice` / `sendMessage` / `listSessions` 等，是现成的 API 客户端层，非缺陷 |
 | `/widget` 自带 SSE 解析器 | 未复用 `streamWidgetChat`；重构客户-facing 聊天路径为零收益换风险 |
 | 邮件渠道 | `config.go` 有 SMTP 字段，**零代码** |
@@ -409,3 +408,20 @@ psql "$DATABASE_URL" -c "SELECT version FROM schema_migrations ORDER BY version 
   `fused = fused[:topK]` 后：来源 3.4 条、tokens 1486/轮（−52%），单题多跳场景
   由 RRF 排序 + OR 召回补偿。
 
+
+### Phase 3（2026-09-14）：摄入质量与运行告警
+
+- **图片知识入库**：`.jpg/.jpeg/.png/.webp` 进 `AcceptedExtensions`，上传走
+  `gemini.ExtractDocumentText`（逐字转写，禁止翻译/转写高棉文），商家拍照资料可直接入库。
+- **PDF 坏提取回退**：`rag.LooksLikeBadExtraction`（<40 runes 或 >5% U+FFFD 替换符）；
+  PDF 原生抽取不达标时把原文件交给视觉 OCR，OCR 再失败则保留原文并告警日志。
+- **出站失败告警**：最终投递失败（PolicyError 或重试耗尽）走 Redis 15 分钟窗口计数，
+  达到 5 条触发 `PlatformAlert`（按平台各一，key 去重）。
+- **来源多样性**：`Search` 输出按文档去重（每篇最多 2 chunk）后再截断 topK，
+  防止长文档占满 grounding 窗口。
+- **编译阈值可调**：`RAG_COMPILE_MIN_RUNES` / `RAG_COMPILE_MAX_RUNES`
+  （默认 600/60000；短文档默认跳过编译，也就不进矛盾检测）。
+- **CI**：新增 `.github/workflows/ci.yml`（后端 build/vet/test + 前端 build）。
+  注意 CI 无数据库，`sqlcheck`、RAG 评估与 DB 门控测试仍会 skip，需按 §七 手工跑。
+- **回填吞吐实测**：本机 PG 17，2000 个 chunk 128ms（≈15,666 rows/s），
+  百万级约 1 分钟（分批 200，逐行 UPDATE；大库上量前建议按此估算窗口）。

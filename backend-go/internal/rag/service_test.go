@@ -98,7 +98,7 @@ func TestRRFFusionPrioritizesSharedChunks(t *testing.T) {
 func TestAcceptedExtensionSet(t *testing.T) {
 	cases := map[string]bool{
 		"README.md": true, "report.PDF": true, "data.docx": true,
-		"image.png": false, "noext": false,
+		"image.png": true, "photo.jpg": true, "noext": false,
 	}
 	for name, want := range cases {
 		if got := IsAccepted(name); got != want {

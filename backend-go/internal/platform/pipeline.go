@@ -1390,6 +1390,7 @@ func (p *Pipeline) deliver(ctx context.Context, d *outboundDelivery) {
 	msg := truncate(err.Error(), 1000)
 	if _, ok := err.(*PolicyError); ok || d.Attempts >= maxAttempts {
 		_, _ = p.DB.Exec(ctx, "UPDATE platform_outbox SET status='failed', next_attempt_at=$1, locked_at=NULL, last_error=$2, updated_at=NOW() WHERE delivery_id=$3", time.Now(), msg, d.DeliveryID)
+		p.alertOutboundFailures(ctx, d.Platform, msg)
 	} else {
 		_, _ = p.DB.Exec(ctx, "UPDATE platform_outbox SET status='pending', next_attempt_at=$1, locked_at=NULL, last_error=$2, updated_at=NOW() WHERE delivery_id=$3", time.Now().Add(retryDelay(int(d.Attempts))), msg, d.DeliveryID)
 	}

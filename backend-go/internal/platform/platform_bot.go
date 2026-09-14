@@ -287,3 +287,29 @@ func (p *Pipeline) auditPlatformCommand(ctx context.Context, telegramUserID int6
 		"telegram:"+command, strconv.FormatInt(telegramUserID, 10),
 		fmt.Sprintf(`{"command":%q,"detail":%q}`, command, detail))
 }
+
+// outboundAlertThreshold — final delivery failures within alertDedupTTL before
+// the operator is paged. One failure is noise; a run of them means a channel is
+// broken (token revoked, provider down) and customers are not receiving replies.
+const outboundAlertThreshold = 5
+
+// alertOutboundFailures pages the operator when deliveries start failing for
+// good (policy error or attempts exhausted). The count rides the rate-limit
+// window; PlatformAlert's own key dedup keeps it to one page per window.
+func (p *Pipeline) alertOutboundFailures(ctx context.Context, platform, detail string) {
+	if p.Redis == nil {
+		return
+	}
+	c, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	ok, err := p.Redis.IncrWindow(c, "platform-alert:outbound:"+platform, outboundAlertThreshold-1, alertDedupTTL)
+	if err != nil {
+		return
+	}
+	if ok {
+		return
+	}
+	p.PlatformAlert(ctx, "outbound-failures-"+platform, "出站消息连续投递失败",
+		fmt.Sprintf("平台 %s 在 15 分钟内失败消息数已达 %d 条阈值，客户可能收不到回复。最近错误: %s",
+			platform, outboundAlertThreshold, truncateRunes(detail, 300)))
+}

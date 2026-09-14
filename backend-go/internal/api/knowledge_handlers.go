@@ -158,11 +158,14 @@ func (a *App) uploadKnowledgeFile(w http.ResponseWriter, r *http.Request) (any, 
 		return nil, ErrBadRequest("缺少或无效的文件 (field name: file)")
 	}
 	if !rag.IsAccepted(filename) {
-		return nil, ErrBadRequest(fmt.Sprintf("不支持的文件类型,允许: .txt .md .csv .pdf .docx (got: %s)", filename))
+		return nil, ErrBadRequest(fmt.Sprintf("不支持的文件类型,允许: .txt .md .csv .pdf .docx .jpg .jpeg .png .webp (got: %s)", filename))
 	}
-	text, err := rag.ExtractText(filename, data)
+	if len(data) > rag.MaxUploadBytes {
+		return nil, ErrBadRequest(fmt.Sprintf("文件超过 %d MB 上限", rag.MaxUploadBytes>>20))
+	}
+	text, err := a.extractKnowledgeText(r.Context(), filename, data)
 	if err != nil {
-		return nil, ErrBadRequest("文档处理失败: " + err.Error())
+		return nil, err
 	}
 	if strings.TrimSpace(text) == "" {
 		return nil, ErrBadRequest("文档处理失败: 无可提取的文本内容")
@@ -189,6 +192,39 @@ func (a *App) uploadKnowledgeFile(w http.ResponseWriter, r *http.Request) (any, 
 		doc["source"] = "upload"
 	}
 	return doc, nil
+}
+
+// extractKnowledgeText picks the extraction path for one KB upload. Images go
+// straight to vision OCR. PDFs use the native extractor first and fall back to
+// OCR when the result is unusable (Khmer fonts without a ToUnicode map come
+// out as replacement characters or nothing at all); if the fallback also
+// fails, whatever the native extractor produced is kept.
+func (a *App) extractKnowledgeText(ctx context.Context, filename string, data []byte) (string, error) {
+	if rag.IsImage(filename) {
+		ocr, err := a.Gemini.ExtractDocumentText(ctx, data, rag.ImageMimeType(filename))
+		if err != nil {
+			return "", ErrServiceUnavailable("图片识别失败: " + err.Error())
+		}
+		return ocr, nil
+	}
+	native, err := rag.ExtractText(filename, data)
+	if err != nil {
+		return "", ErrBadRequest("文档处理失败: " + err.Error())
+	}
+	if strings.ToLower(filepath.Ext(filename)) == ".pdf" && rag.LooksLikeBadExtraction(native) {
+		ocr, oerr := a.Gemini.ExtractDocumentText(ctx, data, "application/pdf")
+		if oerr == nil {
+			return ocr, nil
+		}
+		if strings.TrimSpace(native) == "" {
+			return "", ErrServiceUnavailable("PDF 无可提取文本，OCR 回退失败: " + oerr.Error())
+		}
+		if a.Logger == nil {
+		} else {
+			a.Logger.Warn("pdf OCR fallback failed; keeping native text", "file", filename, "error", oerr.Error())
+		}
+	}
+	return native, nil
 }
 
 // IngestKnowledgeURL — SSRF-guarded page fetch + text ingest.
