@@ -21,5 +21,5 @@ require (
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/yuin/gopher-lua v1.1.1 // indirect
 	golang.org/x/sync v0.12.0 // indirect
-	golang.org/x/text v0.23.0 // indirect
+	golang.org/x/text v0.23.0
 )

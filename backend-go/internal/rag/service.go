@@ -165,6 +165,10 @@ func (s *Service) SpawnIndexWorkers(ctx context.Context) {
 				"WHERE index_status = 'ready' AND embedding_model <> '' AND embedding_model <> $1",
 			gemini.EmbeddingModel)
 	}()
+	// Legacy chunks (indexed before 058) have content_tsv NULL; segment
+	// them in the background so the lexical leg covers them too. Pure lexical
+	// work: embeddings are never touched.
+	go s.backfillSegmentedChunks(ctx)
 	for i := 0; i < indexWorkerCount; i++ {
 		go func() {
 			for {
@@ -222,6 +226,7 @@ func (s *Service) refreshStaleURLDocs(ctx context.Context) error {
 	}
 	for _, d := range docs {
 		_, newText, err := FetchURLContent(ctx, d.url)
+		newText = NormalizeText(newText)
 		if err == nil && strings.TrimSpace(newText) != strings.TrimSpace(d.oldContent) && strings.TrimSpace(newText) != "" {
 			_, _ = s.DB.Exec(ctx,
 				"UPDATE knowledge_documents SET content = $1, index_status = 'pending', index_error = '', updated_at = NOW() WHERE doc_id = $2",
@@ -263,6 +268,7 @@ func (s *Service) indexNextPending(ctx context.Context) bool {
 }
 
 func (s *Service) indexDocument(ctx context.Context, docID int32, content string) error {
+	content = NormalizeText(content)
 	chunks := ChunkMarkdown(content)
 	embeddings, err := s.Gemini.GenerateEmbeddings(ctx, chunks)
 	if err != nil {
@@ -282,9 +288,11 @@ func (s *Service) indexDocument(ctx context.Context, docID int32, content string
 	// Pipelined batch insert — one network round trip for all chunks.
 	batch := &pgx.Batch{}
 	for i := range chunks {
+		seg := SegmentForSearch(chunks[i])
 		batch.Queue(
-			"INSERT INTO knowledge_chunks (doc_id, chunk_index, content, embedding, created_at) VALUES ($1, $2, $3, $4::vector, $5)",
-			docID, int32(i), chunks[i], gemini.FormatVector(embeddings[i]), now)
+			"INSERT INTO knowledge_chunks (doc_id, chunk_index, content, content_seg, content_tsv, embedding, created_at) "+
+				"VALUES ($1, $2, $3, $4, to_tsvector('simple', $4), $5::vector, $6)",
+			docID, int32(i), chunks[i], seg, gemini.FormatVector(embeddings[i]), now)
 	}
 	if err := tx.SendBatch(ctx, batch).Close(); err != nil {
 		return fmt.Errorf("insert chunks: %w", err)
@@ -555,6 +563,7 @@ func (s *Service) compileDocument(ctx context.Context, docID, userID int32, titl
 // UploadDocument creates a document (pending) and lets the worker index it.
 // sourceURL marks the document as URL-derived (source='url').
 func (s *Service) UploadDocument(ctx context.Context, userID int32, title, content, language, category string, tags []string, sourceURL *string) (map[string]any, error) {
+	content = NormalizeText(content)
 	// Auto-detect the document script when no language was chosen.
 	lang := language
 	if lang == "" {
@@ -621,6 +630,7 @@ func (s *Service) findSimilarDocs(ctx context.Context, userID int32, sample stri
 // Search — hybrid retrieval with RRF fusion, relative-similarity gating and
 // LLM rerank; every enhancement degrades gracefully to plain RRF.
 func (s *Service) Search(ctx context.Context, userID int32, query string, topK int64) ([]Source, error) {
+	query = NormalizeText(query)
 	if topK <= 0 {
 		topK = DefaultTopK
 	}
@@ -649,10 +659,13 @@ func (s *Service) Search(ctx context.Context, userID int32, query string, topK i
 		lexical = lexicalRows
 	}
 	var trigram []SearchChunk
-	if hasCJK(query) {
+	if hasLexicalScript(query) {
 		if rows, err := s.searchTrigram(ctx, userID, query, candidateLimit); err == nil {
 			trigram = rows
 		}
+	}
+	if s.Logger != nil {
+		s.Logger.Debug("rag search legs", "dense", len(dense), "lexical", len(lexical), "trigram", len(trigram))
 	}
 	if denseErr != nil && lexical == nil && len(trigram) == 0 {
 		return nil, fmt.Errorf("knowledge search failed")
@@ -700,6 +713,14 @@ func (s *Service) Search(ctx context.Context, userID int32, query string, topK i
 	signalsAgree := topAgrees && topDense != nil && *topDense >= 0.60
 	if !leaderClear && !signalsAgree {
 		fused = s.rerankCandidates(ctx, query, fused, topK)
+	}
+
+	// topK is a hard cap. Without it, a clear dense leader skips the rerank and
+	// every fused candidate (up to candidateLimit, 4x topK) lands in the grounding
+	// prompt — measured at 12+ sources and ~3.1k tokens per Khmer turn on the test
+	// KB. fused is already rank-ordered, so truncation degrades gracefully.
+	if int64(len(fused)) > topK {
+		fused = fused[:topK]
 	}
 
 	out := make([]Source, 0, len(fused))
@@ -845,17 +866,28 @@ func (s *Service) searchDense(ctx context.Context, userID int32, vector string, 
 }
 
 func (s *Service) searchLexical(ctx context.Context, userID int32, query string, limit int64) ([]SearchChunk, error) {
-	rows, err := s.DB.Query(ctx,
-		"WITH search_query AS (SELECT websearch_to_tsquery('simple', $1) AS terms) "+
-			"SELECT kc.chunk_id, kc.doc_id, kc.content, kd.title, "+
-			"ts_rank_cd(to_tsvector('simple', kc.content), sq.terms)::float8 AS similarity "+
-			"FROM knowledge_chunks kc "+
-			"JOIN knowledge_documents kd ON kc.doc_id = kd.doc_id "+
-			"CROSS JOIN search_query sq "+
-			"WHERE kd.uploaded_by = $2 AND kd.index_status = 'ready' "+
-			"AND to_tsvector('simple', kc.content) @@ sq.terms "+
-			"ORDER BY similarity DESC, kc.chunk_id ASC LIMIT $3",
-		query, userID, limit)
+	query = NormalizeText(query)
+	// Unspaced scripts (Khmer/CJK) cannot use websearch_to_tsquery: the whole
+	// run is one token, so nothing matches. Use the segmented tsquery against
+	// content_seg's tsvector, OR-ed with the legacy content expression so chunks written
+	// before migration 058 that are not backfilled yet still match.
+	termsExpr := "websearch_to_tsquery('simple', $1)"
+	termsArg := query
+	if tsq := SegmentedTSQuery(query); tsq != "" {
+		termsExpr = "to_tsquery('simple', $1)"
+		termsArg = tsq
+	}
+	sql := "WITH search_query AS (SELECT " + termsExpr + " AS terms) " +
+		"SELECT kc.chunk_id, kc.doc_id, kc.content, kd.title, " +
+		"GREATEST(ts_rank_cd(COALESCE(kc.content_tsv, ''::tsvector), sq.terms), " +
+		"ts_rank_cd(to_tsvector('simple', kc.content), sq.terms))::float8 AS similarity " +
+		"FROM knowledge_chunks kc " +
+		"JOIN knowledge_documents kd ON kc.doc_id = kd.doc_id " +
+		"CROSS JOIN search_query sq " +
+		"WHERE kd.uploaded_by = $2 AND kd.index_status = 'ready' " +
+		"AND (kc.content_tsv @@ sq.terms OR to_tsvector('simple', kc.content) @@ sq.terms) " +
+		"ORDER BY similarity DESC, kc.chunk_id ASC LIMIT $3"
+	rows, err := s.DB.Query(ctx, sql, termsArg, userID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("lexical search: %w", err)
 	}
@@ -871,27 +903,28 @@ func (s *Service) searchLexical(ctx context.Context, userID int32, query string,
 	return out, rows.Err()
 }
 
-// searchTrigram — CJK bigram recall via ILIKE (pg_trgm optional).
+// searchTrigram — n-gram recall via ILIKE for scripts the simple tsvector
+// config cannot segment: CJK bigrams, Khmer trigrams (pg_trgm GIN needs 3+).
 func (s *Service) searchTrigram(ctx context.Context, userID int32, query string, limit int64) ([]SearchChunk, error) {
-	bigrams := cjkBigrams(query, 8)
-	if len(bigrams) == 0 {
+	ngrams := lexicalNgrams(query, 8)
+	if len(ngrams) == 0 {
 		return nil, nil
 	}
 	var conditions, scoreParts []string
-	args := make([]any, 0, len(bigrams)+2)
+	args := make([]any, 0, len(ngrams)+2)
 	args = append(args, userID, limit)
-	for i := range bigrams {
-		p := i + 3 // $1 user, $2 limit, bigrams start at $3
+	for i := range ngrams {
+		p := i + 3 // $1 user, $2 limit, ngrams start at $3
 		conditions = append(conditions, fmt.Sprintf("kc.content ILIKE $%d", p))
 		scoreParts = append(scoreParts, fmt.Sprintf("(CASE WHEN kc.content ILIKE $%d THEN 1 ELSE 0 END)", p))
-		args = append(args, "%"+bigrams[i]+"%")
+		args = append(args, "%"+ngrams[i]+"%")
 	}
 	sql := fmt.Sprintf(
 		"SELECT kc.chunk_id, kc.doc_id, kc.content, kd.title, (%s)::float8 AS similarity "+
 			"FROM knowledge_chunks kc "+
 			"JOIN knowledge_documents kd ON kc.doc_id = kd.doc_id "+
 			"WHERE kd.uploaded_by = $1 AND kd.index_status = 'ready' "+
-			"AND (%s) > 0 "+
+			"AND (%s) "+
 			"ORDER BY similarity DESC, kc.chunk_id ASC LIMIT $2",
 		strings.Join(scoreParts, " + "), strings.Join(conditions, " OR "))
 	rows, err := s.DB.Query(ctx, sql, args...)
@@ -1328,7 +1361,7 @@ func (s *Service) GetDocument(ctx context.Context, userID int32, docID int32) (m
 
 // UpdateDocument — update content (+metadata), delete chunks, re-queue.
 func (s *Service) UpdateDocument(ctx context.Context, userID int32, docID int32, content string, title, language, category *string, tags []string) (map[string]any, error) {
-	content = strings.TrimSpace(content)
+	content = strings.TrimSpace(NormalizeText(content))
 	if content == "" {
 		return nil, fmt.Errorf("document content cannot be empty")
 	}
@@ -1408,4 +1441,50 @@ func truncateRunes(s string, n int) string {
 		return s
 	}
 	return string(runes[:n-1]) + "…"
+}
+
+// backfillSegmentedChunks — fills content_seg/content_tsv for chunks written
+// before migration 058. It only touches the lexical columns (embeddings stay
+// untouched) and exits once the backlog is empty; new chunks are written with
+// the columns already populated.
+func (s *Service) backfillSegmentedChunks(ctx context.Context) {
+	const batchSize = 200
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		rows, err := s.DB.Query(ctx,
+			"SELECT chunk_id, content FROM knowledge_chunks WHERE content_tsv IS NULL ORDER BY chunk_id LIMIT $1",
+			batchSize)
+		if err == nil {
+		} else {
+			s.Logger.Warn("segmented backfill query failed", "error", err.Error())
+			return
+		}
+		type legacyChunk struct {
+			id      int32
+			content string
+		}
+		var batch []legacyChunk
+		for rows.Next() {
+			var c legacyChunk
+			if scanErr := rows.Scan(&c.id, &c.content); scanErr == nil {
+				batch = append(batch, c)
+			}
+		}
+		rows.Close()
+		if len(batch) == 0 {
+			return
+		}
+		for _, c := range batch {
+			seg := SegmentForSearch(c.content)
+			_, _ = s.DB.Exec(ctx,
+				"UPDATE knowledge_chunks SET content_seg = $1, content_tsv = to_tsvector('simple', $1) "+
+					"WHERE chunk_id = $2 AND content_tsv IS NULL",
+				seg, c.id)
+		}
+		s.Logger.Info("segmented legacy chunks backfilled", "count", len(batch))
+	}
 }
