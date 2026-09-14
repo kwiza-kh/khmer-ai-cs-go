@@ -16,7 +16,7 @@
 
 - 迁移 021 的注释原文：「tenant-scoped settings … become per-user (**user_id**)」
 - `tenant_overview` 是个对 `users` 做 rollup 的**视图**，不是表
-- `listTenants` 的真实 SQL：`SELECT ... FROM users WHERE role <> 'platform_admin'`
+- `listTenants` 的真实 SQL：`SELECT ... FROM tenant_overview WHERE role <> 'platform_admin'`（`tenant_overview` 是 027 建的 users+billing rollup 视图，语义上就是 users 表）
 - `tenantDetail(w, r, userID int32)` —— 租户 ID 就是用户 ID
 
 所以 platform-admin 那个「租户管理」页面，本质是**用户管理 + 计费**。
@@ -25,7 +25,7 @@
 
 ### 2. 零 Row-Level Security
 
-全部 55 个迁移里 `CREATE POLICY` 出现 **0 次**。隔离完全靠应用层手写 `WHERE user_id = $N`。
+截至 057 的全部 57 个迁移里 `CREATE POLICY` 出现 **0 次**。隔离完全靠应用层手写 `WHERE user_id = $N`。
 
 **这意味着任何一处漏写 WHERE 就是跨租户泄漏，没有数据库兜底。**
 
@@ -78,7 +78,7 @@ legacyJWTIssuer = "khmer-ai-cs"    // 旧 token 仍接受
 
 **WebSocket 子协议**（`realtime.go` + `lib/realtime.ts`）—— 前后端各写一份，不同步改实时功能就断。服务端 `Subprotocols` 列表和 token 提取都认两个值，缓存旧 JS 的浏览器也能正常升级。
 
-**刻意没改的**：Go module 名（40 处 import，零用户收益）、`R2_BUCKET` 默认值（真基础设施名）、`InsecureDefaultJwtSecret`（安全绊线常量，改了就检测不到那个弱密钥）。
+**刻意没改的**：Go module 名（74 处 import 语句 / 14 个包路径，零用户收益）、`R2_BUCKET` 默认值（真基础设施名）、`InsecureDefaultJwtSecret`（安全绊线常量，改了就检测不到那个弱密钥）。
 
 ### C. Telegram 登录（OIDC）
 
@@ -140,10 +140,11 @@ legacyJWTIssuer = "khmer-ai-cs"    // 旧 token 仍接受
 > `anynonarray || text` / `text || anynonarray` 两个操作符，存在的意义正是让
 > `整数 || 文本` 这种写法继续可用。
 >
-> **所以同一模式残留的 3 处不是 bug，不要再去「修」它们**：
-> `internal/api/tasks.go:274`、`internal/api/tasks.go:292`（SLA 违约扫描）、
-> `internal/rag/service.go:1032`（知识缺口）。三处的完整语句都已在生产库上
-> prepare 通过。
+> **所以同类写法的残留 3 处不是 bug，不要再去「修」它们**（行号按 2026-09-14 核对）：
+> `internal/api/tasks.go:257`、`internal/api/tasks.go:275`（`scanSLABreaches`，SLA 违约扫描，
+> 用的是 `($2 || ' seconds')::interval`）、`internal/rag/service.go:1032`（`KnowledgeGaps`；
+> 该处 `$2` 实际是 `strconv.FormatInt` 后的字符串，属于 text||text）。三处的完整语句都已在
+> 生产库上 prepare 通过。
 >
 > 改用 `make_interval` 本身没问题（更明确，也没什么代价），但**真实病因至今未知**
 > —— 症状是真的，解释是错的。如果再出现同类 500，不要从这个方向找。
@@ -153,10 +154,10 @@ legacyJWTIssuer = "khmer-ai-cs"    // 旧 token 仍接受
 
 ### F. 其他
 
-- **挂件高棉语文案** —— `frontend/src/app/widget/page.tsx` 的 `km` 语言槽填的是中文（与 `zh` 完全相同），高棉语访客在商家网站上看到全中文界面。这是流量最高的终端客户界面
-- **`api.ts` 优先级 bug** —— `a || b + \`...\`` 里 `+` 优先级高于 `||`，`text` 非空时 HTTP 状态码被吞掉，502 网关页原样进 toast
+- **挂件高棉语文案** —— `frontend/src/app/widget/page.tsx` 的 `km` 语言槽曾是中文占位（与 `zh` 相同），已在 8d150e3 换成高棉语（当前为 `ជំនួយការអតិថិជន` 等）。这是流量最高的终端客户界面，文案仍需母语者过一遍
+- **`api.ts` 优先级 bug（已修复）** —— 原写法 `a || b + \`...\`` 里 `+` 优先级高于 `||`，`text` 非空时 HTTP 状态码被吞掉，502 网关页原样进 toast；现在显式拼接，代码内有注释（`frontend/src/lib/api.ts:34-40`），修复同样在 8d150e3
 - **路由命名空间** —— `/admin/business-hours` 等三个路由是租户自助设置（数据按 `user_id` 自作用域），挂在 `/admin/` 下误导人，且审计中间件会记录每个商家的日程编辑。移到 `/settings/`
-- **命名空间清理** —— 11 个模式串残留（`/ready` 响应、TOTP `otpauth://` issuer、Telegram 测试消息等）
+- **命名空间清理** —— 清理了改名后残留的一批模式串（`/ready` 响应、TOTP `otpauth://` issuer、Telegram 测试消息等）。仍出现的 `khmer-ai-cs` 字样均为刻意保留：module 名、`R2_BUCKET` 默认值、legacy JWT issuer / WebSocket 子协议、`InsecureDefaultJwtSecret`
 
 ### G. Telegram 通知统一到平台 bot（056）
 
@@ -175,7 +176,7 @@ legacyJWTIssuer = "khmer-ai-cs"    // 旧 token 仍接受
 
 **存量商家必须重新绑定一次**，这是数据的性质决定的，不是实现选择：`chat_id` 是**和某个特定 bot 的会话**，只有那个 bot 能寻址。平台 bot 往商家与自己 bot 的 chat_id 发消息会 403（`bot can't initiate conversation with a user`）。没有可迁移的东西。
 
-所以 056 把 `bot_token_enc` 和 `chat_id` 一起**清空**，而不是留着。留一个失效的 chat_id 比没有更糟 —— 设置页会显示「已连接」而投递一直静默失败。三个 `notify_*` 是偏好不是凭据，保留。
+所以 056 把 `bot_token_enc`、`chat_id` 和 `chat_title` 一起**清空**（前两列还写入了 `COMMENT`），而不是留着。留一个失效的 chat_id 比没有更糟 —— 设置页会显示「已连接」而投递一直静默失败。三个 `notify_*` 是偏好不是凭据，保留。
 
 `bot_token_enc` **列本身不删**（可空，恒 NULL）：部署手册把「二进制回滚」当作受支持的操作，删列会让回滚到上一版时直接报列不存在，而不是优雅降级成「未配置」。
 
@@ -191,7 +192,7 @@ legacyJWTIssuer = "khmer-ai-cs"    // 旧 token 仍接受
 2. 逐条拿到**生产库**上 `PREPARE` —— 这正是当初暴露 `/tenants` 的机制
 3. 另做一次「标识符差集」：SQL 里出现过的所有标识符 vs 生产库的表名/列名/类型名
 
-结果（574 条候选）：
+结果（574 条候选；一次性审计，需生产库连接才能复现）：
 
 | 项 | 数 |
 |---|---|
@@ -201,7 +202,7 @@ legacyJWTIssuer = "khmer-ai-cs"    // 旧 token 仍接受
 
 46 条失败里，44 条是提取器误报（`VALUES (...)` 是 INSERT 被变量切断的尾巴、`DELETE /api/v1/...` 是 HTTP 路由不是 SQL），1 条提取不完整，**1 条是真的**：
 
-> **`createSLA` 里的 `$6::sla_priority` —— 这个类型在全部 55 个迁移里从未出现过。**
+> **`upsertSLA`（路由 `POST /api/v1/sla`）里的 `$6::sla_priority` —— 这个类型在全部迁移（截至 057）里从未出现过。**
 >
 > `sla_policies.priority` 实际是 `varchar DEFAULT 'normal'`，不是 enum。语句在 prepare 阶段就失败，
 > 所以 **`POST /api/v1/sla` 从上线起 100% 返回「创建失败」**，一条策略都建不出来
@@ -216,7 +217,7 @@ legacyJWTIssuer = "khmer-ai-cs"    // 旧 token 仍接受
 
 **这一步已经常驻成代码**：`backend-go/internal/sqlcheck/`。它做同样的事，且修掉了首版手工脚本的误报来源 —— 关键是**属于 `+` 拼接链的字面量只作为整条语句上报一次，绝不单独上报**。首版把每一段都单独上报，于是 `INSERT` 的尾巴 `VALUES (...) ON CONFLICT ...` 看起来像独立语句，但没有任何表可解析，prepare 只会报「列不存在」，与源码毫无关系。46 条失败里 44 条是这么来的。
 
-常驻版本的实测结果（对生产库，454 条）：
+常驻版本的实测结果（一次性，对生产库；没有生产库连接则 skip，数字不可本地复现）：
 
 ```
 checked 454 statements: 441 prepared, 11 skipped, 0 broken, 2 unparseable
@@ -238,7 +239,7 @@ checked 454 statements: 441 prepared, 11 skipped, 0 broken, 2 unparseable
 | 053 | `users.email` 可空 + `telegram_sub` | Telegram 不给邮箱 |
 | 054 | `telegram_notify_settings.bot_token_enc` 可空 + `linked_at` + `notify_announcements`；建 `platform_support_messages` | NULL token = 走平台 bot。**056 已废除这条双路径** |
 | 055 | `platform_support_relay` | 中继映射。按 `(admin_chat_id, admin_message_id)` 唯一 —— Telegram 的 message id 只在会话内唯一 |
-| 056 | 清空 `bot_token_enc` + `chat_id`，二者加注释 | **破坏性**：所有存量商家需重新绑定，见 G 节。列不删以保回滚 |
+| 056 | 清空 `bot_token_enc` + `chat_id` + `chat_title`（前两列加注释） | **破坏性**：所有存量商家需重新绑定，见 G 节。列不删以保回滚 |
 
 ---
 
@@ -312,7 +313,7 @@ curl -X POST "https://api.telegram.org/bot${PLATFORM_TELEGRAM_BOT_TOKEN}/setWebh
 | 项 | 说明 |
 |---|---|
 | 出站投递失败激增告警 | 其他告警信号都接了，这条没接 |
-| 前端 11 个零消费者导出 | `streamChat` / `streamWidgetChat` / `chatVoice` 等，是现成的 API 客户端层，非缺陷 |
+| 前端 13 个零消费者导出 | `streamChat` / `streamWidgetChat` / `chatVoice` / `sendMessage` / `listSessions` 等，是现成的 API 客户端层，非缺陷 |
 | `/widget` 自带 SSE 解析器 | 未复用 `streamWidgetChat`；重构客户-facing 聊天路径为零收益换风险 |
 | 邮件渠道 | `config.go` 有 SMTP 字段，**零代码** |
 | 域名 | 仍是 `cs.wanfanginsulationmaterial.com`（保温材料公司子域）。换域名要同步改：DNS、Cloudflare、nginx、BotFather Redirect URIs、Meta/Google OAuth 回调，**并且已嵌出的挂件会全部失效** |
@@ -347,3 +348,64 @@ psql "$DATABASE_URL" -c "SELECT version FROM schema_migrations ORDER BY version 
 ```
 
 **镜像目录**：`backend-go/migrations/` 是供 psql 手查的副本，真源是 `internal/migrations/migrations/`。`TestMirrorDirectoryIsInSync` 会逐字节比对，忘了复制会在 `go test` 就暴露。
+
+---
+
+## 八、高棉语检索修复（2026-09-14，Phase 0+1）
+
+背景：`010` 的 GIN 索引与查询都走 `to_tsvector('simple')`。高棉语没有词间空格 → 一整段
+变成一个 token，词法腿召回≈0；`032` 给中文加了 bigram + pg_trgm 兜底，但 `isCJK` 不含
+高棉文（U+1780–17FF），所以高棉语连字符级兜底也没有，实际退化成纯 dense。详见本轮核对
+（`rag/service.go` 的 `searchLexical` / `searchTrigram` / `Search`）。
+
+本轮改动（无迁移、无重嵌入）：
+
+- 新增 `rag/normalize.go`：`NormalizeText`（NFC、高棉数字→ASCII、ZWSP/ZWNJ/ZWJ/NBSP→空格、
+  空白折叠，且幂等）；在摄入端（Upload/Update/index/URL 刷新）和查询端（Search/lexical 腿）调用。
+- `cjkBigrams` 泛化为 `lexicalNgrams`：CJK 保持 2-gram，高棉语用 3-gram（pg_trgm 的 GIN 只对
+  3 字符以上的 ILIKE 模式有效），过短的 run 回退整段；`Search` 的 gate 由 `hasCJK` 改为
+  `hasLexicalScript`（CJK 或高棉文）。
+- `Search` 增加 Debug 级分腿计数日志（dense / lexical / trigram）。
+- 新增离线评估工具 `internal/rag/eval_test.go`：设好 `DATABASE_URL` + `RAG_EVAL_USER` +
+  `RAG_EVAL_FILE`（`{"queries":[{"query":"...","expect":[doc_id,...]}]}`）后运行
+  `go test ./internal/rag/ -run TestRetrievalEval -v`，输出每条腿的 recall@5/@10 与 MRR@10。
+
+已知边界：**存量文档**的 chunk 内容不会自动重新归一化，ZWSP/数字变体场景只能部分受益；
+需要完全生效时按文档重建 chunk（只刷词法内容，不重嵌入，可与 Phase 2 一并做）。
+
+后续（未做）：Phase 3 PDF 抽取
+质量检查与 Gemini 视觉 OCR 回退 + 图片入库；Phase 4 embedding 换代（BGE-M3 1024 维需新列
+回填、HNSW 重建、`RAG_*` 阈值重校准，不要直接 `ALTER COLUMN`）。
+
+### Phase 2（2026-09-14）：分词列 + 独立词法索引（迁移 058）
+
+- 迁移 058：`knowledge_chunks` 增加 `content_seg TEXT` + `content_tsv TSVECTOR`（GIN 索引）。
+  列可空，保留回滚窗口；旧行由启动时的后台 backfill 填充——**只刷这两列，不重嵌入**。
+- `rag/segment.go`：索引端与查询端共用同一套切分——CJK 2-gram、高棉文 3-gram、普通词保留。
+  `SegmentedTSQuery` 把含脚本的查询编译成 `word & (gram | gram | ...)`；纯拉丁查询仍走
+  `websearch_to_tsquery`，行为不变。选 3-gram 是因为 pg_trgm 的 GIN 只认 3 字符以上的模式；
+  在 PG 17 上实测高棉语组合符号会保留在 token 内，所以原始 n-gram 可以直接进 tsvector。
+- `searchLexical`：含脚本时用 `to_tsquery` 匹配 `content_tsv`，并与旧的
+  `to_tsvector('simple', content)` 表达式 OR，兼容尚未 backfill 的行。
+- 测试：`segment_test.go`（单元）+ `segmented_lexical_test.go`（`RAG_TEST_DSN` 门控，
+  真实 PG 上验证高棉语命中、高棉数字查询、旧行回退分支）。
+- 说明：这是字符 n-gram 方案，不是语言学分词；将来接 khmer-nltk/CRF 时只需替换
+  `runNgrams` 并重建 `content_tsv`，与 embedding 解耦。
+
+### Phase 2.1（2026-09-14）：线上仿真测试发现的三处修复
+
+在真实部署上用 14 篇高棉语知识库 + 41 题仿真跑出来的问题：
+
+- **`searchTrigram` SQL 从上线起就是坏的**：`AND (bool OR bool) > 0` 在 PG 非法
+  （`operator does not exist: boolean > integer`），错误在 `Search` 里被静默忽略 →
+  CJK/高棉语 ILIKE 兜底腿**从未真正生效**。修掉 `> 0` 后，该腿在 40 题上
+  recall@5 从 0% 升到 97%（MRR 0.853）。
+- **分词 tsquery 的 AND 语义过严**：`SegmentedTSQuery` 原来把词条组用 `&` 连接，
+  自然语言问句里的疑问词（ប៉ុន្មាន / អ្វី / មែនទេ）在文档里不存在 → 3/40 题 0 命中。
+  改为平铺 OR（`word | (gram | gram)`），靠 `ts_rank_cd` 覆盖率排序 + RRF/rerank 兜精度：
+  lexical 腿 recall@5 85% → 97%，MRR 0.783 → 0.917。
+- **`Search` 未按 topK 截断**：dense 领先时会跳过 rerank，fused 里最多 4×topK 的
+  chunk 全部进入 grounding prompt——实测平均 11.6 条来源、3092 tokens/轮。加上
+  `fused = fused[:topK]` 后：来源 3.4 条、tokens 1486/轮（−52%），单题多跳场景
+  由 RRF 排序 + OR 召回补偿。
+
