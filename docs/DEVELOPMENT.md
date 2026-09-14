@@ -452,3 +452,16 @@ psql "$DATABASE_URL" -c "SELECT version FROM schema_migrations ORDER BY version 
 结论：CRF 在这套数据上**不提升词法检索**（召回持平、MRR 更低），优势是索引小约 3.3×；
 继续使用 3-gram，CRF 仅在需要词级功能（同义词/缺口聚类）或索引体积成为问题时再评估，
 且应保留 n-gram 兜底 OOV。工具与复现：`tools/khmer-segmentation-compare/`。
+
+#### 决策记录（2026-09-14）：暂不更换分词与嵌入
+
+1. **词法表示：维持 3-gram（不换 CRF）**。依据：同语料 40 题离线对照中 3-gram OR
+   recall@5 40/40、MRR 0.942，CRF OR 39/40、0.900；CRF 的唯一优势是索引 lexeme
+   小约 3.3×（47 vs 170/文档），当前生产 KB 只有几十个 chunk，不构成理由。
+   重新评估的触发条件：a) 索引体积/写入延迟成为实际瓶颈；b) 需要词级功能
+   （同义词表、停用词、缺口聚类）；届时保留 n-gram 兜底 OOV。
+2. **Embedding：维持 Gemini 768 维（不换 BGE-M3）**。依据：fused lexical-only 已达
+   recall@5 97%/MRR 0.906，尚无证据表明 dense 是瓶颈；BGE-M3 引入 1024 维迁移、
+   自托管（服务器 4 vCPU/7.8GB、无 GPU）或第三方依赖，且高棉语效果未验证。
+   重新评估的触发条件：用评估集证明失败案例集中在语义改写（dense 漏召），
+   届时按 Phase 4 的新列回填方案执行并重校准阈值。
