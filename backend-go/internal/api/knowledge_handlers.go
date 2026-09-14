@@ -208,10 +208,20 @@ func (a *App) extractKnowledgeText(ctx context.Context, filename string, data []
 		return ocr, nil
 	}
 	native, err := rag.ExtractText(filename, data)
+	isPDF := strings.ToLower(filepath.Ext(filename)) == ".pdf"
 	if err != nil {
+		// A scanned PDF surfaces as "no extractable text" from the native
+		// extractor; that error is the OCR trigger, not a rejection.
+		if isPDF {
+			ocr, oerr := a.Gemini.ExtractDocumentText(ctx, data, "application/pdf")
+			if oerr == nil {
+				return ocr, nil
+			}
+			return "", ErrServiceUnavailable("PDF 提取失败且 OCR 回退失败: " + oerr.Error())
+		}
 		return "", ErrBadRequest("文档处理失败: " + err.Error())
 	}
-	if strings.ToLower(filepath.Ext(filename)) == ".pdf" && rag.LooksLikeBadExtraction(native) {
+	if isPDF && rag.LooksLikeBadExtraction(native) {
 		ocr, oerr := a.Gemini.ExtractDocumentText(ctx, data, "application/pdf")
 		if oerr == nil {
 			return ocr, nil

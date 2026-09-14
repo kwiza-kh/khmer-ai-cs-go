@@ -425,3 +425,13 @@ psql "$DATABASE_URL" -c "SELECT version FROM schema_migrations ORDER BY version 
   注意 CI 无数据库，`sqlcheck`、RAG 评估与 DB 门控测试仍会 skip，需按 §七 手工跑。
 - **回填吞吐实测**：本机 PG 17，2000 个 chunk 128ms（≈15,666 rows/s），
   百万级约 1 分钟（分批 200，逐行 UPDATE；大库上量前建议按此估算窗口）。
+
+#### OCR 路径实测（2026-09-14 线上）
+
+- 用系统 CoreText 渲染的高棉文 PNG 上传 → Gemini 逐字转写完整（含 KWF-RO-100 / F-RO75 /
+  电话），`NormalizeText` 把 OCR 出来的高棉数字归一化为 ASCII；
+- 图片型"扫描 PDF"原生提取报 `no extractable text`：该错误同样会触发 OCR 回退
+  （修复前只在 err==nil 后判断空文本，会误拒）；回退后检索/回答均验证通过；
+- 近重复提示正常（扫描版与图片版相似度 0.948，上传时返回 `similar_docs`）。
+- 最终检索指标（生产库全量 16 篇测试文档）：lexical recall@5 97% / MRR 0.917；
+  trigram 95% / 0.851；fused 97% / 0.906（本地无 dense key，生产还叠加 dense 腿）。
