@@ -435,3 +435,20 @@ psql "$DATABASE_URL" -c "SELECT version FROM schema_migrations ORDER BY version 
 - 近重复提示正常（扫描版与图片版相似度 0.948，上传时返回 `similar_docs`）。
 - 最终检索指标（生产库全量 16 篇测试文档）：lexical recall@5 97% / MRR 0.917；
   trigram 95% / 0.851；fused 97% / 0.906（本地无 dense key，生产还叠加 dense 腿）。
+
+#### 评估（2026-09-14）：CRF 分词 vs 3-gram（离线对照）
+
+用 khmercut（Rust/Python，MIT，CRF 模型源自 khmer-nltk 系谱）在本地 PG 上把同一
+14 篇 KB 分别以 3-gram 与 CRF 词建 `tsvector('simple', ...)`，同一套 40 题、同一
+`to_tsquery + ts_rank_cd` 形状：
+
+| 表示 | recall@5 | MRR@10 | lexemes/doc |
+|---|---|---|---|
+| 3-gram OR（现状） | 40/40 | **0.942** | 170 |
+| CRF OR | 39/40 | 0.900 | 47 |
+| CRF OR（去疑问词） | 40/40 | 0.908 | 47 |
+| CRF AND（去疑问词） | 15/40 | 0.362 | 47 |
+
+结论：CRF 在这套数据上**不提升词法检索**（召回持平、MRR 更低），优势是索引小约 3.3×；
+继续使用 3-gram，CRF 仅在需要词级功能（同义词/缺口聚类）或索引体积成为问题时再评估，
+且应保留 n-gram 兜底 OOV。工具与复现：`tools/khmer-segmentation-compare/`。
