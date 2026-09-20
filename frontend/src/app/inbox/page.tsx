@@ -465,9 +465,9 @@ export default function InboxPage() {
 		/>
 
       <div className="flex-1 flex overflow-hidden">
-        {/* Left: conversation list */}
-        <aside className={cn("w-full lg:w-80 shrink-0 flex-col border-r border-border bg-card text-card-foreground", mobileView === "chat" ? "hidden lg:flex" : "flex")}>
-          <div className="space-y-3 border-b border-border p-3">
+        {/* Left: conversation list — muted bg for visual separation from chat area */}
+        <aside className={cn("w-full lg:w-80 shrink-0 flex-col border-r border-border bg-sidebar text-sidebar-foreground", mobileView === "chat" ? "hidden lg:flex" : "flex")}>
+          <div className="space-y-3 border-b border-sidebar-border p-3">
             <div className="flex items-center justify-between">
               <button
                 type="button"
@@ -1430,8 +1430,8 @@ function ConversationDetail({
       {/* Messages — min-h-0 is required: without it the flex item refuses to
           shrink below its content, so tall transcripts push the composer off
           screen and the area itself never scrolls. */}
-      <ScrollArea ref={messagesScrollRef} className="min-h-0 flex-1">
-        <div className="max-w-3xl mx-auto px-4 py-3 flex flex-col gap-3">
+      <ScrollArea ref={messagesScrollRef} className="min-h-0 flex-1" role="log" aria-live="polite" aria-label="Chat messages">
+        <div className="max-w-3xl mx-auto px-4 py-5 flex flex-col gap-3.5">
           {msgList.length === 0 ? (
             <p className="text-center text-xs text-muted-foreground py-8">{t("inbox.noMessages")}</p>
           ) : (
@@ -2338,7 +2338,7 @@ function AiSidePanel({ item, lastUserMessageId, summaryData, summaryLoading, onR
   };
 
   return (
-    <aside className="hidden lg:flex w-80 shrink-0 flex-col border-l border-border bg-gradient-to-b from-muted/40 to-transparent min-h-0">
+    <aside className="hidden lg:flex w-80 shrink-0 flex-col border-l border-border bg-muted/20 min-h-0" aria-label="Session details">
       <div className="px-3.5 py-3 border-b border-border flex items-center justify-between gap-2 bg-card/60">
         <p className="flex items-center gap-2 text-[13px] font-semibold tracking-tight">
           <span className="flex size-5 items-center justify-center rounded-md bg-primary/10">

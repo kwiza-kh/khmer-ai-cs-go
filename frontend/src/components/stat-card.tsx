@@ -11,15 +11,15 @@ import type { LucideIcon } from "lucide-react";
  * defined in globals.css so they follow the active theme.
  */
 const toneVariants = cva(
-  "flex size-9 shrink-0 items-center justify-center rounded-[10px] shadow-[inset_0_1px_0_rgb(255_255_255/0.35)] dark:shadow-none",
+  "flex size-9 shrink-0 items-center justify-center rounded-lg",
   {
     variants: {
       tone: {
-        default: "bg-gradient-to-br from-primary/18 to-primary/6 text-primary ring-1 ring-inset ring-primary/15",
-        success: "bg-gradient-to-br from-success/20 to-success/8 text-success ring-1 ring-inset ring-success/15",
-        warning: "bg-gradient-to-br from-warning/20 to-warning/8 text-warning ring-1 ring-inset ring-warning/15",
-        info: "bg-gradient-to-br from-info/20 to-info/8 text-info ring-1 ring-inset ring-info/15",
-        danger: "bg-gradient-to-br from-danger/20 to-danger/8 text-danger ring-1 ring-inset ring-danger/15",
+        default: "bg-muted text-foreground",
+        success: "bg-success/10 text-success",
+        warning: "bg-warning/10 text-warning",
+        info: "bg-info/10 text-info",
+        danger: "bg-danger/10 text-danger",
       },
     },
     defaultVariants: {
@@ -34,6 +34,8 @@ interface StatCardProps extends VariantProps<typeof toneVariants> {
   value?: React.ReactNode;
   /** Optional hint shown below the value, e.g. "+12% vs last week". */
   hint?: React.ReactNode;
+  /** Show skeleton placeholder instead of content. */
+  loading?: boolean;
   className?: string;
 }
 
@@ -47,10 +49,24 @@ export function StatCard({
   value,
   hint,
   tone,
+  loading,
   className,
 }: StatCardProps) {
+  if (loading) {
+    return (
+      <Card className={cn(className)}>
+        <CardContent className="flex items-center gap-3.5 p-4">
+          <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted animate-pulse-subtle" />
+          <div className="min-w-0 space-y-2 flex-1">
+            <div className="h-2.5 w-16 rounded bg-muted animate-pulse-subtle" />
+            <div className="h-5 w-20 rounded bg-muted animate-pulse-subtle" />
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
   return (
-    <Card className={cn("card-interactive", className)}>
+    <Card className={cn(className)}>
       <CardContent className="flex items-center gap-3.5 p-4">
         <div className={cn(toneVariants({ tone }))}>
           <Icon className="size-[18px]" />

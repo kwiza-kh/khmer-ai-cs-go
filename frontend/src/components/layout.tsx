@@ -48,19 +48,19 @@ function NavItem({
       className={cn(
         "group relative flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] transition-all",
         active
-          ? "bg-primary/[0.09] font-semibold text-primary ring-1 ring-inset ring-primary/20 shadow-[inset_0_1px_0_rgb(255_255_255/0.4)] dark:bg-primary/[0.13] dark:shadow-none"
-          : "font-medium text-sidebar-foreground/85 hover:bg-foreground/[0.045] hover:text-sidebar-foreground"
+          ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
+          : "font-medium text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
       )}
     >
-      <Icon className={cn("size-4 shrink-0", active ? "text-primary" : "text-sidebar-foreground/60 group-hover:text-sidebar-foreground")} />
+      <Icon className={cn("size-4 shrink-0 transition-colors", active ? "text-sidebar-primary" : "text-sidebar-foreground/60 group-hover:text-sidebar-accent-foreground")} />
       <span className="flex-1 truncate">{label}</span>
       {count != null && count > 0 && (
-        <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[11px] font-bold tabular-nums text-white shadow-[0_2px_8px_-2px_color-mix(in_oklch,var(--color-destructive)_60%,transparent)]">
+        <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[11px] font-bold tabular-nums text-white">
           {count > 99 ? "99+" : count}
         </span>
       )}
       {badge && (
-        <span className="rounded-full bg-[linear-gradient(115deg,var(--color-primary),hsl(285_85%_58%))] px-1.5 py-0.5 text-[10px] font-semibold text-white shadow-[0_2px_8px_-2px_color-mix(in_oklch,var(--color-primary)_60%,transparent)]">
+        <span className="rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-semibold text-primary-foreground">
           {badge}
         </span>
       )}
@@ -141,15 +141,15 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background">
-      {/* ===== Top bar — glass + hairline ===== */}
-      <header className="glass hairline-b relative z-30 flex h-14 shrink-0 items-center gap-4 px-4">
+      {/* ===== Top bar ===== */}
+      <header className="border-b bg-background relative z-30 flex h-14 shrink-0 items-center gap-4 px-4">
         <button type="button" className="rounded-md p-1.5 hover:bg-foreground/[0.06] lg:hidden" onClick={() => setSidebarOpen(true)}>
           <Menu className="size-4 text-muted-foreground" />
         </button>
         {/* Brand */}
         <Link href="/inbox" onClick={close} className="group flex items-center gap-2">
           <span className="relative flex size-7 items-center justify-center">
-            <span aria-hidden className="absolute inset-0 rounded-lg bg-primary/25 blur-md opacity-60 transition-opacity group-hover:opacity-100" />
+            <span aria-hidden className="absolute inset-0 rounded-lg bg-brand/30 blur-md opacity-60 transition-opacity group-hover:opacity-100" />
             <svg viewBox="0 0 24 24" className="relative size-6 transition-transform duration-300 group-hover:scale-105 group-hover:rotate-3" fill="none" aria-hidden>
               <path d="M12 2l2.4 7.6L22 12l-7.6 2.4L12 22l-2.4-7.6L2 12l7.6-2.4L12 2z" fill="url(#qg)" />
               <defs>
@@ -174,6 +174,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               }
             }}
             placeholder={t("nav.search")}
+            role="searchbox"
+            aria-label={t("nav.search")}
+            aria-keyshortcuts="Meta+k Control+k"
             className="h-9 w-full rounded-full border border-border/80 bg-card/70 pl-9 pr-12 text-[13px] text-foreground shadow-[0_1px_2px_rgb(0_0_0/0.03)] placeholder:text-muted-foreground/50 transition-all focus:outline-none focus:border-ring/50 focus:ring-2 focus:ring-ring/25 dark:bg-white/[0.05]"
           />
           <span className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md border border-border/70 bg-muted/80 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">⌘K</span>
@@ -181,13 +184,13 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         <div className="ml-auto flex items-center gap-4">
           <Link href="/knowledge" className="hidden sm:block text-[13px] font-medium text-muted-foreground transition-colors hover:text-foreground">{t("nav.knowledge")}</Link>
           <Link href="/help" className="hidden sm:block text-[13px] font-medium text-muted-foreground transition-colors hover:text-foreground">{t("nav.help")}</Link>
-          <Link href="/inbox" className="rounded-full bg-ink px-4 py-1.5 text-[13px] font-semibold text-ink-foreground shadow-[0_1px_2px_rgb(0_0_0/0.25),inset_0_1px_0_rgb(255_255_255/0.18)] transition-all hover:brightness-110 active:scale-[0.97]">
+          <Link href="/inbox" className="rounded-lg bg-primary px-4 py-1.5 text-[13px] font-semibold text-primary-foreground transition-colors hover:bg-primary/80">
             {t("nav.console")}
           </Link>
           <DropdownMenu>
             <DropdownMenuTrigger>
-              <Avatar className="size-8 cursor-pointer rounded-full ring-2 ring-primary/30 transition-all hover:ring-primary/55 hover:shadow-[0_0_0_4px_color-mix(in_oklch,var(--color-primary)_14%,transparent)]">
-                <AvatarFallback className="rounded-full bg-gradient-to-br from-primary to-indigo-700 text-[12px] font-semibold text-white">
+              <Avatar className="size-8 cursor-pointer">
+                <AvatarFallback className="text-[12px] font-semibold">
                   {user?.username?.charAt(0).toUpperCase()}
                 </AvatarFallback>
               </Avatar>

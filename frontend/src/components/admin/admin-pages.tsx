@@ -161,13 +161,13 @@ function UserStatCard({
   );
 }
 
-// 最高权限用 ink 实心胶囊, 不再借用 warning(琥珀) —— 那会让“最高权限”读成“警告”。
+// 最高权限用 primary 实心胶囊, 不再借用 warning(琥珀) —— 那会让“最高权限”读成“警告”。
 //
 // ⚠️ 必须成对写 light / dark: SelectTrigger 基类带 `dark:bg-input/30`, 它在
 // 构建产物里的顺序晚于基础 `bg-*`, 深色下会直接盖掉只写了 light 的写法
 // (曾导致 platform_admin 变成深底 + 深字, 对比度 1.01:1 完全不可见)。
 const ROLE_PILL: Record<string, string> = {
-  platform_admin: "bg-ink text-ink-foreground dark:bg-ink dark:text-ink-foreground",
+  platform_admin: "bg-primary text-primary-foreground dark:bg-primary dark:text-primary-foreground",
   admin: "bg-primary/12 text-primary dark:bg-primary/15 dark:text-primary",
   user: "bg-muted text-muted-foreground dark:bg-muted/60 dark:text-muted-foreground",
 };

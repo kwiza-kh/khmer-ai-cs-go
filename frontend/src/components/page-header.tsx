@@ -31,19 +31,19 @@ export function PageHeader({
   return (
     <header
       className={cn(
-        "hairline-b flex items-center justify-between gap-4 px-5 sm:px-6 py-4",
+        "border-b flex items-center justify-between gap-4 px-5 sm:px-6 py-4",
         className
       )}
     >
       <div className="flex min-w-0 items-center gap-3">
         {Icon && (
-          <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary ring-1 ring-inset ring-primary/15 shadow-[inset_0_1px_0_rgb(255_255_255/0.35)] dark:bg-primary/[0.14] dark:shadow-none">
+          <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted text-foreground">
             <Icon className="size-[18px]" />
           </div>
         )}
         <div className="min-w-0">
           {kicker && (
-            <p className="text-gradient-brand text-[11px] leading-none font-semibold uppercase tracking-[0.16em]">
+            <p className="text-muted-foreground text-[11px] leading-none font-semibold uppercase tracking-[0.16em]">
               {kicker}
             </p>
           )}
