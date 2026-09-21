@@ -91,6 +91,26 @@ const ROLE_KEYS: Record<string, string> = {
   user: "role.member",
 };
 
+/** Brand mark + wordmark. `gid` keeps the SVG gradient id unique when the mark renders twice (header + sidebar). */
+function Brand({ gid, iconOnly = false }: { gid: string; iconOnly?: boolean }) {
+  return (
+    <Link href="/inbox" className="group flex items-center gap-2">
+      <span className="relative flex size-7 shrink-0 items-center justify-center">
+        <span aria-hidden className="absolute inset-0 rounded-lg bg-brand/30 blur-md opacity-60 transition-opacity group-hover:opacity-100" />
+        <svg viewBox="0 0 24 24" className="relative size-6 transition-transform duration-300 group-hover:scale-105 group-hover:rotate-3" fill="none" aria-hidden>
+          <path d="M12 2l2.4 7.6L22 12l-7.6 2.4L12 22l-2.4-7.6L2 12l7.6-2.4L12 2z" fill={`url(#${gid})`} />
+          <defs>
+            <linearGradient id={gid} x1="0" y1="0" x2="24" y2="24">
+              <stop offset="0" stopColor="#8b5cf6" /><stop offset="1" stopColor="#4f46e5" />
+            </linearGradient>
+          </defs>
+        </svg>
+      </span>
+      {!iconOnly && <span className="text-[15px] font-semibold tracking-tight text-foreground">RelayChat</span>}
+    </Link>
+  );
+}
+
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const { user, token, logout } = useAuth();
   const { t } = useI18n();
@@ -146,42 +166,31 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         <button type="button" className="rounded-md p-1.5 hover:bg-foreground/[0.06] lg:hidden" onClick={() => setSidebarOpen(true)}>
           <Menu className="size-4 text-muted-foreground" />
         </button>
-        {/* Brand */}
-        <Link href="/inbox" onClick={close} className="group flex items-center gap-2">
-          <span className="relative flex size-7 items-center justify-center">
-            <span aria-hidden className="absolute inset-0 rounded-lg bg-brand/30 blur-md opacity-60 transition-opacity group-hover:opacity-100" />
-            <svg viewBox="0 0 24 24" className="relative size-6 transition-transform duration-300 group-hover:scale-105 group-hover:rotate-3" fill="none" aria-hidden>
-              <path d="M12 2l2.4 7.6L22 12l-7.6 2.4L12 22l-2.4-7.6L2 12l7.6-2.4L12 2z" fill="url(#qg)" />
-              <defs>
-                <linearGradient id="qg" x1="0" y1="0" x2="24" y2="24">
-                  <stop offset="0" stopColor="#8b5cf6" /><stop offset="1" stopColor="#4f46e5" />
-                </linearGradient>
-              </defs>
-            </svg>
-          </span>
-          <span className="text-[15px] font-semibold tracking-tight text-foreground">RelayChat</span>
-        </Link>
-        {/* Search — jumps to the inbox with the query pre-applied */}
-        <div className="relative hidden md:block w-72">
-          <Search className="absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground/50" />
-          <input
-            ref={searchRef}
-            value={globalSearch}
-            onChange={(e) => setGlobalSearch(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && globalSearch.trim()) {
-                router.push(`/inbox?q=${encodeURIComponent(globalSearch.trim())}`);
-              }
-            }}
-            placeholder={t("nav.search")}
-            role="searchbox"
-            aria-label={t("nav.search")}
-            aria-keyshortcuts="Meta+k Control+k"
-            className="h-9 w-full rounded-full border border-border/80 bg-card/70 pl-9 pr-12 text-[13px] text-foreground shadow-[0_1px_2px_rgb(0_0_0/0.03)] placeholder:text-muted-foreground/50 transition-all focus:outline-none focus:border-ring/50 focus:ring-2 focus:ring-ring/25 dark:bg-white/[0.05]"
-          />
-          <span className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md border border-border/70 bg-muted/80 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">⌘K</span>
+        {/* Icon-only brand on small screens — the full brand lives in the sidebar. */}
+        <div className="lg:hidden">
+          <Brand gid="qg-top" iconOnly />
         </div>
+        {/* Search + actions — search leads the right-hand cluster */}
         <div className="ml-auto flex items-center gap-4">
+          <div className="relative hidden md:block w-72">
+            <Search className="absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground/50" />
+            <input
+              ref={searchRef}
+              value={globalSearch}
+              onChange={(e) => setGlobalSearch(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && globalSearch.trim()) {
+                  router.push(`/inbox?q=${encodeURIComponent(globalSearch.trim())}`);
+                }
+              }}
+              placeholder={t("nav.search")}
+              role="searchbox"
+              aria-label={t("nav.search")}
+              aria-keyshortcuts="Meta+k Control+k"
+              className="h-9 w-full rounded-full border border-border/80 bg-card/70 pl-9 pr-12 text-[13px] text-foreground shadow-[0_1px_2px_rgb(0_0_0/0.03)] placeholder:text-muted-foreground/50 transition-all focus:outline-none focus:border-ring/50 focus:ring-2 focus:ring-ring/25 dark:bg-white/[0.05]"
+            />
+            <span className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md border border-border/70 bg-muted/80 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">⌘K</span>
+          </div>
           <Link href="/knowledge" className="hidden sm:block text-[13px] font-medium text-muted-foreground transition-colors hover:text-foreground">{t("nav.knowledge")}</Link>
           <Link href="/help" className="hidden sm:block text-[13px] font-medium text-muted-foreground transition-colors hover:text-foreground">{t("nav.help")}</Link>
           <Link href="/inbox" className="rounded-lg bg-primary px-4 py-1.5 text-[13px] font-semibold text-primary-foreground transition-colors hover:bg-primary/80">
@@ -216,6 +225,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           "flex flex-col overflow-hidden bg-sidebar border-r border-sidebar-border",
           sidebarOpen ? "fixed inset-y-0 left-0 z-50 w-[232px] shadow-2xl" : "hidden lg:flex lg:w-[224px]"
         )}>
+          {/* Brand zone — same height as the top bar for a continuous header line */}
+          <div className="flex h-14 shrink-0 items-center border-b border-sidebar-border/60 px-4">
+            <Brand gid="qg-side" />
+          </div>
           <nav className="flex-1 overflow-auto px-3 py-3">
             <div className="space-y-0.5">
               <NavItem href="/inbox" icon={Inbox} label={t("nav.inbox")} active={isActive("/inbox")} onNavigate={close} />
