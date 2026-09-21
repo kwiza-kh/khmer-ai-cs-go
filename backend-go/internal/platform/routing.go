@@ -23,7 +23,8 @@ var inboundRouteValues = map[string]bool{
 
 // routeBudget bounds the routing call: it sits on the reply path, so a slow
 // or dead Jev must degrade to "route unknown" quickly, never stall the turn.
-const routeBudget = 2 * time.Second
+// 2.5s covers the prod server's measured 0.8-2.1s spread to api.typesafe.ai.
+const routeBudget = 2500 * time.Millisecond
 
 // RouteInbound asks Jev which handling path a message needs, before any
 // retrieval or generation. The returned probability is the model's own
