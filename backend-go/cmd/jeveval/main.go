@@ -49,7 +49,7 @@ type judged struct {
 func main() {
 	csvPath := flag.String("csv", "", "path to the exported turns CSV")
 	workers := flag.Int("workers", 8, "parallel Jev calls")
-	mode := flag.String("mode", "threshold", "threshold | agree | rerank")
+	mode := flag.String("mode", "threshold", "threshold | agree | rerank | live | khmer")
 	gate := flag.String("gate", "stack", "decision policy to scan: stack | noul | jev")
 	flag.Parse()
 	switch *mode {
@@ -61,6 +61,9 @@ func main() {
 		return
 	case "live":
 		runLive(*workers)
+		return
+	case "khmer":
+		runKhmer(*workers)
 		return
 	}
 	if *csvPath == "" {
