@@ -515,3 +515,46 @@ topK=8 能补上长文档覆盖，但成本 +49%；缩短每条来源虽控制�
   （skip 0.60→45/45·0.911·5.0 来源；0.70→44/45·0.904·4.13；0.90→42/45·0.900·2.76），
   弱查询（dense top < 0.60）仍会走 rerank。
 - 真实 KB 46 题端到端复测：**44/45（97.8%）**、grounded 100%、平均 4.5s、0 mock、0 error。
+
+## 九、Jev 决策中间层（2026-09-21）
+
+按全局规则「决策点优先用 Jev」落地六个接入点，客户端在 `internal/typesafe`
+（单端点 `POST https://api.typesafe.ai/v1/systemone`，无 Go SDK，直连 HTTP；
+`TYPESAFE_API_KEY` 缺失时客户端为 nil，所有站点保持旧路径）。
+
+| # | 接入点 | 原语 | 降级 |
+|---|---|---|---|
+| 1 | 轮次分类 `judgeTurnJev`（管道+widget 共享） | Choice(sentiment/intent/topic)+Noul(escalate) | 快模型 JudgeTurn |
+| 2 | RAG rerank `rerankScoresJev` | 每候选一个 Score，单次并行 | Gemini RerankChunks |
+| 3 | 入站预路由 `RouteInbound`（widget+管道） | Choice 四路 | 保持全量 grounding |
+| 4 | 回复护栏 `GuardReply` Noul×3 | promises_handoff/leaks_sources/unsafe_claim | 仅正则网 |
+| 5 | 通知分流 `worthPinging` | Noul（fail-open） | 照旧 ping |
+| 6 | topic 打标 → `sessions.tags` 的 `topic:*` | Choice（随 #1 同批） | 不写 tag |
+
+**阈值旋钮（env，默认值均在真实数据上校准过）**：`JEV_TURN_ESCALATE_MIN=0.90`
+（独立 Noul 安全阀）、`JEV_RULE_CONFIRM_MIN=0.70`（intent/情绪规则需 Noul 确认）、
+`JEV_ROUTE_HANDOFF_MIN=0.80`、`JEV_ROUTE_CHITCHAT_MIN=0.80`、`JEV_GUARD_MIN=0.70`、
+`JEV_GUARD_HANDOFF_MIN=0.85`、`JEV_NOTIFY_WORTH_MIN=0.30`。
+
+**校准结论（cmd/jeveval，370 条真实轮次，ground truth=30 分钟内是否产生 handoff）**：
+- Jev 0 失败；sentiment 与快模型一致 99.2%、intent 81.1%、最终决策 86.8%（分歧全部是
+  快模型多升级 48 条普通产品问题——快模型在过度升级）。
+- 旧意图规则层（complaint/refund/legal 自动转人工）套在 Jev 标签上会过触发：每 370 条
+  20-26 个假 handoff；加 Noul≥0.70 确认后降到 3。故 Jev 路径用 `TurnTriggerFor`
+  （规则需确认 + 高安全阀 + no-KB 规则无条件保留），快模型回退路径仍用 `TurnTrigger`。
+- rerank A/B（生产 KB 56 条查询）：top-1 与 top-3 与 Gemini rerank **100% 一致**。
+- ground truth 是旧系统行为而非正确性oracle，precision 无绝对标准；上述数字用于
+  选旋钮，不用于宣称准确率。
+
+**踩坑记录**：
+- 生产中继（Cloudflare AI Gateway）已下线 gemini-2.5-flash 系（404 "no longer
+  available to new users"）→ `FastModel` 改为 `GEMINI_FAST_MODEL` 可调，默认
+  gemini-3.6-flash；嵌入模型 gemini-embedding-001 仍可用。旧 FastModel 是 const，
+  辅助调用（rerank/JudgeTurn/compile）此前一旦有流量就会静默失败。
+- widget 分类器曾与管道漂移（不走 Jev、不写 tags）——已统一为
+  `Pipe.JudgeTurnFor` + `Pipe.PersistTurnVerdict`；新增分类逻辑只允许走这两个入口。
+- widget 流式回复后的护栏必须用 `persistCtx`（访客挂断会取消请求 ctx）。
+
+复跑校准：导出 CSV（chat_messages ⋈ sessions ⋈ 30 分钟窗口 handoff trigger）后
+`TYPESAFE_API_KEY=… go run ./cmd/jeveval -csv turns.csv [-gate stack|noul|jev|confirm]`；
+`-mode agree` 对比快模型、`-mode rerank` 需 `DATABASE_URL` 隧道做检索 A/B。

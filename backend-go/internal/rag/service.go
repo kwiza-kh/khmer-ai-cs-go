@@ -21,6 +21,7 @@ import (
 
 	"khmer-ai-cs-go/internal/gemini"
 	"khmer-ai-cs-go/internal/redisstore"
+	"khmer-ai-cs-go/internal/typesafe"
 	"khmer-ai-cs-go/internal/usage"
 )
 
@@ -111,6 +112,9 @@ type Service struct {
 	Gemini *gemini.Service
 	Redis  *redisstore.Client
 	Logger *slog.Logger
+	// Jev optionally replaces the LLM reranker with typed Score judgments.
+	// nil = disabled: reranking keeps the Gemini path.
+	Jev *typesafe.Client
 }
 
 func isCJK(c rune) bool {
@@ -847,12 +851,73 @@ func (s *Service) rerankCandidates(ctx context.Context, query string, chunks []S
 	for i := 0; i < n; i++ {
 		texts[i] = chunks[i].Content
 	}
-	scores := s.Gemini.RerankChunks(ctx, query, texts)
+	scores := s.rerankScores(ctx, query, texts)
 	if scores == nil {
 		return chunks
 	}
 	rerankCachePut(key, scores)
 	return applyRerankScores(chunks, scores, topK)
+}
+
+// rerankScores prefers Jev (one Score question per candidate, all in a single
+// parallel batch) and falls back to the fast-model reranker when Jev is
+// disabled or unavailable.
+func (s *Service) rerankScores(ctx context.Context, query string, texts []string) []float32 {
+	if sc, ok := s.rerankScoresJev(ctx, query, texts); ok {
+		return sc
+	}
+	return s.Gemini.RerankChunks(ctx, query, texts)
+}
+
+// rerankRelevanceLevels — the ordered scale for passage relevance. Jev Score
+// returns a probability-weighted position on it (0..4); ×2.5 maps onto the
+// 0-10 scale the Gemini reranker and the rerankMin threshold use.
+var rerankRelevanceLevels = []string{
+	"Irrelevant: another topic, product, or document",
+	"Marginal: shares a word with the query but answers nothing",
+	"Partial: related background, does not answer the query",
+	"Mostly: answers part of the query",
+	"Exact: directly and completely answers the query",
+}
+
+func (s *Service) rerankScoresJev(ctx context.Context, query string, texts []string) ([]float32, bool) {
+	if !s.Jev.Enabled() || len(texts) == 0 || len(texts) > 20 {
+		return nil, false
+	}
+	passages := make([]map[string]any, len(texts))
+	questions := make(map[string]typesafe.Question, len(texts))
+	for i, text := range texts {
+		passages[i] = map[string]any{"id": fmt.Sprintf("c%d", i), "text": truncateRunes(text, 400)}
+		questions[fmt.Sprintf("c%d", i)] = typesafe.Score(
+			"How relevant is passage `passages["+strconv.Itoa(i)+"].text` to `query`?",
+			rerankRelevanceLevels)
+	}
+	resp, err := s.Jev.Judge(ctx, map[string]any{"query": query, "passages": passages}, questions)
+	if err != nil {
+		if s.Logger != nil {
+			s.Logger.Warn("jev rerank failed; falling back to fast model", "error", err.Error())
+		}
+		return nil, false
+	}
+	scores := make([]float32, len(texts))
+	for i := range texts {
+		v, ok := resp.ScoreValue(fmt.Sprintf("c%d", i))
+		if !ok {
+			if s.Logger != nil {
+				s.Logger.Warn("jev rerank missing a score; falling back to fast model", "passage", i)
+			}
+			return nil, false
+		}
+		sc := v * 2.5
+		if sc < 0 {
+			sc = 0
+		}
+		if sc > 10 {
+			sc = 10
+		}
+		scores[i] = float32(sc)
+	}
+	return scores, true
 }
 
 // applyRerankScores keeps chunks scoring above rerankMin, best first.

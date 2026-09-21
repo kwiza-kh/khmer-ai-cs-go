@@ -26,21 +26,34 @@ import (
 const (
 	// EmbeddingModel — shared with the Rust backend (identical vectors).
 	EmbeddingModel = "gemini-embedding-001"
-	// FastModel routes auxiliary calls (rewrite/rerank) to a cheap model.
-	FastModel                = "gemini-2.5-flash"
+	// embeddingVectorDimension matches EmbeddingModel's output width.
 	embeddingVectorDimension = 768
 )
+
+// FastModel routes auxiliary calls (rewrite/rerank/audit) to a cheap model.
+// The 2.5 generation was withdrawn from the production relay (404 "no longer
+// available to new users", observed 2026-09-21), so the default tracks the
+// relay's suggested successor and GEMINI_FAST_MODEL overrides it per deploy.
+var FastModel = envOr("GEMINI_FAST_MODEL", "gemini-3.6-flash")
+
+func envOr(name, fallback string) string {
+	if v := strings.TrimSpace(os.Getenv(name)); v != "" {
+		return v
+	}
+	return fallback
+}
 
 // apiBase — Gemini REST endpoint. Override with GEMINI_API_BASE to route
 // through a relay in a Google-supported region when the server's egress IP
 // is geo-blocked ("User location is not supported for the API use").
 // Value must include the /v1beta version segment, no trailing slash.
-var apiBase = func() string {
+// Read per call (not cached at init) so tests can point it at a stub.
+func apiBase() string {
 	if v := strings.TrimSpace(os.Getenv("GEMINI_API_BASE")); v != "" {
 		return strings.TrimRight(v, "/")
 	}
 	return "https://generativelanguage.googleapis.com/v1beta"
-}()
+}
 
 // HistoryItem is one chat turn for prompt construction.
 type HistoryItem struct {
@@ -167,7 +180,7 @@ func (s *Service) HotReload(apiKey, modelName, systemPrompt string, maxTokens in
 // ListModels returns the generative model names available for the key.
 func ListModels(ctx context.Context, apiKey string) ([]string, error) {
 	client := &http.Client{Timeout: 20 * time.Second}
-	u := fmt.Sprintf("%s/models?pageSize=200&key=%s", apiBase, url.QueryEscape(apiKey))
+	u := fmt.Sprintf("%s/models?pageSize=200&key=%s", apiBase(), url.QueryEscape(apiKey))
 	resp, err := client.Get(u)
 	if err != nil {
 		return nil, err
@@ -219,11 +232,11 @@ func (s *Service) fastModelName() string {
 }
 
 func (s *Service) generateURLFor(model string) string {
-	return fmt.Sprintf("%s/models/%s:generateContent?key=%s", apiBase, NormalizeModelName(model), url.QueryEscape(s.snapshot().apiKey))
+	return fmt.Sprintf("%s/models/%s:generateContent?key=%s", apiBase(), NormalizeModelName(model), url.QueryEscape(s.snapshot().apiKey))
 }
 
 func (s *Service) embedURL() string {
-	return fmt.Sprintf("%s/models/%s:embedContent?key=%s", apiBase, EmbeddingModel, url.QueryEscape(s.snapshot().apiKey))
+	return fmt.Sprintf("%s/models/%s:embedContent?key=%s", apiBase(), EmbeddingModel, url.QueryEscape(s.snapshot().apiKey))
 }
 
 // postWithRetry posts JSON, retrying 5xx/429/transport errors up to 3 times
@@ -401,7 +414,7 @@ func usageFromValue(v map[string]any) (int, int, int) {
 // streamURL builds the SSE streaming endpoint for a model.
 func (s *Service) streamURLFor(model string) string {
 	return fmt.Sprintf("%s/models/%s:streamGenerateContent?alt=sse&key=%s",
-		apiBase, NormalizeModelName(model), url.QueryEscape(s.snapshot().apiKey))
+		apiBase(), NormalizeModelName(model), url.QueryEscape(s.snapshot().apiKey))
 }
 
 // ChatStream runs a turn with token-level streaming: onToken is invoked for
@@ -583,7 +596,7 @@ func (s *Service) SynthesizeSpeech(ctx context.Context, text string) ([]byte, er
 			},
 		},
 	}
-	target := fmt.Sprintf("%s/models/%s:generateContent?key=%s", apiBase, NormalizeModelName(TTSModel()), url.QueryEscape(s.snapshot().apiKey))
+	target := fmt.Sprintf("%s/models/%s:generateContent?key=%s", apiBase(), NormalizeModelName(TTSModel()), url.QueryEscape(s.snapshot().apiKey))
 	status, respText, err := s.postWithRetry(ctx, target, body)
 	if err != nil || status != http.StatusOK {
 		return nil, fmt.Errorf("tts failed (%d): %v", status, err)
@@ -866,7 +879,7 @@ func (s *Service) embedBatch(ctx context.Context, texts []string) ([][]float32, 
 			"outputDimensionality": embeddingVectorDimension,
 		}
 	}
-	batchURL := fmt.Sprintf("%s/models/%s:batchEmbedContents?key=%s", apiBase, EmbeddingModel, url.QueryEscape(s.snapshot().apiKey))
+	batchURL := fmt.Sprintf("%s/models/%s:batchEmbedContents?key=%s", apiBase(), EmbeddingModel, url.QueryEscape(s.snapshot().apiKey))
 	status, respText, err := s.postWithRetry(ctx, batchURL, map[string]any{"requests": requests})
 	if err != nil {
 		return nil, fmt.Errorf("batchEmbedContents request: %w", err)

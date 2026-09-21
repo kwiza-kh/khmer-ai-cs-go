@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +25,7 @@ import (
 	"khmer-ai-cs-go/internal/redisstore"
 	"khmer-ai-cs-go/internal/security"
 	"khmer-ai-cs-go/internal/storager2"
+	"khmer-ai-cs-go/internal/typesafe"
 	"khmer-ai-cs-go/internal/usage"
 )
 
@@ -97,6 +100,10 @@ type Pipeline struct {
 	Sealer *security.Sealer
 	Media  *storager2.Client
 	Logger *slog.Logger
+	// Jev is the TypeSafe judgment client for typed decisions (turn
+	// classification, routing, guardrails). nil = disabled: every site
+	// falls back to its previous logic.
+	Jev *typesafe.Client
 
 	notify         chan struct{}
 	notifyOutbound chan struct{}
@@ -417,6 +424,21 @@ func (p *Pipeline) processInboundEvent(ctx context.Context, ev *InboundEvent) er
 	// Typing indicator while the AI is composing (best-effort, per platform).
 	p.sendTyping(ctx, cfg, ev.PlatformUserID)
 
+	// Pre-routing: one Jev Choice decides whether this turn needs a human,
+	// needs no retrieval at all, or takes the full grounded path. An unknown
+	// route (Jev off/slow/unsure) keeps today's behaviour untouched.
+	skipGround := false
+	if route, prob, ok := p.RouteInbound(ctx, content); ok {
+		escalate, skip := routeDecision(route, prob)
+		if escalate {
+			p.Logger.Info("auto handoff: jev routed the message to a human", "session_id", sessionID, "p", prob)
+			p.escalateToHuman(ctx, ev, cfg, sessionID, "customer_request",
+				"Jev routed the message as a human request (p="+strconv.FormatFloat(prob, 'f', 2, 64)+")")
+			return nil
+		}
+		skipGround = skip
+	}
+
 	// AI reply (grounded in the knowledge base).
 	ownerLang := p.ownerLanguage(ctx, cfg.UserID)
 	replyLang := ownerLang
@@ -429,7 +451,10 @@ func (p *Pipeline) processInboundEvent(ctx context.Context, ev *InboundEvent) er
 	}
 
 	history := p.loadHistory(ctx, sessionID, userMessageID)
-	groundCtx := p.RAG.Ground(ctx, cfg.UserID, &sessionID, content, replyLang, history, 0)
+	var groundCtx rag.GroundingContext
+	if !skipGround {
+		groundCtx = p.RAG.Ground(ctx, cfg.UserID, &sessionID, content, replyLang, history, 0)
+	}
 	message := content
 	if groundCtx.HasMatch {
 		message = rag.AugmentMessage(content, &groundCtx)
@@ -450,6 +475,20 @@ func (p *Pipeline) processInboundEvent(ctx context.Context, ev *InboundEvent) er
 	reply := result.Reply
 	if !result.UsedMock {
 		reply = gemini.StripSourceMarkers(reply)
+	}
+
+	// Semantic guard (bounded at 1.5s): catches paraphrased source leaks,
+	// handoff promises, and unconfirmed commitments the regex nets miss.
+	// Delivery is not yet enqueued, so this path can still edit the reply.
+	claimsHandoff := false
+	if g, ok := p.GuardReply(ctx, reply); ok {
+		if g.LeaksSources {
+			reply = StripCitationLines(reply)
+		}
+		claimsHandoff = g.PromisesHandoff
+		if g.UnsafeClaim {
+			p.alertUnsafeClaim(ctx, cfg.UserID, sessionID)
+		}
 	}
 
 	// After-hours preamble.
@@ -486,7 +525,7 @@ func (p *Pipeline) processInboundEvent(ctx context.Context, ev *InboundEvent) er
 	// The reply announced a handoff to the customer ("已为您转接人工…") —
 	// make it true: create the request now. No canned ack (ev=nil) since the
 	// reply itself already told the customer.
-	if ReplyClaimsHandoff(reply) {
+	if ReplyClaimsHandoff(reply) || claimsHandoff {
 		p.escalateToHuman(ctx, nil, cfg, sessionID, "ai_decision",
 			"AI reply announced a handoff to the customer")
 		return nil
@@ -1092,6 +1131,34 @@ func TurnTrigger(v gemini.TurnVerdict, hasMatch, hasDocs bool) (string, string) 
 	return "", ""
 }
 
+// TurnTriggerFor is the escalation decision for a Jev-sourced verdict. The
+// intent/sentiment rules were written for the fast model's label semantics
+// and over-fire on Jev's distributions (calibrated 2026-09-21 on 370 real
+// turns: 20-26 false handoffs per 370 without confirmation, 3 with), so here
+// they require the model's own escalate probability to corroborate them, and
+// the solo-noul valve sits at a high bar. The no-knowledge-base rule stays
+// unconditional: it rests on retrieval facts, not labels.
+func TurnTriggerFor(v gemini.TurnVerdict, rawNoul float64, hasMatch, hasDocs bool) (string, string) {
+	confirm := envFloat("JEV_RULE_CONFIRM_MIN", 0.70)
+	solo := envFloat("JEV_TURN_ESCALATE_MIN", 0.90)
+	ruleIntent := false
+	switch v.Intent {
+	case "complaint", "refund", "legal", "customization", "bulk_order":
+		ruleIntent = true
+	}
+	switch {
+	case (ruleIntent || v.Sentiment == "negative") && rawNoul >= confirm:
+		return "negative_feedback", "Jev intent/sentiment rule confirmed by escalate probability (" +
+			v.Intent + ", p=" + strconv.FormatFloat(rawNoul, 'f', 2, 64) + ")"
+	case rawNoul >= solo:
+		return "ai_decision", "Jev escalate probability above the solo bar (" +
+			strconv.FormatFloat(rawNoul, 'f', 2, 64) + ", intent: " + v.Intent + ")"
+	case !hasMatch && v.Confidence < 0.35 && hasDocs && v.Intent != "small_talk":
+		return "no_knowledge_base", "Answer not grounded in the knowledge base (intent: " + v.Intent + ")"
+	}
+	return "", ""
+}
+
 func truncateStr(s string, n int) string {
 	r := []rune(s)
 	if len(r) <= n {
@@ -1139,13 +1206,11 @@ func (p *Pipeline) classifyTurn(userID int32, sessionID, customerMsg, reply stri
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), 20*time.Second)
 		defer cancel()
 
-		verdict, ok := p.Gemini.JudgeTurn(ctx, customerMsg, reply, hasMatch)
+		verdict, topic, raw, fromJev, ok := p.judgeTurn(ctx, customerMsg, reply, hasMatch)
 		if !ok {
 			return
 		}
-		_, _ = p.DB.Exec(ctx,
-			"UPDATE sessions SET sentiment=$1, sentiment_at=NOW(), intent=$2, confidence=$3 WHERE session_id=$4 AND status='active'",
-			verdict.Sentiment, verdict.Intent, verdict.Confidence, sessionID)
+		p.PersistTurnVerdict(ctx, sessionID, verdict, topic)
 
 		// Still owned by the AI? only escalate active sessions.
 		var status string
@@ -1153,11 +1218,42 @@ func (p *Pipeline) classifyTurn(userID int32, sessionID, customerMsg, reply stri
 		if status != "active" {
 			return
 		}
-		trigger, reason := TurnTrigger(verdict, hasMatch, p.hasReadyDocs(ctx, userID))
+		var trigger, reason string
+		if fromJev {
+			trigger, reason = TurnTriggerFor(verdict, raw, hasMatch, p.hasReadyDocs(ctx, userID))
+		} else {
+			trigger, reason = TurnTrigger(verdict, hasMatch, p.hasReadyDocs(ctx, userID))
+		}
 		if trigger != "" {
 			p.escalateToHuman(ctx, nil, &configCred{UserID: userID}, sessionID, trigger, reason)
 		}
 	}
+}
+
+// PersistTurnVerdict writes the classifier's verdict onto the session. The
+// topic lands in the existing sessions.tags column as a `topic:*` entry (the
+// inbox TagsBar renders and edits it like any other tag); manual tags are
+// preserved and an older topic tag is replaced. Shared by the platform
+// pipeline and the web-chat classifier so the two cannot drift.
+func (p *Pipeline) PersistTurnVerdict(ctx context.Context, sessionID string, verdict gemini.TurnVerdict, topic string) {
+	topicTag := ""
+	if topic != "" && topic != "other" {
+		topicTag = "topic:" + topic
+	}
+	_, _ = p.DB.Exec(ctx,
+		"UPDATE sessions SET sentiment=$1, sentiment_at=NOW(), intent=$2, confidence=$3, "+
+			"tags = CASE WHEN $5::text = '' THEN tags ELSE "+
+			"(SELECT COALESCE(array_agg(x), '{}'::text[]) FROM unnest(tags) x WHERE x NOT LIKE 'topic:%') || ARRAY[$5::text] END "+
+			"WHERE session_id=$4 AND status='active'",
+		verdict.Sentiment, verdict.Intent, verdict.Confidence, sessionID, topicTag)
+}
+
+// JudgeTurnFor is the Jev-first turn judgment for callers outside the
+// pipeline (the web-chat classifier). fromJev tells the caller which
+// escalation policy applies: TurnTriggerFor for Jev verdicts, TurnTrigger for
+// fast-model fallbacks.
+func (p *Pipeline) JudgeTurnFor(ctx context.Context, customerMsg, reply string, hasMatch bool) (gemini.TurnVerdict, string, float64, bool, bool) {
+	return p.judgeTurn(ctx, customerMsg, reply, hasMatch)
 }
 
 // hasReadyDocs — whether the tenant has at least one indexed knowledge doc.
@@ -1166,6 +1262,135 @@ func (p *Pipeline) hasReadyDocs(ctx context.Context, userID int32) bool {
 	_ = p.DB.QueryRow(ctx,
 		"SELECT EXISTS(SELECT 1 FROM knowledge_documents WHERE uploaded_by = $1 AND index_status = 'ready')", userID).Scan(&exists)
 	return exists
+}
+
+// turnIntentValues mirrors the intent vocabulary of JudgeTurn so persisted
+// values stay comparable across the Jev and fast-model paths.
+var turnIntentValues = map[string]bool{
+	"question": true, "complaint": true, "refund": true, "order_status": true,
+	"price": true, "booking": true, "customization": true, "bulk_order": true,
+	"delivery": true, "payment": true, "legal": true, "small_talk": true, "other": true,
+}
+
+var turnSentimentValues = map[string]bool{"positive": true, "neutral": true, "negative": true}
+
+// judgeTurn decides one turn's verdict plus a topic tag. Jev (typed
+// judgments in a single parallel batch) is primary; the fast-model JSON
+// audit is the fallback when Jev is disabled, unavailable, or returns an
+// out-of-vocabulary answer (it yields no topic).
+func (p *Pipeline) judgeTurn(ctx context.Context, customerMsg, reply string, hasMatch bool) (gemini.TurnVerdict, string, float64, bool, bool) {
+	if v, topic, raw, ok := p.judgeTurnJev(ctx, customerMsg, reply, hasMatch); ok {
+		return v, topic, raw, true, true
+	}
+	v, ok := p.Gemini.JudgeTurn(ctx, customerMsg, reply, hasMatch)
+	return v, "", 0, false, ok
+}
+
+// turnTopicValues — the topic vocabulary persisted as `topic:*` tags.
+var turnTopicValues = map[string]bool{
+	"product": true, "price": true, "delivery": true, "complaint": true, "order": true, "other": true,
+}
+
+// judgeTurnJev asks Jev the same four decisions JudgeTurn's prompt encodes,
+// as typed questions. Escalation is a Noul thresholded in code (calibrated on
+// real handoff outcomes, see JEV_TURN_ESCALATE_MIN); the confidence stored on
+// the session is the intent distribution's concentration.
+func (p *Pipeline) judgeTurnJev(ctx context.Context, customerMsg, reply string, hasMatch bool) (gemini.TurnVerdict, string, float64, bool) {
+	if !p.Jev.Enabled() {
+		return gemini.TurnVerdict{}, "", 0, false
+	}
+	state := map[string]any{
+		"customer_message": truncateStr(customerMsg, 600),
+		"assistant_reply":  truncateStr(reply, 600),
+		"kb_grounded":      hasMatch,
+	}
+	resp, err := p.Jev.Judge(ctx, state, map[string]typesafe.Question{
+		"sentiment": typesafe.Choice(
+			"Overall emotional tone of `customer_message` in this customer-service turn.",
+			map[string]string{
+				"positive": "Satisfied, grateful, or friendly",
+				"neutral":  "Matter-of-fact, no strong emotion",
+				"negative": "Angry, rude, frustrated, or repeating a complaint",
+			}),
+		"intent": typesafe.Choice(
+			"Primary intent of `customer_message`.",
+			map[string]string{
+				"question": "Asks about a product or service",
+				"complaint": "Complains about a past problem",
+				"refund": "Demands a refund, return, or money back",
+				"order_status": "Asks where an order is",
+				"price": "Asks about prices or negotiates",
+				"booking": "Wants to book or reserve",
+				"customization": "Needs custom sizing or special specifications",
+				"bulk_order": "Wholesale or bulk purchase",
+				"delivery": "Delivery arrangement or delivery problem",
+				"payment": "Invoice, contract, or payment terms",
+				"legal": "Legal threat or dispute",
+				"small_talk": "Greeting or chit-chat",
+				"other": "Anything else",
+			}),
+		"escalate": typesafe.Noul(
+			"Should a human agent take over this conversation now? Yes when ANY applies: " +
+				"the customer is angry or repeats a complaint; refund/return demands even if a policy was quoted; " +
+				"delivery problems (late, damaged, wrong items, address change after ordering); custom sizing or " +
+				"special specifications not in the catalog; bulk/wholesale orders or price negotiation; contract, " +
+				"invoice, payment terms, or legal threats; the answer clearly did not resolve the question or the " +
+				"customer says it is wrong; the customer explicitly asks for a human. No only for well-answered " +
+				"product questions, greetings, and small talk."),
+		"topic": typesafe.Choice(
+			"Main subject of `customer_message`.",
+			map[string]string{
+				"product": "Product features, availability, or specifications",
+				"price": "Prices, quotes, discounts, or payment amounts",
+				"delivery": "Shipping, delivery time, or logistics",
+				"complaint": "A problem with a past purchase or service",
+				"order": "Placing, changing, or tracking an order",
+				"other": "Anything else",
+			}),
+	})
+	if err != nil {
+		if p.Logger != nil {
+			p.Logger.Warn("jev turn judgment failed; falling back to fast model", "error", err.Error())
+		}
+		return gemini.TurnVerdict{}, "", 0, false
+	}
+	sentiment, _, okS := resp.ChoiceValue("sentiment")
+	intent, intentConf, okI := resp.ChoiceValue("intent")
+	escalateP, okE := resp.NoulValue("escalate")
+	if !okS || !okI || !okE || !turnSentimentValues[sentiment] || !turnIntentValues[intent] {
+		if p.Logger != nil {
+			p.Logger.Warn("jev turn judgment out of vocabulary; falling back to fast model",
+				"sentiment", sentiment, "intent", intent)
+		}
+		return gemini.TurnVerdict{}, "", 0, false
+	}
+	// A missing or unknown topic only drops the tag, never the verdict.
+	topic, _, _ := resp.ChoiceValue("topic")
+	if !turnTopicValues[topic] {
+		topic = ""
+	}
+	return gemini.TurnVerdict{
+		Sentiment:  sentiment,
+		Intent:     intent,
+		Confidence: intentConf,
+		Escalate:   escalateP >= envFloat("JEV_TURN_ESCALATE_MIN", 0.60),
+	}, topic, escalateP, true
+}
+
+// JudgeTurnJev exposes the raw Jev turn judgment (verdict, topic tag, raw
+// escalate probability) for offline calibration tooling (cmd/jeveval).
+func (p *Pipeline) JudgeTurnJev(ctx context.Context, customerMsg, reply string, hasMatch bool) (gemini.TurnVerdict, string, float64, bool) {
+	return p.judgeTurnJev(ctx, customerMsg, reply, hasMatch)
+}
+
+// envFloat reads an optional float knob with a default.
+func envFloat(name string, fallback float64) float64 {
+	if v := os.Getenv(name); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f
+		}
+	}
+	return fallback
 }
 
 // sendTyping shows the "typing…" hint while the AI composes (best effort).

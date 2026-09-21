@@ -24,6 +24,7 @@ import (
 	"khmer-ai-cs-go/internal/redisstore"
 	"khmer-ai-cs-go/internal/security"
 	"khmer-ai-cs-go/internal/storager2"
+	"khmer-ai-cs-go/internal/typesafe"
 	"khmer-ai-cs-go/internal/usage"
 )
 
@@ -71,7 +72,12 @@ func main() {
 		logger.Warn("Gemini not configured — running in mock mode")
 	}
 
-	ragService := &rag.Service{DB: pool, Gemini: gem, Redis: redisClient, Logger: logger}
+	// Jev (TypeSafe System One) powers every typed judgment — turn
+	// classification, rerank, routing, guardrails, notify triage. It is nil
+	// without TYPESAFE_API_KEY, and every site then keeps its previous path.
+	jev := typesafe.NewFromEnv(logger)
+
+	ragService := &rag.Service{DB: pool, Gemini: gem, Redis: redisClient, Logger: logger, Jev: jev}
 	ragService.SpawnIndexWorkers(ctx)
 
 	// Attribute auxiliary model spend to whichever tenant tagged the context.
@@ -95,7 +101,7 @@ func main() {
 	media := storager2.New(cfg.R2.AccountID, cfg.R2.AccessKey, cfg.R2.SecretKey, cfg.R2.Bucket, cfg.R2.PublicURL)
 
 	// Platform pipeline (inbound AI replies + outbound delivery).
-	pipe := &platform.Pipeline{DB: pool, Redis: redisClient, Cfg: cfg, Gemini: gem, RAG: ragService, Sealer: sealer, Media: media, Logger: logger}
+	pipe := &platform.Pipeline{DB: pool, Redis: redisClient, Cfg: cfg, Gemini: gem, RAG: ragService, Sealer: sealer, Media: media, Logger: logger, Jev: jev}
 	pipe.SpawnWorkers(ctx)
 
 	app := &api.App{

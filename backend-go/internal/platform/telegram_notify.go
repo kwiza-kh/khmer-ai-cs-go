@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"khmer-ai-cs-go/internal/typesafe"
 )
 
 // TelegramNotifyConfig is the decrypted per-tenant notify setup.
@@ -167,6 +169,12 @@ func (p *Pipeline) NotifyNewCustomerMessage(ctx context.Context, userID int32, s
 	if cfg == nil || !cfg.NotifyMessages {
 		return
 	}
+	// Jev triage: filler turns ("ok", "thanks", emoji-only) should not buzz
+	// the owner's phone. Bounded at 1s and fail-open — a dead or slow Jev
+	// pings exactly as today.
+	if !p.worthPinging(ctx, content) {
+		return
+	}
 	name := displayName
 	if name == "" {
 		name = "customer"
@@ -322,4 +330,31 @@ func (p *Pipeline) SendDailyDigest(ctx context.Context, userID int32) {
 		b.WriteString(merchantText(lang, "digest_top") + "\n" + strings.Join(top, "\n"))
 	}
 	p.SendTelegramNotify(ctx, userID, b.String())
+}
+
+// worthPinging asks Jev whether a customer message deserves interrupting the
+// store owner. Fail-open on any doubt: no Jev, errors, incomplete answers,
+// and mid-range probabilities all keep today's behaviour (ping). Only a
+// clearly-filler verdict (below JEV_NOTIFY_WORTH_MIN) silences the ping.
+func (p *Pipeline) worthPinging(ctx context.Context, content string) bool {
+	if !p.Jev.Enabled() {
+		return true
+	}
+	ctx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+
+	resp, err := p.Jev.Judge(ctx, map[string]any{"customer_message": truncateStr(content, 300)},
+		map[string]typesafe.Question{
+			"worth_pinging": typesafe.Noul(
+				"Does this customer message need the store owner's attention now — a real question, request, " +
+					"complaint, or decision — as opposed to filler like ok/thanks/emoji/stickers or pure chit-chat?"),
+		})
+	if err != nil {
+		return true
+	}
+	v, ok := resp.NoulValue("worth_pinging")
+	if !ok {
+		return true
+	}
+	return v >= envFloat("JEV_NOTIFY_WORTH_MIN", 0.30)
 }

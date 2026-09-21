@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -385,12 +386,13 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 		_, _ = a.DB.Exec(ctx, "UPDATE sessions SET status='active', resolved_at=NULL, closed_at=NULL WHERE session_id=$1", sid)
 	}
 
-	// Human request keyword → immediate handoff (AI stays silent).
-	if keyword, matched := platform.HumanRequestKeyword(req.Message); matched {
+	// Human request → immediate handoff (AI stays silent). Shared by the
+	// keyword match and the Jev route so both paths behave identically.
+	webEscalate := func(reason string) {
 		_, _ = a.DB.Exec(ctx,
 			"INSERT INTO human_handoff_requests (session_id, user_id, status, priority, trigger, reason, created_at) "+
 				"VALUES ($1,$2,'pending','high','customer_request'::human_handoff_trigger,$3,NOW()) ON CONFLICT DO NOTHING",
-			sid, t.ownerID, "Customer asked for a human agent (matched: "+keyword+")")
+			sid, t.ownerID, reason)
 		_, _ = a.DB.Exec(ctx, "UPDATE sessions SET status='handoff', escalated_at=COALESCE(escalated_at,NOW()) WHERE session_id=$1 AND status='active'", sid)
 		ack := platform.HandoffAcknowledgement(language)
 		a.persistSystemReply(ctx, t.ownerID, sid, ack)
@@ -398,11 +400,32 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 		a.publishSessionEvent(ctx, t.ownerID, sid)
 		sendEvent("token", map[string]string{"text": ack})
 		sendEvent("done", map[string]any{"reply": ack, "tokens_used": 0, "cached_tokens": 0, "used_mock": false, "escalated": true})
+	}
+	if keyword, matched := platform.HumanRequestKeyword(req.Message); matched {
+		webEscalate("Customer asked for a human agent (matched: " + keyword + ")")
 		return
 	}
 
+	// Jev pre-routing: catches semantic human requests the keyword list
+	// misses, and skips retrieval outright for pure chit-chat. Unknown route
+	// (Jev off/slow) keeps today's full path.
+	skipGround := false
+	if a.Pipe != nil {
+		if route, prob, ok := a.Pipe.RouteInbound(ctx, req.Message); ok {
+			if escalate, skip := platform.RouteDecision(route, prob); escalate {
+				webEscalate("Jev routed the message as a human request (p=" + strconv.FormatFloat(prob, 'f', 2, 64) + ")")
+				return
+			} else {
+				skipGround = skip
+			}
+		}
+	}
+
 	history := a.chatHistory(ctx, sid, nil, userMsgID)
-	groundCtx := a.RAG.Ground(ctx, t.ownerID, &sid, req.Message, language, history, 0)
+	var groundCtx rag.GroundingContext
+	if !skipGround {
+		groundCtx = a.RAG.Ground(ctx, t.ownerID, &sid, req.Message, language, history, 0)
+	}
 	message := req.Message
 	if groundCtx.HasMatch {
 		message = rag.AugmentMessage(req.Message, &groundCtx)
@@ -430,6 +453,18 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 	if !result.UsedMock {
 		reply = gemini.StripSourceMarkers(reply)
 	}
+	// The stream already reached the visitor, so the semantic guard is
+	// after-the-fact here: it can escalate and page the owner, not unsend.
+	// persistCtx because the visitor may hang up mid-guard (r.Context dies).
+	claimsHandoff := false
+	if a.Pipe != nil {
+		if g, ok := a.Pipe.GuardReply(persistCtx, reply); ok {
+			claimsHandoff = g.PromisesHandoff
+			if g.UnsafeClaim {
+				a.Pipe.AlertUnsafeClaim(ctx, t.ownerID, sid)
+			}
+		}
+	}
 	usage.Record(persistCtx, a.DB, t.ownerID, &sid, a.Gemini.ModelName(), result.PromptTokens, result.OutputTokens, result.CachedTokens)
 	// The visitor row was persisted above; persistChatTurn would store it a
 	// second time (and double-count it), so persist only the model turn.
@@ -438,7 +473,7 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 	// request so an agent is actually notified. No canned ack: the reply
 	// itself already told the customer.
 	escalated := false
-	if platform.ReplyClaimsHandoff(reply) {
+	if platform.ReplyClaimsHandoff(reply) || claimsHandoff {
 		if _, err := a.DB.Exec(ctx,
 			"INSERT INTO human_handoff_requests (session_id, user_id, status, priority, trigger, reason, created_at) "+
 				"VALUES ($1,$2,'pending','high','ai_decision'::human_handoff_trigger,$3,NOW()) ON CONFLICT DO NOTHING",
@@ -532,32 +567,33 @@ func (a *App) releaseWebHandoff(ctx context.Context, ownerID int32, sessionID, c
 }
 
 // classifyWebTurnAsync — widget turns go through the SAME shared classifier
-// and escalation decision as platform channels (TurnTrigger), so intent-based
-// handoffs behave identically everywhere.
+// and escalation decision as platform channels, Jev first with the fast model
+// as fallback, so intent-based handoffs and topic tags behave identically
+// everywhere (this path drifted before: it skipped Jev and never wrote tags).
 func (a *App) classifyWebTurnAsync(userID int32, sessionID, message, reply string, hasMatch bool) {
-	if !a.Gemini.IsConfigured() {
+	if a.Pipe == nil {
 		return
 	}
 	platform.SpawnClassifier(func() {
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), 20*time.Second)
 		defer cancel()
-		verdict, ok := a.Gemini.JudgeTurn(ctx, message, reply, hasMatch)
+		verdict, topic, raw, fromJev, ok := a.Pipe.JudgeTurnFor(ctx, message, reply, hasMatch)
 		if !ok {
 			slog.Warn("widget turn classifier failed", "session_id", sessionID)
 			return
 		}
-		_, _ = a.DB.Exec(ctx,
-			"UPDATE sessions SET sentiment=$1, sentiment_at=NOW(), intent=$2, confidence=$3 WHERE session_id=$4 AND status='active'",
-			verdict.Sentiment, verdict.Intent, verdict.Confidence, sessionID)
+		a.Pipe.PersistTurnVerdict(ctx, sessionID, verdict, topic)
 		var status string
 		_ = a.DB.QueryRow(ctx, "SELECT status::text FROM sessions WHERE session_id=$1", sessionID).Scan(&status)
 		if status != "active" {
 			return
 		}
-		if a.Pipe == nil {
-			return
+		var trigger, reason string
+		if fromJev {
+			trigger, reason = platform.TurnTriggerFor(verdict, raw, hasMatch, a.Pipe.HasReadyDocs(ctx, userID))
+		} else {
+			trigger, reason = platform.TurnTrigger(verdict, hasMatch, a.Pipe.HasReadyDocs(ctx, userID))
 		}
-		trigger, reason := platform.TurnTrigger(verdict, hasMatch, a.Pipe.HasReadyDocs(ctx, userID))
 		if trigger == "" {
 			return
 		}
