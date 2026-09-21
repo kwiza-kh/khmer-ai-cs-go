@@ -462,8 +462,9 @@ func (s *Service) compileDocument(ctx context.Context, docID, userID int32, titl
 	// source with none until an operator noticed and re-indexed it.
 
 	// Existing KB excerpts feed the contradiction check (self and compiled
-	// children excluded).
-	var excerpts strings.Builder
+	// children excluded). Kept as a slice so the Jev confirmation/sweep can
+	// address each excerpt individually.
+	var excerpts []kbExcerpt
 	if sources, err := s.Search(ctx, userID, title+" "+truncateRunes(content, 300), 6); err == nil {
 		for _, src := range sources {
 			// Skip the document itself and AI-compiled children (a source must
@@ -471,13 +472,17 @@ func (s *Service) compileDocument(ctx context.Context, docID, userID int32, titl
 			if src.DocID == docID || strings.HasSuffix(src.Title, compiledTitleSuffix) {
 				continue
 			}
-			fmt.Fprintf(&excerpts, "--- EXISTING DOC: %s ---\n%s\n\n", src.Title, truncateRunes(src.Content, 400))
+			excerpts = append(excerpts, kbExcerpt{Title: src.Title, Content: truncateRunes(src.Content, 400)})
 		}
+	}
+	var excerptsBlob strings.Builder
+	for _, ex := range excerpts {
+		fmt.Fprintf(&excerptsBlob, "--- EXISTING DOC: %s ---\n%s\n\n", ex.Title, ex.Content)
 	}
 
 	prompt := "You maintain a customer-support knowledge base.\n\n" +
 		"NEW DOCUMENT (title: " + title + "):\n" + truncateRunes(content, 9000) + "\n\n" +
-		"EXISTING KB EXCERPTS:\n" + truncateRunes(excerpts.String(), 4000) + "\n" +
+		"EXISTING KB EXCERPTS:\n" + truncateRunes(excerptsBlob.String(), 4000) + "\n" +
 		"TASK 1 — compile the NEW DOCUMENT into a concise support-ready page. Write field \"faq_markdown\" as Markdown:\n" +
 		"  line 1 exactly: \"# " + title + compiledTitleSuffix + "\"\n" +
 		"  then a summary of at most 300 characters,\n" +
@@ -551,6 +556,12 @@ func (s *Service) compileDocument(ctx context.Context, docID, userID int32, titl
 		return fmt.Errorf("commit compiled doc: %w", err)
 	}
 	s.Logger.Info("knowledge document compiled", "doc_id", docID, "compiled_id", compiledID)
+
+	// Jev reviews the compile LLM's contradiction claims (drop unconfirmed
+	// noise) and sweeps the excerpts for conflicts the LLM missed. Both are
+	// single parallel calls and both fail open.
+	res.Contradictions = s.confirmContradictions(ctx, title, res.Contradictions)
+	res.Contradictions = append(res.Contradictions, s.sweepContradictions(ctx, title, excerpts, res.Contradictions)...)
 
 	if len(res.Contradictions) > 0 {
 		items, _ := json.Marshal(res.Contradictions)
@@ -1122,11 +1133,17 @@ func fuseSearchResults(dense, lexical, trigram []SearchChunk) []SearchChunk {
 // fail the chat — log and proceed ungrounded.
 func (s *Service) Ground(ctx context.Context, userID int32, sessionID *string, message, language string, history []gemini.HistoryItem, topK int64) GroundingContext {
 	// Rewrite turns follow-up phrasing into a searchable query; the first
-	// turn has nothing to resolve, so skip the extra LLM call.
+	// turn has nothing to resolve, so skip the extra call. Jev picks among
+	// code-built candidates when available; the Gemini free-text rewrite is
+	// the fallback.
 	effectiveQuery := message
 	var rewritten *string
 	if len(history) > 0 {
-		rewritten = s.Gemini.RewriteSearchQuery(ctx, message, history)
+		var decided bool
+		rewritten, decided = s.rewriteQueryJev(ctx, message, history)
+		if !decided {
+			rewritten = s.Gemini.RewriteSearchQuery(ctx, message, history)
+		}
 		if rewritten != nil {
 			effectiveQuery = *rewritten
 		}

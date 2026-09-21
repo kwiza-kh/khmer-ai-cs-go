@@ -27,7 +27,7 @@ func f(v float64) string { return strconv.FormatFloat(v, 'f', -1, 64) }
 
 func TestGuardReplyFlagsAllThree(t *testing.T) {
 	p := &Pipeline{Jev: jevGuardServer(t, 0.9, 0.8, 0.75), Logger: quietLogger()}
-	g, ok := p.GuardReply(context.Background(), "I will transfer you… according to the document… price is fixed at 5$")
+	g, ok := p.GuardReply(context.Background(), "I will transfer you… according to the document… price is fixed at 5$", nil)
 	if !ok {
 		t.Fatal("guard expected")
 	}
@@ -38,7 +38,7 @@ func TestGuardReplyFlagsAllThree(t *testing.T) {
 
 func TestGuardReplyBelowBarIsClean(t *testing.T) {
 	p := &Pipeline{Jev: jevGuardServer(t, 0.2, 0.1, 0.3), Logger: quietLogger()}
-	g, ok := p.GuardReply(context.Background(), "The 5cm board costs about market rate.")
+	g, ok := p.GuardReply(context.Background(), "The 5cm board costs about market rate.", nil)
 	if !ok {
 		t.Fatal("guard expected")
 	}
@@ -51,7 +51,7 @@ func TestGuardReplyBarIsAKnob(t *testing.T) {
 	t.Setenv("JEV_GUARD_MIN", "0.95")
 	t.Setenv("JEV_GUARD_HANDOFF_MIN", "0.95")
 	p := &Pipeline{Jev: jevGuardServer(t, 0.9, 0.8, 0.75), Logger: quietLogger()}
-	g, ok := p.GuardReply(context.Background(), "x")
+	g, ok := p.GuardReply(context.Background(), "x", nil)
 	if !ok {
 		t.Fatal("guard expected")
 	}
@@ -62,7 +62,7 @@ func TestGuardReplyBarIsAKnob(t *testing.T) {
 
 func TestGuardReplyDisabledAndIncomplete(t *testing.T) {
 	p := &Pipeline{Jev: nil, Logger: quietLogger()}
-	if _, ok := p.GuardReply(context.Background(), "x"); ok {
+	if _, ok := p.GuardReply(context.Background(), "x", nil); ok {
 		t.Fatal("disabled Jev must report not-ok")
 	}
 	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -71,7 +71,7 @@ func TestGuardReplyDisabledAndIncomplete(t *testing.T) {
 	}))
 	t.Cleanup(bad.Close)
 	p2 := &Pipeline{Jev: &typesafe.Client{Endpoint: bad.URL, APIKey: "k", Model: "jev-latest", HTTP: bad.Client(), Logger: quietLogger()}}
-	if _, ok := p2.GuardReply(context.Background(), "x"); ok {
+	if _, ok := p2.GuardReply(context.Background(), "x", nil); ok {
 		t.Fatal("incomplete guard must report not-ok, never half-act")
 	}
 }

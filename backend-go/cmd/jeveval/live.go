@@ -173,7 +173,7 @@ func judgeLiveCase(ctx context.Context, pipe *platform.Pipeline, c liveCase) (bo
 		return len(issues) == 0, detail, fmt.Sprintf("noul=%.2f conf=%.2f %s", raw, v.Confidence, shortReason(reason))
 
 	case "guard":
-		g, ok := pipe.GuardReply(ctx, c.reply)
+		g, ok := pipe.GuardReply(ctx, c.reply, nil)
 		if !ok {
 			return false, "jev call failed", ""
 		}

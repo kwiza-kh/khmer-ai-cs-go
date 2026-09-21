@@ -570,3 +570,15 @@ topK=8 能补上长文档覆盖，但成本 +49%；缩短每条来源虽控制�
 词汇探测 4/4（0.90-0.95）、乱码/纯问候对照 2/2（0.20/0.09 不乱答 yes）。
 结论：Jev 真实读懂高棉语，但准确率低于英语的文档警示仍然成立——阈值必须
 持续用自有数据校准，勿直接抄英文语料的数字。
+
+### Jev 与知识库的三处增强（2026-09-21 晚）
+
+| # | 接入点 | 设计 | 实测 |
+|---|---|---|---|
+| A | 入库矛盾复核+补漏 | compile LLM 列出的矛盾逐条 Jev Noul 确认（`JEV_CONTRADICTION_MIN=0.60`，fail-open 全保留）；对未命中的现有文档 excerpt 补漏 sweep（同批并行，低危条目） | prompt 锐化前 0.31/0.32 无区分度（复合判断），锐化为「同一事项、不同具体值」后 **0.99/0.08**；doc 级 sweep **0.80/0.05** |
+| B | 引用核查 | GuardReply 第 4 问 `supported_by_sources`（仅 grounded 回复携带；缺答案=审计不完整→fail 不-ok），未支持→店主告警（10 分钟节流） | 支持的回复 **0.87** vs 编造价格 **0.03** |
+| C | 检索改写 | 不再信任 Gemini 自由文本改写为首选：代码出候选（原文/上一轮关键词承接/本轮分词词），Jev Choice 择优；`rewriteQueryJev` 三态（nil,true=原文最佳 / q,true=选中 / nil,false=降级 Gemini 改写） | carry-over 候选 conf 0.95；线上两轮会话无告警、hit_count 正常 |
+
+教训：Jev 的 Noul 做**双 claim 对比**这类复合判断时问法必须拆到位（"同一事项+不同具体值"），
+笼统的 "do these contradict" 没有区分度——这正是 typesafe 技能「一个问题一个窄判断」的实例。
+compile 的 E2E（真实上传矛盾文档）未跑，验证止于 prompt 级探针 + fail-open。

@@ -478,16 +478,26 @@ func (p *Pipeline) processInboundEvent(ctx context.Context, ev *InboundEvent) er
 	}
 
 	// Semantic guard (bounded at 1.5s): catches paraphrased source leaks,
-	// handoff promises, and unconfirmed commitments the regex nets miss.
-	// Delivery is not yet enqueued, so this path can still edit the reply.
+	// handoff promises, and unconfirmed commitments the regex nets miss,
+	// plus the citation check against the grounding passages. Delivery is
+	// not yet enqueued, so this path can still edit the reply.
 	claimsHandoff := false
-	if g, ok := p.GuardReply(ctx, reply); ok {
+	srcTexts := make([]string, 0, len(groundCtx.Sources))
+	for _, src := range groundCtx.Sources {
+		srcTexts = append(srcTexts, src.Content)
+	}
+	if g, ok := p.GuardReply(ctx, reply, srcTexts); ok {
 		if g.LeaksSources {
 			reply = StripCitationLines(reply)
 		}
 		claimsHandoff = g.PromisesHandoff
 		if g.UnsafeClaim {
-			p.alertUnsafeClaim(ctx, cfg.UserID, sessionID)
+			p.alertQuality(ctx, cfg.UserID, sessionID, "AI 回复包含待确认承诺",
+				"Jev 标记该回复做出了需店员确认的承诺（价格/交期/库存等），请在收件箱检查该会话。")
+		}
+		if !g.SupportedBySources {
+			p.alertQuality(ctx, cfg.UserID, sessionID, "AI 回复脱离知识库作答",
+				"Jev 标记该回复的事实性断言没有命中知识库原文（可能是幻觉），请核对后回复客户。")
 		}
 	}
 

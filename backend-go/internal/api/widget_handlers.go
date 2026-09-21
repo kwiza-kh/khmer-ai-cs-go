@@ -458,10 +458,19 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 	// persistCtx because the visitor may hang up mid-guard (r.Context dies).
 	claimsHandoff := false
 	if a.Pipe != nil {
-		if g, ok := a.Pipe.GuardReply(persistCtx, reply); ok {
+		srcTexts := make([]string, 0, len(groundCtx.Sources))
+		for _, src := range groundCtx.Sources {
+			srcTexts = append(srcTexts, src.Content)
+		}
+		if g, ok := a.Pipe.GuardReply(persistCtx, reply, srcTexts); ok {
 			claimsHandoff = g.PromisesHandoff
 			if g.UnsafeClaim {
-				a.Pipe.AlertUnsafeClaim(ctx, t.ownerID, sid)
+				a.Pipe.AlertQuality(ctx, t.ownerID, sid, "AI 回复包含待确认承诺",
+					"Jev 标记该回复做出了需店员确认的承诺（价格/交期/库存等），请在收件箱检查该会话。")
+			}
+			if !g.SupportedBySources {
+				a.Pipe.AlertQuality(ctx, t.ownerID, sid, "AI 回复脱离知识库作答",
+					"Jev 标记该回复的事实性断言没有命中知识库原文（可能是幻觉），请核对后回复客户。")
 			}
 		}
 	}
