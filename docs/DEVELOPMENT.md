@@ -558,3 +558,8 @@ topK=8 能补上长文档覆盖，但成本 +49%；缩短每条来源虽控制�
 复跑校准：导出 CSV（chat_messages ⋈ sessions ⋈ 30 分钟窗口 handoff trigger）后
 `TYPESAFE_API_KEY=… go run ./cmd/jeveval -csv turns.csv [-gate stack|noul|jev|confirm]`；
 `-mode agree` 对比快模型、`-mode rerank` 需 `DATABASE_URL` 隧道做检索 A/B。
+
+复跑线上能力实测：`TYPESAFE_API_KEY=… go run ./cmd/jeveval -mode live`（22 个
+高棉语客服场景，含否定转人工、混合语言、逐 flag 护栏用例；2026-09-21 首跑
+20/22，两个"失败"均为期望过严的标签分歧：500 件批发标成 price 但经 solo
+安全阀正确升级；"សួស្តី!" 标 neutral 而非 positive。行为零误判）。

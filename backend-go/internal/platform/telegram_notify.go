@@ -332,6 +332,11 @@ func (p *Pipeline) SendDailyDigest(ctx context.Context, userID int32) {
 	p.SendTelegramNotify(ctx, userID, b.String())
 }
 
+// WorthPinging exposes worthPinging for live/offline evaluation tooling.
+func (p *Pipeline) WorthPinging(ctx context.Context, content string) bool {
+	return p.worthPinging(ctx, content)
+}
+
 // worthPinging asks Jev whether a customer message deserves interrupting the
 // store owner. Fail-open on any doubt: no Jev, errors, incomplete answers,
 // and mid-range probabilities all keep today's behaviour (ping). Only a

@@ -59,6 +59,9 @@ func main() {
 	case "rerank":
 		runRerank(*csvPath, *workers)
 		return
+	case "live":
+		runLive(*workers)
+		return
 	}
 	if *csvPath == "" {
 		fmt.Fprintln(os.Stderr, "usage: jeveval -csv turns.csv")
