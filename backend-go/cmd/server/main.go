@@ -157,9 +157,21 @@ func main() {
 	hub.Start(ctx)
 
 	// Webhook handlers (Meta/WhatsApp/Telegram/LINE).
-	webhooks := &platform.Webhooks{DB: pool, Pipe: pipe, Sealer: sealer, MetaVerifyToken: cfg.MetaVerifyToken}
+	webhooks := &platform.Webhooks{
+		DB: pool, Pipe: pipe, Sealer: sealer,
+		MetaVerifyToken: cfg.MetaVerifyToken,
+		// The Data Deletion callback is signed with the app secret, which is a
+		// different credential from the verify token used by the hub.challenge GET.
+		MetaAppSecret: cfg.Meta.AppSecret,
+		PublicBaseURL: cfg.Server.PublicAPIURL,
+		Logger:        logger,
+	}
 	whMux := http.NewServeMux()
 	whMux.HandleFunc("/api/v1/webhook/meta", webhooks.MetaWebhook)
+	// Meta Data Deletion Request Callback — mandatory under Platform Terms
+	// §3(d)(i). Unauthenticated like every other webhook here: the
+	// signed_request is the authentication.
+	whMux.HandleFunc("/api/v1/webhook/meta/data-deletion", webhooks.MetaDataDeletion)
 	whMux.HandleFunc("/api/v1/webhook/whatsapp", webhooks.WhatsAppWebhook)
 	whMux.HandleFunc("/api/v1/webhook/telegram", webhooks.TelegramWebhook)
 	whMux.HandleFunc("/api/v1/webhook/line", webhooks.LineWebhook)

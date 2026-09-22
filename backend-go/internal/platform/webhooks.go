@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -28,6 +29,13 @@ type Webhooks struct {
 	Pipe            *Pipeline
 	Sealer          *security.Sealer
 	MetaVerifyToken string
+	// MetaAppSecret verifies Meta signed_requests (the Data Deletion callback).
+	// Distinct from MetaVerifyToken, which only answers the hub.challenge GET.
+	MetaAppSecret string
+	// PublicBaseURL is the site origin used to build the deletion status link
+	// handed back to Meta. Falls back to the production origin when empty.
+	PublicBaseURL string
+	Logger        *slog.Logger
 }
 
 // configRow is the lookup shape for webhook routing.

@@ -42,6 +42,12 @@ func (a *App) Router() http.Handler {
 	mux.Handle("POST /api/v1/widget/chat", a.widgetRateLimit(20)(http.HandlerFunc(a.widgetChat)))
 	mux.Handle("POST /api/v1/widget/feedback", a.widgetRateLimit(30)(a.handle(a.widgetFeedback)))
 
+	// Data-subject self-service: look up one deletion request by the code the
+	// Meta callback returned. Public for the same reason the widget routes are
+	// — the subject holds no account here — and rate limited per client. The
+	// code itself is the capability and carries 80 bits of entropy.
+	mux.Handle("GET /api/v1/privacy/deletion-status", a.rateLimit(30)(a.handle(a.deletionStatus)))
+
 	// Authenticated group.
 	authed := http.NewServeMux()
 	authed.Handle("PUT /api/v1/auth/password", a.handle(a.changePassword))
