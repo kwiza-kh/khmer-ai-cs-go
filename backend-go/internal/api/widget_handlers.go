@@ -426,6 +426,27 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	history := a.chatHistory(ctx, sid, nil, userMsgID)
+
+	// Retrieval is the slowest pre-generation step and does not depend on the
+	// routing decision — only on whether we keep its result. Start it
+	// concurrently with Jev's routing call below so Jev's latency stops being
+	// purely additive. The widget is the primary customer channel, so it pays
+	// that cost on nearly every turn.
+	groundCh := make(chan rag.GroundingContext, 1)
+	go func() {
+		res := rag.GroundingContext{}
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					a.Logger.Warn("widget background retrieval panic recovered", "panic", r)
+				}
+			}()
+			res = a.RAG.Ground(ctx, t.ownerID, &sid, req.Message, language, history, 0)
+		}()
+		groundCh <- res // exactly one send, so the channel never leaks
+	}()
+
 	// Jev pre-routing: catches semantic human requests the keyword list
 	// misses, and skips retrieval outright for pure chit-chat. Unknown route
 	// (Jev off/slow) keeps today's full path.
@@ -441,10 +462,18 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	history := a.chatHistory(ctx, sid, nil, userMsgID)
 	var groundCtx rag.GroundingContext
-	if !skipGround {
-		groundCtx = a.RAG.Ground(ctx, t.ownerID, &sid, req.Message, language, history, 0)
+	if skipGround {
+		// Small talk: Jev decided retrieval is unnecessary, so drop the
+		// speculative result. The buffered channel lets the worker finish
+		// without blocking; one unused retrieval on chit-chat is cheaper than
+		// making every real question wait for the routing call.
+	} else {
+		select {
+		case groundCtx = <-groundCh:
+		case <-ctx.Done():
+			return
+		}
 	}
 	message := req.Message
 	if groundCtx.HasMatch {
