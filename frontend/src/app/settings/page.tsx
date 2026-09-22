@@ -192,6 +192,12 @@ function TwoFactorCard() {
   const [otpauthUri, setOtpauthUri] = React.useState("");
   const [qrDataUrl, setQrDataUrl] = React.useState("");
   const [code, setCode] = React.useState("");
+  // Replacing an enabled factor requires proof of the CURRENT factor (password
+  // plus a code from the existing authenticator) — the server refuses a
+  // session-only rebind, so the form has to ask for both.
+  const [replacing, setReplacing] = React.useState(false);
+  const [reauthPassword, setReauthPassword] = React.useState("");
+  const [reauthCode, setReauthCode] = React.useState("");
   const [busy, setBusy] = React.useState(false);
 
   React.useEffect(() => {
@@ -218,6 +224,21 @@ function TwoFactorCard() {
       const r = await totpSetup();
       setSecret(r.secret);
       setOtpauthUri(r.otpauth_uri);
+      toast.success(t("settings.totpSetupToast"));
+    } catch (e) { toast.error((e as Error).message); } finally { setBusy(false); }
+  };
+
+  // Replace the existing factor: server re-verifies the password and the
+  // current authenticator code before issuing a new secret.
+  const replaceSetup = async () => {
+    if (!reauthPassword || !reauthCode.trim()) { toast.error(t("settings.totpReauthHint")); return; }
+    setBusy(true);
+    try {
+      const r = await totpSetup(reauthPassword, reauthCode.trim());
+      setSecret(r.secret);
+      setOtpauthUri(r.otpauth_uri);
+      setReplacing(false);
+      setReauthPassword(""); setReauthCode(""); setCode("");
       toast.success(t("settings.totpSetupToast"));
     } catch (e) { toast.error((e as Error).message); } finally { setBusy(false); }
   };
@@ -259,6 +280,25 @@ function TwoFactorCard() {
               <Input value={code} onChange={(e) => setCode(e.target.value)} placeholder={t("settings.totpCodePlaceholder")} className="mt-1 h-9 text-sm" inputMode="numeric" />
             </div>
             <Button onClick={disable} disabled={busy} variant="destructive" className="h-8 text-xs">{t("settings.totpDisable")}</Button>
+            {replacing ? (
+              <div className="space-y-2 rounded-md border border-border p-3">
+                <p className="text-xs text-muted-foreground">{t("settings.totpReauthHint")}</p>
+                <div>
+                  <Label className="text-xs text-muted-foreground">{t("settings.currentPassword")}</Label>
+                  <Input type="password" value={reauthPassword} onChange={(e) => setReauthPassword(e.target.value)} className="mt-1 h-9 text-sm" />
+                </div>
+                <div>
+                  <Label className="text-xs text-muted-foreground">{t("settings.totpCurrentCode")}</Label>
+                  <Input value={reauthCode} onChange={(e) => setReauthCode(e.target.value)} placeholder={t("settings.totpCodePlaceholder")} className="mt-1 h-9 text-sm" inputMode="numeric" />
+                </div>
+                <div className="flex gap-2">
+                  <Button onClick={replaceSetup} disabled={busy} className="h-8 text-xs gap-1.5">{busy ? <Loader2 className="size-3 animate-spin" /> : <ShieldCheck className="size-3" />}{t("settings.totpReplaceConfirm")}</Button>
+                  <Button onClick={() => { setReplacing(false); setReauthPassword(""); setReauthCode(""); }} disabled={busy} variant="ghost" className="h-8 text-xs">{t("common.cancel")}</Button>
+                </div>
+              </div>
+            ) : (
+              <Button onClick={() => setReplacing(true)} disabled={busy} variant="outline" className="h-8 text-xs gap-1.5"><ShieldCheck className="size-3" />{t("settings.totpReplace")}</Button>
+            )}
           </>
         ) : secret ? (
           <>

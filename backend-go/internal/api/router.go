@@ -383,24 +383,58 @@ func (a *App) handlePlatformRetry(kind string) http.HandlerFunc {
 	}
 }
 
-// audit records every non-GET mutation on the admin/platform surface into
-// audit_logs, joined to the acting user. Best-effort.
+// auditedPrefixes are the route namespaces whose mutations must land in
+// audit_logs. Matching is prefix-based rather than a substring search so that
+// the plural /api/v1/platforms/ (the channel-credential surface) and the team,
+// billing and credential namespaces are covered too: the old substring test on
+// "/admin/" or "/platform/" missed the routes that create the agent_teams
+// tenant edge, rotate provider credentials, or change a plan through the
+// billing twin of the audited platform path.
+var auditedPrefixes = []string{
+	"/api/v1/admin/",
+	"/api/v1/platform/",
+	"/api/v1/platforms/",
+	"/api/v1/team/",
+	"/api/v1/billing/",
+	"/api/v1/api-keys",
+	// Credential-changing self-service routes. The public login/register/SSO
+	// endpoints are deliberately excluded: they have no authenticated actor and
+	// are already covered by the per-IP limiter and the request log.
+	"/api/v1/auth/password",
+	"/api/v1/auth/totp/",
+}
+
+// audit records every non-GET mutation on the admin, platform and credential
+// surface into audit_logs, joined to the acting user. Best-effort.
+//
+// Denied attempts are recorded too: an authorization probe against a
+// privileged or credential route is exactly what an operator needs to see, and
+// the previous status<300 filter discarded it.
 func (a *App) audit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
-		isAdminSurface := strings.Contains(path, "/admin/") || strings.Contains(path, "/platform/") || strings.HasSuffix(path, "/admin") || strings.HasSuffix(path, "/platform")
+		isAdminSurface := strings.HasSuffix(path, "/admin") || strings.HasSuffix(path, "/platform")
+		if !isAdminSurface {
+			for _, p := range auditedPrefixes {
+				if strings.HasPrefix(path, p) {
+					isAdminSurface = true
+					break
+				}
+			}
+		}
 		rec := &statusRecorder{ResponseWriter: w, status: 200}
 		next.ServeHTTP(rec, r)
-		if isAdminSurface && r.Method != http.MethodGet && r.Method != http.MethodOptions && rec.status < 300 {
+		if isAdminSurface && r.Method != http.MethodGet && r.Method != http.MethodOptions && rec.status > 0 {
 			user, _ := UserFrom(r)
-			uid := int32(0)
-			ip := ""
+			// NULL when there is no authenticated actor: audit_logs.admin_id is a
+			// foreign key to users, so 0 would violate it and silently drop the row.
+			var uid any
 			if user != nil {
 				uid = user.UserID
 			}
 			// Same trust-boundary resolution as rate limiting: the audit IP
 			// must not be the client-suppliable first XFF element.
-			ip = clientIP(r)
+			ip := clientIP(r)
 			details, _ := json.Marshal(map[string]any{"method": r.Method, "path": path, "status": rec.status})
 			_, _ = a.DB.Exec(r.Context(),
 				"INSERT INTO audit_logs (admin_id, action, target_type, target_id, details, ip_address) VALUES ($1,$2,'admin','',$3::jsonb,$4)",

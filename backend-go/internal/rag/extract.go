@@ -114,6 +114,11 @@ func extractDocx(data []byte) (string, error) {
 	var out strings.Builder
 	inParagraph := false
 	i := 0
+	// wtClose caches where the text run ends, so an unterminated <w:t> does
+	// not make every later tag repeat the same suffix scan (that made the walk
+	// quadratic in the 32 MB cap: ~30 KB of bare <w:t> cost ~1e14 comparisons).
+	// -1 means "no </w:t> anywhere at or after this point".
+	wtClose := -1
 	for i < len(xml) {
 		if xml[i] != '<' {
 			i++
@@ -137,17 +142,26 @@ func extractDocx(data []byte) (string, error) {
 		local := strings.TrimSpace(tag[:nameEnd])
 		switch {
 		case local == "w:p" && !strings.HasPrefix(tag, "/"):
+			// i MUST advance here. Without it the loop re-parses the same
+			// opening <w:p> forever, which hangs the request goroutine for any
+			// document that contains a paragraph — i.e. every real .docx.
 			inParagraph = true
+			i = close
 		case local == "w:t" && !strings.HasPrefix(tag, "/"):
 			contentStart := close
-			rel := strings.Index(xml[contentStart:], "</w:t>")
-			if rel >= 0 {
-				contentEnd := contentStart + rel
-				out.WriteString(xml[contentStart:contentEnd])
-				i = contentEnd + len("</w:t>")
-				continue
+			if wtClose < contentStart {
+				rel := strings.Index(xml[contentStart:], "</w:t>")
+				if rel < 0 {
+					// No terminator remains: the rest of the document has no
+					// text run, so stop instead of re-scanning per tag.
+					i = len(xml)
+					break
+				}
+				wtClose = contentStart + rel
 			}
-			i = close
+			out.WriteString(xml[contentStart:wtClose])
+			i = wtClose + len("</w:t>")
+			continue
 		case (local == "w:br" || local == "w:tab") && inParagraph:
 			out.WriteByte('\n')
 			i = close
@@ -171,28 +185,14 @@ func extractDocx(data []byte) (string, error) {
 // URL ingestion (SSRF-guarded)
 // ============================================
 
-// FetchURLContent fetches a public URL (http/https only), enforcing SSRF
-// guards: the target must resolve to a public IP and redirects are
-// re-validated. Returns (title, text). Body capped at 5 MB.
-func FetchURLContent(ctx context.Context, rawURL string) (string, string, error) {
-	parsed, err := url.Parse(rawURL)
-	if err != nil {
-		return "", "", fmt.Errorf("invalid url: %w", err)
-	}
-	if (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" {
-		return "", "", fmt.Errorf("only public http(s) URLs are allowed")
-	}
-	if err := ensurePublicHost(parsed.Hostname()); err != nil {
-		return "", "", fmt.Errorf("URL host is not public: %w", err)
-	}
-
-	// The dialer Control hook closes the check-to-dial gap: net/http re-
-	// resolves DNS at connection time, so validating the hostname up front is
-	// not enough. Control runs with the address actually being dialed (after
-	// resolution) and rejects any private/loopback target — defeating DNS
-	// rebinding between the guard's LookupIP and the dial, and the mixed
-	// public/private A-record variant (Happy Eyeballs can no longer land on
-	// the private member unnoticed).
+// PublicFetchClient returns an HTTP client whose dialer refuses any address
+// that is not globally routable, plus a redirect policy that re-validates each
+// hop and caps the chain. Callers that fetch an attacker-supplied URL must use
+// it: a plain http.Client follows up to 10 redirects with no address check.
+//
+// This is the same guard FetchURLContent applies, exported so the platform
+// media path (which fetches a webhook-supplied source_url) cannot drift from it.
+func PublicFetchClient() *http.Client {
 	dialer := &net.Dialer{
 		Timeout: 10 * time.Second,
 		Control: func(network, address string, _ syscall.RawConn) error {
@@ -207,7 +207,7 @@ func FetchURLContent(ctx context.Context, rawURL string) (string, string, error)
 			return nil
 		},
 	}
-	client := &http.Client{
+	return &http.Client{
 		Timeout: 20 * time.Second,
 		Transport: &http.Transport{
 			DialContext: dialer.DialContext,
@@ -222,6 +222,41 @@ func FetchURLContent(ctx context.Context, rawURL string) (string, string, error)
 			return nil
 		},
 	}
+}
+
+// ValidateFetchURL enforces the scheme allowlist and the pre-dial public-host
+// check on a caller-supplied URL, returning the parsed URL for use.
+func ValidateFetchURL(rawURL string) (*url.URL, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid url: %w", err)
+	}
+	if (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" {
+		return nil, fmt.Errorf("only public http(s) URLs are allowed")
+	}
+	if err := ensurePublicHost(parsed.Hostname()); err != nil {
+		return nil, fmt.Errorf("URL host is not public: %w", err)
+	}
+	return parsed, nil
+}
+
+// FetchURLContent fetches a public URL (http/https only), enforcing SSRF
+// guards: the target must resolve to a public IP and redirects are
+// re-validated. Returns (title, text). Body capped at 5 MB.
+func FetchURLContent(ctx context.Context, rawURL string) (string, string, error) {
+	parsed, err := ValidateFetchURL(rawURL)
+	if err != nil {
+		return "", "", err
+	}
+
+	// The dialer Control hook closes the check-to-dial gap: net/http re-
+	// resolves DNS at connection time, so validating the hostname up front is
+	// not enough. Control runs with the address actually being dialed (after
+	// resolution) and rejects any private/loopback target — defeating DNS
+	// rebinding between the guard's LookupIP and the dial, and the mixed
+	// public/private A-record variant (Happy Eyeballs can no longer land on
+	// the private member unnoticed).
+	client := PublicFetchClient()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
 	if err != nil {
 		return "", "", err
@@ -292,15 +327,50 @@ func isPublicIP(ip net.IP) bool {
 		}
 		return true
 	}
-	return !addr.Is6() || !isUniqueLocalV6(addr)
+	// IPv6 is an ALLOWLIST, not a denylist: the previous fallback accepted every
+	// IPv6 address outside fc00::/7, so 6to4 (2002::/16), Teredo (2001::/32),
+	// NAT64 (64:ff9b::/96), deprecated site-local (fec0::/10), documentation
+	// (2001:db8::/32) and any internal host in global unicast space all passed
+	// both the pre-dial check and the dial-time Control hook. Only addresses the
+	// IANA special-purpose registry marks globally reachable are accepted here.
+	return isGloballyRoutableV6(addr)
 }
 
-func isUniqueLocalV6(addr netip.Addr) bool {
+// isGloballyRoutableV6 accepts only 2000::/3 (the global unicast range that the
+// special-purpose registry delegates for public routing) while excluding the
+// embedded/transitional ranges inside it that can carry a non-public
+// destination: 2001:db8::/32 documentation, 2001::/32 Teredo, 2001:2::/48
+// benchmarking, 2002::/16 6to4, and 64:ff9b::/96 NAT64 (which maps IPv4).
+func isGloballyRoutableV6(addr netip.Addr) bool {
 	if !addr.Is6() {
 		return false
 	}
 	segs := addr.As16()
-	return segs[0] == 0xfc || segs[0] == 0xfd
+	g0 := uint16(segs[0])<<8 | uint16(segs[1]) // first 16-bit group
+	g1 := uint16(segs[2])<<8 | uint16(segs[3]) // second 16-bit group
+	// 2000::/3 → first three bits 001, i.e. g0 in 0x2000..0x3fff.
+	if g0 < 0x2000 || g0 > 0x3fff {
+		return false
+	}
+	switch g0 {
+	case 0x2001:
+		switch g1 {
+		case 0x0db8: // 2001:db8::/32 documentation
+			return false
+		case 0x0000: // 2001::/32 Teredo
+			return false
+		case 0x0002: // 2001:2::/48 benchmarking
+			return false
+		}
+	case 0x2002: // 2002::/16 6to4
+		return false
+	}
+	// 64:ff9b::/96 NAT64 — outside 2000::/3, but checked explicitly so the
+	// reason is recorded if the range ever moves.
+	if g0 == 0x0064 && g1 == 0xff9b {
+		return false
+	}
+	return true
 }
 
 // ExtractHTMLText extracts visible text from an HTML page: skips

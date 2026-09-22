@@ -18,6 +18,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"khmer-ai-cs-go/internal/rag"
 )
 
 // unwrapURLErr drops the *url.Error wrapper, whose message embeds the full
@@ -208,12 +210,22 @@ func (m *MetaClient) DownloadMedia(ctx context.Context, mediaID string) ([]byte,
 	return data, mime, err
 }
 
+// downloadBytes fetches a provider- or webhook-supplied media URL. The URL is
+// attacker-influenced (a signed webhook payload names it), so it goes through
+// the shared RAG egress guard: scheme allowlist, pre-dial public-address check,
+// a dial-time control that binds the check to the resolved address, and a
+// re-validated 3-hop redirect cap — the default client would otherwise follow
+// up to 10 redirects into the host's own network with no check at all.
 func downloadBytes(ctx context.Context, u string) ([]byte, string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	parsed, err := rag.ValidateFetchURL(u)
+	if err != nil {
+		return nil, "", fmt.Errorf("media download blocked: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
 	if err != nil {
 		return nil, "", err
 	}
-	resp, err := httpClient.Do(req)
+	resp, err := rag.PublicFetchClient().Do(req)
 	if err != nil {
 		return nil, "", fmt.Errorf("media download: %w", unwrapURLErr(err))
 	}

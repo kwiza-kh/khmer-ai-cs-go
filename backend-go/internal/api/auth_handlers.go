@@ -147,16 +147,15 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) (any, error) {
 }
 
 // recordLoginFailure increments the counter and sets the lockout when it
-// crosses the threshold.
+// crosses the threshold. The increment is a single atomic INCR: the previous
+// read-modify-write lost one increment per concurrent round, so a burst of
+// simultaneous failures advanced the counter by roughly one and the advertised
+// 5-per-15min bound scaled with attacker concurrency instead of bounding it.
 func (a *App) recordLoginFailure(ctx context.Context, failKey, lockKey string) {
-	count := int64(1)
-	if v, err := a.Redis.GetJSON(ctx, failKey); err == nil && v != nil {
-		var n int64
-		if json.Unmarshal(v, &n) == nil {
-			count = n + 1
-		}
+	count, err := a.Redis.IncrCounter(ctx, failKey, lockoutTTL)
+	if err != nil {
+		return
 	}
-	_ = a.Redis.SetJSON(ctx, failKey, count, lockoutTTL)
 	if count >= lockoutThreshold {
 		_ = a.Redis.SetJSON(ctx, lockKey, "locked", lockoutTTL)
 	}

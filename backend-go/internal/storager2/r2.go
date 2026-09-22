@@ -181,10 +181,27 @@ func (c *Client) PresignedGET(key string, ttl time.Duration) (string, error) {
 
 // PublicOrPresigned prefers the bucket public URL (permanent, for provider
 // side downloads), falling back to a presigned GET.
+//
+// Only use this for objects that are inherently publishable (a merchant's own
+// avatar, a customer photo the tenant is meant to display). It ignores ttl
+// whenever PublicURL is configured, so the result never expires.
 func (c *Client) PublicOrPresigned(key string, ttl time.Duration) string {
 	if c.PublicURL != "" {
 		return c.PublicURL + "/" + escapeKeyPath(key)
 	}
+	u, err := c.PresignedGET(key, ttl)
+	if err != nil {
+		return ""
+	}
+	return u
+}
+
+// PresignedOnly returns an expiring presigned URL and never falls back to the
+// permanent public host. Use this for tenant-private objects — synthesized
+// voice replies, inbound customer media, transcripts — where the requested TTL
+// is part of the access grant: the public branch of PublicOrPresigned discards
+// that TTL, and the bucket's public host is not a per-object ACL.
+func (c *Client) PresignedOnly(key string, ttl time.Duration) string {
 	u, err := c.PresignedGET(key, ttl)
 	if err != nil {
 		return ""

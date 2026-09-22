@@ -259,7 +259,14 @@ func (a *App) updateModelConfig(w http.ResponseWriter, r *http.Request, configID
 		_, _ = a.DB.Exec(r.Context(), "UPDATE model_configs SET is_default = $1 WHERE config_id = $2", *req.IsDefault, configID)
 	}
 	if req.APIKey != nil && *req.APIKey != "" {
-		_, _ = a.DB.Exec(r.Context(), "UPDATE model_configs SET api_key = $1 WHERE config_id = $2", *req.APIKey, configID)
+		// Stored sealed, like every other credential column: the platform key is
+		// a billable bearer credential, so a database read (backup, replica,
+		// query log) must not hand over a working key.
+		sealed, err := a.Sealer.Encrypt(*req.APIKey)
+		if err != nil {
+			return nil, ErrInternal("加密失败")
+		}
+		_, _ = a.DB.Exec(r.Context(), "UPDATE model_configs SET api_key = $1 WHERE config_id = $2", sealed, configID)
 	}
 	// Hot-reload the serving Gemini service so edits take effect without restart.
 	a.reloadGeminiFromDB(r.Context())
@@ -277,7 +284,7 @@ func (a *App) reloadGeminiFromDB(ctx context.Context) {
 	if err != nil || apiKey == "" {
 		return
 	}
-	a.Gemini.HotReload(apiKey, modelName, systemPrompt, maxTokens)
+	a.Gemini.HotReload(a.Sealer.DecryptOrKeep(apiKey), modelName, systemPrompt, maxTokens)
 }
 
 // testModelConfig — run a test prompt against one model config.
@@ -293,7 +300,7 @@ func (a *App) testModelConfig(w http.ResponseWriter, r *http.Request, configID i
 	if apiKey == "" {
 		return nil, ErrBadRequest("该配置未设置 API Key")
 	}
-	client := gemini.FromPartsFull(apiKey, modelName, systemPrompt, maxTokens)
+	client := gemini.FromPartsFull(a.Sealer.DecryptOrKeep(apiKey), modelName, systemPrompt, maxTokens)
 	result, err := client.Chat(r.Context(), "Reply with the single word: ok", nil, "en")
 	if err != nil || result.UsedMock {
 		return nil, &ApiError{Status: http.StatusBadGateway, Message: "模型连接测试失败"}
@@ -315,7 +322,7 @@ func (a *App) listAvailableModels(w http.ResponseWriter, r *http.Request, config
 	if apiKey == "" {
 		return nil, ErrBadRequest("未设置 API Key")
 	}
-	names, err := gemini.ListModels(r.Context(), apiKey)
+	names, err := gemini.ListModels(r.Context(), a.Sealer.DecryptOrKeep(apiKey))
 	if err != nil {
 		return nil, &ApiError{Status: http.StatusBadGateway, Message: "获取模型列表失败"}
 	}

@@ -20,7 +20,19 @@ import (
 
 	"khmer-ai-cs-go/internal/gemini"
 	"khmer-ai-cs-go/internal/rag"
+	"khmer-ai-cs-go/internal/security"
 )
+
+// decryptModelKey opens a sealed model_configs.api_key, tolerating a legacy
+// plaintext value (the sealer passes unrecognised values through). A failure to
+// open a sealed value yields the input, matching the server's behaviour.
+func decryptModelKey(stored string) string {
+	sealer, err := security.NewSealer(os.Getenv("PLATFORM_CREDENTIAL_KEY"))
+	if err != nil {
+		return stored
+	}
+	return sealer.DecryptOrKeep(stored)
+}
 
 func main() {
 	evalPath := flag.String("eval", "", "eval JSON: {\"queries\":[{\"query\":\"...\",\"expect\":[id]}]}")
@@ -59,7 +71,8 @@ func main() {
 	defer pool.Close()
 	svc := &rag.Service{DB: pool, Logger: slog.Default()}
 	if apiKey, model, prompt, maxTokens, ok := gemini.LoadDefaultConfig(ctx, pool); ok {
-		svc.Gemini = gemini.FromPartsFull(apiKey, model, prompt, maxTokens)
+		// model_configs.api_key is sealed at rest; open it before use.
+		svc.Gemini = gemini.FromPartsFull(decryptModelKey(apiKey), model, prompt, maxTokens)
 	} else {
 		svc.Gemini = gemini.New(os.Getenv("GEMINI_API_KEY"), os.Getenv("GEMINI_MODEL"), 0)
 	}

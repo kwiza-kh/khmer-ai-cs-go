@@ -54,11 +54,20 @@ func main() {
 	}
 	logger.Info("connected to redis")
 
+	// Platform credential sealer. Built before the Gemini service so the
+	// platform-global model key can be decrypted on load: model_configs.api_key
+	// lives in the same sealed-column regime as the channel credentials.
+	sealer, err := security.NewSealer(cfg.PlatformCredentialKey)
+	if err != nil {
+		logger.Error("invalid platform credential key", "error", err.Error())
+		os.Exit(1)
+	}
+
 	// Gemini service — prefer the DB default model config (admin Models page is
 	// the source of truth once a key is saved), fall back to env.
 	var gem *gemini.Service
 	if apiKey, modelName, systemPrompt, maxTokens, ok := gemini.LoadDefaultConfig(ctx, pool); ok {
-		gem = gemini.FromPartsFull(apiKey, modelName, systemPrompt, maxTokens)
+		gem = gemini.FromPartsFull(sealer.DecryptOrKeep(apiKey), modelName, systemPrompt, maxTokens)
 		if gem.IsConfigured() {
 			logger.Info("Gemini configured from database model config", "model", gem.ModelName())
 		} else {
@@ -88,13 +97,6 @@ func main() {
 		if uid, ok := usage.UserFrom(ctx); ok {
 			usage.Record(ctx, pool, uid, nil, model, prompt, completion, cached)
 		}
-	}
-
-	// Platform credential sealer.
-	sealer, err := security.NewSealer(cfg.PlatformCredentialKey)
-	if err != nil {
-		logger.Error("invalid platform credential key", "error", err.Error())
-		os.Exit(1)
 	}
 
 	// R2 object storage (inbound media replay + TTS audio; inert without creds).

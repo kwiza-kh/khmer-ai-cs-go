@@ -1502,16 +1502,18 @@ export function totpStatus() {
   return apiFetch<{ enabled: boolean }>("/auth/totp/status");
 }
 /**
- * Begin TOTP enrolment. `password` is required only when 2FA is already
- * enabled — re-enrolling replaces the second factor and so needs re-auth.
+ * Begin TOTP enrolment. When 2FA is already enabled, re-enrolling replaces the
+ * live second factor, so BOTH the account password and a code from the current
+ * authenticator are required — a session alone must not be able to rebind the
+ * factor to a new device.
  *
  * verify/disable bump the account's token version and return a fresh `token`
  * for the current session; persist it with adoptRefreshedToken.
  */
-export function totpSetup(password?: string) {
+export function totpSetup(password?: string, currentCode?: string) {
   return apiFetch<{ secret: string; otpauth_uri: string }>("/auth/totp/setup", {
     method: "POST",
-    body: JSON.stringify({ password: password ?? "" }),
+    body: JSON.stringify({ password: password ?? "", current_code: currentCode ?? "" }),
   });
 }
 export function totpVerify(code: string) {

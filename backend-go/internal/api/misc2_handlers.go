@@ -770,13 +770,27 @@ func (a *App) addTeamAgent(w http.ResponseWriter, r *http.Request) (any, error) 
 	// foreign-user-id handler (see userInCallerTenant), so a user already
 	// owned by another merchant must not be claimable here — that would hand
 	// the claiming tenant management rights over a competitor's account.
+	//
+	// The target-side check must also refuse an account that is itself an
+	// independent tenant principal. Every user row is a tenant keyed by
+	// user_id (tenant_billing, platform_configs, sessions), so claiming ANY
+	// foreign account would extend this tenant's authority over that account:
+	// updateUserRole's tenant boundary is agent_teams membership, which the
+	// inserted edge satisfies. A role='admin' row is an established tenant
+	// owner; a role='user' row that already holds tenant state (billing row,
+	// platform config, sessions, or knowledge) is an established tenant too.
 	var targetRole string
-	var claimedElsewhere bool
+	var claimedElsewhere, targetIsTenant bool
 	if err := a.DB.QueryRow(r.Context(),
-		"SELECT u.role::text, EXISTS (SELECT 1 FROM agent_teams t "+
-			"WHERE t.agent_user_id = u.user_id AND t.owner_user_id <> $2) "+
+		"SELECT u.role::text, "+
+			"EXISTS (SELECT 1 FROM agent_teams t "+
+			"        WHERE t.agent_user_id = u.user_id AND t.owner_user_id <> $2), "+
+			"EXISTS (SELECT 1 FROM tenant_billing b WHERE b.user_id = u.user_id) "+
+			"  OR EXISTS (SELECT 1 FROM platform_configs pc WHERE pc.user_id = u.user_id) "+
+			"  OR EXISTS (SELECT 1 FROM sessions ss WHERE ss.user_id = u.user_id) "+
+			"  OR EXISTS (SELECT 1 FROM knowledge_documents kd WHERE kd.uploaded_by = u.user_id) "+
 			"FROM users u WHERE u.user_id = $1",
-		req.AgentUserID, user.UserID).Scan(&targetRole, &claimedElsewhere); err != nil {
+		req.AgentUserID, user.UserID).Scan(&targetRole, &claimedElsewhere, &targetIsTenant); err != nil {
 		return nil, ErrNotFound("用户不存在")
 	}
 	if req.AgentUserID == user.UserID {
@@ -784,6 +798,12 @@ func (a *App) addTeamAgent(w http.ResponseWriter, r *http.Request) (any, error) 
 	}
 	if targetRole == "platform_admin" {
 		return nil, ErrForbidden("无权添加该用户")
+	}
+	if targetRole == "admin" || targetIsTenant {
+		// This account owns its own tenant data. Claiming it would grant this
+		// tenant role/status authority over it, so it cannot be recruited as
+		// an agent; only accounts created for this tenant are claimable.
+		return nil, ErrForbidden("该账号是独立的商家账号，不能添加为客服")
 	}
 	if claimedElsewhere {
 		return nil, ErrConflict("该用户已属于其他商家")

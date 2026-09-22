@@ -1445,7 +1445,11 @@ func (p *Pipeline) enqueueVoiceReply(ctx context.Context, ev *InboundEvent, cfg 
 		return
 	}
 	cancel2()
-	audioURL := p.Media.PublicOrPresigned(key, time.Hour)
+	// The voice reply is tenant-private conversation content delivered through
+	// the provider, so it must carry a real expiry: PresignedOnly keeps the
+	// 1-hour grant, where PublicOrPresigned would discard it and hand out a
+	// permanent credential-free URL whenever R2_PUBLIC_URL is configured.
+	audioURL := p.Media.PresignedOnly(key, time.Hour)
 	if audioURL == "" {
 		return
 	}

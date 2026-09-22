@@ -53,21 +53,32 @@ func (a *App) totpSetup(w http.ResponseWriter, r *http.Request) (any, error) {
 	user, _ := UserFrom(r)
 	var req struct {
 		Password string `json:"password"`
+		// CurrentCode proves possession of the second factor that is being
+		// replaced; required when one is already enabled.
+		CurrentCode string `json:"current_code"`
 	}
 	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req)
 
 	var alreadyEnabled bool
+	var currentSecret string
 	_ = a.DB.QueryRow(r.Context(),
-		"SELECT enabled FROM user_totp WHERE user_id = $1", user.UserID).Scan(&alreadyEnabled)
+		"SELECT enabled, secret FROM user_totp WHERE user_id = $1", user.UserID).Scan(&alreadyEnabled, &currentSecret)
 	if alreadyEnabled {
-		if req.Password == "" {
-			return nil, ErrBadRequest("请先验证当前密码")
+		// Replacing a live second factor needs the second factor, not just the
+		// first: with the password alone (or, for a passwordless SSO account,
+		// with nothing at all) anyone holding a session could rebind the
+		// account to their own authenticator and keep a durable login path.
+		if req.Password == "" || req.CurrentCode == "" {
+			return nil, ErrBadRequest("请先验证当前密码与现有动态验证码")
 		}
 		var hash *string
 		if err := a.DB.QueryRow(r.Context(),
 			"SELECT password_hash FROM users WHERE user_id = $1", user.UserID).Scan(&hash); err != nil ||
 			hash == nil || !auth.VerifyPassword(req.Password, *hash) {
 			return nil, ErrForbidden("密码错误")
+		}
+		if !auth.VerifyTOTP(a.openTOTP(currentSecret), req.CurrentCode) {
+			return nil, ErrForbidden("动态验证码错误")
 		}
 	}
 

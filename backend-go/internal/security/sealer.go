@@ -91,6 +91,19 @@ func (s *Sealer) Decrypt(value string) (string, error) {
 	return string(plain), nil
 }
 
+// DecryptOrKeep returns the decrypted value, or the input unchanged when it is
+// not sealed or cannot be opened. Call sites that cannot fail closed (a boot
+// path that must still start, a pre-flight value) use this instead of Decrypt;
+// a value that fails to open is passed through so the caller's own validation
+// decides. Never use it where an unauthenticated credential must be rejected.
+func (s *Sealer) DecryptOrKeep(value string) string {
+	plain, err := s.Decrypt(value)
+	if err != nil {
+		return value
+	}
+	return plain
+}
+
 // Sha256Hex — lowercase hex SHA-256 (webhook secret / bot token hashes).
 func Sha256Hex(input string) string {
 	if input == "" {

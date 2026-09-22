@@ -81,6 +81,14 @@ func (c *Client) incrWindow(ctx context.Context, key string, ttl time.Duration) 
 	return incrWindowScript.Run(ctx, c.rdb, []string{key}, ttl.Milliseconds()).Int64()
 }
 
+// IncrCounter atomically increments key and arms ttl when the counter is new
+// (or had lost its expiry). Unlike the rate-limit helpers it adds no key
+// prefix, so it can back counters such as the login-failure tally where the
+// read-modify-write pattern used to lose increments under concurrency.
+func (c *Client) IncrCounter(ctx context.Context, key string, ttl time.Duration) (int64, error) {
+	return incrWindowScript.Run(ctx, c.rdb, []string{key}, ttl.Milliseconds()).Int64()
+}
+
 // CheckRateLimit implements the 60s fixed window: count over max means
 // "blocked". Returns the caller's count within the current window.
 func (c *Client) CheckRateLimit(ctx context.Context, key string, max uint32) (bool, error) {
