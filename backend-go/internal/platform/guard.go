@@ -25,7 +25,12 @@ type ReplyGuard struct {
 // guardBudget bounds the audit: on the platform path it delays delivery by
 // at most this much, and a dead Jev degrades to "no extra checks" instead of
 // holding the customer's answer hostage.
-const guardBudget = 1500 * time.Millisecond
+//
+// 1500ms sat BELOW the production server's measured 0.8-2.1s spread to
+// api.typesafe.ai, so every slow-but-healthy call silently dropped the
+// semantic audit and left only the regex nets. Raised above that spread;
+// tunable so ops can re-measure from the host without a rebuild.
+var guardBudget = envMillis("JEV_GUARD_BUDGET_MS", 3000)
 
 // GuardReply asks Jev three yes/no checks about a reply plus, when knowledge
 // sources grounded it, whether every concrete claim is actually backed by

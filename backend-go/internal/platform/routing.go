@@ -2,7 +2,6 @@ package platform
 
 import (
 	"context"
-	"time"
 
 	"khmer-ai-cs-go/internal/typesafe"
 )
@@ -23,8 +22,10 @@ var inboundRouteValues = map[string]bool{
 
 // routeBudget bounds the routing call: it sits on the reply path, so a slow
 // or dead Jev must degrade to "route unknown" quickly, never stall the turn.
-// 2.5s covers the prod server's measured 0.8-2.1s spread to api.typesafe.ai.
-const routeBudget = 2500 * time.Millisecond
+// 2.5s only just covered the prod server's measured 0.8-2.1s spread to
+// api.typesafe.ai with no margin for its tail; raised, and tunable so ops can
+// re-measure from the host without a rebuild.
+var routeBudget = envMillis("JEV_ROUTE_BUDGET_MS", 4000)
 
 // RouteInbound asks Jev which handling path a message needs, before any
 // retrieval or generation. The returned probability is the model's own

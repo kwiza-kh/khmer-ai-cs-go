@@ -1403,6 +1403,18 @@ func envFloat(name string, fallback float64) float64 {
 	return fallback
 }
 
+// envMillis reads an optional millisecond knob with a default. Non-positive
+// or unparseable values keep the default: a zero budget would silently
+// disable the feature it bounds rather than tighten it.
+func envMillis(name string, fallbackMS int) time.Duration {
+	if v := os.Getenv(name); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return time.Duration(n) * time.Millisecond
+		}
+	}
+	return time.Duration(fallbackMS) * time.Millisecond
+}
+
 // sendTyping shows the "typing…" hint while the AI composes (best effort).
 func (p *Pipeline) sendTyping(ctx context.Context, cfg *configCred, recipientID string) {
 	if recipientID == "" {
