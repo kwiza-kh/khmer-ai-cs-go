@@ -9,8 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"khmer-ai-cs-go/internal/gemini"
 	"khmer-ai-cs-go/internal/rag"
 )
@@ -25,35 +23,8 @@ const (
 	planEnterprise = "enterprise"
 )
 
-func consumeDocQuota(ctx context.Context, db *pgxpool.Pool, userID int32) error {
-	if _, err := db.Exec(ctx,
-		"INSERT INTO tenant_billing (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING", userID); err != nil {
-		return ErrInternal("billing init")
-	}
-	if _, err := db.Exec(ctx,
-		"UPDATE tenant_billing SET messages_used = 0, docs_used = 0, cycle_start = NOW(), cycle_end = NOW() + INTERVAL '30 days' WHERE user_id = $1 AND cycle_end <= NOW()",
-		userID); err != nil {
-		return ErrInternal("billing rollover")
-	}
-	var plan string
-	var used, quota int64
-	err := db.QueryRow(ctx,
-		"SELECT plan, docs_used::bigint, monthly_doc_quota::bigint FROM tenant_billing WHERE user_id = $1", userID).
-		Scan(&plan, &used, &quota)
-	if err != nil {
-		if strings.Contains(err.Error(), "no rows") {
-			return nil
-		}
-		return ErrInternal("billing lookup")
-	}
-	if plan != planEnterprise && used >= quota {
-		return &ApiError{http.StatusPaymentRequired, "月度文档配额已用尽，请升级套餐"}
-	}
-	if _, err := db.Exec(ctx, "UPDATE tenant_billing SET docs_used = docs_used + 1 WHERE user_id = $1", userID); err != nil {
-		return ErrInternal("billing increment")
-	}
-	return nil
-}
+// consumeDocQuota moved to consume_doc_quota.go during the security-audit
+// remediation (atomic quota gate; enterprise unmetered).
 
 // ============================================
 // Handlers

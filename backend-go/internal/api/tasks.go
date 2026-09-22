@@ -86,7 +86,7 @@ func (a *App) sendDueDigests(ctx context.Context) {
 		return
 	}
 	day := now.Format("20060102")
-	rows, err := a.DB.Query(ctx, "SELECT user_id FROM telegram_notify_settings")
+	rows, err := a.DB.Query(ctx, "SELECT n.user_id FROM telegram_notify_settings n JOIN users u ON u.user_id = n.user_id AND u.is_active")
 	if err != nil {
 		return
 	}
@@ -130,9 +130,10 @@ type campRow struct {
 // deliveries for recipients that already have a session on the platform.
 // Idempotent: a campaign moves scheduled -> sending -> done.
 func (a *App) dispatchDueCampaigns(ctx context.Context) {
-	rows, err := a.DB.Query(ctx, `SELECT campaign_id, user_id, platform::text, config_id, template_name,
-		template_language, body_params, recipient_filter, tag_filter
-		FROM marketing_campaigns WHERE status='scheduled' AND scheduled_at <= NOW() LIMIT 10`)
+	rows, err := a.DB.Query(ctx, `SELECT c.campaign_id, c.user_id, c.platform::text, c.config_id, c.template_name,
+		c.template_language, c.body_params, c.recipient_filter, c.tag_filter
+		FROM marketing_campaigns c JOIN users u ON u.user_id = c.user_id AND u.is_active
+		WHERE c.status='scheduled' AND c.scheduled_at <= NOW() LIMIT 10`)
 	if err != nil {
 		return
 	}
@@ -238,7 +239,7 @@ type slaPol struct {
 // (session_id, breach_type).
 func (a *App) scanSLABreaches(ctx context.Context) {
 	rows, err := a.DB.Query(ctx,
-		"SELECT user_id, sla_id, first_response_secs, resolution_secs, business_hours_only FROM sla_policies WHERE is_active = true")
+		"SELECT p.user_id, p.sla_id, p.first_response_secs, p.resolution_secs, p.business_hours_only FROM sla_policies p JOIN users u ON u.user_id = p.user_id AND u.is_active WHERE p.is_active = true")
 	if err != nil {
 		return
 	}

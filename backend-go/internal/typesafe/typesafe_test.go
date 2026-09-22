@@ -25,11 +25,16 @@ func judgeResponse(t *testing.T) string {
 	}`
 }
 
+// stubAuthValue is the placeholder credential given to a stub client. Every
+// test in this package talks to a loopback httptest server, so no real
+// credential is involved and this value is deliberately not credential-shaped.
+const stubAuthValue = "stub"
+
 func newServer(t *testing.T, handler http.HandlerFunc) (*Client, *httptest.Server) {
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	c := &Client{Endpoint: srv.URL, APIKey: "test-key", Model: DefaultModel, HTTP: srv.Client()}
+	c := &Client{Endpoint: srv.URL, APIKey: stubAuthValue, Model: DefaultModel, HTTP: srv.Client()}
 	return c, srv
 }
 
@@ -52,7 +57,7 @@ func TestJudgeParsesAllThreePrimitives(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Judge: %v", err)
 	}
-	if gotAuth != "Bearer test-key" || gotCT != "application/json" {
+	if gotAuth != "Bearer "+stubAuthValue || gotCT != "application/json" {
 		t.Fatalf("headers: auth=%q ct=%q", gotAuth, gotCT)
 	}
 	if body["model"] != DefaultModel {

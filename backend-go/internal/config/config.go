@@ -90,6 +90,11 @@ type SSOConfig struct {
 	// deployment can restrict self-service password signups while still
 	// letting staff sign in with their Google Workspace account.
 	AllowSignup bool
+	// SkipIDTokenVerify — escape hatch for deployments whose egress to the
+	// identity provider's JWKS endpoint is blocked. When true the id_token is
+	// trusted on transport (the pre-audit behaviour) instead of failing
+	// closed; leave it false unless the deployment cannot reach the JWKS URL.
+	SkipIDTokenVerify bool
 }
 
 // TelegramLoginConfig — "Log in with Telegram" via Telegram's OpenID Connect
@@ -251,14 +256,15 @@ func Load() (*Config, error) {
 			PublicBotUsername: env("PLATFORM_TELEGRAM_BOT_USERNAME", ""),
 		},
 		SSO: SSOConfig{
-			Enabled:          envBool("SSO_ENABLED", false),
-			Provider:         env("SSO_PROVIDER", ""),
-			OIDCIssuer:       env("SSO_OIDC_ISSUER", ""),
-			OIDCClientID:     env("SSO_OIDC_CLIENT_ID", ""),
-			OIDCClientSecret: env("SSO_OIDC_CLIENT_SECRET", ""),
-			RedirectURL:      env("SSO_REDIRECT_URL", ""),
-			FrontendURL:      env("SSO_FRONTEND_URL", ""),
-			AllowSignup:      envBool("SSO_ALLOW_SIGNUP", true),
+			Enabled:           envBool("SSO_ENABLED", false),
+			Provider:          env("SSO_PROVIDER", ""),
+			OIDCIssuer:        env("SSO_OIDC_ISSUER", ""),
+			OIDCClientID:      env("SSO_OIDC_CLIENT_ID", ""),
+			OIDCClientSecret:  env("SSO_OIDC_CLIENT_SECRET", ""),
+			RedirectURL:       env("SSO_REDIRECT_URL", ""),
+			FrontendURL:       env("SSO_FRONTEND_URL", ""),
+			AllowSignup:       envBool("SSO_ALLOW_SIGNUP", true),
+			SkipIDTokenVerify: envBool("SSO_SKIP_ID_TOKEN_VERIFY", false),
 		},
 		TTS: TTSConfig{
 			Enabled: envBool("TTS_ENABLED", false),

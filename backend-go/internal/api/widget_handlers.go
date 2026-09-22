@@ -19,13 +19,20 @@ import (
 )
 
 // widgetRateLimit caps requests per client IP for the public widget endpoints
-// (Redis fixed window; fails open when Redis is unreachable).
+// (Redis fixed window; fails CLOSED when Redis is unreachable — matching the
+// authenticated rateLimit middleware, because this is the one public surface
+// whose accepted requests cost real LLM spend. The old fail-open choice left
+// the tenant-billed endpoint uncapped during Redis incidents).
 func (a *App) widgetRateLimit(maxRPM int) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			key := "widget-ip:" + clientIP(r)
 			allowed, err := a.Redis.CheckRateLimit(r.Context(), key, uint32(maxRPM))
-			if err == nil && !allowed {
+			if err != nil {
+				WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "服务暂时不可用，请稍后再试"})
+				return
+			}
+			if !allowed {
 				w.Header().Set("Retry-After", "60")
 				WriteJSON(w, http.StatusTooManyRequests, map[string]string{"error": "请求过于频繁"})
 				return
@@ -293,17 +300,27 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "消息不能为空"})
 		return
 	}
-	// Per-token visitor rate limit (fail-open).
-	if ok, err := a.Redis.CheckRateLimit(r.Context(), "widget:"+req.SessionID+":"+clientIP(r), 20); err == nil && !ok {
+	// Per-token visitor rate limit. Keyed on the resolved client address only —
+	// never on attacker-suppliable input like the raw session id (rotating it
+	// used to mint a fresh window per request). Fails CLOSED with the rest of
+	// the widget gates.
+	if ok, err := a.Redis.CheckRateLimit(r.Context(), "widget:"+clientIP(r), 20); err != nil {
+		WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "服务暂时不可用，请稍后再试"})
+		return
+	} else if !ok {
 		WriteJSON(w, http.StatusTooManyRequests, map[string]string{"error": "发送太快，请稍候"})
 		return
 	}
 	// Layered abuse guard: the widget token ships publicly inside embed.js,
 	// so per-IP limits alone cannot stop a token-burning bot that rotates
 	// IPs. Cap total messages per token per day and new-session creation per
-	// token per hour — IP rotation cannot bypass either (fail-open).
+	// token per hour — IP rotation cannot bypass either (fail-closed: these
+	// are the last spend caps on a metered public surface).
 	dayKey := fmt.Sprintf("widget-msg-day:%d:%s", t.TokenID, time.Now().UTC().Format("20060102"))
-	if ok, err := a.Redis.IncrWindow(r.Context(), dayKey, 200, 26*time.Hour); err == nil && !ok {
+	if ok, err := a.Redis.IncrWindow(r.Context(), dayKey, 200, 26*time.Hour); err != nil {
+		WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "服务暂时不可用，请稍后再试"})
+		return
+	} else if !ok {
 		WriteJSON(w, http.StatusTooManyRequests, map[string]string{"error": "今日咨询量已达上限，请明日再来或直接致电我们"})
 		return
 	}
@@ -324,9 +341,12 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.SessionID == "" || owner != t.ownerID {
 		// New-session throttle: scripted abuse without client-side session
-		// persistence would flood the inbox with sessions (fail-open).
+		// persistence would flood the inbox with sessions (fail-closed).
 		hourKey := fmt.Sprintf("widget-sess-hour:%d:%s", t.TokenID, time.Now().UTC().Format("2006010215"))
-		if ok, err := a.Redis.IncrWindow(r.Context(), hourKey, 20, 2*time.Hour); err == nil && !ok {
+		if ok, err := a.Redis.IncrWindow(r.Context(), hourKey, 20, 2*time.Hour); err != nil {
+			WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "服务暂时不可用，请稍后再试"})
+			return
+		} else if !ok {
 			WriteJSON(w, http.StatusTooManyRequests, map[string]string{"error": "会话创建过于频繁，请稍后再试"})
 			return
 		}

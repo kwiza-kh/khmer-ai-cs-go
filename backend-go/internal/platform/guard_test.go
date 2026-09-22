@@ -10,6 +10,11 @@ import (
 	"khmer-ai-cs-go/internal/typesafe"
 )
 
+// stubAuthValue is the placeholder credential given to a stub client. Every
+// test in this package talks to a loopback httptest server, so no real
+// credential is involved and this value is deliberately not credential-shaped.
+const stubAuthValue = "stub"
+
 func jevGuardServer(t *testing.T, handoff, leaks, unsafe float64) *typesafe.Client {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -20,7 +25,7 @@ func jevGuardServer(t *testing.T, handoff, leaks, unsafe float64) *typesafe.Clie
 			"unsafe_claim":{"type":"noul","noul":` + f(unsafe) + `}}}`))
 	}))
 	t.Cleanup(srv.Close)
-	return &typesafe.Client{Endpoint: srv.URL, APIKey: "k", Model: "jev-latest", HTTP: srv.Client(), Logger: quietLogger()}
+	return &typesafe.Client{Endpoint: srv.URL, APIKey: stubAuthValue, Model: "jev-latest", HTTP: srv.Client(), Logger: quietLogger()}
 }
 
 func f(v float64) string { return strconv.FormatFloat(v, 'f', -1, 64) }
@@ -70,7 +75,7 @@ func TestGuardReplyDisabledAndIncomplete(t *testing.T) {
 		_, _ = w.Write([]byte(`{"model":"jev-1.13.0","answers":{"promises_handoff":{"type":"noul","noul":0.9}}}`))
 	}))
 	t.Cleanup(bad.Close)
-	p2 := &Pipeline{Jev: &typesafe.Client{Endpoint: bad.URL, APIKey: "k", Model: "jev-latest", HTTP: bad.Client(), Logger: quietLogger()}}
+	p2 := &Pipeline{Jev: &typesafe.Client{Endpoint: bad.URL, APIKey: stubAuthValue, Model: "jev-latest", HTTP: bad.Client(), Logger: quietLogger()}}
 	if _, ok := p2.GuardReply(context.Background(), "x", nil); ok {
 		t.Fatal("incomplete guard must report not-ok, never half-act")
 	}

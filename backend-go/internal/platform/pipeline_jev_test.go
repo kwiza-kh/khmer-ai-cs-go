@@ -28,7 +28,7 @@ func jevTurnServer(t *testing.T, noul float64, intent string) *typesafe.Client {
 		}`))
 	}))
 	t.Cleanup(srv.Close)
-	return &typesafe.Client{Endpoint: srv.URL, APIKey: "k", Model: "jev-latest", HTTP: srv.Client(), Logger: slog.New(slog.NewJSONHandler(discardWriter{}, nil))}
+	return &typesafe.Client{Endpoint: srv.URL, APIKey: stubAuthValue, Model: "jev-latest", HTTP: srv.Client(), Logger: slog.New(slog.NewJSONHandler(discardWriter{}, nil))}
 }
 
 type discardWriter struct{}
@@ -89,7 +89,7 @@ func TestJudgeTurnFallsBackWhenJevFails(t *testing.T) {
 	}))
 	t.Cleanup(bad.Close)
 	p := &Pipeline{
-		Jev:    &typesafe.Client{Endpoint: bad.URL, APIKey: "k", Model: "jev-latest", HTTP: bad.Client(), Logger: slog.New(slog.NewJSONHandler(discardWriter{}, nil))},
+		Jev:    &typesafe.Client{Endpoint: bad.URL, APIKey: stubAuthValue, Model: "jev-latest", HTTP: bad.Client(), Logger: slog.New(slog.NewJSONHandler(discardWriter{}, nil))},
 		Gemini: geminiFastServer(t),
 		Logger: slog.New(slog.NewJSONHandler(discardWriter{}, nil)),
 	}

@@ -505,8 +505,12 @@ func (wh *Webhooks) WhatsAppWebhook(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			// Route by the phone number the event belongs to (stored as
-			// page_id). Every WhatsApp config shares the app secret, so a
-			// wrong-tenant match would still verify and cross-deliver.
+			// page_id). webhook_secret is per-tenant (BYO Meta app): the
+			// merchant supplies their own app secret at activation, so the
+			// HMAC binds the event to this tenant's secret. A deployment that
+			// instead distributes ONE app secret to every merchant loses that
+			// property — per-tenant secrets are required for cross-tenant
+			// isolation.
 			phoneNumberID := ""
 			if meta, ok := value["metadata"].(map[string]any); ok {
 				phoneNumberID, _ = meta["phone_number_id"].(string)
@@ -813,8 +817,9 @@ func (wh *Webhooks) resolveZaloConfig(ctx context.Context, oaID string) (cfg *we
 // resolveWhatsAppConfig routes a WhatsApp webhook to its tenant by the
 // phone_number_id carried in value.metadata (stored in the page_id column).
 // Falling back to "any active config" would deliver the event to the wrong
-// tenant — and since every WhatsApp config shares the app secret, signature
-// verification would happily accept it. No match means drop.
+// tenant — and with per-tenant secrets (BYO Meta app) the signature only
+// binds the event to the routed tenant, so routing must be exact. No match
+// means drop.
 func (wh *Webhooks) resolveWhatsAppConfig(ctx context.Context, phoneNumberID string) *webhookConfig {
 	if phoneNumberID == "" {
 		return nil

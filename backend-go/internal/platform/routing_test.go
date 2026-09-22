@@ -19,7 +19,7 @@ func jevRouteServer(t *testing.T, route string, prob float64) *typesafe.Client {
 			strconv.FormatFloat(prob, 'f', -1, 64) + `}}}}`))
 	}))
 	t.Cleanup(srv.Close)
-	return &typesafe.Client{Endpoint: srv.URL, APIKey: "k", Model: "jev-latest", HTTP: srv.Client(), Logger: quietLogger()}
+	return &typesafe.Client{Endpoint: srv.URL, APIKey: stubAuthValue, Model: "jev-latest", HTTP: srv.Client(), Logger: quietLogger()}
 }
 
 func TestRouteInboundParsesChoiceAndProbability(t *testing.T) {

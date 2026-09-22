@@ -18,7 +18,7 @@ func jevWorthServer(t *testing.T, v float64) *typesafe.Client {
 			strconv.FormatFloat(v, 'f', -1, 64) + `}}}`))
 	}))
 	t.Cleanup(srv.Close)
-	return &typesafe.Client{Endpoint: srv.URL, APIKey: "k", Model: "jev-latest", HTTP: srv.Client(), Logger: quietLogger()}
+	return &typesafe.Client{Endpoint: srv.URL, APIKey: stubAuthValue, Model: "jev-latest", HTTP: srv.Client(), Logger: quietLogger()}
 }
 
 func TestWorthPingingSilencesClearFiller(t *testing.T) {
@@ -45,7 +45,7 @@ func TestWorthPingingFailOpen(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	t.Cleanup(bad.Close)
-	p := &Pipeline{Jev: &typesafe.Client{Endpoint: bad.URL, APIKey: "k", Model: "jev-latest", HTTP: bad.Client(), Logger: quietLogger()}}
+	p := &Pipeline{Jev: &typesafe.Client{Endpoint: bad.URL, APIKey: stubAuthValue, Model: "jev-latest", HTTP: bad.Client(), Logger: quietLogger()}}
 	if !p.worthPinging(context.Background(), "x") {
 		t.Fatal("Jev failure must ping (fail-open)")
 	}

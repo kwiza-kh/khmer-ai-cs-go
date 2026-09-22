@@ -117,18 +117,32 @@ func main() {
 		Pipe:   pipe,
 	}
 
+	// Converge migration-era plaintext secrets to sealed form. Migration 052's
+	// header claims read-path re-sealing that was never implemented; this
+	// boot-time backfill is the convergence mechanism, so legacy rows do not
+	// hold working TOTP secrets / channel credentials in cleartext forever.
+	if n, err := api.BackfillLegacySecrets(ctx, pool, sealer); err != nil {
+		logger.Warn("legacy secret backfill failed; rows stay plaintext", "error", err.Error())
+	} else if n > 0 {
+		logger.Info("legacy plaintext secrets re-sealed at boot", "count", n)
+	}
+
+	// Google JWKS cache for id_token signature verification.
+	app.SSOJWKS = api.NewJWKSCache(api.GoogleJWKSURL)
+
 	// Realtime inbox hub (WebSocket fan-out fed by Redis pub/sub).
 	allowedOrigins := make(map[string]bool, len(cfg.AllowedOrigins))
 	for _, o := range cfg.AllowedOrigins {
 		allowedOrigins[o] = true
 	}
 	hub := realtime.NewHub(app.JWT, redisClient, logger,
-		func(ctx context.Context, userID int32) bool {
+		func(ctx context.Context, userID int32) (bool, int) {
 			var active bool
-			if err := pool.QueryRow(ctx, "SELECT is_active FROM users WHERE user_id = $1", userID).Scan(&active); err != nil {
-				return false
+			var tokenVersion int
+			if err := pool.QueryRow(ctx, "SELECT is_active, token_version FROM users WHERE user_id = $1", userID).Scan(&active, &tokenVersion); err != nil {
+				return false, 0
 			}
-			return active
+			return active, tokenVersion
 		},
 		func(origin string) bool { return origin == "" || allowedOrigins[origin] },
 	)

@@ -59,7 +59,7 @@ set -a; . ./.env-go; set +a   # 先导出真配置
 
 - `API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080/api/v1"` — Next 把 `NEXT_PUBLIC_*` 编译进客户端 bundle
 - 发布时忘带 env 构建 = 用户浏览器请求自己的 localhost:8080, 页面能打开、接口全挂
-- 修复: 带 `NEXT_PUBLIC_API_URL=https://cs.wanfanginsulationmaterial.com/api/v1` 重新 build + 发布 (§5 流程)
+- 修复: 带 `NEXT_PUBLIC_API_URL=https://<部署域名>/api/v1` 重新 build + 发布 (§5 流程)
 
 ## 10. standalone 缺静态资源 = 页面裸奔/白屏
 
@@ -81,7 +81,7 @@ set -a; . ./.env-go; set +a   # 先导出真配置
 
 ## 14. 同机 WMS 干扰 [继承]
 
-- 38.55.192.90 同时跑 wms.service (:3000, 主域名)。排查看 `ss -tlnp` 时端口 3000/3001 易混淆: **3001 才是本项目前端**
+- <部署服务器IP> 同时跑 wms.service (:3000, 主域名)。排查看 `ss -tlnp` 时端口 3000/3001 易混淆: **3001 才是本项目前端**
 - 重启 nginx 会瞬断两边; 操作避开 WMS 业务高峰
 - zone SSL/记录改动影响 WMS, 见 cloudflare.md
 

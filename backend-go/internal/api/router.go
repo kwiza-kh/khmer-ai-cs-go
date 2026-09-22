@@ -21,14 +21,16 @@ func (a *App) Router() http.Handler {
 	mux.Handle("POST /api/v1/auth/login", a.rateLimit(10)(a.handle(a.login)))
 	mux.Handle("POST /api/v1/auth/register", a.rateLimit(10)(a.handle(a.register)))
 	// Google (OIDC) sign-in — browser redirects carry no JWT, so these are
-	// public; the callback validates a one-time CSRF state token.
-	mux.HandleFunc("GET /api/v1/auth/google/start", a.googleStart)
+	// public; the callback validates a one-time CSRF state token. /start is
+	// rate limited too: it mints state keys, and an unbounded mint made the
+	// exchange's state half trivially satisfiable.
+	mux.Handle("GET /api/v1/auth/google/start", a.rateLimit(20)(http.HandlerFunc(a.googleStart)))
 	mux.HandleFunc("GET /api/v1/auth/google/callback", a.googleCallback)
 	mux.Handle("POST /api/v1/auth/google/exchange", a.rateLimit(20)(a.handle(a.googleLoginExchange)))
 	// Telegram (OIDC) sign-in — public for the same reason: the browser arrives
 	// from Telegram with no JWT, and the callback validates a one-time state
 	// token that also carries the PKCE verifier.
-	mux.HandleFunc("GET /api/v1/auth/telegram/start", a.telegramStart)
+	mux.Handle("GET /api/v1/auth/telegram/start", a.rateLimit(20)(http.HandlerFunc(a.telegramStart)))
 	mux.HandleFunc("GET /api/v1/auth/telegram/callback", a.telegramCallback)
 	mux.Handle("POST /api/v1/auth/telegram/exchange", a.rateLimit(20)(a.handle(a.telegramLoginExchange)))
 	mux.Handle("GET /api/v1/auth/methods", a.handle(a.googleAuthMethods))
@@ -64,8 +66,12 @@ func (a *App) Router() http.Handler {
 	authed.Handle("GET /api/v1/knowledge/contradictions", a.handle(a.listContradictions))
 	authed.HandleFunc("POST /api/v1/knowledge/contradictions/{id}/resolve", a.handleDoc(a.resolveContradiction))
 	authed.HandleFunc("POST /api/v1/knowledge/contradictions/{id}/dismiss", a.handleDoc(a.dismissContradiction))
-	authed.Handle("GET /api/v1/admin/rag/settings", a.adminOnly(a.handle(a.getRagSettings)))
-	authed.Handle("PUT /api/v1/admin/rag/settings", a.adminOnly(a.handle(a.putRagSettings)))
+	// Model config and the RAG compile toggle are PLATFORM-GLOBAL resources
+	// (model_configs has no tenant column; the compile toggle is a global Redis
+	// key) — they must require the platform_admin role, not the per-tenant
+	// admin role, or one merchant could redirect every tenant's AI serving.
+	authed.Handle("GET /api/v1/admin/rag/settings", a.platformAdminOnly(a.handle(a.getRagSettings)))
+	authed.Handle("PUT /api/v1/admin/rag/settings", a.platformAdminOnly(a.handle(a.putRagSettings)))
 	// Telegram notifications — one-tap linking through the platform bot plus
 	// the three delivery toggles. The bring-your-own-bot setup (save a token,
 	// discover chats via getUpdates) was removed in 056; there is no endpoint
@@ -117,10 +123,10 @@ func (a *App) Router() http.Handler {
 	authed.Handle("GET /api/v1/settings/canned-responses", a.handle(a.listCannedResponses))
 	authed.Handle("POST /api/v1/settings/canned-responses", a.handle(a.createCannedResponse))
 	authed.HandleFunc("DELETE /api/v1/settings/canned-responses/{id}", a.handleDoc(a.deleteCannedResponse))
-	authed.Handle("GET /api/v1/admin/models", a.adminOnly(a.handle(a.listModelConfigs)))
-	authed.Handle("PUT /api/v1/admin/models/{id}", a.adminOnly(a.handleDoc(a.updateModelConfig)))
-	authed.Handle("POST /api/v1/admin/models/{id}/test", a.adminOnly(a.handleDoc(a.testModelConfig)))
-	authed.Handle("GET /api/v1/admin/models/{id}/available", a.adminOnly(a.handleDoc(a.listAvailableModels)))
+	authed.Handle("GET /api/v1/admin/models", a.platformAdminOnly(a.handle(a.listModelConfigs)))
+	authed.Handle("PUT /api/v1/admin/models/{id}", a.platformAdminOnly(a.handleDoc(a.updateModelConfig)))
+	authed.Handle("POST /api/v1/admin/models/{id}/test", a.platformAdminOnly(a.handleDoc(a.testModelConfig)))
+	authed.Handle("GET /api/v1/admin/models/{id}/available", a.platformAdminOnly(a.handleDoc(a.listAvailableModels)))
 	authed.Handle("GET /api/v1/admin/users", a.adminOnly(a.handle(a.listUsers)))
 	authed.Handle("PUT /api/v1/admin/users/{id}/role", a.adminOnly(a.handleDoc(a.updateUserRole)))
 	authed.Handle("GET /api/v1/admin/analytics/overview", a.adminOnly(a.handle(a.analyticsOverview)))
@@ -218,10 +224,11 @@ func (a *App) Router() http.Handler {
 	authed.Handle("GET /api/v1/billing", a.handle(a.getBilling))
 	authed.Handle("PUT /api/v1/billing/plan", a.handle(a.setPlan))
 
-	// Teams (agent management).
-	authed.Handle("GET /api/v1/team", a.handle(a.listTeam))
-	authed.Handle("POST /api/v1/team/agents", a.handle(a.addTeamAgent))
-	authed.HandleFunc("DELETE /api/v1/team/agents/{id}", a.handleDoc(a.removeTeamAgent))
+	// Teams (agent management) — agent_teams doubles as the tenant boundary
+	// consumed by userInCallerTenant, so claiming requires the owner role.
+	authed.Handle("GET /api/v1/team", a.adminOnly(a.handle(a.listTeam)))
+	authed.Handle("POST /api/v1/team/agents", a.adminOnly(a.handle(a.addTeamAgent)))
+	authed.Handle("DELETE /api/v1/team/agents/{id}", a.adminOnly(a.handleDoc(a.removeTeamAgent)))
 
 	// Copilot (agent AI suggestions).
 	authed.HandleFunc("POST /api/v1/inbox/sessions/{id}/copilot/suggest", a.handleSession(a.copilotSuggest))
@@ -391,11 +398,9 @@ func (a *App) audit(next http.Handler) http.Handler {
 			if user != nil {
 				uid = user.UserID
 			}
-			if f := r.Header.Get("X-Forwarded-For"); f != "" {
-				ip = strings.Split(f, ",")[0]
-			} else {
-				ip = r.RemoteAddr
-			}
+			// Same trust-boundary resolution as rate limiting: the audit IP
+			// must not be the client-suppliable first XFF element.
+			ip = clientIP(r)
 			details, _ := json.Marshal(map[string]any{"method": r.Method, "path": path, "status": rec.status})
 			_, _ = a.DB.Exec(r.Context(),
 				"INSERT INTO audit_logs (admin_id, action, target_type, target_id, details, ip_address) VALUES ($1,$2,'admin','',$3::jsonb,$4)",

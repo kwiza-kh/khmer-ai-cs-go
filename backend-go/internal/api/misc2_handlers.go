@@ -756,6 +756,11 @@ type addAgentRequest struct {
 
 func (a *App) addTeamAgent(w http.ResponseWriter, r *http.Request) (any, error) {
 	user, _ := UserFrom(r)
+	// agent_teams doubles as the tenant boundary; only tenant owners may
+	// claim agents. Defense in depth alongside the route-level adminOnly gate.
+	if !user.IsAdmin() {
+		return nil, ErrForbidden("仅管理员可添加客服")
+	}
 	var req addAgentRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		return nil, ErrBadRequest("请求格式错误")

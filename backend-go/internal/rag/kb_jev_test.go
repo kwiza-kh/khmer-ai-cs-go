@@ -31,7 +31,7 @@ func jevNoulServer(t *testing.T, calls *atomic.Int32, values []float64) *typesaf
 		_, _ = w.Write([]byte(`{"model":"jev-1.13.0","answers":{` + answers + `}}`))
 	}))
 	t.Cleanup(srv.Close)
-	return &typesafe.Client{Endpoint: srv.URL, APIKey: "k", Model: "jev-latest", HTTP: srv.Client(), Logger: quietLogger()}
+	return &typesafe.Client{Endpoint: srv.URL, APIKey: stubAuthValue, Model: "jev-latest", HTTP: srv.Client(), Logger: quietLogger()}
 }
 
 func TestConfirmContradictionsDropsUnconfirmed(t *testing.T) {
@@ -52,7 +52,7 @@ func TestConfirmContradictionsFailOpen(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	t.Cleanup(bad.Close)
-	s := &Service{Jev: &typesafe.Client{Endpoint: bad.URL, APIKey: "k", Model: "jev-latest", HTTP: bad.Client(), Logger: quietLogger()}, Logger: quietLogger()}
+	s := &Service{Jev: &typesafe.Client{Endpoint: bad.URL, APIKey: stubAuthValue, Model: "jev-latest", HTTP: bad.Client(), Logger: quietLogger()}, Logger: quietLogger()}
 	items := []compileContradiction{{NewClaim: "a", OldClaim: "b", OldDocTitle: "d", Severity: "high"}}
 	if kept := s.confirmContradictions(context.Background(), "t", items); len(kept) != 1 {
 		t.Fatal("jev failure must keep every item (noisy queue beats silent loss)")
@@ -87,7 +87,7 @@ func jevChoiceServer(t *testing.T, calls *atomic.Int32, pick string) *typesafe.C
 			pick + `","confidence":0.9}}}`))
 	}))
 	t.Cleanup(srv.Close)
-	return &typesafe.Client{Endpoint: srv.URL, APIKey: "k", Model: "jev-latest", HTTP: srv.Client(), Logger: quietLogger()}
+	return &typesafe.Client{Endpoint: srv.URL, APIKey: stubAuthValue, Model: "jev-latest", HTTP: srv.Client(), Logger: quietLogger()}
 }
 
 func TestRewriteQueryJevPicksCarryOverCandidate(t *testing.T) {

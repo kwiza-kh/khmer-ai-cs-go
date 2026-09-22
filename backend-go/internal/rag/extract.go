@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 	"unicode/utf8"
 )
@@ -84,14 +85,24 @@ func extractDocx(data []byte) (string, error) {
 		if f.Name != "word/document.xml" {
 			continue
 		}
+		// Representation-amplification guard: a <=10MB deflate stream can
+		// expand ~1000:1, so the decompressed entry is capped before reading
+		// (the declared size is untrusted, hence the LimitReader backstop).
+		const maxDecompressed = 32 << 20 // 32 MB of XML is far above any real document
+		if f.UncompressedSize64 > maxDecompressed {
+			return "", fmt.Errorf("docx: document.xml too large (%d bytes declared)", f.UncompressedSize64)
+		}
 		rc, err := f.Open()
 		if err != nil {
 			return "", fmt.Errorf("read docx entry: %w", err)
 		}
-		docXML, err = io.ReadAll(rc)
+		docXML, err = io.ReadAll(io.LimitReader(rc, maxDecompressed+1))
 		rc.Close()
 		if err != nil {
 			return "", fmt.Errorf("read document.xml: %w", err)
+		}
+		if len(docXML) > maxDecompressed {
+			return "", fmt.Errorf("docx: document.xml exceeds %d bytes", maxDecompressed)
 		}
 		break
 	}
@@ -175,8 +186,32 @@ func FetchURLContent(ctx context.Context, rawURL string) (string, string, error)
 		return "", "", fmt.Errorf("URL host is not public: %w", err)
 	}
 
+	// The dialer Control hook closes the check-to-dial gap: net/http re-
+	// resolves DNS at connection time, so validating the hostname up front is
+	// not enough. Control runs with the address actually being dialed (after
+	// resolution) and rejects any private/loopback target — defeating DNS
+	// rebinding between the guard's LookupIP and the dial, and the mixed
+	// public/private A-record variant (Happy Eyeballs can no longer land on
+	// the private member unnoticed).
+	dialer := &net.Dialer{
+		Timeout: 10 * time.Second,
+		Control: func(network, address string, _ syscall.RawConn) error {
+			host, _, err := net.SplitHostPort(address)
+			if err != nil {
+				return fmt.Errorf("dial address: %w", err)
+			}
+			ip := net.ParseIP(host)
+			if ip == nil || !isPublicIP(ip) {
+				return fmt.Errorf("dial target is not a public address")
+			}
+			return nil
+		},
+	}
 	client := &http.Client{
 		Timeout: 20 * time.Second,
+		Transport: &http.Transport{
+			DialContext: dialer.DialContext,
+		},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 3 {
 				return fmt.Errorf("too many redirects")

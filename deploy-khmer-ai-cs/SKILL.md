@@ -1,6 +1,6 @@
 ---
 name: deploy-khmer-ai-cs
-description: 将「Khmer AI 客服系统 (khmer-ai-cs-go, Go 后端 + Next.js 前端)」部署/更新到远程 Linux 服务器, 经 Cloudflare 子域名 cs.wanfanginsulationmaterial.com 提供 HTTPS。当用户提到 部署 khmer-ai-cs / 高棉语 AI 客服 / server-go / migrate-go / cs.wanfanginsulationmaterial.com / 连接 38.55.192.90 / 更新线上版本 / 跑迁移 / nginx 反代 / systemd 服务 / Cloudflare 521 / HTTPS 异常 时触发。
+description: 将「Khmer AI 客服系统 (khmer-ai-cs-go, Go 后端 + Next.js 前端)」部署/更新到远程 Linux 服务器, 经 Cloudflare 子域名 <部署域名> 提供 HTTPS。当用户提到 部署 khmer-ai-cs / 高棉语 AI 客服 / server-go / migrate-go / <部署域名> / 连接 <部署服务器IP> / 更新线上版本 / 跑迁移 / nginx 反代 / systemd 服务 / Cloudflare 521 / HTTPS 异常 时触发。
 ---
 
 # Khmer AI 客服系统 (khmer-ai-cs-go) 部署与迭代
@@ -10,7 +10,7 @@ description: 将「Khmer AI 客服系统 (khmer-ai-cs-go, Go 后端 + Next.js �
 ## 何时触发
 
 - 部署/更新 khmer-ai-cs 客服系统到服务器、上线、发布新版本
-- 提到 38.55.192.90 或 cs.wanfanginsulationmaterial.com
+- 提到 <部署服务器IP> 或 <部署域名>
 - 跑迁移 / migrate-go / schema_migrations / pgvector
 - nginx / systemd / Cloudflare / 521 / HTTPS 异常排查
 - 前端 standalone 发布、Telegram/Meta webhook 域名配置
@@ -18,10 +18,10 @@ description: 将「Khmer AI 客服系统 (khmer-ai-cs-go, Go 后端 + Next.js �
 ## 架构与环境（先读这个）
 
 ```
-浏览器 ──HTTPS──> Cloudflare (橙色云朵, zone=wanfanginsulationmaterial.com)
+浏览器 ──HTTPS──> Cloudflare (橙色云朵, zone=<域名>)
                       │ HTTPS:443 (源站自签证书, SSL 模式必须 Full)
                       ▼
-              nginx (cs.wanfanginsulationmaterial.com)
+              nginx (<部署域名>)
                 ├── /api/                    ──> 127.0.0.1:8081  server-go (Go 后端, SSE 关 buffering)
                 ├── /api/v1/realtime/inbox   ──> 127.0.0.1:8081  WebSocket 升级 (3600s 超时)
                 └── /                        ──> 127.0.0.1:3001  next-server (standalone)
@@ -30,9 +30,9 @@ description: 将「Khmer AI 客服系统 (khmer-ai-cs-go, Go 后端 + Next.js �
 
 | 项 | 值 |
 |---|---|
-| 服务器 | 38.55.192.90 (Debian 13 trixie, x86_64) — **与 WMS 系统同机共存, 勿动 wms.service** |
-| SSH | root + 密码 (从环境变量 `KHMER_SSH_PASSWORD` 读取, **勿把明文写进文件/仓库**; 密码末尾两个点) |
-| 域名 | **cs**.wanfanginsulationmaterial.com (Cloudflare A 记录 → 38.55.192.90, 橙色云朵代理) |
+| 服务器 | <部署服务器IP> (Debian 13 trixie, x86_64) — **与 WMS 系统同机共存, 勿动 wms.service** |
+| SSH | root + 密码 (从环境变量 `KHMER_SSH_PASSWORD` 读取, **勿把明文写进文件/仓库**; 密码值放密码管理器) |
+| 域名 | **cs**.<域名> (Cloudflare A 记录 → <部署服务器IP>, 橙色云朵代理) |
 | 后端 | Go (go.mod 声明 go 1.26; 线上二进制 go1.26.5) `server-go` → :8081, 二进制内 `/health` `/ready`; **服务器上没装 Go, 二进制在构建机交叉编译后上传** |
 | 前端 | Next.js 16 standalone (`node server.js`) → 127.0.0.1:3001; `API_BASE` 在**构建时**烘焙 (见下) |
 | 数据库 | 系统级 Postgres 17 (apt, 非 Docker), 扩展 **pgvector 0.8.0 + pg_trgm**, 迁移表 `schema_migrations` (见 `internal/migrations/migrations/` 当前文件数) |
@@ -54,8 +54,8 @@ description: 将「Khmer AI 客服系统 (khmer-ai-cs-go, Go 后端 + Next.js �
 ## 部署工作流（迭代发布）
 
 1. **构建后端** (本地, 需 go ≥1.26, `brew install go`): `backend-go/` 下交叉编译 `server-go` 与 `migrate-go`; 发布前跑一次 SQL 引用检查 (`go test ./internal/sqlcheck/`, 需 `DATABASE_URL`, 未设会 skip) 质量门 —— 它挡的是编译器看不见的那类 bug (命令见 references/deploy-commands.md §1)
-2. **构建前端**: `NEXT_PUBLIC_API_URL=https://cs.wanfanginsulationmaterial.com/api/v1 npm run build`, 组装 standalone + `.next/static` + `public` 打 tar (§2)
-3. **上传**: scp 到 `root@38.55.192.90:/root/khmer-deploy/` (§3)
+2. **构建前端**: `NEXT_PUBLIC_API_URL=https://<部署域名>/api/v1 npm run build`, 组装 standalone + `.next/static` + `public` 打 tar (§2)
+3. **上传**: scp 到 `root@$KHMER_DEPLOY_HOST:/root/khmer-deploy/` (§3)
 4. **后端发布**: 备份旧二进制 → `systemctl stop khmer-ai-cs-go` → (有迁移则) 跑 `migrate-go` → cp 新二进制 → `chown khmerai` → start (§4; 先 stop 再 cp, 否则 Text file busy)
 5. **前端发布**: `cp -a frontend frontend-backup-<ts>` → 解包新目录 → `chown -R khmerai` → `systemctl restart khmer-ai-cs-web` (§5)
 6. **验证**: 服务器 `/ready` 双检查 + 本地走域名 `POST /api/v1/auth/login` 有 JSON 响应 (§6)
@@ -70,14 +70,15 @@ cat > /tmp/khmer-deploy/askpass.sh <<'EOF'
 echo "${KHMER_SSH_PASSWORD:-}"
 EOF
 chmod +x /tmp/khmer-deploy/askpass.sh
-export KHMER_SSH_PASSWORD='<密码, 末尾两个点>'
+export KHMER_SSH_PASSWORD='<root 密码, 从密码管理器取>'
+export KHMER_DEPLOY_HOST='<部署服务器IP, 从密码管理器取>'
 
 # sshrun 封装 (下文所有远程操作用它; 2>&1 后过滤 known_hosts 噪音)
 sshrun() {
   DISPLAY=:0 SSH_ASKPASS=/tmp/khmer-deploy/askpass.sh SSH_ASKPASS_REQUIRE=force \
-  ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+  ssh -o StrictHostKeyChecking=accept-new \
       -o ConnectTimeout=20 -o NumberOfPasswordPrompts=1 -o PubkeyAuthentication=no \
-      root@38.55.192.90 "$@" 2>&1 | grep -v "Warning: Permanently added"
+      root@$KHMER_DEPLOY_HOST "$@" 2>&1 | grep -v "Warning: Permanently added"
 }
 ```
 
@@ -113,9 +114,9 @@ curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:3001/    # 200
 systemctl is-active khmer-ai-cs-go khmer-ai-cs-web                 # active active
 
 # 本地 (走 Cloudflare 全链路)。⚠️ 域名上没有 /health —— nginx 只转 /api/, 裸路径全是 Next 页面
-curl -s -X POST https://cs.wanfanginsulationmaterial.com/api/v1/auth/login \
+curl -s -X POST https://<部署域名>/api/v1/auth/login \
      -H "Content-Type: application/json" -d '{"username":"x","password":"***"}' -o /dev/null -w "%{http_code}\n"  # 401 = API 链路通
-curl -sI https://cs.wanfanginsulationmaterial.com/ | grep -iE "content-security|HTTP"                            # CSP 头
+curl -sI https://<部署域名>/ | grep -iE "content-security|HTTP"                            # CSP 头
 ```
 
 journalctl 里周期性 `/api/v1/realtime/inbox 401 WARN` = 未带 token 的 WS 重试探测, 属正常噪音, 不是故障。
@@ -124,7 +125,7 @@ journalctl 里周期性 `/api/v1/realtime/inbox 401 WARN` = 未带 token 的 WS 
 
 | 症状 | 原因 | 解法 |
 |---|---|---|
-| HTTPS 521 | Cloudflare 连不上源站 | zone SSL 必须 Full; `cs` A 记录必须 38.55.192.90 (不能是 CF 边缘 IP) |
+| HTTPS 521 | Cloudflare 连不上源站 | zone SSL 必须 Full; `cs` A 记录必须 <部署服务器IP> (不能是 CF 边缘 IP) |
 | Gemini 502 / `User location is not supported` | Google 按出口 IP 地域封锁 Gemini API (2026-09-04 起, 服务器区域被拒) | 已用 **CF AI Gateway** 中继: `.env-go` 的 `GEMINI_API_BASE=https://gateway.ai.cloudflare.com/v1/<acc>/gemini-relay-gw/google-ai-studio/**v1beta**` — **`/v1beta` 后缀绝不能丢** (gemini.go 用 `apiBase+"/models"` 直接拼接, 丢了 = 网关 404 空 body)。CF Worker 边缘中继无效 (出口同被识别为受限区域) |
 | 模型列表 200 但为空 | gemini.go ListModels 曾按 `data` 字段解析, Google 实际返回 `models` | 已修复 (2026-09-04); 若回归先查此解析 |
 | 模型列表 404 `no longer available to new users` | 测试用了退役模型名 | 用 DB `model_configs.model_name` 里配的现役模型 (当前 gemini-3.6-flash) |
@@ -137,7 +138,7 @@ journalctl 里周期性 `/api/v1/realtime/inbox 401 WARN` = 未带 token 的 WS 
 | SSH banner exchange 超时 | 连续密码错误被临时封 / 服务器负载 | 等 30~60s 再试, 别反复重连 |
 | 密码被拒 Permission denied | 少打了末尾的点 | 密码结尾是**两个点** |
 | 大文件上传 413 | 该 server 块没配 `client_max_body_size` (默认 1m) | cs 的 443 块按需加大后 `nginx -s reload` |
-| Telegram webhook 注册失败 | `PUBLIC_API_URL` 不对或没走 https | 必须 `https://cs.wanfanginsulationmaterial.com` (不带 /api/v1) |
+| Telegram webhook 注册失败 | `PUBLIC_API_URL` 不对或没走 https | 必须 `https://<部署域名>` (不带 /api/v1) |
 
 ## 详细参考（按需阅读）
 

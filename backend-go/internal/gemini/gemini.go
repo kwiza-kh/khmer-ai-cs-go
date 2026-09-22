@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -180,8 +179,14 @@ func (s *Service) HotReload(apiKey, modelName, systemPrompt string, maxTokens in
 // ListModels returns the generative model names available for the key.
 func ListModels(ctx context.Context, apiKey string) ([]string, error) {
 	client := &http.Client{Timeout: 20 * time.Second}
-	u := fmt.Sprintf("%s/models?pageSize=200&key=%s", apiBase(), url.QueryEscape(apiKey))
-	resp, err := client.Get(u)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiBase()+"/models?pageSize=200", nil)
+	if err != nil {
+		return nil, err
+	}
+	// The key travels in the x-goog-api-key header, never the URL query: a
+	// transport error would otherwise render the key into the error string.
+	req.Header.Set("x-goog-api-key", apiKey)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -232,11 +237,11 @@ func (s *Service) fastModelName() string {
 }
 
 func (s *Service) generateURLFor(model string) string {
-	return fmt.Sprintf("%s/models/%s:generateContent?key=%s", apiBase(), NormalizeModelName(model), url.QueryEscape(s.snapshot().apiKey))
+	return fmt.Sprintf("%s/models/%s:generateContent", apiBase(), NormalizeModelName(model))
 }
 
 func (s *Service) embedURL() string {
-	return fmt.Sprintf("%s/models/%s:embedContent?key=%s", apiBase(), EmbeddingModel, url.QueryEscape(s.snapshot().apiKey))
+	return fmt.Sprintf("%s/models/%s:embedContent", apiBase(), EmbeddingModel)
 }
 
 // postWithRetry posts JSON, retrying 5xx/429/transport errors up to 3 times
@@ -263,6 +268,10 @@ func (s *Service) postWithRetry(ctx context.Context, target string, body any) (i
 			return 0, "", err
 		}
 		req.Header.Set("Content-Type", "application/json")
+		// The key travels in the header, never the URL query: a transport error
+		// would otherwise render the key inside the error string (Go's
+		// *url.Error carries the full URL, redacting only userinfo).
+		req.Header.Set("x-goog-api-key", s.snapshot().apiKey)
 		resp, err := client.Do(req)
 		if err != nil {
 			lastErr = fmt.Sprintf("request: %v", err)
@@ -413,8 +422,8 @@ func usageFromValue(v map[string]any) (int, int, int) {
 
 // streamURL builds the SSE streaming endpoint for a model.
 func (s *Service) streamURLFor(model string) string {
-	return fmt.Sprintf("%s/models/%s:streamGenerateContent?alt=sse&key=%s",
-		apiBase(), NormalizeModelName(model), url.QueryEscape(s.snapshot().apiKey))
+	return fmt.Sprintf("%s/models/%s:streamGenerateContent?alt=sse",
+		apiBase(), NormalizeModelName(model))
 }
 
 // ChatStream runs a turn with token-level streaming: onToken is invoked for
@@ -439,6 +448,8 @@ func (s *Service) ChatStream(ctx context.Context, message string, history []Hist
 		return s.chatWithModel(ctx, message, history, language, "")
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// Key in the header, never the URL (same rule as postWithRetry).
+	req.Header.Set("x-goog-api-key", cfg.apiKey)
 	resp, err := cfg.client.Do(req)
 	if err != nil {
 		return s.chatWithModel(ctx, message, history, language, "")
@@ -596,7 +607,7 @@ func (s *Service) SynthesizeSpeech(ctx context.Context, text string) ([]byte, er
 			},
 		},
 	}
-	target := fmt.Sprintf("%s/models/%s:generateContent?key=%s", apiBase(), NormalizeModelName(TTSModel()), url.QueryEscape(s.snapshot().apiKey))
+	target := fmt.Sprintf("%s/models/%s:generateContent", apiBase(), NormalizeModelName(TTSModel()))
 	status, respText, err := s.postWithRetry(ctx, target, body)
 	if err != nil || status != http.StatusOK {
 		return nil, fmt.Errorf("tts failed (%d): %v", status, err)
@@ -799,7 +810,14 @@ func (s *Service) JudgeTurn(ctx context.Context, customerMsg, reply string, hasM
 	default:
 		v.Sentiment = "neutral"
 	}
-	if v.Intent == "" || len(v.Intent) > 64 {
+	// Intent is enum-enforced (mirroring sentiment above), not merely
+	// length-capped: the value persists into sessions.intent and is exported
+	// to CSV reports, so a steered model emitting a formula-leading string
+	// ("=...", "+...") must never survive validation.
+	switch v.Intent {
+	case "question", "complaint", "refund", "order_status", "price", "booking",
+		"customization", "bulk_order", "delivery", "payment", "legal", "small_talk", "other":
+	default:
 		v.Intent = "other"
 	}
 	if v.Confidence < 0 || v.Confidence > 1 {
@@ -879,7 +897,7 @@ func (s *Service) embedBatch(ctx context.Context, texts []string) ([][]float32, 
 			"outputDimensionality": embeddingVectorDimension,
 		}
 	}
-	batchURL := fmt.Sprintf("%s/models/%s:batchEmbedContents?key=%s", apiBase(), EmbeddingModel, url.QueryEscape(s.snapshot().apiKey))
+	batchURL := fmt.Sprintf("%s/models/%s:batchEmbedContents", apiBase(), EmbeddingModel)
 	status, respText, err := s.postWithRetry(ctx, batchURL, map[string]any{"requests": requests})
 	if err != nil {
 		return nil, fmt.Errorf("batchEmbedContents request: %w", err)

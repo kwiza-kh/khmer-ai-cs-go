@@ -4,6 +4,8 @@ SKILL.md 工作流的命令级详细版, 按顺序执行。远程命令通过 SS
 
 ## 0. 前置：封装 ssh / scp（macOS）
 
+> 安全基线（安全审计 2026-09）：服务器 IP、域名、密码等敏感值一律放环境变量或密码管理器，**不得写进本仓库**；SSH 必须校验主机密钥（`accept-new` 首连自动记录、之后任何变化都会失败——`no` 会把部署通道对中间人敞开，二进制却没有任何独立完整性校验）。
+
 ```bash
 mkdir -p /tmp/khmer-deploy
 cat > /tmp/khmer-deploy/askpass.sh <<'EOF'
@@ -11,19 +13,20 @@ cat > /tmp/khmer-deploy/askpass.sh <<'EOF'
 echo "${KHMER_SSH_PASSWORD:-}"
 EOF
 chmod +x /tmp/khmer-deploy/askpass.sh
-export KHMER_SSH_PASSWORD='<密码, 末尾两个点>'   # 只放环境变量, 不写进文件/仓库
+export KHMER_SSH_PASSWORD='<root 密码, 从密码管理器取>'   # 只放环境变量, 不写进文件/仓库
+export KHMER_DEPLOY_HOST='<服务器 IP, 从密码管理器/云控制台取>'
 
 cat > /tmp/khmer-deploy/sshrun.sh <<'EOF'
 #!/bin/bash
 DISPLAY=:0 SSH_ASKPASS=/tmp/khmer-deploy/askpass.sh SSH_ASKPASS_REQUIRE=force \
-ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+ssh -o StrictHostKeyChecking=accept-new \
     -o ConnectTimeout=20 -o NumberOfPasswordPrompts=1 -o PubkeyAuthentication=no \
-    root@38.55.192.90 "$@" 2>&1 | grep -v "Warning: Permanently added"
+    "root@${KHMER_DEPLOY_HOST:?KHMER_DEPLOY_HOST 未设置}" "$@" 2>&1 | grep -v "Warning: Permanently added"
 EOF
 cat > /tmp/khmer-deploy/scprun.sh <<'EOF'
 #!/bin/bash
 DISPLAY=:0 SSH_ASKPASS=/tmp/khmer-deploy/askpass.sh SSH_ASKPASS_REQUIRE=force \
-scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+scp -o StrictHostKeyChecking=accept-new \
     -o ConnectTimeout=20 -o NumberOfPasswordPrompts=1 -o PubkeyAuthentication=no \
     "$@" 2>&1 | grep -v "Warning: Permanently added"
 EOF
@@ -56,12 +59,19 @@ go vet ./... && go test ./...                                   # 发布前质�
 # 未设 DATABASE_URL 时它会 skip —— 也就是说常规 go test 覆盖不到它。
 set -a; . ./.env-go; set +a; go test ./internal/sqlcheck/ -v
 # 本机没有库时用隧道(把 DSN 的 5432 换成隧道端口):
-#   ssh -f -N -L 15432:127.0.0.1:5432 root@38.55.192.90
+#   ssh -f -N -L 15432:127.0.0.1:5432 root@$KHMER_DEPLOY_HOST
 #   DATABASE_URL=$(echo "$DATABASE_URL" | sed 's|:5432/|:15432/|') go test ./internal/sqlcheck/ -v
 
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/khmer-deploy/server-go  ./cmd/server
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/khmer-deploy/migrate-go ./cmd/migrate
+# 版本戳: 把当前 commit 写进二进制, /ready 能回答"线上跑的是哪个构建"。
+VERSION=$(git rev-parse --short HEAD)
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-X khmer-ai-cs-go/internal/api.Version=$VERSION" -o /tmp/khmer-deploy/server-go ./cmd/server
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-X khmer-ai-cs-go/internal/api.Version=$VERSION-migrate" -o /tmp/khmer-deploy/migrate-go ./cmd/migrate
 file /tmp/khmer-deploy/server-go   # 确认 "ELF 64-bit ... x86-64"
+# 构建完整性: 记录摘要, 上传后在服务器上核对 (§3)。
+shasum -a 256 /tmp/khmer-deploy/server-go /tmp/khmer-deploy/migrate-go /tmp/khmer-deploy/khmer-fe.tgz > /tmp/khmer-deploy/SHA256SUMS
+cat /tmp/khmer-deploy/SHA256SUMS
 ```
 
 > 本机没装 Go 时: `brew install go` (需 ≥1.26, 见 go.mod)。线上现行二进制为 go1.26.5 构建。
@@ -74,7 +84,7 @@ cd <仓库>/frontend
 # ⚠️ 关键: API_BASE 是构建时烘焙进 bundle 的 (src/lib/auth-client.tsx:
 #    process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080/api/v1")
 #    忘设 = 线上前端打用户本机的 localhost → 接口全挂
-NEXT_PUBLIC_API_URL=https://cs.wanfanginsulationmaterial.com/api/v1 npm run build
+NEXT_PUBLIC_API_URL=https://<部署域名>/api/v1 npm run build
 
 # 组装 standalone 运行目录 (与 frontend/Dockerfile 第三阶段同法):
 STAGE=/tmp/khmer-deploy/fe; rm -rf $STAGE && mkdir -p $STAGE/.next
@@ -93,9 +103,12 @@ tar czf /tmp/khmer-deploy/khmer-fe.tgz -C $STAGE .
 
 ```bash
 /tmp/khmer-deploy/sshrun.sh "mkdir -p /root/khmer-deploy"
-/tmp/khmer-deploy/scprun.sh /tmp/khmer-deploy/server-go /tmp/khmer-deploy/migrate-go /tmp/khmer-deploy/khmer-fe.tgz root@38.55.192.90:/root/khmer-deploy/
+/tmp/khmer-deploy/scprun.sh /tmp/khmer-deploy/server-go /tmp/khmer-deploy/migrate-go /tmp/khmer-deploy/khmer-fe.tgz root@\$KHMER_DEPLOY_HOST:/root/khmer-deploy/
+/tmp/khmer-deploy/scprun.sh /tmp/khmer-deploy/SHA256SUMS root@\$KHMER_DEPLOY_HOST:/root/khmer-deploy/
 # scp 退出码可能是管道误报, 以远端 ls 为准:
 /tmp/khmer-deploy/sshrun.sh "ls -lh /root/khmer-deploy/"
+# 完整性校验: 摘要不匹配就立即停手 (构建→部署通道的替换检测)。
+/tmp/khmer-deploy/sshrun.sh "cd /root/khmer-deploy && sha256sum -c SHA256SUMS"
 ```
 
 ## 4. 后端发布（含迁移）
@@ -168,10 +181,10 @@ curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:3001/
 journalctl -u khmer-ai-cs-go -n 15 --no-pager -o cat   # 启动无 ERROR
 
 # 本地 (走 Cloudflare; 域名上 /health 不存在, 别拿它验证)
-curl -s -X POST https://cs.wanfanginsulationmaterial.com/api/v1/auth/login \
+curl -s -X POST https://<部署域名>/api/v1/auth/login \
      -H "Content-Type: application/json" -d '{"username":"__probe__","password":"***"}' \
      -w "\n%{http_code}\n"    # 期望 JSON + 401/4xx (非 5xx/521)
-curl -s -o /dev/null -w "%{http_code}\n" https://cs.wanfanginsulationmaterial.com/   # 200
+curl -s -o /dev/null -w "%{http_code}\n" https://<部署域名>/   # 200
 ```
 
 ## 7. 回滚
@@ -197,13 +210,13 @@ chown -R khmerai:khmerai frontend && systemctl start khmer-ai-cs-web
 ```nginx
 server {
     listen 80; listen [::]:80;
-    server_name cs.wanfanginsulationmaterial.com;
+    server_name <部署域名>;
     return 301 https://$host$request_uri;
 }
 server {
     listen 443 ssl; listen [::]:443 ssl;
     http2 on;
-    server_name cs.wanfanginsulationmaterial.com;
+    server_name <部署域名>;
 
     # 安全头 (CSP 允许 connect.facebook.net = Meta SDK; 页面本体全同源)
     add_header Strict-Transport-Security "max-age=31536000" always;

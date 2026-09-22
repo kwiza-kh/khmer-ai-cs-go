@@ -82,8 +82,6 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) (any, error) {
 		a.recordLoginFailure(ctx, failKey, lockKey)
 		return nil, ErrUnauthorized("用户名或密码错误")
 	}
-	// Successful login — clear the failure counter.
-	_ = a.Redis.SetJSON(ctx, failKey, 0, time.Second)
 
 	// Upgrade legacy-cost hashes at login.
 	if auth.PasswordNeedsRehash(*passwordHash) {
@@ -122,9 +120,16 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) (any, error) {
 			}}, nil
 		}
 		if !auth.VerifyTOTP(*totpSecret, code) {
+			// Second-factor failures count toward the same account lockout as
+			// password failures; without this the advertised 5/15min lockout
+			// never applies to TOTP guessing once the password is known.
+			a.recordLoginFailure(ctx, failKey, lockKey)
 			return nil, ErrUnauthorized("验证码错误")
 		}
 	}
+
+	// Both factors passed — only now clear the failure counter.
+	_ = a.Redis.SetJSON(ctx, failKey, 0, time.Second)
 
 	token, err := a.JWT.GenerateToken(userID, username, role, tokenVersion)
 	if err != nil {
@@ -340,6 +345,12 @@ func (a *App) updatePreferences(w http.ResponseWriter, r *http.Request) (any, er
 }
 
 // Health — liveness probe (Docker hits this every 30s).
+// Version is the deployed binary identity, stamped at build time via
+// -ldflags "-X khmer-ai-cs-go/internal/api.Version=<git-sha>". A build that
+// skips the stamp falls back to dev, which still beats a constant that makes
+// every build indistinguishable.
+var Version = "dev"
+
 func (a *App) health(w http.ResponseWriter, r *http.Request) (any, error) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
@@ -352,7 +363,7 @@ func (a *App) health(w http.ResponseWriter, r *http.Request) (any, error) {
 	body := map[string]any{
 		"status":  status,
 		"service": "relaychat",
-		"version": "2.0.0-go",
+		"version": Version,
 		"checks":  map[string]bool{"database": dbOK, "redis": redisOK},
 	}
 	WriteJSON(w, code, body)

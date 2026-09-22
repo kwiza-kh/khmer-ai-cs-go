@@ -17,6 +17,9 @@ import (
 const googleAuthEndpoint = "https://accounts.google.com/o/oauth2/v2/auth"
 const googleTokenEndpoint = "https://oauth2.googleapis.com/token"
 
+// GoogleJWKSURL is Google's OIDC public-key set (id_token verification).
+const GoogleJWKSURL = "https://www.googleapis.com/oauth2/v3/certs"
+
 // googleSSOEnabled — all four settings must be present.
 func (a *App) googleSSOEnabled() bool {
 	c := a.Cfg.SSO
@@ -51,6 +54,10 @@ func (a *App) googleStart(w http.ResponseWriter, r *http.Request) {
 	state := base64.RawURLEncoding.EncodeToString(buf)
 	// State lives 10 minutes in Redis: one-time use, checked on callback.
 	_ = a.Redis.SetString(r.Context(), "google-state:"+state, "1", 10*time.Minute)
+	// Bind the flow to the browser that started it (sso_flow cookie); without
+	// this binding an attacker's (state, code) pair could be exchanged by the
+	// victim's browser — silent login CSRF.
+	a.ssoFlowStart(w, r, "google", state)
 	http.Redirect(w, r, a.googleAuthURL(state), http.StatusFound)
 }
 
@@ -69,6 +76,13 @@ func (a *App) googleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if v, err := a.Redis.GetString(ctx, "google-state:"+state); err != nil || v == "" {
+		a.googleRedirectError(w, r, "invalid_state")
+		return
+	}
+	// The state must belong to the flow this browser started (sso_flow
+	// cookie). Without this binding the callback is login-CSRF bait: anyone
+	// can mint a live state via /start and paste it into a link.
+	if !a.ssoFlowMatch(r, "google", state) {
 		a.googleRedirectError(w, r, "invalid_state")
 		return
 	}
@@ -130,10 +144,12 @@ func (a *App) googleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Hand the token to the SPA through a short-lived one-time code rather
-	// than the URL fragment (keeps it out of history/referrer).
+	// than the URL fragment (keeps it out of history/referrer). The state is
+	// embedded in the payload so the exchange can verify code↔flow↔state.
 	loginCode := newUUIDv4()
 	payload, _ := json.Marshal(map[string]any{
 		"token": token,
+		"state": state,
 		"user":  map[string]any{"user_id": userID, "username": username, "email": email, "role": role},
 	})
 	if err := a.Redis.SetString(ctx, "google-login:"+loginCode, string(payload), 2*time.Minute); err != nil {
@@ -176,7 +192,29 @@ func (a *App) exchangeGoogleCode(ctx context.Context, code string) (*googleClaim
 	if resp.StatusCode != http.StatusOK || body.IDToken == "" {
 		return nil, fmt.Errorf("token endpoint %d: %s", resp.StatusCode, body.Error)
 	}
-	return parseGoogleIDToken(body.IDToken, a.Cfg.SSO.OIDCClientID)
+	return a.verifyGoogleIDToken(body.IDToken)
+}
+
+// verifyGoogleIDToken checks the RS256 signature against Google's published
+// JWKS keys (OIDC Core requires signature validation even in the code flow),
+// then parses the claims. Transport alone is not the authenticity guarantee:
+// any interposition on the server's egress TLS would otherwise yield account
+// impersonation. SSO_SKIP_ID_TOKEN_VERIFY=true restores the old
+// transport-trust posture for deployments that cannot reach the JWKS URL.
+func (a *App) verifyGoogleIDToken(idToken string) (*googleClaims, error) {
+	if !a.Cfg.SSO.SkipIDTokenVerify {
+		if a.SSOJWKS == nil {
+			a.SSOJWKS = NewJWKSCache(GoogleJWKSURL)
+		}
+		key, err := jwksKidPublicKey(a.SSOJWKS, idToken)
+		if err != nil {
+			return nil, err
+		}
+		if err := verifyRS256(idToken, key); err != nil {
+			return nil, err
+		}
+	}
+	return parseGoogleIDToken(idToken, a.Cfg.SSO.OIDCClientID)
 }
 
 type googleClaims struct {
@@ -186,10 +224,9 @@ type googleClaims struct {
 	Name          string
 }
 
-// parseGoogleIDToken decodes the JWT payload. The token arrives directly from
-// Google over TLS in response to our client_secret-authenticated request, so
-// the transport is the authenticity guarantee here; we still verify audience
-// and issuer to reject a token minted for another client.
+// parseGoogleIDToken decodes the JWT payload and verifies the standard
+// claims. Signature verification happens separately in verifyGoogleIDToken
+// (RS256 against Google's JWKS) before this function is reached.
 func parseGoogleIDToken(idToken, clientID string) (*googleClaims, error) {
 	parts := strings.Split(idToken, ".")
 	if len(parts) != 3 {
@@ -325,13 +362,18 @@ func (a *App) googleLoginExchange(w http.ResponseWriter, r *http.Request) (any, 
 	if state == "" {
 		return nil, ErrBadRequest("缺少登录会话标识")
 	}
-	// The state must still be live — it is deleted on first successful use
-	// below, which also makes the whole exchange single-shot.
+	// The state must still be live AND belong to the flow this browser started
+	// (cookie binding). Both are deleted on first successful use below, which
+	// makes the whole exchange single-shot.
 	stateKey := "google-state:" + state
 	if v, err := a.Redis.GetString(r.Context(), stateKey); err != nil || v == "" {
 		return nil, ErrUnauthorized("登录会话已失效，请重新登录")
 	}
+	if !a.ssoFlowMatch(r, "google", state) {
+		return nil, ErrUnauthorized("登录会话与当前浏览器不匹配，请重新登录")
+	}
 	_ = a.Redis.Del(r.Context(), stateKey)
+	a.ssoFlowConsume(r, "google")
 	raw, err := a.Redis.GetString(r.Context(), "google-login:"+code)
 	if err != nil || raw == "" {
 		return nil, ErrUnauthorized("登录码已失效，请重新登录")
@@ -341,5 +383,10 @@ func (a *App) googleLoginExchange(w http.ResponseWriter, r *http.Request) (any, 
 	if json.Unmarshal([]byte(raw), &payload) != nil {
 		return nil, ErrInternal("登录数据处理失败")
 	}
+	// The code must have been issued for THIS state (code↔flow↔state binding).
+	if s, _ := payload["state"].(string); s != state {
+		return nil, ErrUnauthorized("登录码与会话不匹配，请重新登录")
+	}
+	delete(payload, "state")
 	return payload, nil
 }

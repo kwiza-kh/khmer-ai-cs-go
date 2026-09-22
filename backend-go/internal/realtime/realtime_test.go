@@ -133,10 +133,19 @@ func TestAuthenticateSubprotocolToken(t *testing.T) {
 	}
 
 	// Inactive tenant rejected even with a valid token.
-	h.IsActive = func(context.Context, int32) bool { return false }
+	h.IsActive = func(context.Context, int32) (bool, int) { return false, 0 }
 	r4 := httptest.NewRequest("GET", "/api/v1/realtime/inbox", nil)
 	r4.Header.Set("Authorization", "Bearer "+token)
 	if _, ok := h.authenticate(r4); ok {
 		t.Fatal("inactive user must be rejected")
+	}
+
+	// A token whose tv claim no longer matches the account's token_version is
+	// rejected — the same revocation predicate the HTTP chain enforces.
+	h.IsActive = func(context.Context, int32) (bool, int) { return true, 999 }
+	r5 := httptest.NewRequest("GET", "/api/v1/realtime/inbox", nil)
+	r5.Header.Set("Authorization", "Bearer "+token)
+	if _, ok := h.authenticate(r5); ok {
+		t.Fatal("stale token_version must be rejected")
 	}
 }

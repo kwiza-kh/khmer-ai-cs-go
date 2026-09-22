@@ -218,8 +218,13 @@ type updateModelRequest struct {
 	APIKey       *string  `json:"api_key"`
 }
 
-// updateModelConfig — update one model config (admin).
+// updateModelConfig — update one model config (platform admin only; the
+// resource is platform-global with no tenant column, so a tenant admin must
+// never reach it even if a route gate is misconfigured elsewhere).
 func (a *App) updateModelConfig(w http.ResponseWriter, r *http.Request, configID int32) (any, error) {
+	if caller, ok := UserFrom(r); !ok || !caller.IsPlatformAdmin() {
+		return nil, ErrForbidden("模型配置仅平台管理员可修改")
+	}
 	var req updateModelRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		return nil, ErrBadRequest("请求格式错误")

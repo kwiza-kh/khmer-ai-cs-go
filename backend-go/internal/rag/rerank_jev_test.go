@@ -19,6 +19,11 @@ func (discardWriter) Write(p []byte) (int, error) { return len(p), nil }
 
 func quietLogger() *slog.Logger { return slog.New(slog.NewJSONHandler(discardWriter{}, nil)) }
 
+// stubAuthValue is the placeholder credential given to a stub client. Every
+// test in this package talks to a loopback httptest server, so no real
+// credential is involved and this value is deliberately not credential-shaped.
+const stubAuthValue = "stub"
+
 // jevRerankServer scores every passage question from the supplied 0-4 values.
 func jevRerankServer(t *testing.T, calls *atomic.Int32, scores []float64) *typesafe.Client {
 	t.Helper()
@@ -35,7 +40,7 @@ func jevRerankServer(t *testing.T, calls *atomic.Int32, scores []float64) *types
 		_, _ = w.Write([]byte(`{"model":"jev-1.13.0","answers":{` + answers + `}}`))
 	}))
 	t.Cleanup(srv.Close)
-	return &typesafe.Client{Endpoint: srv.URL, APIKey: "k", Model: "jev-latest", HTTP: srv.Client(), Logger: quietLogger()}
+	return &typesafe.Client{Endpoint: srv.URL, APIKey: stubAuthValue, Model: "jev-latest", HTTP: srv.Client(), Logger: quietLogger()}
 }
 
 func geminiRerankStub(t *testing.T) *gemini.Service {
@@ -72,7 +77,7 @@ func TestRerankScoresFallsBackWhenJevFails(t *testing.T) {
 	}))
 	t.Cleanup(bad.Close)
 	s := &Service{
-		Jev:    &typesafe.Client{Endpoint: bad.URL, APIKey: "k", Model: "jev-latest", HTTP: bad.Client(), Logger: quietLogger()},
+		Jev:    &typesafe.Client{Endpoint: bad.URL, APIKey: stubAuthValue, Model: "jev-latest", HTTP: bad.Client(), Logger: quietLogger()},
 		Gemini: geminiRerankStub(t),
 		Logger: quietLogger(),
 	}

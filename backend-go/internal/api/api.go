@@ -40,6 +40,11 @@ type App struct {
 	// Realtime is the WebSocket inbox hub (may be nil in tests).
 	Realtime *realtime.Hub
 
+	// SSOJWKS caches the Google provider's public keys for id_token signature
+	// verification (may be nil in tests; the signature check then depends on
+	// SSO_SKIP_ID_TOKEN_VERIFY).
+	SSOJWKS *jwksCache
+
 	// WebhookHandler serves the platform webhook endpoints (mounted by main).
 	WebhookHandler http.Handler
 }

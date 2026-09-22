@@ -133,13 +133,52 @@ func (s *statusRecorder) Flush() {
 
 func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }
 
+// clientIP resolves the originating client address for rate limiting, audit
+// attribution and request logs.
+//
+// Trust boundary: the documented production chain is Cloudflare → local nginx
+// (X-Real-IP overwritten with $remote_addr, X-Forwarded-For appended) → this
+// process, so the immediate peer being a loopback address means the request
+// came through the trusted proxy and the client identity is the value nginx
+// computed: X-Real-IP. The client-supplied FIRST X-Forwarded-For element is
+// never trusted — an attacker could rotate it per request to get fresh
+// rate-limit buckets and forge audit attribution. When the peer is not a
+// loopback proxy (direct :8081 access), the socket peer is used and all
+// forwarded headers are ignored.
 func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if ip := strings.Split(xff, ",")[0]; strings.TrimSpace(ip) != "" {
-			return strings.TrimSpace(ip)
+	peer := r.RemoteAddr
+	if host, _, err := net.SplitHostPort(peer); err == nil {
+		peer = host
+	}
+	peer = strings.Trim(peer, "[]")
+	if isLoopbackIP(peer) {
+		if xr := strings.TrimSpace(r.Header.Get("X-Real-IP")); xr != "" {
+			return xr
+		}
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			// nginx appends its own peer to XFF, so the last element is the
+			// trusted proxy's view of the client; earlier elements are
+			// client-suppliable and never used.
+			parts := strings.Split(xff, ",")
+			for i := len(parts) - 1; i >= 0; i-- {
+				if ip := strings.TrimSpace(parts[i]); ip != "" {
+					return ip
+				}
+			}
 		}
 	}
-	return "-"
+	if peer == "" {
+		return "-"
+	}
+	return peer
+}
+
+func isLoopbackIP(ip string) bool {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return false
+	}
+	return parsed.IsLoopback()
 }
 
 // auth parses the Bearer credential (JWT or kcs_ API key), verifies the

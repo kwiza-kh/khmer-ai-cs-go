@@ -46,11 +46,11 @@ LINE/Zalo 的 webhook 按 `platform_configs.channel_identity` (LINE = 机器人 
 | 组 | 变量 | 要点 |
 |---|---|---|
 | 服务 | `SERVER_PORT` (默认 8080, **线上 8081**) `GIN_MODE` | 监听 0.0.0.0, 见 troubleshooting#16 |
-| URL | `PUBLIC_API_URL=https://cs.wanfanginsulationmaterial.com` | **不带 /api/v1**; Telegram webhook 自动注册地址由它拼出, 错则 Platform 页注册失败 |
+| URL | `PUBLIC_API_URL=https://<部署域名>` | **不带 /api/v1**; Telegram webhook 自动注册地址由它拼出, 错则 Platform 页注册失败 |
 | 库 | `DATABASE_URL` `REDIS_ADDR` `REDIS_PASSWORD` `REDIS_DB` | pg: 127.0.0.1:5432/khmer_ai_cs; redis requirepass |
 | 认证 | `JWT_SECRET` (≥32 随机) `JWT_EXPIRE_HOUR` `INITIAL_ADMIN_PASSWORD` `ALLOW_REGISTRATION` `REGISTRATION_INVITE_CODE` | 改 JWT_SECRET = 全员在线会话作废 |
 | 凭据加密 | `PLATFORM_CREDENTIAL_KEY` | base64(32B); **轮换后已保存的渠道凭据不可解密** (等于渠道全挂), 除非有重加密流程 |
-| AI | `GEMINI_API_KEY` `GEMINI_MODEL`(gemini-2.5-flash) `GEMINI_MAX_TOKENS` `GEMINI_CACHE_TTL` `GEMINI_API_BASE`(可选) | **key 为空 = MOCK 模式** (模板回复, 演示/CI 用), 上线真 AI 必配; `GEMINI_API_BASE` 覆盖 REST 端点 (gemini.go 启动时读, 代码拼 `apiBase+"/models"`), 现网指向 CF AI Gateway **含 /v1beta 后缀**: `https://gateway.ai.cloudflare.com/v1/b86b1f31914f5b090031b778e2e064d5/gemini-relay-gw/google-ai-studio/v1beta` (绕开 Google 对服务器区域的地域封锁, 2026-09-04 起)。坑: ①后缀丢了 → 网关 404 空 body; ②DB model_configs 的 key 含非标准字符也能用 (curl/Go 原样传); ③网关的 Authentication 必须 None, 否则 401 code 2009; ④请求日志在 CF 面板 AI→AI Gateway 可查 |
+| AI | `GEMINI_API_KEY` `GEMINI_MODEL`(gemini-2.5-flash) `GEMINI_MAX_TOKENS` `GEMINI_CACHE_TTL` `GEMINI_API_BASE`(可选) | **key 为空 = MOCK 模式** (模板回复, 演示/CI 用), 上线真 AI 必配; `GEMINI_API_BASE` 覆盖 REST 端点 (gemini.go 启动时读, 代码拼 `apiBase+"/models"`), 现网指向 CF AI Gateway **含 /v1beta 后缀**: `https://gateway.ai.cloudflare.com/v1/<CLOUDFLARE_ACCOUNT_ID>/gemini-relay-gw/google-ai-studio/v1beta` (绕开 Google 对服务器区域的地域封锁, 2026-09-04 起)。坑: ①后缀丢了 → 网关 404 空 body; ②DB model_configs 的 key 含非标准字符也能用 (curl/Go 原样传); ③网关的 Authentication 必须 None, 否则 401 code 2009; ④请求日志在 CF 面板 AI→AI Gateway 可查 |
 | 渠道 | `TELEGRAM_BOT_TOKEN` `META_VERIFY_TOKEN` `META_APP_ID/APP_SECRET` `META_OAUTH_REDIRECT_URL` `META_OAUTH_FRONTEND_URL` `META_GRAPH_API_VERSION` `META_WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID` | OAuth 回调 URL 与 Meta 后台 redirect URI **逐字符一致** |
 | 存储 | `R2_ACCOUNT_ID/ACCESS_KEY/SECRET_KEY/BUCKET/PUBLIC_URL` | 聊天文件上传 (Cloudflare R2, S3 兼容) |
 | 企业(可空=关) | `EMAIL_*` `VOICE_ENABLED`+`TWILIO_*` `SSO_*` `ALLOWED_ORIGINS` | 生产前端与 API 同源 (都挂 cs 域), CORS 不触发; 仅当前端另起 origin 直连 API 才把该 origin 加进 ALLOWED_ORIGINS |
@@ -70,7 +70,7 @@ LINE/Zalo 的 webhook 按 `platform_configs.channel_identity` (LINE = 机器人 
 
 ## 6. 前端构建事实
 
-- `API_BASE` 构建时烘焙 (troubleshooting#9), 生产构建必带 `NEXT_PUBLIC_API_URL=https://cs.wanfanginsulationmaterial.com/api/v1`
+- `API_BASE` 构建时烘焙 (troubleshooting#9), 生产构建必带 `NEXT_PUBLIC_API_URL=https://<部署域名>/api/v1`
 - realtime.ts 从 API_BASE 推导 `wss://` 地址 → 走 nginx WS location
 - `output: "standalone"` 是发布格式契约 (Dockerfile 与服务器 systemd 都按它写); 改 next.config 前想清楚
 - dev 环境: `allowedDevOrigins: ["127.0.0.1","0.0.0.0"]` 已配, 否则非 localhost 访问 Next16/Turbopack 不水合

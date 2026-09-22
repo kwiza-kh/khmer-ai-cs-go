@@ -166,9 +166,18 @@ func (p *Pipeline) dispatchPlatformUpdate(ctx context.Context, upd *telegramUpda
 
 	// --- operator reply to a relayed support message ---
 	// Checked BEFORE commands so an answer that happens to start with "/" is
-	// still delivered as an answer rather than parsed as a command.
+	// still delivered as an answer rather than parsed as a command. The reply
+	// path applies the SAME two-gate authority as the command console below
+	// (allow-list + linked platform_admin recheck) so demoting an operator
+	// revokes the reply lane too, and every reply (or denial) is audited.
 	if p.IsPlatformAdminChat(senderID) && msg.ReplyTo != nil {
+		if ok, reason := p.adminConsoleAllowed(ctx, senderID); !ok {
+			p.SendPlatformMessage(ctx, chatID, "⛔ "+reason, nil)
+			p.auditPlatformCommand(ctx, senderID, "relay_reply", "denied: "+reason)
+			return
+		}
 		if p.relayAdminReply(ctx, msg.Chat.ID, msg.ReplyTo.MessageID, text) {
+			p.auditPlatformCommand(ctx, senderID, "relay_reply", "")
 			return
 		}
 	}

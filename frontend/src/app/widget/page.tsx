@@ -8,6 +8,18 @@
 import * as React from "react";
 import { useSearchParams } from "next/navigation";
 import { Suspense } from "react";
+import { API_BASE } from "@/lib/auth-client";
+
+// The API base is the build-time NEXT_PUBLIC_API_URL, never a query
+// parameter: trusting ?api= let any page frame the widget with the tenant's
+// public token and api=<attacker origin>, then poison the persisted session
+// id with an attacker-chosen value.
+const FIXED_API_BASE = API_BASE.replace(/\/$/, "");
+
+// Server-issued session ids are UUIDs; validating the persisted sid on
+// restore keeps attacker-chosen junk (from a poisoned storage context) out of
+// transcript URLs.
+const SID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 type Msg = {
   id: number;
@@ -78,23 +90,27 @@ function parseLine(raw: string): { event: string; data: unknown } | null {
 const widgetSidCookieName = (token: string) => `khmer_widget_sid_${token.replace(/[^a-zA-Z0-9]/g, "").slice(0, 32)}`;
 
 function readWidgetSidCookie(token: string): string | null {
-  const name = `${widgetSidCookieName(token)}=`;
-  for (const part of document.cookie.split("; ")) {
-    if (part.startsWith(name)) return decodeURIComponent(part.slice(name.length));
-  }
+  try {
+    const name = `${widgetSidCookieName(token)}=`;
+    for (const part of document.cookie.split("; ")) {
+      if (part.startsWith(name)) return decodeURIComponent(part.slice(name.length));
+    }
+  } catch { /* malformed cookie value or cookies unavailable */ }
   return null;
 }
 
 function writeWidgetSidCookie(token: string, sid: string) {
   try {
-    document.cookie = `${widgetSidCookieName(token)}=${encodeURIComponent(sid)}; path=/; max-age=31536000; samesite=lax`;
+    document.cookie = `${widgetSidCookieName(token)}=${encodeURIComponent(sid)}; path=/; max-age=31536000; samesite=lax; secure; partitioned`;
   } catch { /* cookies unavailable (e.g. blocked in third-party iframe) */ }
 }
 
 function WidgetInner() {
   const params = useSearchParams();
   const token = params.get("t") || "";
-  const apiBase = (params.get("api") || "").replace(/\/$/, "");
+  // API base is fixed at build time (see FIXED_API_BASE above); the old ?api=
+  // query override was removed in the security-audit remediation.
+  const apiBase = FIXED_API_BASE;
   const langParam = params.get("lang");
   const lang: Lang = langParam === "en" ? "en" : langParam === "zh" ? "zh" : "km";
   const colorParam = params.get("color") || "";
@@ -159,7 +175,7 @@ function WidgetInner() {
     } catch { /* ignore */ }
     if (!saved) saved = readWidgetSidCookie(token);
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (saved) setSessionId(saved);
+    if (saved && SID_RE.test(saved)) setSessionId(saved);
   }, [token]);
 
   // Fetch the persisted transcript (gives real dbIds + agent replies). Skips
@@ -168,7 +184,7 @@ function WidgetInner() {
   const syncMessages = React.useCallback(async (sid: string) => {
     if (!apiBase) return;
     try {
-      const res = await fetch(`${apiBase}/widget/messages?token=${encodeURIComponent(token)}&session=${sid}&limit=200`);
+      const res = await fetch(`${apiBase}/widget/messages?token=${encodeURIComponent(token)}&session=${encodeURIComponent(sid)}&limit=200`);
       if (!res.ok) return;
       const rows = (await res.json()) as { message_id: number; role: string; content: string; feedback_rating?: number | null }[];
       const mapped: Msg[] = rows

@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +19,20 @@ import (
 	"strings"
 	"time"
 )
+
+// unwrapURLErr drops the *url.Error wrapper, whose message embeds the full
+// request URL. Telegram Bot API paths carry the bot token and Meta URLs can
+// carry page tokens, so a raw transport error would leak credentials into
+// logs, platform_outbox.last_error and operator alert text. Keeping only the
+// underlying cause (timeout, DNS, refused, TLS) stays informative without the
+// credential.
+func unwrapURLErr(err error) error {
+	var uerr *url.Error
+	if errors.As(err, &uerr) {
+		return uerr.Err
+	}
+	return err
+}
 
 const (
 	metaGraphBase  = "https://graph.facebook.com"
@@ -78,17 +93,17 @@ func (m *MetaClient) accountID(platform string) string {
 
 func (m *MetaClient) get(ctx context.Context, path string, params url.Values) (map[string]any, error) {
 	u := m.base() + path
-	q := url.Values{}
-	q.Set("access_token", m.AccessToken)
-	for k, vs := range params {
-		for _, v := range vs {
-			q.Add(k, v)
-		}
+	if len(params) > 0 {
+		u += "?" + params.Encode()
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u+"?"+q.Encode(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
 	}
+	// Access token rides the Authorization header, never the URL query: a
+	// transport-level *url.Error would otherwise render the token into the
+	// error string that reaches last_error columns and operator alerts.
+	req.Header.Set("Authorization", "OAuth "+m.AccessToken)
 	return m.do(req, "meta get "+path)
 }
 
@@ -97,19 +112,19 @@ func (m *MetaClient) post(ctx context.Context, path string, body any) (map[strin
 	if err != nil {
 		return nil, err
 	}
-	u := m.base() + path + "?access_token=" + url.QueryEscape(m.AccessToken)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, strings.NewReader(string(payload)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.base()+path, strings.NewReader(string(payload)))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "OAuth "+m.AccessToken)
 	return m.do(req, "meta post "+path)
 }
 
 func (m *MetaClient) do(req *http.Request, what string) (map[string]any, error) {
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", what, err)
+		return nil, fmt.Errorf("%s: %w", what, unwrapURLErr(err))
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024))
@@ -200,7 +215,7 @@ func downloadBytes(ctx context.Context, u string) ([]byte, string, error) {
 	}
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return nil, "", fmt.Errorf("media download: %w", err)
+		return nil, "", fmt.Errorf("media download: %w", unwrapURLErr(err))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
@@ -434,7 +449,9 @@ func (t *TelegramClient) call(ctx context.Context, method string, body any) (map
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("telegram %s: %w", method, err)
+		// The bot token rides the URL path (Bot API design), so the raw
+		// *url.Error would carry it into logs/alerts — keep only the cause.
+		return nil, fmt.Errorf("telegram %s: %w", method, unwrapURLErr(err))
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024))

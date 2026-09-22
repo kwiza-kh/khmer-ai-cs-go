@@ -77,11 +77,17 @@ func Publish(ctx context.Context, rdb *redisstore.Client, ev Event) {
 // Hub tracks the authenticated WebSocket connections of this process and
 // replays Redis events to them.
 type Hub struct {
-	JWT      *auth.JWT
-	Redis    *redisstore.Client
-	Logger   *slog.Logger
-	IsActive func(ctx context.Context, userID int32) bool
+	JWT   *auth.JWT
+	Redis *redisstore.Client
+	// IsActive reports whether the account is usable AND returns the account's
+	// current token_version. The handshake compares it against the token's tv
+	// claim — the same revocation predicate the HTTP auth chain enforces — so
+	// a JWT invalidated by a password/role/2FA change cannot open new inbox
+	// streams until it expires.
+	IsActive func(ctx context.Context, userID int32) (active bool, tokenVersion int)
 	OriginOK func(origin string) bool
+
+	Logger *slog.Logger
 
 	mu    sync.Mutex
 	conns map[int32]map[*conn]struct{}
@@ -90,9 +96,11 @@ type Hub struct {
 }
 
 // NewHub wires a hub. isActive mirrors the auth middleware's disabled-tenant
-// guard; originOK enforces the CORS allowlist on the handshake.
+// guard and additionally returns the account's current token_version so the
+// handshake can enforce the same revocation predicate as the HTTP chain;
+// originOK enforces the CORS allowlist on the handshake.
 func NewHub(jwt *auth.JWT, rdb *redisstore.Client, logger *slog.Logger,
-	isActive func(context.Context, int32) bool, originOK func(string) bool) *Hub {
+	isActive func(context.Context, int32) (bool, int), originOK func(string) bool) *Hub {
 	h := &Hub{
 		JWT:      jwt,
 		Redis:    rdb,
@@ -170,8 +178,14 @@ func (h *Hub) authenticate(r *http.Request) (int32, bool) {
 	if err != nil {
 		return 0, false
 	}
-	if h.IsActive != nil && !h.IsActive(r.Context(), claims.UserID) {
-		return 0, false
+	if h.IsActive != nil {
+		active, tokenVersion := h.IsActive(r.Context(), claims.UserID)
+		if !active || tokenVersion != claims.TokenVersion {
+			// Same revocation predicate as authMiddleware: a token whose tv no
+			// longer matches users.token_version is invalidated for new
+			// handshakes exactly as it is for every REST call.
+			return 0, false
+		}
 	}
 	return claims.UserID, true
 }

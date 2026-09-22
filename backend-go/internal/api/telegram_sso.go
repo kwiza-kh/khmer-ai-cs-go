@@ -87,6 +87,9 @@ func (a *App) telegramStart(w http.ResponseWriter, r *http.Request) {
 	// exchange without trusting anything the browser sends back except the
 	// opaque state. 10 minutes, one-time use.
 	_ = a.Redis.SetString(r.Context(), "telegram-state:"+state, verifier, 10*time.Minute)
+	// Bind the flow to the browser that started it (sso_flow cookie) — same
+	// login-CSRF fix as the Google flow.
+	a.ssoFlowStart(w, r, "telegram", state)
 
 	sum := sha256.Sum256([]byte(verifier))
 	challenge := base64.RawURLEncoding.EncodeToString(sum[:])
@@ -109,6 +112,12 @@ func (a *App) telegramCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	verifier, err := a.Redis.GetString(ctx, "telegram-state:"+state)
 	if err != nil || verifier == "" {
+		a.telegramRedirectError(w, r, "invalid_state")
+		return
+	}
+	// The state must belong to the flow this browser started (mirrors the
+	// Google callback; without it the callback is login-CSRF bait).
+	if !a.ssoFlowMatch(r, "telegram", state) {
 		a.telegramRedirectError(w, r, "invalid_state")
 		return
 	}
@@ -168,10 +177,12 @@ func (a *App) telegramCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Hand the token to the SPA through a short-lived one-time code rather than
-	// the URL fragment (keeps it out of history/referrer).
+	// the URL fragment (keeps it out of history/referrer). The state rides in
+	// the payload so the exchange can verify code↔flow↔state.
 	loginCode := newUUIDv4()
 	payload, _ := json.Marshal(map[string]any{
 		"token": token,
+		"state": state,
 		"user": map[string]any{
 			// Telegram supplies no address; the SPA renders a blank rather
 			// than a fabricated one.
@@ -406,7 +417,11 @@ func (a *App) telegramLoginExchange(w http.ResponseWriter, r *http.Request) (any
 	if v, err := a.Redis.GetString(r.Context(), stateKey); err != nil || v == "" {
 		return nil, ErrUnauthorized("登录会话已失效，请重新登录")
 	}
+	if !a.ssoFlowMatch(r, "telegram", state) {
+		return nil, ErrUnauthorized("登录会话与当前浏览器不匹配，请重新登录")
+	}
 	_ = a.Redis.Del(r.Context(), stateKey)
+	a.ssoFlowConsume(r, "telegram")
 	raw, err := a.Redis.GetString(r.Context(), "telegram-login:"+code)
 	if err != nil || raw == "" {
 		return nil, ErrUnauthorized("登录码已失效，请重新登录")
@@ -416,5 +431,10 @@ func (a *App) telegramLoginExchange(w http.ResponseWriter, r *http.Request) (any
 	if json.Unmarshal([]byte(raw), &payload) != nil {
 		return nil, ErrInternal("登录数据处理失败")
 	}
+	// The code must have been issued for THIS state (code↔flow↔state binding).
+	if s, _ := payload["state"].(string); s != state {
+		return nil, ErrUnauthorized("登录码与会话不匹配，请重新登录")
+	}
+	delete(payload, "state")
 	return payload, nil
 }

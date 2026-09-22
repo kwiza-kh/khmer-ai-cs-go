@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +17,19 @@ import (
 
 	"github.com/jackc/pgx/v5"
 )
+
+// stripURLErr drops the *url.Error wrapper, whose message embeds the full
+// request URL. Meta request URLs must stay free of credentials AND free of
+// echo: keeping only the underlying cause (timeout, DNS, refused, TLS) means
+// any error string that reaches a tenant or a log can never carry request
+// material.
+func stripURLErr(err error) error {
+	var uerr *url.Error
+	if errors.As(err, &uerr) {
+		return uerr.Err
+	}
+	return err
+}
 
 // ============================================
 // Meta OAuth (Facebook / Instagram Login)
@@ -82,38 +96,50 @@ func (a *App) authorizationURL(oauthState string) string {
 	)
 }
 
-// metaRequest — Meta Graph API helper (access_token as query param).
+// metaRequest — Meta Graph API helper. Credentials never travel in the URL:
+// the access token rides the Authorization header, and POST parameters (which
+// include client_secret during code exchanges) go in the form body, because a
+// transport-level *url.Error renders the full request URL into the error
+// string that reaches tenants on failure paths.
 func (a *App) metaRequest(ctx context.Context, method, path string, params [][2]string, accessToken string) (map[string]any, error) {
-	var query []string
-	if accessToken != "" {
-		query = append(query, "access_token="+url.QueryEscape(accessToken))
-	}
-	for _, kv := range params {
-		query = append(query, url.QueryEscape(kv[0])+"="+url.QueryEscape(kv[1]))
-	}
 	u := a.graphAPIBase() + path
-	if len(query) > 0 {
-		u += "?" + strings.Join(query, "&")
-	}
 	client := &http.Client{Timeout: 20 * time.Second}
 	var req *http.Request
 	var err error
 	if method == "POST" {
-		req, err = http.NewRequestWithContext(ctx, http.MethodPost, u, nil)
+		form := url.Values{}
+		for _, kv := range params {
+			form.Set(kv[0], kv[1])
+		}
+		req, err = http.NewRequestWithContext(ctx, http.MethodPost, u, strings.NewReader(form.Encode()))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	} else {
+		var query []string
+		for _, kv := range params {
+			query = append(query, url.QueryEscape(kv[0])+"="+url.QueryEscape(kv[1]))
+		}
+		if len(query) > 0 {
+			u += "?" + strings.Join(query, "&")
+		}
 		req, err = http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+		if err != nil {
+			return nil, err
+		}
 	}
-	if err != nil {
-		return nil, err
+	if accessToken != "" {
+		req.Header.Set("Authorization", "OAuth "+accessToken)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("Meta API request failed: %w", err)
+		return nil, fmt.Errorf("Meta API request failed: %w", stripURLErr(err))
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("Meta API request failed: %w", err)
+		return nil, fmt.Errorf("Meta API request failed: %w", stripURLErr(err))
 	}
 	text := string(body)
 	if resp.StatusCode >= 400 {
@@ -434,7 +460,7 @@ func (a *App) consumeOAuthState(ctx context.Context, sessionID string) error {
 
 func (a *App) exchangeCode(ctx context.Context, code string) (string, error) {
 	c := a.Cfg.Meta
-	v, err := a.metaRequest(ctx, "GET", "/oauth/access_token", [][2]string{
+	v, err := a.metaRequest(ctx, "POST", "/oauth/access_token", [][2]string{
 		{"client_id", c.AppID}, {"client_secret", c.AppSecret},
 		{"redirect_uri", c.OAuthRedirectURL}, {"code", code},
 	}, "")
@@ -449,7 +475,7 @@ func (a *App) exchangeCode(ctx context.Context, code string) (string, error) {
 
 func (a *App) exchangeLongLived(ctx context.Context, userToken string) (string, error) {
 	c := a.Cfg.Meta
-	v, err := a.metaRequest(ctx, "GET", "/oauth/access_token", [][2]string{
+	v, err := a.metaRequest(ctx, "POST", "/oauth/access_token", [][2]string{
 		{"grant_type", "fb_exchange_token"}, {"client_id", c.AppID},
 		{"client_secret", c.AppSecret}, {"fb_exchange_token", userToken},
 	}, "")
@@ -536,7 +562,7 @@ func (a *App) embeddedSignupComplete(w http.ResponseWriter, r *http.Request) (an
 		return nil, ErrServiceUnavailable("WhatsApp Embedded Signup is not configured")
 	}
 	c := a.Cfg.Meta
-	tokenV, err := a.metaRequest(r.Context(), "GET", "/oauth/access_token", [][2]string{
+	tokenV, err := a.metaRequest(r.Context(), "POST", "/oauth/access_token", [][2]string{
 		{"client_id", c.AppID}, {"client_secret", c.AppSecret}, {"code", code},
 	}, "")
 	if err != nil {

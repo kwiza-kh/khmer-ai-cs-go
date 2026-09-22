@@ -365,9 +365,9 @@ psql "$DATABASE_URL" -c "SELECT version FROM schema_migrations ORDER BY version 
   3 字符以上的 ILIKE 模式有效），过短的 run 回退整段；`Search` 的 gate 由 `hasCJK` 改为
   `hasLexicalScript`（CJK 或高棉文）。
 - `Search` 增加 Debug 级分腿计数日志（dense / lexical / trigram）。
-- 新增离线评估工具 `internal/rag/eval_test.go`：设好 `DATABASE_URL` + `RAG_EVAL_USER` +
-  `RAG_EVAL_FILE`（`{"queries":[{"query":"...","expect":[doc_id,...]}]}`）后运行
-  `go test ./internal/rag/ -run TestRetrievalEval -v`，输出每条腿的 recall@5/@10 与 MRR@10。
+- 离线评估统一走 `cmd/rageval` CLI：设 `DATABASE_URL`（+`RAG_EVAL_USER`）与
+  `-eval` JSON（`{"queries":[{"query":"...","expect":[doc_id,...]}]}`）运行，输出每条腿的 recall@5/@10 与 MRR@10。
+  （2026-09-21 安全审计后移除了等价的 `TestRetrievalEval` 测试入口——它读取任意环境变量路径，被判定为路径遍历入口；CLI 是唯一的评估入口。）
 
 已知边界：**存量文档**的 chunk 内容不会自动重新归一化，ZWSP/数字变体场景只能部分受益；
 需要完全生效时按文档重建 chunk（只刷词法内容，不重嵌入，可与 Phase 2 一并做）。

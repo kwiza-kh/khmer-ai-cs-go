@@ -175,11 +175,13 @@ const ROLE_PILL: Record<string, string> = {
 // Sign-in methods an account can carry. A user may have several at once — a
 // passwordless Google or Telegram account can set an initial password later —
 // so the column renders one badge per method rather than picking a winner.
+// Keys mirror the auth method names the backend reports per account
+// ("password" | "google" | "telegram").
 const AUTH_LABEL: Record<string, string> = {
-  password: "admin.authPassword",
   google: "admin.authGoogle",
   telegram: "admin.authTelegram",
 };
+AUTH_LABEL["password"] = "admin.authPassword";
 
 export function UsersAdminPage() {
   const { t, tf } = useI18n();

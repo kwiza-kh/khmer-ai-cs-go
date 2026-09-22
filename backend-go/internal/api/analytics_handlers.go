@@ -469,7 +469,7 @@ func (a *App) reportCSV(w http.ResponseWriter, r *http.Request) {
 				var firstResp, resolved, escalated *time.Time
 				if rows.Scan(&sid, &plat, &status, &lang, &title, &cust, &umc, &mmc, &sent, &intent, &created, &firstResp, &resolved, &escalated) == nil {
 					_ = cw.Write([]string{sid, plat, status, lang, csvCell(title), csvCell(cust),
-						strconv.Itoa(int(umc)), strconv.Itoa(int(mmc)), sent, intent,
+						strconv.Itoa(int(umc)), strconv.Itoa(int(mmc)), csvCell(sent), csvCell(intent),
 						created.Format(time.RFC3339), fmtTime(firstResp), fmtTime(resolved), fmtTime(escalated)})
 				}
 			}
