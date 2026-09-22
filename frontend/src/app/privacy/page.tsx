@@ -57,16 +57,54 @@ export default function PrivacyPolicyPage() {
 
       <H>4. Sharing with third parties / ការចែករំលែក / 第三方共享</H>
       <P>
-        We share data only with the providers required to run the service: Meta Platforms, Inc.
-        (receiving and sending Facebook/Instagram messages via their APIs) and Google (message text
-        processed by Gemini to draft replies). We do not sell personal data. / 我们不会出售个人数据。
+        We share data only with the providers required to run the service, and we do not sell
+        personal data. Depending on which channels your business connects, those providers are: /
+        我们不会出售个人数据。
+      </P>
+      <ul className="list-disc pl-6">
+        <L>
+          <b>Meta Platforms, Inc.</b> — receiving and sending Facebook Page, Instagram and WhatsApp
+          messages through their APIs.
+        </L>
+        <L>
+          <b>Google</b> — message text, images, voice notes and uploaded documents are processed by
+          Gemini to draft replies and to compute search embeddings.
+        </L>
+        <L>
+          <b>TypeSafe (System One)</b> — the same message text, the drafted reply and the retrieved
+          knowledge passages are sent to a judgment model that decides routing, whether a message
+          needs a knowledge-base lookup, whether a reply should go to a human, and whether a drafted
+          reply is actually supported by the retrieved passages.
+        </L>
+        <L>
+          <b>Cloudflare</b> — content delivery, the AI gateway that relays Google requests, and object
+          storage (Cloudflare R2) for chat attachments, agent avatars and voice recordings.
+        </L>
+        <L>
+          <b>Telegram</b> — message delivery when a Telegram bot is connected, and notifications to
+          your own staff.
+        </L>
+        <L>
+          <b>LINE and Zalo</b> — message delivery when those channels are connected.
+        </L>
+        <L>
+          <b>Twilio</b> — voice calls, only where the voice feature is enabled.
+        </L>
+        <L>
+          <b>Our email provider</b> — transactional email such as sign-in and notification messages.
+        </L>
+      </ul>
+      <P>
+        These providers are located in the United States and the European Union and process data on
+        our instructions under their own data-processing terms.
       </P>
 
       <H>5. Storage and retention / ការរក្សាទុក / 存储与保留</H>
       <P>
-        Data is stored on servers operated by us and retained while your business account is active,
-        or as required by law. You can disconnect a channel at any time; new messages stop
-        immediately after disconnection.
+        Data is stored on servers we operate in <b>Hong Kong</b>, and is transferred to the providers
+        listed above in the United States and the European Union in order to deliver the service.
+        Conversations are retained while your business account is active, or as required by law. You
+        can disconnect a channel at any time; new messages stop immediately after disconnection.
       </P>
 
       <H>6. Data deletion / ការលុបទិន្នន័យ / 数据删除</H>
@@ -78,8 +116,18 @@ export default function PrivacyPolicyPage() {
       </ul>
       <H3>For customers who messaged a business through this platform</H3>
       <P>
-        Contact the business you were chatting with, or email b1783467220@gmail.com with the page
-        name and your message handle. We delete the conversation data within 30 days.
+        Removing this app in Facebook Settings, or submitting a data deletion request through Meta,
+        reaches our automated deletion callback. We verify Meta&apos;s signature, remove the records
+        we hold for the identifier Meta supplies, and return a confirmation code with a link to a
+        status page where you can follow the outcome.
+      </P>
+      <P>
+        Some requests cannot be matched automatically: Meta supplies an app-scoped identifier, while
+        conversations are stored under the channel-scoped identifier of the business you messaged.
+        Those requests are recorded as needing review rather than reported as deleted. In that case,
+        or to delete a conversation directly, contact the business you were chatting with, or email
+        b1783467220@gmail.com with the page name and your message handle. We delete the conversation
+        data within 30 days.
       </P>
 
       <H>7. Contact / ទំនាក់ទំនង / 联系我们</H>
