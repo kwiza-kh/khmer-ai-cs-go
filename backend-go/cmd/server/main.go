@@ -85,6 +85,11 @@ func main() {
 	// classification, rerank, routing, guardrails, notify triage. It is nil
 	// without TYPESAFE_API_KEY, and every site then keeps its previous path.
 	jev := typesafe.NewFromEnv(logger)
+	// Production traffic is a handful of messages a day, so every turn would
+	// otherwise meet a cold connection and pay a 0.4-3.6s TLS handshake. That
+	// blows the reply-path budgets (route 4s, guard 3s) and hands the decision
+	// to the slower model Jev exists to replace. Hold the connection open.
+	jev.StartKeepWarm(ctx, typesafe.KeepWarmInterval())
 
 	ragService := &rag.Service{DB: pool, Gemini: gem, Redis: redisClient, Logger: logger, Jev: jev}
 	ragService.SpawnIndexWorkers(ctx)

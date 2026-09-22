@@ -424,6 +424,39 @@ func (p *Pipeline) processInboundEvent(ctx context.Context, ev *InboundEvent) er
 	// Typing indicator while the AI is composing (best-effort, per platform).
 	p.sendTyping(ctx, cfg, ev.PlatformUserID)
 
+	// AI reply (grounded in the knowledge base). Everything the grounded path
+	// needs is prepared first so that retrieval can run concurrently with
+	// Jev's routing call below.
+	ownerLang := p.ownerLanguage(ctx, cfg.UserID)
+	replyLang := ownerLang
+	if replyLang == "" {
+		if det := gemini.DetectLanguage(content); det != "" {
+			replyLang = det
+		} else {
+			replyLang = "km"
+		}
+	}
+
+	history := p.loadHistory(ctx, sessionID, userMessageID)
+
+	// Retrieval is the slowest pre-generation step (embedding + search +
+	// rerank, ~2.5s) and it does not depend on the routing decision — only on
+	// whether we keep its result. Running it concurrently with routing stops
+	// Jev's latency from being purely additive to every grounded turn.
+	groundCh := make(chan rag.GroundingContext, 1)
+	go func() {
+		res := rag.GroundingContext{}
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					p.Logger.Warn("background retrieval panic recovered", "panic", r)
+				}
+			}()
+			res = p.RAG.Ground(ctx, cfg.UserID, &sessionID, content, replyLang, history, 0)
+		}()
+		groundCh <- res // exactly one send, so the channel never leaks
+	}()
+
 	// Pre-routing: one Jev Choice decides whether this turn needs a human,
 	// needs no retrieval at all, or takes the full grounded path. An unknown
 	// route (Jev off/slow/unsure) keeps today's behaviour untouched.
@@ -439,21 +472,18 @@ func (p *Pipeline) processInboundEvent(ctx context.Context, ev *InboundEvent) er
 		skipGround = skip
 	}
 
-	// AI reply (grounded in the knowledge base).
-	ownerLang := p.ownerLanguage(ctx, cfg.UserID)
-	replyLang := ownerLang
-	if replyLang == "" {
-		if det := gemini.DetectLanguage(content); det != "" {
-			replyLang = det
-		} else {
-			replyLang = "km"
-		}
-	}
-
-	history := p.loadHistory(ctx, sessionID, userMessageID)
 	var groundCtx rag.GroundingContext
-	if !skipGround {
-		groundCtx = p.RAG.Ground(ctx, cfg.UserID, &sessionID, content, replyLang, history, 0)
+	if skipGround {
+		// Small talk: Jev already decided retrieval is unnecessary, so drop the
+		// speculative result. The buffered channel lets the worker finish
+		// without blocking. Paying for one unused retrieval on chit-chat is
+		// cheaper than making every real question wait for the routing call.
+	} else {
+		select {
+		case groundCtx = <-groundCh:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	message := content
 	if groundCtx.HasMatch {
