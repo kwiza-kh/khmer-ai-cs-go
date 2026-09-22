@@ -53,9 +53,27 @@ func NewFromEnv(logger *slog.Logger) *Client {
 		Endpoint: DefaultEndpoint,
 		APIKey:   key,
 		Model:    DefaultModel,
-		HTTP:     &http.Client{Timeout: defaultTimeout},
+		HTTP:     newHTTPClient(),
 		Logger:   logger,
 	}
+}
+
+// newHTTPClient keeps connections warm across Judge calls.
+//
+// A zero-value http.Client falls back to http.DefaultTransport, whose
+// MaxIdleConnsPerHost is 2. Every concurrent turn past the second therefore
+// found its pooled connection already closed and paid a fresh TCP+TLS
+// handshake. Measured from the production host: handshake alone 0.44-5.0s,
+// versus 0.32-0.42s for a request on a reused connection — the steady-state
+// model call is fast, the connection setup is what blew through the
+// reply-path budgets. Cloning DefaultTransport keeps its proxy and TLS
+// defaults, so only the pooling knobs change.
+func newHTTPClient() *http.Client {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxIdleConns = 64
+	t.MaxIdleConnsPerHost = 32
+	t.IdleConnTimeout = 90 * time.Second
+	return &http.Client{Timeout: defaultTimeout, Transport: t}
 }
 
 // Enabled reports whether the client may be used.
