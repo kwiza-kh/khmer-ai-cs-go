@@ -75,8 +75,12 @@ func (p *Pipeline) ensureSession(ctx context.Context, ev *InboundEvent, cfg *con
 		eventIDArg = ev.EventID
 	}
 	var userMessageID int64
+	// Column/value counts must match: 8 columns, 8 value expressions, 6 bound
+	// parameters. A stray trailing $7 made Postgres reject the statement at
+	// prepare time ("INSERT has more expressions than target columns"), which
+	// failed every platform inbound message on this path.
 	err = p.DB.QueryRow(ctx,
-		"INSERT INTO chat_messages (session_id, role, message_type, content, media_url, metadata, inbound_event_id, created_at) VALUES ($1,'user','text',$2,$3,$4,$5,$6,$7) RETURNING message_id",
+		"INSERT INTO chat_messages (session_id, role, message_type, content, media_url, metadata, inbound_event_id, created_at) VALUES ($1,'user','text',$2,$3,$4,$5,$6) RETURNING message_id",
 		sessionID, content, nullIfEmpty(mediaURL), metadata, eventIDArg, time.Now()).Scan(&userMessageID)
 	if err != nil {
 		return "", 0, false, "", fmt.Errorf("persist user message: %w", err)
