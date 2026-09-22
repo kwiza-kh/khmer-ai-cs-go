@@ -109,7 +109,10 @@ RestartSec=3
 
 ```bash
 # 服务器本机 (绕过 nginx 直连后端)
-curl -s http://127.0.0.1:8081/ready    # {"service":"khmer-ai-cs","status":"ok","checks":{"database":true,"redis":true},"version":"2.0.0-go"}
+curl -s http://127.0.0.1:8081/ready    # {"service":"relaychat","status":"ok","checks":{"database":true,"redis":true},"version":"<git-sha>"}
+# ⚠️ service 是 "relaychat", 不是 "khmer-ai-cs" (internal/api/auth_handlers.go 里写死)。
+# ⚠️ version 是构建期注入的 git 短哈希 (ldflags -X ...api.Version), 不是固定字符串 ——
+#    部署后拿它核对"线上跑的到底是哪个构建", 这是唯一的权威信号。
 curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:3001/    # 200
 systemctl is-active khmer-ai-cs-go khmer-ai-cs-web                 # active active
 
