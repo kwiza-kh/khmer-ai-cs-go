@@ -407,12 +407,15 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Human request → immediate handoff (AI stays silent). Shared by the
-	// keyword match and the Jev route so both paths behave identically.
-	webEscalate := func(reason string) {
+	// keyword match and the Jev route so both paths behave identically —
+	// including queue priority, computed the same way the platform pipeline
+	// computes it instead of a hardcoded "high".
+	webEscalate := func(reason, urgency string) {
+		priority := platform.HandoffPriority("customer_request", urgency)
 		_, _ = a.DB.Exec(ctx,
 			"INSERT INTO human_handoff_requests (session_id, user_id, status, priority, trigger, reason, created_at) "+
-				"VALUES ($1,$2,'pending','high','customer_request'::human_handoff_trigger,$3,NOW()) ON CONFLICT DO NOTHING",
-			sid, t.ownerID, reason)
+				"VALUES ($1,$2,'pending',$3,'customer_request'::human_handoff_trigger,$4,NOW()) ON CONFLICT DO NOTHING",
+			sid, t.ownerID, priority, reason)
 		_, _ = a.DB.Exec(ctx, "UPDATE sessions SET status='handoff', escalated_at=COALESCE(escalated_at,NOW()) WHERE session_id=$1 AND status='active'", sid)
 		ack := platform.HandoffAcknowledgement(language)
 		a.persistSystemReply(ctx, t.ownerID, sid, ack)
@@ -422,7 +425,7 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 		sendEvent("done", map[string]any{"reply": ack, "tokens_used": 0, "cached_tokens": 0, "used_mock": false, "escalated": true})
 	}
 	if keyword, matched := platform.HumanRequestKeyword(req.Message); matched {
-		webEscalate("Customer asked for a human agent (matched: " + keyword + ")")
+		webEscalate("Customer asked for a human agent (matched: "+keyword+")", "")
 		return
 	}
 
@@ -453,11 +456,12 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 	// a platform channel where silence is natural). Unknown route
 	// (Jev off/slow) keeps today's full path.
 	skipGround := false
+	inboundUrgency := platform.UrgencyUnknown
 	if a.Pipe != nil {
 		if r, ok := a.Pipe.RouteInbound(ctx, req.Message); ok {
 			escalate, skip, silent := platform.RouteDecision(r.Route, r.Prob)
 			if escalate {
-				webEscalate("Jev routed the message as a human request (p=" + strconv.FormatFloat(r.Prob, 'f', 2, 64) + ")")
+				webEscalate("Jev routed the message as a human request (p="+strconv.FormatFloat(r.Prob, 'f', 2, 64)+")", r.Urgency)
 				return
 			}
 			if silent {
@@ -470,6 +474,7 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			skipGround = skip
+			inboundUrgency = r.Urgency
 		}
 	}
 
@@ -510,8 +515,17 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 	// Cache hit: the stored answer was generated, guarded and persisted for
 	// this tenant before — deliver it as one token, skipping generation and
 	// the guard (re-judging every replay would erase the latency win).
+	// The owner still gets the new-message ping: a cache hit is a real
+	// visitor turn, and skipping the ping would make the owner blind to
+	// exactly the turns the bot answered fastest.
 	if cacheHit {
-		a.persistModelReply(persistCtx, t.ownerID, sid, gemini.ChatResult{}, replyText, &rag.GroundingContext{}, language, time.Now())
+		a.persistModelReply(persistCtx, t.ownerID, sid, gemini.ChatResult{}, replyText, &rag.GroundingContext{}, language, time.Now(), "reply-cache")
+		if a.Pipe != nil {
+			ownerID, sessID, visitorMsg := t.ownerID, sid, req.Message
+			platform.SpawnCritical(func() {
+				a.Pipe.NotifyNewCustomerMessage(persistCtx, ownerID, sessID, "web", "", visitorMsg)
+			})
+		}
 		sendEvent("token", map[string]string{"text": replyText})
 		sendEvent("done", map[string]any{
 			"reply": replyText, "tokens_used": 0, "cached_tokens": 0,
@@ -535,7 +549,7 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 		// Keep whatever already streamed: the visitor may have read part of
 		// it, and the next turn must not see a question with no answer.
 		if partial := strings.TrimSpace(streamed.String()); partial != "" {
-			a.persistModelReply(persistCtx, t.ownerID, sid, gemini.ChatResult{}, partial, &groundCtx, language, time.Now())
+			a.persistModelReply(persistCtx, t.ownerID, sid, gemini.ChatResult{}, partial, &groundCtx, language, time.Now(), "")
 		}
 		return
 	}
@@ -575,16 +589,18 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 	usage.Record(persistCtx, a.DB, t.ownerID, &sid, a.Gemini.ModelName(), result.PromptTokens, result.OutputTokens, result.CachedTokens)
 	// The visitor row was persisted above; persistChatTurn would store it a
 	// second time (and double-count it), so persist only the model turn.
-	a.persistModelReply(persistCtx, t.ownerID, sid, result, reply, &groundCtx, language, time.Now())
+	a.persistModelReply(persistCtx, t.ownerID, sid, result, reply, &groundCtx, language, time.Now(), "")
 	// The reply announced a handoff ("已为您转接人工…") — create the real
 	// request so an agent is actually notified. No canned ack: the reply
-	// itself already told the customer.
+	// itself already told the customer. Priority computed the same way the
+	// platform pipeline computes it, urgent turns jumping the line.
 	escalated := false
 	if platform.ReplyClaimsHandoff(reply) || claimsHandoff {
+		priority := platform.HandoffPriority("ai_decision", inboundUrgency)
 		if _, err := a.DB.Exec(ctx,
 			"INSERT INTO human_handoff_requests (session_id, user_id, status, priority, trigger, reason, created_at) "+
-				"VALUES ($1,$2,'pending','high','ai_decision'::human_handoff_trigger,$3,NOW()) ON CONFLICT DO NOTHING",
-			sid, t.ownerID, "AI reply announced a handoff to the customer"); err == nil {
+				"VALUES ($1,$2,'pending',$3,'ai_decision'::human_handoff_trigger,$4,NOW()) ON CONFLICT DO NOTHING",
+			sid, t.ownerID, priority, "AI reply announced a handoff to the customer"); err == nil {
 			_, _ = a.DB.Exec(ctx, "UPDATE sessions SET status='handoff', escalated_at=COALESCE(escalated_at,NOW()) WHERE session_id=$1 AND status='active'", sid)
 			a.notifyUser(ctx, t.ownerID, "handoff", "New human-handoff request", "ai_decision (widget): AI announced a transfer", sid)
 			a.publishSessionEvent(ctx, t.ownerID, sid)
@@ -594,11 +610,12 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 	if !escalated {
 		// Telegram parity with platform channels: ping the owner about the
 		// new customer message (handoff turns are covered by the 🔔 ping
-		// instead; throttled per session; background).
+		// instead; throttled per session; background). persistCtx so a
+		// visitor hangup cannot cancel the ping mid-send.
 		if a.Pipe != nil {
 			ownerID, sessID, visitorMsg := t.ownerID, sid, req.Message
 			platform.SpawnCritical(func() {
-				a.Pipe.NotifyNewCustomerMessage(ctx, ownerID, sessID, "web", "", visitorMsg)
+				a.Pipe.NotifyNewCustomerMessage(persistCtx, ownerID, sessID, "web", "", visitorMsg)
 			})
 		}
 		a.classifyWebTurnAsync(t.ownerID, sid, req.Message, reply, groundCtx.HasMatch)

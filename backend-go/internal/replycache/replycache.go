@@ -98,21 +98,24 @@ func (s *Service) Lookup(ctx context.Context, userID int32, query, language stri
 	if err != nil || len(vec) == 0 {
 		return "", false
 	}
+	var cacheID int64
 	var answer string
 	err = s.DB.QueryRow(ctx,
-		"SELECT answer FROM reply_cache "+
+		"SELECT cache_id, answer FROM reply_cache "+
 			"WHERE user_id = $1 AND language = $2 "+
 			"AND created_at > NOW() - make_interval(hours => $3) "+
 			"AND query_embedding <=> $4::vector < $5 "+
 			"ORDER BY query_embedding <=> $4::vector LIMIT 1",
 		userID, language, ttlHours(), gemini.FormatVector(vec), 1-minSimilarity()).
-		Scan(&answer)
+		Scan(&cacheID, &answer)
 	if err != nil {
 		return "", false
 	}
+	// By primary key: identical answer texts are common across different
+	// questions ("250$") — counting by answer would bump every sibling row.
 	_, _ = s.DB.Exec(ctx,
-		"UPDATE reply_cache SET hit_count = hit_count + 1, last_hit_at = NOW() WHERE user_id = $1 AND answer = $2",
-		userID, answer)
+		"UPDATE reply_cache SET hit_count = hit_count + 1, last_hit_at = NOW() WHERE cache_id = $1",
+		cacheID)
 	return answer, true
 }
 

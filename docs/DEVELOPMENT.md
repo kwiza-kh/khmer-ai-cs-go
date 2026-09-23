@@ -735,3 +735,27 @@ pipeline、widget、jeveval live 已全部跟进）；`RouteDecision` 返回三�
 
 urgency 不落 session/分析面；缓存命中率没有运维指标（看日志 `reply cache hit`）；
 widget `ignored` 事件前端未特殊渲染（显示致谢行已足够）。
+
+#### 评审修复（2026-09-23，OCR 委托模式全量评审后）
+
+用 `ocr delegate`（确定性选文件 + 规则匹配）+ 宿主 agent 逐 bundle 评审了
+a69c7d1..6b8d374，修复全部 4 项发现：
+
+1. **widget 缓存命中补发店主通知**（原先提前 return，店主对该类轮次失明；
+   现与平台渠道对齐，且通知 goroutine 一并改用 persistCtx——原实现用请求
+   ctx，访客挂断会取消进行中的通知）
+2. **widget 侧缓存命中盖 `reply-cache` 戳**：`persistModelReply` 加
+   `modelName` 尾参（"" = 当前模型），两个渠道的缓存命中在 DB 里都可辨认
+3. **widget 转人工优先级不再硬编码**：`webEscalate`/ai_decision 走导出的
+   `platform.HandoffPriority(trigger, urgency)`，与 pipeline 同一套计算，
+   杜绝渠道间漂移复发
+4. **缓存命中计数按 `cache_id` 主键**（原先按 answer 文本，相同答案的兄弟
+   行会被连带 +1）；测试锁死「命中一行、兄弟行计数不动」
+
+顺带修两个评审备注（原本只记录在案）：
+
+- **junk 沉默补全**：店主 💬 通知与打字指示移到路由判定之后——junk 现在
+  真沉默（不 ping、不 typing）；billing 计数（bumpMessagesUsed）保留在
+  路由前，收到的消息照旧计费
+- **分类器如实报告 grounding**：缓存命中的轮次 `hasMatch=true`（答案首次
+  生成时确实有 KB 依据），不再喂给「知识库零命中」转人工触发器一个假输入

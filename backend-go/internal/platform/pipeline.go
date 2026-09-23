@@ -411,10 +411,8 @@ func (p *Pipeline) processInboundEvent(ctx context.Context, ev *InboundEvent) er
 		return nil
 	}
 
-	// Telegram notify: ping the owner's bot about a new customer message
-	// (background, throttled per session — must not slow the worker). Only
-	// reached for turns the AI still owns; keyword escalations above already
-	// sent the single handoff notification instead.
+	// Billing counts every received customer message regardless of routing
+	// outcome — junk silence is a service decision, not a free-usage one.
 	tgUserID := cfg.UserID
 	tgPlatform := ev.Platform
 	tgName := ev.UserDisplayName
@@ -422,11 +420,7 @@ func (p *Pipeline) processInboundEvent(ctx context.Context, ev *InboundEvent) er
 	tgSession := sessionID
 	SpawnCritical(func() {
 		p.bumpMessagesUsed(ctx, tgUserID)
-		p.NotifyNewCustomerMessage(ctx, tgUserID, tgSession, tgPlatform, tgName, tgContent)
 	})
-
-	// Typing indicator while the AI is composing (best-effort, per platform).
-	p.sendTyping(ctx, cfg, ev.PlatformUserID)
 
 	// AI reply (grounded in the knowledge base). Everything the grounded path
 	// needs is prepared first so that retrieval can run concurrently with
@@ -478,9 +472,12 @@ func (p *Pipeline) processInboundEvent(ctx context.Context, ev *InboundEvent) er
 		}
 		if silent {
 			// Junk: spam/ads/gibberish. No reply, no generation, no delivery —
-			// the customer message itself stays in the inbox for the owner.
-			// The speculative retrieval above is abandoned; the buffered
-			// channel lets that worker finish without blocking.
+			// and because the owner ping and the typing indicator now live
+			// below this decision, junk silence is complete: no ping with no
+			// reply behind it, no typing that promises an answer. The customer
+			// message itself stays in the inbox for the owner. The speculative
+			// retrieval above is abandoned; the buffered channel lets that
+			// worker finish without blocking.
 			p.Logger.Info("junk dropped: jev routed the message as no-reply",
 				"session_id", sessionID, "p", r.Prob)
 			return nil
@@ -488,6 +485,21 @@ func (p *Pipeline) processInboundEvent(ctx context.Context, ev *InboundEvent) er
 		skipGround = skip
 		inboundUrgency = r.Urgency
 	}
+
+	// Telegram notify: ping the owner's bot about a new customer message
+	// (background, throttled per session — must not slow the worker). Only
+	// reached for turns the AI still owns: keyword/Jev escalations above
+	// already sent the single 🔔 handoff notification, and junk silence must
+	// not ping at all.
+	SpawnCritical(func() {
+		p.NotifyNewCustomerMessage(ctx, tgUserID, tgSession, tgPlatform, tgName, tgContent)
+	})
+
+	// Typing indicator while the AI is composing (best-effort, per platform).
+	// After routing: junk never shows a typing promise it will not keep, and
+	// real turns lose nothing — retrieval above already ran in parallel with
+	// the routing call.
+	p.sendTyping(ctx, cfg, ev.PlatformUserID)
 
 	// Semantic reply cache: on a hit the answer was already generated,
 	// guarded and stored for this tenant — deliver it directly and skip both
@@ -628,7 +640,11 @@ func (p *Pipeline) processInboundEvent(ctx context.Context, ev *InboundEvent) er
 			"AI reply announced a handoff to the customer", inboundUrgency)
 		return nil
 	}
-	p.classifyTurnAsync(cfg.UserID, sessionID, content, reply, groundCtx.HasMatch)
+	// A cached answer WAS grounded in the tenant's knowledge base when it was
+	// first generated — reporting hasMatch=false on hits would feed the
+	// "no knowledge base" handoff trigger a lie and mislabel analytics.
+	grounded := fromCache || groundCtx.HasMatch
+	p.classifyTurnAsync(cfg.UserID, sessionID, content, reply, grounded)
 	return nil
 }
 
@@ -1147,6 +1163,11 @@ func handoffPriority(trigger, urgency string) string {
 	return priority
 }
 
+// HandoffPriority is handoffPriority for callers outside the platform package
+// (the web widget shares the handoff queue and must compute the same priority
+// instead of hardcoding one — the two paths drifted before).
+func HandoffPriority(trigger, urgency string) string { return handoffPriority(trigger, urgency) }
+
 var highPriorityTriggers = map[string]string{
 	"customer_request":  "high",
 	"negative_feedback": "high",
@@ -1446,19 +1467,19 @@ func (p *Pipeline) judgeTurnJev(ctx context.Context, customerMsg, reply string, 
 		"intent": typesafe.Choice(
 			"Primary intent of `customer_message`.",
 			map[string]string{
-				"question": "Asks about a product or service",
-				"complaint": "Complains about a past problem",
-				"refund": "Demands a refund, return, or money back",
-				"order_status": "Asks where an order is",
-				"price": "Asks about prices or negotiates",
-				"booking": "Wants to book or reserve",
+				"question":      "Asks about a product or service",
+				"complaint":     "Complains about a past problem",
+				"refund":        "Demands a refund, return, or money back",
+				"order_status":  "Asks where an order is",
+				"price":         "Asks about prices or negotiates",
+				"booking":       "Wants to book or reserve",
 				"customization": "Needs custom sizing or special specifications",
-				"bulk_order": "Wholesale or bulk purchase",
-				"delivery": "Delivery arrangement or delivery problem",
-				"payment": "Invoice, contract, or payment terms",
-				"legal": "Legal threat or dispute",
-				"small_talk": "Greeting or chit-chat",
-				"other": "Anything else",
+				"bulk_order":    "Wholesale or bulk purchase",
+				"delivery":      "Delivery arrangement or delivery problem",
+				"payment":       "Invoice, contract, or payment terms",
+				"legal":         "Legal threat or dispute",
+				"small_talk":    "Greeting or chit-chat",
+				"other":         "Anything else",
 			}),
 		"escalate": typesafe.Noul(
 			"Should a human agent take over this conversation now? Yes when ANY applies: " +
@@ -1471,12 +1492,12 @@ func (p *Pipeline) judgeTurnJev(ctx context.Context, customerMsg, reply string, 
 		"topic": typesafe.Choice(
 			"Main subject of `customer_message`.",
 			map[string]string{
-				"product": "Product features, availability, or specifications",
-				"price": "Prices, quotes, discounts, or payment amounts",
-				"delivery": "Shipping, delivery time, or logistics",
+				"product":   "Product features, availability, or specifications",
+				"price":     "Prices, quotes, discounts, or payment amounts",
+				"delivery":  "Shipping, delivery time, or logistics",
 				"complaint": "A problem with a past purchase or service",
-				"order": "Placing, changing, or tracking an order",
-				"other": "Anything else",
+				"order":     "Placing, changing, or tracking an order",
+				"other":     "Anything else",
 			}),
 	})
 	if err != nil {

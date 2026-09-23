@@ -114,6 +114,44 @@ func TestReplyCacheHitMissInvalidation(t *testing.T) {
 	}
 }
 
+// TestReplyCacheHitCountsByRow pins the hit-counter contract: identical
+// answers cached under different questions are common ("250$"), and a hit on
+// one must not bump its siblings' hit_count — the counter is per row (by
+// cache_id), not per answer text.
+func TestReplyCacheHitCountsByRow(t *testing.T) {
+	pool := cachePool(t)
+	ctx := context.Background()
+	const dim = 768
+
+	embeds := stubEmbed{
+		"how much is the water filter":          nearlyOrthogonal(dim, 1),
+		"how much is the replacement cartridge": nearlyOrthogonal(dim, 2),
+	}
+	s := &Service{DB: pool, Embed: embeds.embed}
+	userID := cacheUser(t, pool, "c")
+	shared := "It costs 250 USD."
+	s.Store(ctx, userID, "how much is the water filter", "en", shared, "test-model")
+	s.Store(ctx, userID, "how much is the replacement cartridge", "en", shared, "test-model")
+
+	if _, hit := s.Lookup(ctx, userID, "how much is the water filter", "en"); !hit {
+		t.Fatal("lookup on a stored question must hit")
+	}
+	var aHits, bHits int
+	if err := pool.QueryRow(ctx,
+		"SELECT hit_count FROM reply_cache WHERE user_id = $1 AND query_text = 'how much is the water filter'",
+		userID).Scan(&aHits); err != nil {
+		t.Fatalf("read counter A: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		"SELECT hit_count FROM reply_cache WHERE user_id = $1 AND query_text = 'how much is the replacement cartridge'",
+		userID).Scan(&bHits); err != nil {
+		t.Fatalf("read counter B: %v", err)
+	}
+	if aHits != 1 || bHits != 0 {
+		t.Fatalf("hit counters after one lookup: A=%d B=%d, want A=1 B=0 (sibling must not be bumped)", aHits, bHits)
+	}
+}
+
 // TestReplyCacheThresholdAndTTL are knob contracts: a lowered bar must let an
 // inexact match hit, and TTL=0 must expire everything.
 func TestReplyCacheThresholdAndTTL(t *testing.T) {

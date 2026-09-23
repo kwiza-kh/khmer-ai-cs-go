@@ -128,15 +128,21 @@ func (a *App) persistChatTurn(ctx context.Context, userID int32, sessionID, mess
 		"INSERT INTO chat_messages (session_id, role, message_type, content, created_at) VALUES ($1,'user','text',$2,$3)",
 		sessionID, message, now)
 	_, _ = a.DB.Exec(ctx, "UPDATE sessions SET user_message_count = user_message_count + 1 WHERE session_id = $1", sessionID)
-	a.persistModelReply(ctx, userID, sessionID, result, reply, groundCtx, language, now)
+	a.persistModelReply(ctx, userID, sessionID, result, reply, groundCtx, language, now, "")
 }
 
 // persistModelReply stores only the model turn of a chat exchange whose user
 // row already exists. Split out of persistChatTurn so streaming handlers can
 // persist the reply on a request-detached context after the client hangs up.
-func (a *App) persistModelReply(ctx context.Context, userID int32, sessionID string, result gemini.ChatResult, reply string, groundCtx *rag.GroundingContext, language string, now time.Time) {
+// modelName overrides the stamped model_name — cache hits pass
+// "reply-cache" so replays stay distinguishable from real generations; ""
+// stamps the live Gemini model.
+func (a *App) persistModelReply(ctx context.Context, userID int32, sessionID string, result gemini.ChatResult, reply string, groundCtx *rag.GroundingContext, language string, now time.Time, modelName string) {
 	if language != "" {
 		_, _ = a.DB.Exec(ctx, "UPDATE sessions SET language = $2 WHERE session_id = $1 AND (language = '' OR language IS NULL)", sessionID, language)
+	}
+	if modelName == "" {
+		modelName = a.Gemini.ModelName()
 	}
 
 	var sourcesJSONArg any
@@ -149,7 +155,7 @@ func (a *App) persistModelReply(ctx context.Context, userID int32, sessionID str
 	err := a.DB.QueryRow(ctx,
 		"INSERT INTO chat_messages (session_id, role, message_type, content, tokens_used, model_name, used_mock, sources_json, created_at) "+
 			"VALUES ($1,'model','text',$2,$3,$4,$5,$6,$7) RETURNING message_id",
-		sessionID, reply, result.PromptTokens+result.OutputTokens, a.Gemini.ModelName(), result.UsedMock, sourcesJSONArg, now).Scan(&msgID)
+		sessionID, reply, result.PromptTokens+result.OutputTokens, modelName, result.UsedMock, sourcesJSONArg, now).Scan(&msgID)
 	if err != nil {
 		a.Logger.Warn("persist web model reply failed", "error", err.Error(), "session_id", sessionID)
 		return
@@ -247,7 +253,7 @@ func (a *App) chatPlain(w http.ResponseWriter, r *http.Request) (any, error) {
 	if !result.UsedMock {
 		reply = gemini.StripSourceMarkers(reply)
 	}
-	a.persistModelReply(r.Context(), user.UserID, sessionID, result, reply, &groundCtx, language, time.Now())
+	a.persistModelReply(r.Context(), user.UserID, sessionID, result, reply, &groundCtx, language, time.Now(), "")
 
 	resp := map[string]any{
 		"reply":         reply,
@@ -352,7 +358,7 @@ func (a *App) chatStream(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		sendEvent("error", map[string]string{"message": "生成回答失败"})
 		if partial := strings.TrimSpace(streamed.String()); partial != "" {
-			a.persistModelReply(persistCtx, user.UserID, sessionID, gemini.ChatResult{}, partial, &groundCtx, language, time.Now())
+			a.persistModelReply(persistCtx, user.UserID, sessionID, gemini.ChatResult{}, partial, &groundCtx, language, time.Now(), "")
 		}
 		return
 	}
@@ -361,7 +367,7 @@ func (a *App) chatStream(w http.ResponseWriter, r *http.Request) {
 	if !result.UsedMock {
 		reply = gemini.StripSourceMarkers(reply)
 	}
-	a.persistModelReply(persistCtx, user.UserID, sessionID, result, reply, &groundCtx, language, time.Now())
+	a.persistModelReply(persistCtx, user.UserID, sessionID, result, reply, &groundCtx, language, time.Now(), "")
 
 	sendEvent("done", map[string]any{
 		"reply":         reply,
