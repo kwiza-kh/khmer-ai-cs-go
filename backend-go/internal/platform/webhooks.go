@@ -283,7 +283,7 @@ func (wh *Webhooks) handleTelegramCallback(ctx context.Context, cfg *webhookConf
 	if rating == -1 {
 		// 👎 = "the answer was not good enough" → negative_feedback handoff.
 		_ = wh.Pipe.createHandoffRequest(ctx, ownerID, sessionID, "negative_feedback",
-			"Customer rated the AI reply 👎")
+			"Customer rated the AI reply 👎", "")
 	}
 	realtime.Publish(ctx, wh.Pipe.Redis, realtime.Event{
 		Type: realtime.EventSession, UserID: ownerID, SessionID: sessionID,

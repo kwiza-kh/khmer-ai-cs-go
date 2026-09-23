@@ -18,6 +18,7 @@ import (
 	"khmer-ai-cs-go/internal/rag"
 	"khmer-ai-cs-go/internal/realtime"
 	"khmer-ai-cs-go/internal/redisstore"
+	"khmer-ai-cs-go/internal/replycache"
 	"khmer-ai-cs-go/internal/security"
 	"khmer-ai-cs-go/internal/storager2"
 )
@@ -33,6 +34,9 @@ type App struct {
 	Logger *slog.Logger
 	Sealer *security.Sealer
 	Media  *storager2.Client
+	// Cache is the semantic reply cache for the widget path (may be nil in
+	// tests; nil = the widget always takes the full generation path).
+	Cache *replycache.Service
 
 	// Pipe is the platform pipeline (used to wake outbound workers when an
 	// agent reply or campaign template is enqueued).

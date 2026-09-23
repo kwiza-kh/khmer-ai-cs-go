@@ -23,13 +23,17 @@
 
 子账号靠 `agent_teams(owner_user_id, agent_user_id)`，**一对一独占**：一个用户只能属于一个 owner 的团队。这条约束是 `addTeamAgent` 强制的，因为 `agent_teams` 同时充当了所有「外来 user_id」handler 的租户边界（见 `userInCallerTenant`）—— 如果允许一个用户被两个商家认领，A 商家就能借这条链管理 B 商家的账号。
 
-### 2. 零 Row-Level Security
+### 2. Row-Level Security：061 起有兜底，但尚未上膛
 
-截至 057 的全部 57 个迁移里 `CREATE POLICY` 出现 **0 次**。隔离完全靠应用层手写 `WHERE user_id = $N`。
+057 及之前 `CREATE POLICY` 出现 **0 次**。隔离完全靠应用层手写 `WHERE user_id = $N`。
 
-**这意味着任何一处漏写 WHERE 就是跨租户泄漏，没有数据库兜底。**
+**这意味着任何一处漏写 WHERE 就是跨租户泄漏。**
 
 `chat_messages` 和 `knowledge_chunks` 连 owner 列都没有，要靠 join `sessions` / `knowledge_documents` 绕上去 —— 漏写的风险面比表面上更大。
+
+061 给这两张表加了 RLS 兜底策略（`app.user_id` GUC 门控、GUC 未设时 fail-open），
+语义、失效条件与后续收严路径见「十」。**在应用侧还没有任何代码设置该 GUC 之前，
+它不改变任何运行行为——不要把「有 RLS」误读成「有强制隔离」**，应用层纪律照旧。
 
 ### 3. 技术栈的三个常见误记
 
@@ -582,3 +586,152 @@ topK=8 能补上长文档覆盖，但成本 +49%；缩短每条来源虽控制�
 教训：Jev 的 Noul 做**双 claim 对比**这类复合判断时问法必须拆到位（"同一事项+不同具体值"），
 笼统的 "do these contradict" 没有区分度——这正是 typesafe 技能「一个问题一个窄判断」的实例。
 compile 的 E2E（真实上传矛盾文档）未跑，验证止于 prompt 级探针 + fail-open。
+
+---
+
+## 十、RLS 兜底（061，2026-09-23）
+
+### 它是什么
+
+`061_rls_tenant_backstop.sql` 给 `chat_messages` 和 `knowledge_chunks` 启用并
+`FORCE` 了 Row-Level Security（其余租户表自带 `user_id` 列，漏写 WHERE 在同一条
+语句里可见，不需要这层）。策略按会话 GUC `app.user_id`（int4）判定归属：
+
+- `chat_messages` 经 `sessions.user_id`（有 `idx_messages_session` 可走）；
+- `knowledge_chunks` 经 `knowledge_documents.uploaded_by`（走 `idx_knowledge_chunks_doc`）。
+
+GUC **已设**时：读/写全部被约束到该用户的行——**查询忘写 WHERE 也不再泄漏**，
+跨租户 INSERT 被 `WITH CHECK` 拒绝。这正是 2026-09-12 审计挖出的那五处漏洞的形状。
+
+### 为什么 GUC 未设时 fail-open（刻意的，不是偷懒）
+
+- **部署顺序**：migrate-go 先跑、新二进制后启动；旧二进制（不懂 GUC）必须照常工作，
+  fail-closed 会当场打断线上，也打断「二进制回滚」这个受支持的运维动作；
+- **系统路径**：platform pipeline 与后台 worker 天然跨租户，必须看得见所有行。
+
+所以 061 上线当天**不改变任何行为**——它是「武装了但未上膛」的兜底：迁移先就位，
+把后续收严的成本从「迁移+代码」降为「只改代码」。
+
+### 已知边界（不夸大）
+
+| 边界 | 说明 |
+|---|---|
+| 超级用户/BYPASSRLS 无条件绕过 | `cmd/server` 启动时检测并在日志告警 `RLS tenant backstop (061) is bypassed`；生产 `DATABASE_URL` 应使用专用非超级用户角色 |
+| TRUNCATE 不受策略约束 | 全仓无 TRUNCATE 路径，隐私删除走逐行 DELETE |
+| GUC 设成非数字 | `::int` 转换报错（响亮失败），不会静默放宽 |
+| FK 级联删除 | RI 动作绕过 RLS，删除流程不受影响 |
+
+### 测试（DB 门控，与 sqlcheck 同款纪律）
+
+```bash
+cd backend-go
+DATABASE_URL=... go test ./internal/migrations/ -run RLS -v
+```
+
+- `TestRLSBackstopPoliciesInstalled`：两表 enabled+forced、策略存在（没跑 061 会失败并提示 migrate-go）
+- `TestRLSBackstopEnforcesWhenGUCSet`：双向读隔离、同租户写放行、跨租户写拒绝
+  （savepoint 隔离预期错误）、GUC 未设全可见（**fail-open 契约被断言锁死**，
+  谁改默认值谁就得同时改部署手册）
+
+探针数据**提交后由 `t.Cleanup` 按外键安全顺序精确删除**——GUC 必须跨事务可观测，
+不能和被检查的语句同事务（第一版这么写，回滚重置 GUC 的同时把种子也滚掉了，
+三条断言同时说谎）。`uploaded_by` 无级联所以文档先删，users 级联带走
+sessions/messages；若测试进程被杀，残留行带 `__rls_` 前缀+时间戳后缀可辨认。
+超级用户连接会 skip（断言会因错误的原因失败）。
+
+### ⚠️ 为什么 GUC 必须经 `app_tenant_id()` 读——扩展协议的 InitPlan 提升
+
+第一版策略把 `current_setting('app.user_id', true)::int` **内联**进 policy 的
+EXISTS，被真库测试当场击毙，而且 **psql 完全复现不了**：
+
+- psql 走简单协议、每次执行 custom plan，OR 首分支逐行短路，GUC 为空时
+  cast 根本不会发生——三轮手工验证全绿；
+- pgx（extended protocol + 语句缓存）下，planner 会把子计划里**不引用外层行**
+  的表达式提升为 **InitPlan，在执行起点就求值**：连接池长连接上 GUC 处于
+  「`SET LOCAL` 结束后的重置态」，`current_setting(..., missing_ok)` 返回的是
+  **空串而不是 NULL**（NULL 只属于从未碰过该 GUC 的连接），`''::int` 直接把
+  这张表上的所有查询炸成 `invalid input syntax for type integer: ""`，
+  OR 短路根本没有出场机会。
+
+所以 061 提供了 **VOLATILE** 的 `app_tenant_id()`（内含 NULLIF 统一 ''/NULL），
+VOLATILE 禁止折叠与 InitPlan 提升，逐行惰性求值，短路才恢复可靠。
+**不要把 current_setting 内联回 policy，不要把该函数改成 STABLE**——那两个改动
+单独看都「更高效」，合起来就是上面那个生产炸弹。
+
+### 收严路径（真正上膛，按集群逐步做）
+
+1. 逐端点集群引入「租户作用域事务」：`tx := pool.Begin(ctx)` 后第一条执行
+   `SELECT app_set_tenant($1)`（061 提供的 VOLATILE 助手，内部就是
+   `set_config(..., is_local => true)`）—— **绝不能用 is_local = false**：
+   池化连接上会话级设置会把身份泄漏给下一个借走连接的请求，比没有 RLS 更糟。
+   `handleSession`/`handleDoc` 包装器是天然的下手点（一个包装器罩住几十条路由）。
+2. 每收编一个集群，带 `DATABASE_URL` 跑一次 rls 测试 + sqlcheck。
+3. 全部认证路径收编完毕后才考虑翻 fail-closed——那是破坏性变更：迁移先行 +
+   旧二进制当场失明，需要与部署手册联动，并放弃「迁移先于二进制」的窗口保护。
+
+### 性能
+
+GUC 未设时每行只多一次 VOLATILE 函数调用（亚微秒级；短路后不评估 EXISTS 子计划）；
+GUC 已设时 EXISTS 走两表已有的 session/doc 索引，而现有访问路径本来就是
+session/doc 作用域的。注意 VOLATILE 谓词默认并行不安全：这两张表上的全表扫描型
+分析查询不会并行化——目前不存在这类查询，出现时用一次性 filter 改写或物化聚合，
+或届时再评估把函数改 PARALLEL SAFE 的正确性。
+
+---
+
+## 十一、路由三档扩展：junk 沉默 / urgency / 语义缓存秒回（062，2026-09-23）
+
+补齐「先判定、没把握才下沉」架构的三块缺口。一次路由 = 一个 Judge 批量
+（route Choice + urgency Score 并行），检索照旧投机并行。
+
+### junk 档：垃圾消息沉默
+
+- 新路由 `junk`（`routing.go`）：`p ≥ 0.90`（`JEV_ROUTE_JUNK_MIN`，**四档里最高**
+  ——错误沉默真客户是路由最坏的失败模式，测试锁死 junk 阈值 ≥ handoff 阈值）。
+- 平台渠道（Telegram/Messenger/LINE/Zalo/Instagram）：**真沉默**——不生成、不投递、
+  不打字指示后续，客户消息留在收件箱里给店主看。
+- Web widget：SSE 访客不能吊着空气泡，回一条纯致谢行（`JunkAcknowledgement`，
+  高棉语初稿待母语者过）+ `ignored: true` 事件；没有生成开销。
+- 转人工路由升级 handoff 请求行时携带 `urgency`。
+
+### urgency：路由顺带判急
+
+- 同一 Judge 批量里的 Score 三档（routine/elevated/urgent），`ScoreValue` 返回
+  概率加权位置 0..2，`≥1.5`（`JEV_ROUTE_URGENT_MIN`）判 urgent。
+- **单向升级**：urgent 把 handoff 请求优先级抬到 `high`，永不降档
+  （`handoffPriority()`，schema 只有 normal|high）。v1 不落 session 列——
+  只作用于当轮升级；后台轮次分类触发的升级（无路由上下文）传空串走静态表。
+
+### reply_cache：语义缓存秒回（迁移 062）
+
+- 表：`reply_cache`（tenant + language + query_embedding(768) + answer + hit_count），
+  HNSW 与 chunks 同形。**只缓存守卫后、非 mock 的最终回答**（守卫后落库前写入，
+  after-hours 前缀是投递期文案不入缓存）。
+- 命中路径：检索投机并行中先查缓存（1 次 embedding + 1 次 HNSW），**未命中零
+  额外墙钟时间，命中亚秒返回**，零 token 计费，`model_name='reply-cache'` 可辨认。
+  命中跳过守卫（存的就是守卫后的），`ReplyClaimsHandoff` 正则照跑。
+- 失效：`rag.Service.KBChanged` 钩子——文档索引成功（上传/更新/URL 刷新/编译子文档
+  全走索引 worker）或删除时，**整租户缓存全删**。宁滥勿缺：缓存的是旧 grounding。
+- 门槛：`REPLY_CACHE_MIN_SIM=0.92`（余弦，防"那第二种呢"这类追问串答）、
+  `REPLY_CACHE_MIN_RUNES=12`（短查询永不读也不写）、TTL 72h、每租户 500 条 LRU。
+  `REPLY_CACHE_ENABLED=false` 一键关。
+- 嵌入在写入侧多付一次（丢进 SpawnClassifier 可丢车道）；读取侧在检索并行窗内，
+  不加墙钟。**embedding 换代（Phase 4）时此表与 chunks 一样要重建。**
+
+### API 变更
+
+`RouteInbound` 返回 `InboundRoute{Route, Prob, Urgency}`（原三值返回的调用方：
+pipeline、widget、jeveval live 已全部跟进）；`RouteDecision` 返回三开关
+`(escalate, skipGround, silent)`；`escalateToHuman`/`createHandoffRequest` 尾参
+`urgency`（无则传 `""`）。
+
+### 验证
+
+- 单测：路由解析/分档/旋钮/junk 门槛/优先级合并（纯单测，无 DB）；
+  replycache 机制（hit/miss/阈值/TTL/失效/nil 安全，stub 嵌入 + 真库，DSN 门控）。
+- 发布前照旧：`DATABASE_URL=... go test ./internal/migrations/ ./internal/replycache/ ./internal/sqlcheck/`。
+
+### 未做（下轮候选）
+
+urgency 不落 session/分析面；缓存命中率没有运维指标（看日志 `reply cache hit`）；
+widget `ignored` 事件前端未特殊渲染（显示致谢行已足够）。

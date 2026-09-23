@@ -22,6 +22,7 @@ import (
 	"khmer-ai-cs-go/internal/rag"
 	"khmer-ai-cs-go/internal/realtime"
 	"khmer-ai-cs-go/internal/redisstore"
+	"khmer-ai-cs-go/internal/replycache"
 	"khmer-ai-cs-go/internal/security"
 	"khmer-ai-cs-go/internal/storager2"
 	"khmer-ai-cs-go/internal/typesafe"
@@ -46,6 +47,20 @@ func main() {
 	}
 	defer pool.Close()
 	logger.Info("connected to postgres")
+
+	// Migration 061 put RLS backstop policies on chat_messages/knowledge_chunks,
+	// keyed to the app.user_id GUC. Superusers and BYPASSRLS roles bypass row
+	// security unconditionally, which would silently disable that backstop.
+	// Warn rather than exit: the deployment ran fine before 061 and must keep
+	// starting either way — but say why the backstop is inert.
+	var dbRoleSuper bool
+	if err := pool.QueryRow(ctx,
+		"SELECT rolsuper FROM pg_roles WHERE rolname = current_user").Scan(&dbRoleSuper); err != nil {
+		logger.Warn("could not inspect DB role for the RLS backstop", "error", err.Error())
+	} else if dbRoleSuper {
+		logger.Warn("connected as a superuser — RLS tenant backstop (061) is bypassed; " +
+			"switch DATABASE_URL to a dedicated non-superuser role for it to apply")
+	}
 
 	redisClient, err := redisstore.Connect(cfg.Redis.Addr, cfg.Redis.Password, cfg.Redis.DB)
 	if err != nil {
@@ -91,7 +106,12 @@ func main() {
 	// to the slower model Jev exists to replace. Hold the connection open.
 	jev.StartKeepWarm(ctx, typesafe.KeepWarmInterval())
 
+	// Semantic reply cache: identical asks skip retrieval+generation entirely.
+	// Any knowledge-base change drops the tenant's cache via KBChanged below.
+	replyCache := &replycache.Service{DB: pool, Gemini: gem, Logger: logger}
+
 	ragService := &rag.Service{DB: pool, Gemini: gem, Redis: redisClient, Logger: logger, Jev: jev}
+	ragService.KBChanged = replyCache.InvalidateTenant
 	ragService.SpawnIndexWorkers(ctx)
 
 	// Attribute auxiliary model spend to whichever tenant tagged the context.
@@ -108,7 +128,7 @@ func main() {
 	media := storager2.New(cfg.R2.AccountID, cfg.R2.AccessKey, cfg.R2.SecretKey, cfg.R2.Bucket, cfg.R2.PublicURL)
 
 	// Platform pipeline (inbound AI replies + outbound delivery).
-	pipe := &platform.Pipeline{DB: pool, Redis: redisClient, Cfg: cfg, Gemini: gem, RAG: ragService, Sealer: sealer, Media: media, Logger: logger, Jev: jev}
+	pipe := &platform.Pipeline{DB: pool, Redis: redisClient, Cfg: cfg, Gemini: gem, RAG: ragService, Sealer: sealer, Media: media, Logger: logger, Jev: jev, Cache: replyCache}
 	pipe.SpawnWorkers(ctx)
 
 	app := &api.App{
@@ -122,6 +142,7 @@ func main() {
 		Sealer: sealer,
 		Media:  media,
 		Pipe:   pipe,
+		Cache:  replyCache,
 	}
 
 	// Converge migration-era plaintext secrets to sealed form. Migration 052's

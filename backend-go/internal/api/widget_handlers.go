@@ -448,42 +448,83 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	// Jev pre-routing: catches semantic human requests the keyword list
-	// misses, and skips retrieval outright for pure chit-chat. Unknown route
+	// misses, skips retrieval outright for pure chit-chat, and drops junk
+	// with a thanks-only line (an SSE visitor cannot be left hanging, unlike
+	// a platform channel where silence is natural). Unknown route
 	// (Jev off/slow) keeps today's full path.
 	skipGround := false
 	if a.Pipe != nil {
-		if route, prob, ok := a.Pipe.RouteInbound(ctx, req.Message); ok {
-			if escalate, skip := platform.RouteDecision(route, prob); escalate {
-				webEscalate("Jev routed the message as a human request (p=" + strconv.FormatFloat(prob, 'f', 2, 64) + ")")
+		if r, ok := a.Pipe.RouteInbound(ctx, req.Message); ok {
+			escalate, skip, silent := platform.RouteDecision(r.Route, r.Prob)
+			if escalate {
+				webEscalate("Jev routed the message as a human request (p=" + strconv.FormatFloat(r.Prob, 'f', 2, 64) + ")")
 				return
-			} else {
-				skipGround = skip
 			}
+			if silent {
+				a.Logger.Info("junk dropped: jev routed the widget message as no-reply",
+					"session_id", sid, "p", r.Prob)
+				ack := platform.JunkAcknowledgement(language)
+				a.persistSystemReply(ctx, t.ownerID, sid, ack)
+				sendEvent("token", map[string]string{"text": ack})
+				sendEvent("done", map[string]any{"reply": ack, "tokens_used": 0, "cached_tokens": 0, "used_mock": false, "ignored": true})
+				return
+			}
+			skipGround = skip
+		}
+	}
+
+	// Semantic reply cache: a hit answers before the speculative retrieval
+	// finishes, skipping both the retrieval wait and generation. Small talk
+	// skips the cache — conversational replies depend on history.
+	cacheHit := false
+	replyText := ""
+	if !skipGround && a.Cache != nil && a.Cache.Enabled() {
+		if cached, hit := a.Cache.Lookup(ctx, t.ownerID, req.Message, language); hit {
+			cacheHit = true
+			replyText = cached
+			a.Logger.Info("reply cache hit", "session_id", sid)
 		}
 	}
 
 	var groundCtx rag.GroundingContext
-	if skipGround {
-		// Small talk: Jev decided retrieval is unnecessary, so drop the
-		// speculative result. The buffered channel lets the worker finish
-		// without blocking; one unused retrieval on chit-chat is cheaper than
-		// making every real question wait for the routing call.
-	} else {
-		select {
-		case groundCtx = <-groundCh:
-		case <-ctx.Done():
-			return
+	var result gemini.ChatResult
+	if !cacheHit {
+		if skipGround {
+			// Small talk: Jev decided retrieval is unnecessary, so drop the
+			// speculative result. The buffered channel lets the worker finish
+			// without blocking; one unused retrieval on chit-chat is cheaper than
+			// making every real question wait for the routing call.
+		} else {
+			select {
+			case groundCtx = <-groundCh:
+			case <-ctx.Done():
+				return
+			}
 		}
-	}
-	message := req.Message
-	if groundCtx.HasMatch {
-		message = rag.AugmentMessage(req.Message, &groundCtx)
-		sendEvent("sources", groundCtx.Sources)
 	}
 	// Reply persistence must survive a visitor hangup: r.Context() dies with
 	// the connection, and a lost model row erases the answer from every later
 	// turn's context and from the agent inbox.
 	persistCtx := context.WithoutCancel(ctx)
+
+	// Cache hit: the stored answer was generated, guarded and persisted for
+	// this tenant before — deliver it as one token, skipping generation and
+	// the guard (re-judging every replay would erase the latency win).
+	if cacheHit {
+		a.persistModelReply(persistCtx, t.ownerID, sid, gemini.ChatResult{}, replyText, &rag.GroundingContext{}, language, time.Now())
+		sendEvent("token", map[string]string{"text": replyText})
+		sendEvent("done", map[string]any{
+			"reply": replyText, "tokens_used": 0, "cached_tokens": 0,
+			"used_mock": false, "cached": true,
+		})
+		return
+	}
+
+	message := req.Message
+	if groundCtx.HasMatch {
+		message = rag.AugmentMessage(req.Message, &groundCtx)
+		sendEvent("sources", groundCtx.Sources)
+	}
 	var streamed strings.Builder
 	result, cerr := a.Gemini.ChatStream(ctx, message, history, language, func(chunk string) {
 		streamed.WriteString(chunk)
@@ -522,6 +563,14 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 					"Jev 标记该回复的事实性断言没有命中知识库原文（可能是幻觉），请核对后回复客户。")
 			}
 		}
+	}
+	// Store the post-stream answer for future identical asks (mock replies are
+	// never cached). persistCtx: the visitor may hang up before the store.
+	if !skipGround && !result.UsedMock && a.Cache != nil && a.Cache.Enabled() {
+		ownerID, cachedQuery, cachedLang, cachedReply := t.ownerID, req.Message, language, reply
+		platform.SpawnClassifier(func() {
+			a.Cache.Store(persistCtx, ownerID, cachedQuery, cachedLang, cachedReply, a.Gemini.ModelName())
+		})
 	}
 	usage.Record(persistCtx, a.DB, t.ownerID, &sid, a.Gemini.ModelName(), result.PromptTokens, result.OutputTokens, result.CachedTokens)
 	// The visitor row was persisted above; persistChatTurn would store it a

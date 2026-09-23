@@ -115,6 +115,11 @@ type Service struct {
 	// Jev optionally replaces the LLM reranker with typed Score judgments.
 	// nil = disabled: reranking keeps the Gemini path.
 	Jev *typesafe.Client
+	// KBChanged, when set, fires after a tenant's grounded content changes —
+	// a document finished indexing (upload/update/URL refresh/compile all
+	// funnel through the index worker) or was deleted. The reply cache uses
+	// it to drop that tenant's cached answers; nil = no callback.
+	KBChanged func(ctx context.Context, userID int32)
 }
 
 func isCJK(c rune) bool {
@@ -271,6 +276,11 @@ func (s *Service) indexNextPending(ctx context.Context) bool {
 		s.Logger.Warn("knowledge document indexing failed", "error", err.Error())
 		s.markDocumentFailed(ctx, docID, err.Error())
 		return true
+	}
+	// The tenant's grounded content just changed — drop its reply cache so no
+	// stale answer survives the update.
+	if s.KBChanged != nil {
+		s.KBChanged(ctx, userID)
 	}
 	// Ingest-time compile (llm-wiki pattern): distill the freshly indexed
 	// source into an FAQ/summary child document and flag contradictions with
@@ -1557,6 +1567,9 @@ func (s *Service) DeleteDocument(ctx context.Context, userID int32, docID int32)
 	}
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("document not found")
+	}
+	if s.KBChanged != nil {
+		s.KBChanged(ctx, userID)
 	}
 	return nil
 }

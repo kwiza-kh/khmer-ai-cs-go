@@ -197,15 +197,15 @@ func judgeLiveCase(ctx context.Context, pipe *platform.Pipeline, c liveCase) (bo
 		return len(issues) == 0, detail, ""
 
 	case "route":
-		route, prob, ok := pipe.RouteInbound(ctx, c.msg)
+		r, ok := pipe.RouteInbound(ctx, c.msg)
 		if !ok {
 			return false, "jev call failed", ""
 		}
-		escalate, skipGround := platform.RouteDecision(route, prob)
-		detail := fmt.Sprintf("route=%s p=%.2f", route, prob)
-		pass := route == c.expectRoute
-		if escalate || skipGround {
-			detail += fmt.Sprintf(" (escalate=%t skipGround=%t)", escalate, skipGround)
+		escalate, skipGround, silent := platform.RouteDecision(r.Route, r.Prob)
+		detail := fmt.Sprintf("route=%s p=%.2f urgency=%s", r.Route, r.Prob, r.Urgency)
+		pass := r.Route == c.expectRoute
+		if escalate || skipGround || silent {
+			detail += fmt.Sprintf(" (escalate=%t skipGround=%t silent=%t)", escalate, skipGround, silent)
 		}
 		if !pass {
 			detail += fmt.Sprintf("  ✗ want %s", c.expectRoute)

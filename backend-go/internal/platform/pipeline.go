@@ -23,6 +23,7 @@ import (
 	"khmer-ai-cs-go/internal/rag"
 	"khmer-ai-cs-go/internal/realtime"
 	"khmer-ai-cs-go/internal/redisstore"
+	"khmer-ai-cs-go/internal/replycache"
 	"khmer-ai-cs-go/internal/security"
 	"khmer-ai-cs-go/internal/storager2"
 	"khmer-ai-cs-go/internal/typesafe"
@@ -104,6 +105,9 @@ type Pipeline struct {
 	// classification, routing, guardrails). nil = disabled: every site
 	// falls back to its previous logic.
 	Jev *typesafe.Client
+	// Cache is the semantic reply cache (nil = disabled: every turn takes the
+	// full retrieval+generation path).
+	Cache *replycache.Service
 
 	notify         chan struct{}
 	notifyOutbound chan struct{}
@@ -403,7 +407,7 @@ func (p *Pipeline) processInboundEvent(ctx context.Context, ev *InboundEvent) er
 	if matched, ok := humanRequestKeyword(content); ok {
 		p.Logger.Info("auto handoff: customer requested a human", "session_id", sessionID, "keyword", matched)
 		p.escalateToHuman(ctx, ev, cfg, sessionID, "customer_request",
-			"Customer asked for a human agent (matched: "+matched+")")
+			"Customer asked for a human agent (matched: "+matched+")", "")
 		return nil
 	}
 
@@ -457,77 +461,125 @@ func (p *Pipeline) processInboundEvent(ctx context.Context, ev *InboundEvent) er
 		groundCh <- res // exactly one send, so the channel never leaks
 	}()
 
-	// Pre-routing: one Jev Choice decides whether this turn needs a human,
-	// needs no retrieval at all, or takes the full grounded path. An unknown
-	// route (Jev off/slow/unsure) keeps today's behaviour untouched.
+	// Pre-routing: one Jev batch decides whether this turn needs a human,
+	// needs no retrieval at all, is junk that deserves silence, or takes the
+	// full grounded path — plus how urgent it is (drives handoff priority).
+	// An unknown route (Jev off/slow/unsure) keeps today's behaviour untouched.
 	skipGround := false
-	if route, prob, ok := p.RouteInbound(ctx, content); ok {
-		escalate, skip := routeDecision(route, prob)
+	inboundUrgency := UrgencyUnknown
+	if r, ok := p.RouteInbound(ctx, content); ok {
+		escalate, skip, silent := routeDecision(r.Route, r.Prob)
 		if escalate {
-			p.Logger.Info("auto handoff: jev routed the message to a human", "session_id", sessionID, "p", prob)
+			p.Logger.Info("auto handoff: jev routed the message to a human",
+				"session_id", sessionID, "p", r.Prob, "urgency", r.Urgency)
 			p.escalateToHuman(ctx, ev, cfg, sessionID, "customer_request",
-				"Jev routed the message as a human request (p="+strconv.FormatFloat(prob, 'f', 2, 64)+")")
+				"Jev routed the message as a human request (p="+strconv.FormatFloat(r.Prob, 'f', 2, 64)+")", r.Urgency)
+			return nil
+		}
+		if silent {
+			// Junk: spam/ads/gibberish. No reply, no generation, no delivery —
+			// the customer message itself stays in the inbox for the owner.
+			// The speculative retrieval above is abandoned; the buffered
+			// channel lets that worker finish without blocking.
+			p.Logger.Info("junk dropped: jev routed the message as no-reply",
+				"session_id", sessionID, "p", r.Prob)
 			return nil
 		}
 		skipGround = skip
+		inboundUrgency = r.Urgency
+	}
+
+	// Semantic reply cache: on a hit the answer was already generated,
+	// guarded and stored for this tenant — deliver it directly and skip both
+	// the retrieval wait and generation. The lookup (one embedding + one
+	// indexed search) runs while the speculative retrieval above is still
+	// executing, so a miss adds no wall time and a hit answers in a fraction
+	// of a second. Small talk skips the cache: conversational replies depend
+	// on history.
+	reply := ""
+	fromCache := false
+	if !skipGround && p.Cache.Enabled() {
+		if cached, hit := p.Cache.Lookup(ctx, cfg.UserID, content, replyLang); hit {
+			reply = cached
+			fromCache = true
+			p.Logger.Info("reply cache hit", "session_id", sessionID)
+		}
 	}
 
 	var groundCtx rag.GroundingContext
-	if skipGround {
-		// Small talk: Jev already decided retrieval is unnecessary, so drop the
-		// speculative result. The buffered channel lets the worker finish
-		// without blocking. Paying for one unused retrieval on chit-chat is
-		// cheaper than making every real question wait for the routing call.
-	} else {
-		select {
-		case groundCtx = <-groundCh:
-		case <-ctx.Done():
-			return ctx.Err()
+	var result gemini.ChatResult
+	if !fromCache {
+		if skipGround {
+			// Small talk: Jev already decided retrieval is unnecessary, so drop the
+			// speculative result. The buffered channel lets the worker finish
+			// without blocking. Paying for one unused retrieval on chit-chat is
+			// cheaper than making every real question wait for the routing call.
+		} else {
+			select {
+			case groundCtx = <-groundCh:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		}
-	}
-	message := content
-	if groundCtx.HasMatch {
-		message = rag.AugmentMessage(content, &groundCtx)
-	}
-	result, err := p.Gemini.Chat(ctx, message, history, replyLang)
-	if err != nil {
-		// An exhausted quota or a drained prepaid balance is not a transient
-		// failure: the retry loop below will burn its attempts and the inbound
-		// event ends up 'failed' with the customer unanswered. Nothing else in
-		// the system notices, so page the operator now.
-		if isQuotaExhausted(err) {
-			p.PlatformAlert(ctx, "gemini-quota", "Gemini 配额/余额耗尽",
-				"AI 回复已停止。检查 Google AI Studio 的配额与预付款余额。\n"+truncateRunes(err.Error(), 300))
+		message := content
+		if groundCtx.HasMatch {
+			message = rag.AugmentMessage(content, &groundCtx)
 		}
-		return fmt.Errorf("AI 响应失败: %w", err)
-	}
-	usage.Record(ctx, p.DB, cfg.UserID, &sessionID, p.Gemini.ModelName(), result.PromptTokens, result.OutputTokens, result.CachedTokens)
-	reply := result.Reply
-	if !result.UsedMock {
-		reply = gemini.StripSourceMarkers(reply)
+		var err error
+		result, err = p.Gemini.Chat(ctx, message, history, replyLang)
+		if err != nil {
+			// An exhausted quota or a drained prepaid balance is not a transient
+			// failure: the retry loop below will burn its attempts and the inbound
+			// event ends up 'failed' with the customer unanswered. Nothing else in
+			// the system notices, so page the operator now.
+			if isQuotaExhausted(err) {
+				p.PlatformAlert(ctx, "gemini-quota", "Gemini 配额/余额耗尽",
+					"AI 回复已停止。检查 Google AI Studio 的配额与预付款余额。\n"+truncateRunes(err.Error(), 300))
+			}
+			return fmt.Errorf("AI 响应失败: %w", err)
+		}
+		usage.Record(ctx, p.DB, cfg.UserID, &sessionID, p.Gemini.ModelName(), result.PromptTokens, result.OutputTokens, result.CachedTokens)
+		reply = result.Reply
+		if !result.UsedMock {
+			reply = gemini.StripSourceMarkers(reply)
+		}
 	}
 
 	// Semantic guard (bounded at 1.5s): catches paraphrased source leaks,
 	// handoff promises, and unconfirmed commitments the regex nets miss,
 	// plus the citation check against the grounding passages. Delivery is
 	// not yet enqueued, so this path can still edit the reply.
+	// Cache hits skip the guard: the cached answer was guarded before it was
+	// stored, and re-judging every replay would erase the latency win.
 	claimsHandoff := false
-	srcTexts := make([]string, 0, len(groundCtx.Sources))
-	for _, src := range groundCtx.Sources {
-		srcTexts = append(srcTexts, src.Content)
-	}
-	if g, ok := p.GuardReply(ctx, reply, srcTexts); ok {
-		if g.LeaksSources {
-			reply = StripCitationLines(reply)
+	if !fromCache {
+		srcTexts := make([]string, 0, len(groundCtx.Sources))
+		for _, src := range groundCtx.Sources {
+			srcTexts = append(srcTexts, src.Content)
 		}
-		claimsHandoff = g.PromisesHandoff
-		if g.UnsafeClaim {
-			p.alertQuality(ctx, cfg.UserID, sessionID, "AI 回复包含待确认承诺",
-				"Jev 标记该回复做出了需店员确认的承诺（价格/交期/库存等），请在收件箱检查该会话。")
+		if g, ok := p.GuardReply(ctx, reply, srcTexts); ok {
+			if g.LeaksSources {
+				reply = StripCitationLines(reply)
+			}
+			claimsHandoff = g.PromisesHandoff
+			if g.UnsafeClaim {
+				p.alertQuality(ctx, cfg.UserID, sessionID, "AI 回复包含待确认承诺",
+					"Jev 标记该回复做出了需店员确认的承诺（价格/交期/库存等），请在收件箱检查该会话。")
+			}
+			if !g.SupportedBySources {
+				p.alertQuality(ctx, cfg.UserID, sessionID, "AI 回复脱离知识库作答",
+					"Jev 标记该回复的事实性断言没有命中知识库原文（可能是幻觉），请核对后回复客户。")
+			}
 		}
-		if !g.SupportedBySources {
-			p.alertQuality(ctx, cfg.UserID, sessionID, "AI 回复脱离知识库作答",
-				"Jev 标记该回复的事实性断言没有命中知识库原文（可能是幻觉），请核对后回复客户。")
+		// Store the guarded answer for future identical asks — after the
+		// guard (the cache must never serve what the guard would have edited)
+		// and before the after-hours preamble (which is per-delivery, not
+		// part of the answer). Mock replies are never cached. Droppable lane:
+		// losing a store only costs the next identical ask a cache miss.
+		if !skipGround && !result.UsedMock && p.Cache.Enabled() {
+			SpawnClassifier(func() {
+				p.Cache.Store(ctx, cfg.UserID, content, replyLang, reply, p.Gemini.ModelName())
+			})
 		}
 	}
 
@@ -537,11 +589,17 @@ func (p *Pipeline) processInboundEvent(ctx context.Context, ev *InboundEvent) er
 	}
 
 	// Persist model reply + enqueue delivery (👍/👎 buttons ride on Telegram).
+	// A cache hit is a real answer with zero token cost: model_name says so.
+	tokensUsed := result.PromptTokens + result.OutputTokens
+	modelName := p.Gemini.ModelName()
+	if fromCache {
+		tokensUsed, modelName = 0, "reply-cache"
+	}
 	var modelMessageID int64
 	err = p.DB.QueryRow(ctx,
 		"INSERT INTO chat_messages (session_id, role, message_type, content, tokens_used, model_name, used_mock, sources_json, created_at) "+
 			"VALUES ($1,'model','text',$2,$3,$4,$5,$6,$7) RETURNING message_id",
-		sessionID, reply, result.PromptTokens+result.OutputTokens, p.Gemini.ModelName(), result.UsedMock,
+		sessionID, reply, tokensUsed, modelName, result.UsedMock,
 		sourcesJSON(groundCtx), time.Now()).
 		Scan(&modelMessageID)
 	if err != nil {
@@ -567,7 +625,7 @@ func (p *Pipeline) processInboundEvent(ctx context.Context, ev *InboundEvent) er
 	// reply itself already told the customer.
 	if ReplyClaimsHandoff(reply) || claimsHandoff {
 		p.escalateToHuman(ctx, nil, cfg, sessionID, "ai_decision",
-			"AI reply announced a handoff to the customer")
+			"AI reply announced a handoff to the customer", inboundUrgency)
 		return nil
 	}
 	p.classifyTurnAsync(cfg.UserID, sessionID, content, reply, groundCtx.HasMatch)
@@ -1016,6 +1074,22 @@ func ReplyClaimsHandoff(reply string) bool {
 // HandoffAcknowledgement is the exported canned "agent will respond" text.
 func HandoffAcknowledgement(language string) string { return handoffAcknowledgement(language) }
 
+// JunkAcknowledgement — platform channels stay truly silent on junk, but the
+// web widget cannot leave a visitor's message bubble hanging, so it answers
+// junk with a thanks-only line: no promise of a human, no AI engagement, and
+// none of the generation cost. Khmer is first-draft copy (needs a native pass,
+// like every bot string here).
+func JunkAcknowledgement(language string) string {
+	switch language {
+	case "en":
+		return "🙏 Thanks — your message has been received."
+	case "zh":
+		return "🙏 感谢您的留言！"
+	default:
+		return "🙏 អរគុណសម្រាប់សាររបស់អ្នក!"
+	}
+}
+
 // ReleaseHandoffKeyword is the exported customer-cancellation matcher so the
 // web-chat path shares the pipeline's release rule.
 func ReleaseHandoffKeyword(content string) (string, bool) { return releaseHandoffKeyword(content) }
@@ -1023,10 +1097,12 @@ func ReleaseHandoffKeyword(content string) (string, bool) { return releaseHandof
 // escalateToHuman moves a session to the handoff queue: creates the request
 // row (unless one is already open), flips the status, and — when an inbound
 // event is given — acks the customer. Every auto trigger funnels through here.
+// urgency is the router's verdict for this turn ("" when unavailable); it can
+// raise the queue priority, never lower it.
 // Escalation failures never fail the inbound event (the AI already replied or
 // the queue dedupes), so the error is logged, not returned.
-func (p *Pipeline) escalateToHuman(ctx context.Context, ev *InboundEvent, cfg *configCred, sessionID, trigger, reason string) {
-	if err := p.createHandoffRequest(ctx, cfg.UserID, sessionID, trigger, reason); err != nil {
+func (p *Pipeline) escalateToHuman(ctx context.Context, ev *InboundEvent, cfg *configCred, sessionID, trigger, reason, urgency string) {
+	if err := p.createHandoffRequest(ctx, cfg.UserID, sessionID, trigger, reason, urgency); err != nil {
 		p.Logger.Warn("auto handoff request failed", "session_id", sessionID, "error", err.Error())
 		return
 	}
@@ -1038,11 +1114,11 @@ func (p *Pipeline) escalateToHuman(ctx context.Context, ev *InboundEvent, cfg *c
 // createHandoffRequest inserts a queue row + session status + notification.
 // The partial unique index keeps exactly one open request per session, so
 // repeat triggers are silently deduplicated.
-func (p *Pipeline) createHandoffRequest(ctx context.Context, userID int32, sessionID, trigger, reason string) error {
-	priority := highPriorityTriggers[trigger]
-	if priority == "" {
-		priority = "normal"
-	}
+// urgency (the router's verdict for this turn, "" when unknown) can raise the
+// queue priority — an urgent message jumps the line even when its trigger
+// would normally be "normal".
+func (p *Pipeline) createHandoffRequest(ctx context.Context, userID int32, sessionID, trigger, reason, urgency string) error {
+	priority := handoffPriority(trigger, urgency)
 	_, err := p.DB.Exec(ctx,
 		"INSERT INTO human_handoff_requests (session_id, user_id, status, priority, trigger, reason, created_at) "+
 			"VALUES ($1,$2,'pending',$3,$4::human_handoff_trigger,$5,NOW()) ON CONFLICT DO NOTHING",
@@ -1055,6 +1131,20 @@ func (p *Pipeline) createHandoffRequest(ctx context.Context, userID int32, sessi
 	p.notifyUser(ctx, userID, "handoff", "New human-handoff request", trigger+": "+truncateStr(reason, 120), sessionID)
 	p.publishSession(ctx, userID, sessionID)
 	return nil
+}
+
+// handoffPriority merges the static trigger table with the router's urgency:
+// urgency can raise the priority to "high", never lower it below the trigger's
+// default. The schema only knows "normal" | "high" (human_handoff_requests).
+func handoffPriority(trigger, urgency string) string {
+	priority := highPriorityTriggers[trigger]
+	if priority == "" {
+		priority = "normal"
+	}
+	if urgency == UrgencyUrgent {
+		priority = "high"
+	}
+	return priority
 }
 
 var highPriorityTriggers = map[string]string{
@@ -1139,8 +1229,9 @@ func (p *Pipeline) ackHandoffOnce(ctx context.Context, ev *InboundEvent, cfg *co
 
 // EscalateHuman moves a session to the handoff queue without the canned ack —
 // the exported entry point for the web-chat path, which shares the queue.
+// No router urgency here: the web-chat path escalates from its own rules.
 func (p *Pipeline) EscalateHuman(ctx context.Context, userID int32, sessionID, trigger, reason string) {
-	p.escalateToHuman(ctx, nil, &configCred{UserID: userID}, sessionID, trigger, reason)
+	p.escalateToHuman(ctx, nil, &configCred{UserID: userID}, sessionID, trigger, reason, "")
 }
 
 // HasReadyDocs — whether the tenant has at least one indexed knowledge doc.
@@ -1265,7 +1356,7 @@ func (p *Pipeline) classifyTurn(userID int32, sessionID, customerMsg, reply stri
 			trigger, reason = TurnTrigger(verdict, hasMatch, p.hasReadyDocs(ctx, userID))
 		}
 		if trigger != "" {
-			p.escalateToHuman(ctx, nil, &configCred{UserID: userID}, sessionID, trigger, reason)
+			p.escalateToHuman(ctx, nil, &configCred{UserID: userID}, sessionID, trigger, reason, "")
 		}
 	}
 }
