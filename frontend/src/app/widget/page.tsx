@@ -301,6 +301,15 @@ function WidgetInner() {
   const greeting = (lang === "en" ? cfg?.greeting_en : lang === "zh" ? (cfg?.greeting_en || cfg?.greeting_km) : cfg?.greeting_km) || s.intro;
   const chips = cfg?.suggested_questions ?? [];
   const showOpeners = messages.length === 0;
+  // Only the newest AI answer offers 好评/差评. Leaving the controls on every
+  // older answer clutters the history and lets a visitor rate the wrong
+  // message; a rating that was already given still shows on its own bubble.
+  const lastModelKey = React.useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      if (messages[i].role === "model" && messages[i].dbId != null) return messages[i].id;
+    }
+    return null;
+  }, [messages]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh", background: p.bg, color: p.bubbleInText, fontFamily: "'Noto Sans Khmer','Inter',system-ui,sans-serif" }}>
@@ -362,12 +371,12 @@ function WidgetInner() {
                 {m.dbId != null && (
                   m.rating ? (
                     <span style={{ color: m.rating === 1 ? "#16a34a" : "#dc2626" }}>{m.rating === 1 ? "👍" : "👎"}</span>
-                  ) : (
+                  ) : m.id === lastModelKey ? (
                     <>
                       <button type="button" aria-label="good" style={{ border: "none", background: "transparent", cursor: "pointer", padding: 0 }} onClick={() => void rate(m, 1)}>👍</button>
                       <button type="button" aria-label="bad" style={{ border: "none", background: "transparent", cursor: "pointer", padding: 0 }} onClick={() => void rate(m, -1)}>👎</button>
                     </>
-                  )
+                  ) : null
                 )}
               </div>
             )}

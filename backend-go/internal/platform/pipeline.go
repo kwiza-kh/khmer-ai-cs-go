@@ -1819,6 +1819,49 @@ func (p *Pipeline) deliver(ctx context.Context, d *outboundDelivery) {
 	}
 }
 
+// parseTelegramMessageID extracts the numeric message id from a stored
+// provider_message_id ("<chat_id>:<message_id>", see TelegramProviderMessageID).
+func parseTelegramMessageID(providerID string) (int64, bool) {
+	idx := strings.LastIndex(providerID, ":")
+	if idx < 0 || idx == len(providerID)-1 {
+		return 0, false
+	}
+	id, err := strconv.ParseInt(providerID[idx+1:], 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return id, true
+}
+
+// demotePreviousFeedbackKeyboard strips the 👍/👎 keyboard from the customer's
+// previous AI reply, so exactly one message — the newest — stays rateable.
+// Telegram stores an inline keyboard on the message itself and keeps it for
+// the life of that message, so without this every answer in the conversation
+// keeps offering 好评/差评 (and a customer can rate an old answer by mistake).
+// Best-effort: the new reply is already delivered, so a failure is logged and
+// never returned.
+func (p *Pipeline) demotePreviousFeedbackKeyboard(ctx context.Context, client *TelegramClient, d *outboundDelivery) {
+	var prevID string
+	err := p.DB.QueryRow(ctx,
+		"SELECT provider_message_id FROM platform_outbox "+
+			"WHERE session_id = $1 AND platform = 'telegram' AND delivery_id <> $2 "+
+			"AND status = 'sent' AND provider_message_id IS NOT NULL AND provider_message_id <> '' "+
+			"AND payload->>'feedback' = 'true' "+
+			"ORDER BY delivery_id DESC LIMIT 1",
+		d.SessionID, d.DeliveryID).Scan(&prevID)
+	if err != nil || prevID == "" {
+		return // first rateable reply of the conversation — nothing to demote
+	}
+	msgID, ok := parseTelegramMessageID(prevID)
+	if !ok {
+		return
+	}
+	if err := client.EditMessageReplyMarkup(ctx, d.RecipientID, msgID); err != nil && p.Logger != nil {
+		p.Logger.Warn("demoting previous feedback keyboard failed",
+			"session_id", d.SessionID, "provider_message_id", prevID, "error", err.Error())
+	}
+}
+
 // deliverToProvider sends via the correct provider client. Returns provider id.
 // isHuman marks agent-authored messages: only those may use the Meta
 // HUMAN_AGENT tag to reply within the 7-day extension window.
@@ -1875,11 +1918,13 @@ func (p *Pipeline) deliverToProvider(ctx context.Context, d *outboundDelivery, i
 			return TelegramProviderMessageID(d.RecipientID, id), nil
 		}
 		// AI replies get 👍/👎 inline buttons (customer-side CSAT collection).
+		hasFeedbackButtons := false
 		if fb, _ := d.Payload["feedback"].(bool); fb && len(buttons) == 0 && d.LastMessageID > 0 {
 			buttons = [][2]string{
 				{"👍", fmt.Sprintf("fb:%d:1", d.LastMessageID)},
 				{"👎", fmt.Sprintf("fb:%d:-1", d.LastMessageID)},
 			}
+			hasFeedbackButtons = true
 		}
 		chunks := SplitPlatformText(d.Content, PlatformTextLimit("telegram"))
 		lastID := ""
@@ -1893,6 +1938,9 @@ func (p *Pipeline) deliverToProvider(ctx context.Context, d *outboundDelivery, i
 			}
 			// Buttons ride on the first chunk only.
 			buttons = nil
+		}
+		if hasFeedbackButtons {
+			p.demotePreviousFeedbackKeyboard(ctx, client, d)
 		}
 		return lastID, nil
 	case "line":

@@ -544,10 +544,14 @@ func (t *TelegramClient) AnswerCallback(ctx context.Context, callbackID, text st
 }
 
 // EditMessageReplyMarkup removes the inline keyboard from a sent message
-// (used after a notify-bot button action so it cannot fire twice).
+// (used after a notify-bot button action so it cannot fire twice, and to
+// demote the previous AI reply's 👍/👎 so only the newest one stays rateable).
+// The keyboard must ride inside `reply_markup`: passing inline_keyboard at the
+// top level is silently ignored by Telegram, which made this a no-op.
 func (t *TelegramClient) EditMessageReplyMarkup(ctx context.Context, chatID string, messageID int64) error {
 	_, err := t.call(ctx, "editMessageReplyMarkup", map[string]any{
-		"chat_id": chatID, "message_id": messageID, "inline_keyboard": []any{},
+		"chat_id": chatID, "message_id": messageID,
+		"reply_markup": map[string]any{"inline_keyboard": []any{}},
 	})
 	return err
 }
