@@ -973,10 +973,14 @@ export async function listFeedback(page = 1, pageSize = 50, rating?: -1 | 1) {
   return apiFetch<PaginatedResponse<ChatMessageItem>>(`/admin/feedback?${qs}`);
 }
 
-export async function listInbox(params?: { status?: SessionStatus; archived?: boolean; page?: number; pageSize?: number }) {
+export async function listInbox(params?: { status?: SessionStatus; archived?: boolean; page?: number; pageSize?: number; q?: string }) {
   const qs = new URLSearchParams();
   if (params?.status) qs.set("status", params.status);
   if (params?.archived) qs.set("archived", "1");
+  // Server-side search: matches platform user id, customer display name,
+  // assigned agent username, session title and message content — so a
+  // username search reaches sessions beyond the first loaded page.
+  if (params?.q?.trim()) qs.set("q", params.q.trim());
   qs.set("page", String(params?.page ?? 1));
   qs.set("page_size", String(params?.pageSize ?? 50));
   return apiFetch<PaginatedResponse<InboxItem>>(`/inbox?${qs}`);

@@ -34,11 +34,30 @@ func (a *App) listInbox(w http.ResponseWriter, r *http.Request) (any, error) {
 		archivePredicate = " AND archived_at IS NOT NULL"
 	}
 
-	countSQL := "SELECT COUNT(*) FROM sessions WHERE user_id = $1 AND is_test = FALSE" + archivePredicate
+	// Aliased `s` on purpose: the search predicate below is written against the
+	// page query's alias so one shared string can serve both statements.
+	countSQL := "SELECT COUNT(*) FROM sessions AS s WHERE s.user_id = $1 AND s.is_test = FALSE" + archivePredicate
 	args := []any{user.UserID}
 	if statusFilter != "" {
 		countSQL += " AND status = $" + strconv.Itoa(len(args)+1) + "::session_status"
 		args = append(args, statusFilter)
+	}
+	// Free-text search across who the conversation is with (platform user id,
+	// customer display name), who handles it (agent username), its title and
+	// its messages — applied identically to the count and the page query so
+	// pagination stays honest. This is what the top-bar search box feeds:
+	// without it a username search only matched whatever happened to be in
+	// the already-loaded first page.
+	searchQ := strings.TrimSpace(r.URL.Query().Get("q"))
+	searchPredicate := ""
+	if searchQ != "" {
+		searchPredicate = " AND (s.title ILIKE $Q OR s.platform_user_id ILIKE $Q" +
+			" OR EXISTS (SELECT 1 FROM platform_user_sessions pus_s WHERE pus_s.session_id = s.session_id AND pus_s.user_display_name ILIKE $Q)" +
+			" OR EXISTS (SELECT 1 FROM users u_s WHERE u_s.user_id = s.assigned_agent_id AND u_s.username ILIKE $Q)" +
+			" OR EXISTS (SELECT 1 FROM chat_messages cm_s WHERE cm_s.session_id = s.session_id AND cm_s.content ILIKE $Q))"
+		searchPredicate = strings.ReplaceAll(searchPredicate, "$Q", "$"+strconv.Itoa(len(args)+1))
+		countSQL += searchPredicate
+		args = append(args, "%"+searchQ+"%")
 	}
 	var total int64
 	if err := a.DB.QueryRow(r.Context(), countSQL, args...).Scan(&total); err != nil {
@@ -62,6 +81,11 @@ func (a *App) listInbox(w http.ResponseWriter, r *http.Request) (any, error) {
 	if statusFilter != "" {
 		selSQL += " AND s.status = $" + strconv.Itoa(len(selArgs)+1) + "::session_status"
 		selArgs = append(selArgs, statusFilter)
+	}
+	if searchPredicate != "" {
+		// Same predicate, re-parameterised for the page query's own arg list.
+		selSQL += strings.ReplaceAll(searchPredicate, "$"+strconv.Itoa(len(args)), "$"+strconv.Itoa(len(selArgs)+1))
+		selArgs = append(selArgs, "%"+searchQ+"%")
 	}
 	selSQL += " ORDER BY last_message.created_at DESC NULLS LAST, s.created_at DESC LIMIT $" + strconv.Itoa(len(selArgs)+1) + " OFFSET $" + strconv.Itoa(len(selArgs)+2)
 	selArgs = append(selArgs, pageSize, offset)

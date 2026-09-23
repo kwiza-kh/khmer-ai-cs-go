@@ -295,10 +295,25 @@ export default function InboxPage() {
 
   const wsConnected = useInboxRealtime(token, handleRealtimeEvent);
 
-  const inboxKey = `inbox-${statusFilter}-${showArchived ? "archived" : "active"}`;
+  // Debounced copy of the search box for the SERVER query: typing stays
+  // instant against the loaded page (below), while the server search catches
+  // sessions that were never loaded — a username living on page 3 must be
+  // findable, not just the 100 newest conversations.
+  const [serverQuery, setServerQuery] = React.useState(() => query.trim());
+  React.useEffect(() => {
+    const timer = setTimeout(() => setServerQuery(query.trim()), 300);
+    return () => clearTimeout(timer);
+  }, [query]);
+
+  const inboxKey = `inbox-${statusFilter}-${showArchived ? "archived" : "active"}-${serverQuery}`;
   const { data: inboxData, mutate: mutateInbox } = useSWR(
     inboxKey,
-    () => listInbox({ status: statusFilter === "all" ? undefined : statusFilter, archived: showArchived, pageSize: 100 }),
+    () => listInbox({
+      status: statusFilter === "all" ? undefined : statusFilter,
+      archived: showArchived,
+      pageSize: 100,
+      q: serverQuery || undefined,
+    }),
     // WS 事件驱动是主通道 (收到即刷新); 轮询为自愈兜底 — 连接正常时降频, 断线时加密.
     { refreshInterval: wsConnected ? 60_000 : 15_000 },
   );
@@ -316,9 +331,18 @@ export default function InboxPage() {
   // effect depends on it, so this prevents listener churn on every poll.
   // Two-stage filter: query first (so platform chips can show "matches within
   // the current search" counts), then the platform chip narrows the list.
-  const queryItems = React.useMemo(() => (inboxData?.data ?? []).filter((item) =>
-    !query || (item.title || item.user_display_name || item.last_message || "").toLowerCase().includes(query.toLowerCase()),
-  ), [inboxData, query]);
+  // NOTE: every identifying field is tested, and the test is "any field
+  // contains the term" — the earlier `a || b || c` chain stopped at the first
+  // non-empty value, so a session with a title could never match on the
+  // customer's display name or the agent's username.
+  const queryItems = React.useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return inboxData?.data ?? [];
+    return (inboxData?.data ?? []).filter((item) =>
+      [item.title, item.user_display_name, item.platform_user_id, item.assigned_agent_name, item.last_message]
+        .some((field) => (field ?? "").toLowerCase().includes(needle)),
+    );
+  }, [inboxData, query]);
   const platformCounts = React.useMemo(() => {
     const counts = new Map<PlatformCategory, number>();
     for (const item of queryItems) {
