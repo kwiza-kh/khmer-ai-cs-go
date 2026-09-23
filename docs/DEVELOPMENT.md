@@ -144,14 +144,25 @@ legacyJWTIssuer = "khmer-ai-cs"    // 旧 token 仍接受
 > `anynonarray || text` / `text || anynonarray` 两个操作符，存在的意义正是让
 > `整数 || 文本` 这种写法继续可用。
 >
-> **所以同类写法的残留 3 处不是 bug，不要再去「修」它们**（行号按 2026-09-14 核对）：
-> `internal/api/tasks.go:257`、`internal/api/tasks.go:275`（`scanSLABreaches`，SLA 违约扫描，
-> 用的是 `($2 || ' seconds')::interval`）、`internal/rag/service.go:1032`（`KnowledgeGaps`；
-> 该处 `$2` 实际是 `strconv.FormatInt` 后的字符串，属于 text||text）。三处的完整语句都已在
-> 生产库上 prepare 通过。
+> **更正（2026-09-23）：上述「残留 3 处不是 bug」的结论对其中两处是错的。**
 >
-> 改用 `make_interval` 本身没问题（更明确，也没什么代价），但**真实病因至今未知**
-> —— 症状是真的，解释是错的。如果再出现同类 500，不要从这个方向找。
+> `internal/api/tasks.go` 里 `scanSLABreaches` 的两条语句（first_response / resolution）
+> **在运行时必然失败**，只是错误被 `if err == nil` 吞掉、不报 500 而已：
+>
+> ```
+> failed to encode args[1]: unable to encode 300 into text format for text (OID 25)
+> ```
+>
+> 机制：`($2 || ' seconds')` 里 Postgres 把参数解析为 **text**，而 pgx 扩展协议无法把
+> Go 的 `int` 编码成 text 参数 —— **语句在发送阶段就挂了，从未执行**。所以 SLA 违约
+> 扫描自上线起就是空转：不会写 `sla_breaches`，也不会发通知（策略数长期为 0 另有原因，
+> 见 030 迁移后的创建接口 bug）。实测换成 `make_interval(secs => $2)` 后同一查询
+> 正常返回 24 行；回归测试 `internal/api/sla_scan_test.go` 用「改回旧写法」验证过会挂。
+>
+> **`psql` 的 `PREPARE` 通过、`internal/sqlcheck` 通过，都不能证明这条语句能跑** ——
+> 两者都不做 pgx 那一步参数编码。这正是本节教训的延伸：手测/静态校验骗过你的方式
+> 不止一种。`internal/rag/service.go:1032`（`$2` 是 `FormatInt` 后的字符串，
+> text||text）不受影响，那一条仍然不是 bug。
 
 教训：**手测 SQL 用字面量会骗你，读到一条看似合理的根因也会。** 任何关于
 「这个写法在 Postgres 上行不行」的结论，都该在真库上 prepare 一次再说。

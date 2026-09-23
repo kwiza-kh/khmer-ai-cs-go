@@ -254,15 +254,31 @@ func (a *App) scanSLABreaches(ctx context.Context) {
 
 	for _, p := range pols {
 		if p.firstSecs > 0 {
+			// make_interval, not ($2 || ' seconds')::interval: Postgres resolves
+			// the parameter of a `||` expression as text (OID 25), and pgx's
+			// extended protocol cannot encode a Go int into a text parameter —
+			// the query failed to send on every single scan
+			// ("unable to encode 300 into text format for text"). psql PREPARE
+			// and sqlcheck both pass, because neither exercises parameter
+			// encoding; only a real bound execution does. The `if err == nil`
+			// below used to swallow the failure, so the whole SLA engine was a
+			// silent no-op.
 			sess, err := a.DB.Query(ctx, `SELECT session_id FROM sessions WHERE user_id=$1 AND status IN ('active','handoff')
-				AND first_response_at IS NULL AND created_at < NOW() - ($2 || ' seconds')::interval`, p.userID, p.firstSecs)
+				AND first_response_at IS NULL AND created_at < NOW() - make_interval(secs => $2)`, p.userID, p.firstSecs)
+			if err != nil {
+				a.Logger.Warn("sla first-response scan failed", "user_id", p.userID, "error", err.Error())
+			}
 			if err == nil {
 				for sess.Next() {
 					var sid string
 					if sess.Scan(&sid) == nil {
-						tag, _ := a.DB.Exec(ctx,
+						tag, ierr := a.DB.Exec(ctx,
 							"INSERT INTO sla_breaches (user_id, session_id, sla_id, breach_type) VALUES ($1,$2,$3,'first_response') ON CONFLICT (session_id, breach_type) DO NOTHING",
 							p.userID, sid, p.slaID)
+						if ierr != nil {
+							a.Logger.Warn("sla breach insert failed", "session_id", sid, "error", ierr.Error())
+							continue
+						}
 						if tag.RowsAffected() > 0 {
 							a.notifyUser(ctx, p.userID, "sla", "SLA 违约：首次响应超时", "A session breached the first-response SLA", sid)
 						}
@@ -272,15 +288,25 @@ func (a *App) scanSLABreaches(ctx context.Context) {
 			}
 		}
 		if p.resolutionSecs != nil && *p.resolutionSecs > 0 {
+			// Same make_interval reasoning as the first-response scan above.
+			// NOTE: this branch records the breach but sends no notification —
+			// the first-response branch does. Asymmetric on purpose or not is
+			// an open question; see docs/DEVELOPMENT.md.
 			sess, err := a.DB.Query(ctx, `SELECT session_id FROM sessions WHERE user_id=$1 AND status IN ('active','handoff')
-				AND resolved_at IS NULL AND created_at < NOW() - ($2 || ' seconds')::interval`, p.userID, *p.resolutionSecs)
+				AND resolved_at IS NULL AND created_at < NOW() - make_interval(secs => $2)`, p.userID, *p.resolutionSecs)
+			if err != nil {
+				a.Logger.Warn("sla resolution scan failed", "user_id", p.userID, "error", err.Error())
+			}
 			if err == nil {
 				for sess.Next() {
 					var sid string
 					if sess.Scan(&sid) == nil {
-						_, _ = a.DB.Exec(ctx,
+						_, ierr := a.DB.Exec(ctx,
 							"INSERT INTO sla_breaches (user_id, session_id, sla_id, breach_type) VALUES ($1,$2,$3,'resolution') ON CONFLICT (session_id, breach_type) DO NOTHING",
 							p.userID, sid, p.slaID)
+						if ierr != nil {
+							a.Logger.Warn("sla resolution breach insert failed", "session_id", sid, "error", ierr.Error())
+						}
 					}
 				}
 				sess.Close()
