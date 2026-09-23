@@ -3,7 +3,7 @@
 import * as React from "react";
 import useSWR from "swr";
 import {
-  AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
+  AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
   PieChart, Pie, Cell, Legend,
 } from "recharts";
 import {
@@ -11,6 +11,7 @@ import {
 } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatCard } from "@/components/stat-card";
+import { StatCards, type StatCardData } from "@/components/spectrumui/charts/stat-cards";
 import { EmptyState } from "@/components/empty-state";
 import { Zap, TrendingUp, BarChart3, Users, Clock, Smile, ThumbsUp, ThumbsDown, Activity, ShieldCheck } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
@@ -26,6 +27,58 @@ export function AnalyticsPanel({ days = 30 }: { days?: number }) {
   const { data: languages } = useSWR(`analytics-languages-${days}`, () => getLanguageBreakdown(days));
   const { data: topQueries } = useSWR(`analytics-top-${days}`, () => getTopQueries(days, 8));
 
+  // Spectrum UI stat cards (registry: @spectrumui/stat-cards, vendored with
+  // token colors) drive the trend row: real per-day series + a delta sentence
+  // computed against the period's first day.
+  const trendCards: StatCardData[] = React.useMemo(() => {
+    if (!timeline?.length) return [];
+    const vsLabel = tf("an.vsPrev", { days });
+    return [
+      {
+        label: t("an.totalTokens"),
+        series: timeline.map((p) => p.tokens),
+        format: (v) => fmtInt(v),
+        caption: t("an.perDay"),
+        deltaLabel: vsLabel,
+      },
+      {
+        label: t("an.sessions"),
+        series: timeline.map((p) => p.sessions),
+        format: (v) => fmtInt(v),
+        caption: t("an.perDay"),
+        deltaLabel: vsLabel,
+      },
+      {
+        label: t("an.estCost"),
+        series: timeline.map((p) => p.cost),
+        format: (v) => fmtMoney(v, 4),
+        goodWhen: "down",
+        caption: t("an.perDay"),
+        deltaLabel: vsLabel,
+      },
+      {
+        label: t("an.deflection"),
+        series: timeline.map((p) => +((p.deflection_rate ?? 0) * 100).toFixed(1)),
+        format: (v) => `${v.toFixed(1)}%`,
+        caption: t("an.perDay"),
+        deltaLabel: vsLabel,
+      },
+    ];
+  }, [timeline, t, tf, days]);
+
+  // Highest-volume day gets the dark bar (the reference chart's single
+  // emphasis) — everything else stays on chart-1's near-neutral gray.
+  const peakSessionDay = React.useMemo(() => {
+    if (!timeline?.length) return -1;
+    let idx = 0;
+    timeline.forEach((p, i) => { if (p.sessions > timeline[idx].sessions) idx = i; });
+    return idx;
+  }, [timeline]);
+  const totalSessions = React.useMemo(
+    () => (timeline ?? []).reduce((sum, p) => sum + (p.sessions ?? 0), 0),
+    [timeline],
+  );
+
   return (
     <div className="space-y-4">
       {/* KPI cards — exactly 8 so the 4-col grid never leaves an orphan row. */}
@@ -39,6 +92,72 @@ export function AnalyticsPanel({ days = 30 }: { days?: number }) {
         <StatCard icon={Smile} label="CSAT" value={overview?.csat != null ? `${(overview.csat * 100).toFixed(0)}%` : "—"} tone="success" />
         <StatCard icon={ShieldCheck} label={t("an.deflection")} value={`${((overview?.deflection_rate ?? 0) * 100).toFixed(1)}%`} tone="success" />
       </div>
+
+      {/* Trend row — Spectrum UI's stat cards: per-day sparkline, tweened
+          headline value and a delta sentence against the period's start. */}
+      {trendCards.length > 0 && (
+        <div className="space-y-2">
+          <p className="px-0.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/70">
+            {tf("an.trend", { days })}
+          </p>
+          <StatCards cards={trendCards} columns={4} />
+        </div>
+      )}
+
+      {/* Sessions per day — the reference layout's emphasised bar chart:
+          near-neutral bars, one dark peak, rotated date axis. */}
+      <Card>
+        <CardHeader className="pb-2">
+          <div className="flex items-center justify-between gap-3">
+            <CardTitle className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+              {t("an.dailySessions")}
+            </CardTitle>
+            <span className="text-[12px] tabular-nums text-muted-foreground">
+              {fmtInt(totalSessions)} · {t("an.inPeriod")}
+            </span>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="h-64">
+            {!timeline?.length ? (
+              <EmptyState icon={BarChart3} title={t("an.noUsage")} />
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={timeline} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                  <CartesianGrid vertical={false} stroke="var(--color-border)" strokeDasharray="3 3" />
+                  <XAxis
+                    dataKey="date"
+                    tick={{ fontSize: 10 }}
+                    angle={-45}
+                    textAnchor="end"
+                    height={54}
+                    stroke="var(--color-muted-foreground)"
+                  />
+                  <YAxis tick={{ fontSize: 10 }} stroke="var(--color-muted-foreground)" allowDecimals={false} />
+                  <Tooltip
+                    cursor={{ fill: "var(--color-muted)", opacity: 0.5 }}
+                    contentStyle={{
+                      background: "var(--color-popover)",
+                      border: "1px solid var(--color-border)",
+                      borderRadius: 10,
+                      fontSize: 12,
+                      color: "var(--color-popover-foreground)",
+                    }}
+                  />
+                  <Bar dataKey="sessions" radius={[5, 5, 0, 0]}>
+                    {timeline.map((point, i) => (
+                      <Cell
+                        key={point.date}
+                        fill={i === peakSessionDay ? "var(--color-foreground)" : "var(--color-chart-1)"}
+                      />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Token usage over time */}
       <Card>

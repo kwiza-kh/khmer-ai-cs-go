@@ -23,6 +23,8 @@ export const en: Dict = {
   "nav.search": "Search",
   "nav.console": "Console",
   "nav.signOut": "Sign out",
+  "nav.groupWorkspace": "Workspace",
+  "nav.groupContent": "Content & channels",
   "nav.hot": "Hot",
   "nav.language": "Interface language",
   "notif.title": "Notifications",
@@ -678,6 +680,11 @@ export const en: Dict = {
   "an.topQuestions": "Top questions",
   "an.noQuestions": "No questions yet",
   "an.empty": "(empty)",
+  "an.trend": "Trends (last {days} days)",
+  "an.perDay": "per day",
+  "an.vsPrev": "vs {days} days ago",
+  "an.dailySessions": "Sessions per day",
+  "an.inPeriod": "in the period",
 
   // Feedback tab
   "fb.count": "{n} feedback entries",

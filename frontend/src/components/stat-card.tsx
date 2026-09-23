@@ -2,7 +2,7 @@ import * as React from "react";
 import { cva, type VariantProps } from "class-variance-authority";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import type { LucideIcon } from "lucide-react";
+import { TrendingDown, TrendingUp, type LucideIcon } from "lucide-react";
 
 /**
  * Tone → icon container color mapping.
@@ -11,7 +11,7 @@ import type { LucideIcon } from "lucide-react";
  * defined in globals.css so they follow the active theme.
  */
 const toneVariants = cva(
-  "flex size-9 shrink-0 items-center justify-center rounded-lg",
+  "flex size-7 shrink-0 items-center justify-center rounded-lg",
   {
     variants: {
       tone: {
@@ -34,13 +34,21 @@ interface StatCardProps extends VariantProps<typeof toneVariants> {
   value?: React.ReactNode;
   /** Optional hint shown below the value, e.g. "+12% vs last week". */
   hint?: React.ReactNode;
+  /** Percentage change vs the previous period; renders as a signed pill. */
+  delta?: number | null;
+  /** Which direction is good news — an increase is good unless this is "down". */
+  deltaGood?: "up" | "down";
+  /** Trailing slot in the label row (e.g. a "…" actions menu). */
+  menu?: React.ReactNode;
   /** Show skeleton placeholder instead of content. */
   loading?: boolean;
   className?: string;
 }
 
 /**
- * Compact KPI card with an icon chip + label + value.
+ * KPI tile in the dashboard language used across the product: a small icon
+ * chip and uppercase label on the top row, the value set large beneath it,
+ * then a muted caption.
  * Used on the admin dashboard (total tokens, cache hit, cost, users, etc).
  */
 export function StatCard({
@@ -48,6 +56,9 @@ export function StatCard({
   label,
   value,
   hint,
+  delta,
+  deltaGood = "up",
+  menu,
   tone,
   loading,
   className,
@@ -55,33 +66,56 @@ export function StatCard({
   if (loading) {
     return (
       <Card className={cn(className)}>
-        <CardContent className="flex items-center gap-3.5 p-4">
-          <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted animate-pulse-subtle" />
-          <div className="min-w-0 space-y-2 flex-1">
-            <div className="h-2.5 w-16 rounded bg-muted animate-pulse-subtle" />
-            <div className="h-5 w-20 rounded bg-muted animate-pulse-subtle" />
+        <CardContent className="flex flex-col gap-3 p-4">
+          <div className="flex items-center gap-2.5">
+            <div className="size-7 shrink-0 rounded-lg bg-muted animate-pulse-subtle" />
+            <div className="h-2.5 w-20 rounded bg-muted animate-pulse-subtle" />
           </div>
+          <div className="h-7 w-24 rounded bg-muted animate-pulse-subtle" />
         </CardContent>
       </Card>
     );
   }
+
+  const hasDelta = delta != null && Number.isFinite(delta);
+  const rising = (delta ?? 0) >= 0;
+  // An increase is good news for most KPIs; for "lower is better" metrics
+  // (cost, churn, response time) the caller passes deltaGood="down".
+  const good = deltaGood === "up" ? rising : !rising;
+  const DeltaIcon = rising ? TrendingUp : TrendingDown;
+
   return (
     <Card className={cn(className)}>
-      <CardContent className="flex items-center gap-3.5 p-4">
-        <div className={cn(toneVariants({ tone }))}>
-          <Icon className="size-[18px]" />
-        </div>
-        <div className="min-w-0">
-          <p className="truncate text-[11px] leading-none font-medium text-muted-foreground uppercase tracking-[0.12em]">
+      <CardContent className="flex flex-col gap-3 p-4">
+        <div className="flex items-center gap-2.5">
+          <div className={cn(toneVariants({ tone }))}>
+            <Icon className="size-[15px]" />
+          </div>
+          <p className="min-w-0 flex-1 truncate text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
             {label}
           </p>
-          <p className="mt-1.5 text-[19px] font-semibold tracking-[-0.015em] leading-none tabular-nums truncate">
+          {menu && <div className="shrink-0 text-muted-foreground/60">{menu}</div>}
+        </div>
+        <div className="flex flex-wrap items-baseline gap-2">
+          <p className="text-[27px] font-semibold leading-none tracking-[-0.02em] tabular-nums">
             {value ?? "—"}
           </p>
-          {hint != null && (
-            <p className="text-[11px] text-muted-foreground/90 mt-1.5 truncate leading-none">{hint}</p>
+          {hasDelta && (
+            <span
+              className={cn(
+                "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] font-semibold tabular-nums",
+                good ? "bg-success/10 text-success" : "bg-danger/10 text-danger"
+              )}
+            >
+              <DeltaIcon className="size-3" />
+              {rising ? "+" : ""}
+              {delta.toFixed(0)}%
+            </span>
           )}
         </div>
+        {hint != null && (
+          <p className="truncate text-[12px] leading-none text-muted-foreground">{hint}</p>
+        )}
       </CardContent>
     </Card>
   );

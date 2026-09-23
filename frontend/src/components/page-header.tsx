@@ -31,13 +31,13 @@ export function PageHeader({
   return (
     <header
       className={cn(
-        "border-b flex items-center justify-between gap-4 px-5 sm:px-6 py-4",
+        "flex items-end justify-between gap-4 px-5 sm:px-6 pt-5 pb-4",
         className
       )}
     >
       <div className="flex min-w-0 items-center gap-3">
         {Icon && (
-          <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted text-foreground">
+          <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-muted text-foreground ring-1 ring-foreground/[0.06]">
             <Icon className="size-[18px]" />
           </div>
         )}
@@ -48,17 +48,17 @@ export function PageHeader({
             </p>
           )}
           <h1 className={cn(
-            "text-[17px] font-semibold tracking-[-0.015em] leading-tight text-foreground truncate",
+            "text-[26px] sm:text-[30px] font-semibold tracking-[-0.025em] leading-[1.1] text-foreground truncate",
             kicker && "mt-1.5"
           )}>
             {title}
           </h1>
           {description != null && (
-            <p className="mt-0.5 text-[12.5px] text-muted-foreground truncate">{description}</p>
+            <p className="mt-1.5 text-[13px] text-muted-foreground truncate">{description}</p>
           )}
         </div>
       </div>
-      {actions && <div className="flex items-center gap-2 flex-shrink-0">{actions}</div>}
+      {actions && <div className="flex items-center gap-2 flex-shrink-0 pb-1">{actions}</div>}
     </header>
   );
 }
