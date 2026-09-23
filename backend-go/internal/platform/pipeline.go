@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -1634,6 +1635,31 @@ func stripMarkdown(s string) string {
 	return strings.TrimSpace(b.String())
 }
 
+// Inline emphasis the model still emits despite the prompt asking for plain
+// text. Only DOUBLED markers and code spans are unwrapped: single `_` / `*`
+// are left alone so identifiers like KWF_RO_100 and prices like *2 for 1*
+// survive byte-for-byte.
+var (
+	chatBoldRe  = regexp.MustCompile(`\*\*([^*\n]+)\*\*`)
+	chatUnderRe = regexp.MustCompile(`__([^_\n]+)__`)
+	chatCodeRe  = regexp.MustCompile("`([^`\n]+)`")
+	chatHeadRe  = regexp.MustCompile(`(?m)^[ \t]{0,3}#{1,6}[ \t]*`)
+)
+
+// plainTextForChat converts a model reply into text a chat bubble renders
+// faithfully. No messenger transport here sets parse_mode (Telegram included),
+// so a reply containing "**EPS PANEL**" reaches the customer as literal
+// asterisks. The system prompt asks for plain text; this makes it true
+// regardless of what the model actually emits. Paragraph and list-line
+// structure is preserved — only the markup is removed.
+func plainTextForChat(s string) string {
+	s = chatBoldRe.ReplaceAllString(s, "$1")
+	s = chatUnderRe.ReplaceAllString(s, "$1")
+	s = chatCodeRe.ReplaceAllString(s, "$1")
+	s = chatHeadRe.ReplaceAllString(s, "")
+	return s
+}
+
 // sourcesJSON renders the grounding sources for persistence (NULL when no
 // grounding happened).
 func sourcesJSON(groundCtx rag.GroundingContext) any {
@@ -1652,8 +1678,12 @@ func sourcesJSON(groundCtx rag.GroundingContext) any {
 // ============================================
 
 // enqueueDelivery queues one outbound message (idempotent by chat_message_id).
+// The stored content is what the customer's app will render, so inline
+// Markdown is flattened here — the chat_messages row keeps the original for
+// the agent console, which does render it.
 func (p *Pipeline) enqueueDelivery(ctx context.Context, ev *InboundEvent, cfg *configCred, sessionID string, chatMessageID int64, content string, payload map[string]any) error {
 	now := time.Now()
+	content = plainTextForChat(content)
 	var payloadJSON []byte
 	if payload != nil {
 		payloadJSON, _ = json.Marshal(payload)
