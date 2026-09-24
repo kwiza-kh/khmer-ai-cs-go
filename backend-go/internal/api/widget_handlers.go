@@ -545,6 +545,8 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 		sendEvent("token", map[string]string{"text": chunk})
 	})
 	if cerr != nil {
+		a.Logger.Error("widget generation failed", "session_id", sid, "token_id", t.TokenID,
+			"grounded", groundCtx.HasMatch, "error", cerr.Error())
 		sendEvent("error", map[string]string{"message": "生成回答失败"})
 		// Keep whatever already streamed: the visitor may have read part of
 		// it, and the next turn must not see a question with no answer.

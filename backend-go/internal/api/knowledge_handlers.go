@@ -346,6 +346,7 @@ func (a *App) ragQuery(w http.ResponseWriter, r *http.Request) (any, error) {
 		"say you don't know and offer to escalate to a human agent. Reply in the user's language."
 	result, err := a.Gemini.Chat(r.Context(), augmented, nil, language)
 	if err != nil {
+		a.Logger.Error("rag query generation failed", "user_id", user.UserID, "error", err.Error())
 		return nil, ErrInternal("生成回答失败")
 	}
 	answer := result.Reply

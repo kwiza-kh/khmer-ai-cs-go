@@ -246,6 +246,12 @@ func (a *App) chatPlain(w http.ResponseWriter, r *http.Request) (any, error) {
 	}
 	result, err := a.Gemini.Chat(r.Context(), message, history, language)
 	if err != nil {
+		// The upstream reason (quota 429, 5xx, transport) is the only thing that
+		// makes this actionable, and returning a bare 500 threw it away: a load
+		// test produced thousands of these with no way to tell an exhausted
+		// spend limit from a network fault. Log the cause, then answer generically.
+		a.Logger.Error("chat generation failed", "session_id", sessionID, "user_id", user.UserID,
+			"grounded", groundCtx.HasMatch, "error", err.Error())
 		return nil, ErrInternal("生成回答失败")
 	}
 	usage.Record(r.Context(), a.DB, user.UserID, &sid, a.Gemini.ModelName(), result.PromptTokens, result.OutputTokens, result.CachedTokens)
