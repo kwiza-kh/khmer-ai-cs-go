@@ -129,6 +129,10 @@ func main() {
 
 	// Platform pipeline (inbound AI replies + outbound delivery).
 	pipe := &platform.Pipeline{DB: pool, Redis: redisClient, Cfg: cfg, Gemini: gem, RAG: ragService, Sealer: sealer, Media: media, Logger: logger, Jev: jev, Cache: replyCache}
+	// Make a Jev outage audible. Every Jev call site degrades to a slower, less
+	// accurate path when it fails, so without this the product changes
+	// behaviour and only journalctl knows (2026-09-22: a 6-hour episode).
+	platform.InstallJevHealth(pipe)
 	pipe.SpawnWorkers(ctx)
 
 	app := &api.App{

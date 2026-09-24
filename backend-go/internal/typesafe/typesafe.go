@@ -13,6 +13,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -40,6 +41,8 @@ type Client struct {
 	Model    string
 	HTTP     *http.Client
 	Logger   *slog.Logger
+	// observer is optional; installed via SetHealthObserver before serving.
+	observer HealthObserver
 }
 
 // NewFromEnv builds a client from TYPESAFE_API_KEY. It returns nil when the
@@ -174,6 +177,7 @@ func (c *Client) Judge(ctx context.Context, state any, questions map[string]Ques
 	if len(questions) == 0 {
 		return nil, fmt.Errorf("typesafe: no questions")
 	}
+	started := time.Now()
 	body, err := json.Marshal(judgeRequest{State: state, Model: c.Model, Questions: questions})
 	if err != nil {
 		return nil, fmt.Errorf("typesafe: marshal request: %w", err)
@@ -185,12 +189,19 @@ func (c *Client) Judge(ctx context.Context, state any, questions map[string]Ques
 			// 429/529 back off; anything else is final.
 			select {
 			case <-ctx.Done():
+				// Only a caller-imposed DEADLINE is a health signal (Jev was too
+				// slow for the reply-path budget). A cancellation means shutdown
+				// or a hung-up visitor, which says nothing about Jev.
+				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+					c.notifyFailed(ctx.Err())
+				}
 				return nil, ctx.Err()
 			case <-time.After(time.Duration(attempt) * 500 * time.Millisecond):
 			}
 		}
 		resp, retryable, err := c.doJudge(ctx, body)
 		if err == nil {
+			c.notifySucceeded(time.Since(started))
 			return resp, nil
 		}
 		lastErr = err
@@ -198,6 +209,17 @@ func (c *Client) Judge(ctx context.Context, state any, questions map[string]Ques
 			break
 		}
 	}
+	// A CANCELLED caller says nothing about Jev's health: that is server
+	// shutdown, or a visitor who hung up mid-turn. Reporting it would page
+	// operators on every hangup, and an alert nobody trusts is worse than none.
+	// A DEADLINE is the opposite — the call was too slow for the budget its
+	// caller set, which is exactly the silent degradation this hook exists to
+	// surface. `lastErr` carries the wrapped url.Error, so errors.Is reaches
+	// the context error through doJudge's %w.
+	if errors.Is(ctx.Err(), context.Canceled) || errors.Is(lastErr, context.Canceled) {
+		return nil, lastErr
+	}
+	c.notifyFailed(lastErr)
 	return nil, lastErr
 }
 
