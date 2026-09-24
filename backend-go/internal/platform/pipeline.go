@@ -1293,7 +1293,12 @@ func TurnTrigger(v gemini.TurnVerdict, hasMatch, hasDocs bool) (string, string) 
 // unconditional: it rests on retrieval facts, not labels.
 func TurnTriggerFor(v gemini.TurnVerdict, rawNoul float64, hasMatch, hasDocs bool) (string, string) {
 	confirm := envFloat("JEV_RULE_CONFIRM_MIN", 0.70)
-	solo := envFloat("JEV_TURN_ESCALATE_MIN", 0.90)
+	// JEV_RULE_SOLO_MIN is deliberately NOT JEV_TURN_ESCALATE_MIN. The two bars
+	// mean different things and have always carried different defaults (0.90
+	// here, 0.60 in judgeTurnJev) — yet both read the same variable. With no
+	// JEV_* set in production, which is the case, each site silently used its
+	// own default and tuning one would have moved the other.
+	solo := envFloat("JEV_RULE_SOLO_MIN", 0.90)
 	ruleIntent := false
 	switch v.Intent {
 	case "complaint", "refund", "legal", "customization", "bulk_order":
@@ -1446,8 +1451,9 @@ var turnTopicValues = map[string]bool{
 
 // judgeTurnJev asks Jev the same four decisions JudgeTurn's prompt encodes,
 // as typed questions. Escalation is a Noul thresholded in code (calibrated on
-// real handoff outcomes, see JEV_TURN_ESCALATE_MIN); the confidence stored on
-// the session is the intent distribution's concentration.
+// real handoff outcomes, see JEV_TURN_ESCALATE_MIN — the verdict flag's own
+// knob, distinct from TurnTriggerFor's JEV_RULE_SOLO_MIN); the confidence
+// stored on the session is the intent distribution's concentration.
 func (p *Pipeline) judgeTurnJev(ctx context.Context, customerMsg, reply string, hasMatch bool) (gemini.TurnVerdict, string, float64, bool) {
 	if !p.Jev.Enabled() {
 		return gemini.TurnVerdict{}, "", 0, false
@@ -1526,7 +1532,9 @@ func (p *Pipeline) judgeTurnJev(ctx context.Context, customerMsg, reply string, 
 		Sentiment:  sentiment,
 		Intent:     intent,
 		Confidence: intentConf,
-		Escalate:   escalateP >= envFloat("JEV_TURN_ESCALATE_MIN", 0.60),
+		// The verdict's own escalate flag. A different bar from
+		// TurnTriggerFor's JEV_RULE_SOLO_MIN, hence a different knob.
+		Escalate: escalateP >= envFloat("JEV_TURN_ESCALATE_MIN", 0.60),
 	}, topic, escalateP, true
 }
 
