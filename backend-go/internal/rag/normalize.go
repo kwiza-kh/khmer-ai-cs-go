@@ -26,7 +26,18 @@ import (
 //     NBSP → a plain space. Khmer uses ZWSP as an optional word boundary; as a
 //     space it is preserved as a boundary for n-grams and future segmentation
 //     instead of gluing two words together.
-//   - Collapse runs of whitespace and trim.
+//   - Runs of spaces/tabs collapse to one space; runs of line breaks collapse
+//     to one '\n'; space abutting a break is dropped; ends are trimmed.
+//
+// Line breaks are deliberately PRESERVED. They are structural, not cosmetic:
+// ChunkMarkdown splits documents on headings, and the heading parse works line
+// by line. Collapsing breaks into spaces turned every multi-line document into
+// a single line whose leading '#' made the whole file look like one heading,
+// so ChunkMarkdown emitted the entire document as one chunk. That chunk then
+// exceeded the embedding model's input window and was silently truncated to
+// its first ~2k characters. Small documents hid this (a sub-1000-rune body
+// chunks to one piece either way); it only surfaces on real documents.
+// SegmentForSearch splits on strings.Fields, so it is unaffected by breaks.
 func NormalizeText(s string) string {
 	if s == "" {
 		return ""
@@ -34,6 +45,7 @@ func NormalizeText(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
 	pendingSpace := false
+	pendingBreak := false
 	wrote := false
 	for _, r := range s {
 		switch {
@@ -42,13 +54,24 @@ func NormalizeText(s string) string {
 		case r == '\u200B' || r == '\u200C' || r == '\u200D' || r == '\uFEFF' || r == '\u00A0':
 			r = ' '
 		}
-		if r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == '\v' || r == '\f' {
+		if r == '\n' || r == '\r' || r == '\v' || r == '\f' {
 			if wrote {
+				pendingBreak = true
+				pendingSpace = false
+			}
+			continue
+		}
+		if r == ' ' || r == '\t' {
+			if wrote && !pendingBreak {
 				pendingSpace = true
 			}
 			continue
 		}
-		if pendingSpace {
+		if pendingBreak {
+			b.WriteByte('\n')
+			pendingBreak = false
+			pendingSpace = false
+		} else if pendingSpace {
 			b.WriteByte(' ')
 			pendingSpace = false
 		}

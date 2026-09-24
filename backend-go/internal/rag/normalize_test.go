@@ -20,10 +20,62 @@ func TestNormalizeTextZeroWidth(t *testing.T) {
 
 func TestNormalizeTextWhitespaceCollapse(t *testing.T) {
 	got := NormalizeText("  ជំនួយ\tការ\n\n អតិថិជន  ")
-	want := "ជំនួយ ការ អតិថិជន"
+	want := "ជំនួយ ការ\nអតិថិជន"
 	if got != want {
 		t.Fatalf("whitespace not collapsed:\n got %q\nwant %q", got, want)
 	}
+}
+
+// Line breaks are structural: ChunkMarkdown parses headings line by line, so
+// flattening breaks into spaces collapses a whole document into one "heading"
+// and then into one over-long chunk (which the embedding model truncates).
+func TestNormalizeTextPreservesLineBreaks(t *testing.T) {
+	got := NormalizeText("# Heading\n\nBody line one.\nBody line two.\n")
+	want := "# Heading\nBody line one.\nBody line two."
+	if got != want {
+		t.Fatalf("line breaks must survive normalisation:\n got %q\nwant %q", got, want)
+	}
+	if n := countLines(got); n != 3 {
+		t.Fatalf("expected 3 lines, got %d in %q", n, got)
+	}
+}
+
+// A run of breaks must collapse to exactly one, and a space abutting a break
+// must be dropped, otherwise repeated normalisation would keep changing the
+// string and chunk boundaries would drift between ingest and re-ingest.
+func TestNormalizeTextBreakRunsCollapse(t *testing.T) {
+	got := NormalizeText("a  \n \n\n  b\r\n\r\nc")
+	want := "a\nb\nc"
+	if got != want {
+		t.Fatalf("break runs not collapsed:\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestNormalizeTextIdempotentWithBreaks(t *testing.T) {
+	for _, in := range []string{
+		"# H\n\n\n body \n\n\t more  \n",
+		"តម្លៃ ១០\u200bដុល្លារ   \n\n ថ្មី",
+		"a\nb\nc",
+	} {
+		once := NormalizeText(in)
+		twice := NormalizeText(once)
+		if once != twice {
+			t.Fatalf("NormalizeText must be idempotent:\n in    %q\n once  %q\n twice %q", in, once, twice)
+		}
+	}
+}
+
+func countLines(s string) int {
+	if s == "" {
+		return 0
+	}
+	n := 1
+	for _, r := range s {
+		if r == '\n' {
+			n++
+		}
+	}
+	return n
 }
 
 func TestNormalizeTextIdempotent(t *testing.T) {
