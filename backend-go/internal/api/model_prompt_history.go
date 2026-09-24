@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -98,17 +99,22 @@ func (a *App) listPromptVersions(w http.ResponseWriter, r *http.Request, configI
 	defer rows.Close()
 
 	type version struct {
-		VersionID int64  `json:"version_id"`
-		Prompt    string `json:"system_prompt"`
-		Source    string `json:"source"`
-		Note      string `json:"note"`
-		CreatedAt string `json:"created_at"`
-		ChangedBy string `json:"changed_by"`
+		VersionID int64     `json:"version_id"`
+		Prompt    string    `json:"system_prompt"`
+		Source    string    `json:"source"`
+		Note      string    `json:"note"`
+		CreatedAt time.Time `json:"created_at"`
+		ChangedBy string    `json:"changed_by"`
 	}
 	out := make([]version, 0)
 	for rows.Next() {
 		var v version
+		// created_at is timestamptz: scanning it into a string fails outright,
+		// so CreatedAt must stay a time.Time. And a scan error is LOGGED rather
+		// than skipped — silently dropping rows once made this endpoint return
+		// an empty history while the table held three rows.
 		if err := rows.Scan(&v.VersionID, &v.Prompt, &v.Source, &v.Note, &v.CreatedAt, &v.ChangedBy); err != nil {
+			a.Logger.Warn("scan prompt version failed", "config_id", configID, "error", err.Error())
 			continue
 		}
 		out = append(out, v)
