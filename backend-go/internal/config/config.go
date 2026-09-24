@@ -195,9 +195,16 @@ func Load() (*Config, error) {
 			DB:       envInt("REDIS_DB", 0),
 		},
 		Gemini: GeminiConfig{
-			APIKey:    env("GEMINI_API_KEY", ""),
-			Model:     env("GEMINI_MODEL", "gemini-2.5-flash"),
-			MaxTokens: envInt("GEMINI_MAX_TOKENS", 2048),
+			APIKey: env("GEMINI_API_KEY", ""),
+			Model:  env("GEMINI_MODEL", "gemini-2.5-flash"),
+			// 1024, not 2048: the cap does not change the average bill (output is
+			// billed as produced — the measured mean is 135 tokens, so headroom
+			// above that costs nothing), it bounds the rare runaway answer that
+			// would eat a rolling spend window. Halved rather than cut to the
+			// mean because a truncated price-list answer is worse than the
+			// tokens it saves. Once a model_configs row exists its max_tokens
+			// wins — set it there too (admin Models page).
+			MaxTokens: envInt("GEMINI_MAX_TOKENS", 1024),
 			CacheTTL:  envInt("GEMINI_CACHE_TTL", 3600),
 		},
 		R2: R2Config{

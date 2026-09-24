@@ -188,6 +188,9 @@ Tier 2 把天花板从约 1,000 RPM 抬到约 5,000 RPM，是实测最坏情况�
 
 ## 八、建议执行顺序
 
+> **落地状态（2026-09-25）**：下表第 3–5 项已实现，见 §十一。第 1–2 项仍需账户持有人操作，
+> 且**升档后必须同步 `GEMINI_SPEND_LIMIT_USD`**，否则本地闸门会在旧档位的阈值上提前放行转人工。
+
 | 优先级 | 动作 | 执行方 | 见效 | 改动量 |
 |---|---|---|---|---|
 | 1 | 查档位 + 提交提额表 | 账户持有人 | 立即 | 无 |
@@ -251,3 +254,86 @@ psql "$DATABASE_URL" -c "select count(*), coalesce(sum(hit_count),0) from reply_
 > 服务器不是瓶颈（峰值只用 9.5% CPU）。瓶颈是 **Gemini 账户的 Tier 1 消费速率上限 $10/10 分钟**，
 > 而**缓存零生效**意味着每一分钱都按全价在烧。**先升 Tier 2（不用改代码），同时把缓存和无效重试修掉**，
 > 就能同时拿到 5 倍天花板和更低的单位成本。
+
+---
+
+## 十一、已落地的改动（2026-09-25）
+
+以下改动都在本文档的同一分支上完成，`go build ./... && go test ./...` 全绿。除标注外均**默认生效**。
+
+### 11.1 无效重试已消除（§5.4 + 队列层）
+
+| 位置 | 改动 |
+|---|---|
+| `gemini.go postWithRetry` | 429 **不再重试**，直接带状态和响应体返回；5xx 与传输错误仍重试 3 次 |
+| `gemini.go chatWithModel` | 降级到快模型的条件加上 `fast != model`：未设 `GEMINI_FAST_MODEL` 时二者同名，旧逻辑等于把刚被拒的请求重发一遍 |
+| `pipeline.go processInboundEvent` | 配额类错误**不再走 5 次队列重试**（5s/15s/60s/300s/900s，10 分钟窗口内的必然全败）：改为告警 + 转人工 + 给客户回执，事件直接置 `completed` |
+
+单回合在最坏情况下的上游请求数从 6–9 次降到 1 次。测试：`TestPostWithRetryFailsFastOn429`、`TestPostWithRetryStillRetries5xx`。
+
+### 11.2 429 时的优雅降级（§7.1）
+
+- **平台渠道**（`pipeline.go`）：配额耗尽 → `PlatformAlert` 告警 + `escalateToHuman(ai_decision)` + 客户收到 `HandoffAcknowledgement`，会话进入人工队列。
+- **网站挂件**（`widget_handlers.go`）：同上；已流出的半截内容照常入库，随后补一条转人工说明而不是抛错。
+- **认证接口** `/api/v1/chat`、`/chat/stream`（`chat_handlers.go`）：这是租户自测台，转人工无意义，因此只告警 + 记日志（此前该路径**连日志都没有**）+ 返回可重试错误。
+
+### 11.3 回复缓存接入认证接口（§5.3）
+
+`chatPlain` 与 `chatStream` 都接上了 `replycache`：命中直接回放（流式路径把整段答案作为单个 token 事件发出，前端协议不变），生成成功后异步写回。写回在正文定稿之后、跳过 mock 回复，与 widget / 平台渠道一致。
+
+### 11.4 small_talk 零成本（新增，文档未提）
+
+Jev 判定 `small_talk` 且概率过阈时，不再调用模型，改由多语言模板直接作答（回执文案可改，`JEV_CHITCHAT_CANNED=0` 可关闭）。问候与道谢是系统里最重复的回合类型，这一类流量现在成本为 0；平台渠道和挂件都走同一开关（`platform.SmallTalkCanned`）。
+
+### 11.5 注入体积与输出上限（§5.2）
+
+| 项 | 改动 |
+|---|---|
+| 注入总预算 | `Ground` 新增 `RAG_CONTEXT_BUDGET_RUNES`（默认 4800）：逐个来源分配，**排序靠前的来源拿满额度**，只裁尾部的第 3 个及以后 |
+| `RAG_TOP_K` | 默认 5 → **3**（`DefaultTopK`，仍可 env 覆盖；`rageval` 用同一常量衡量 recall） |
+| `GEMINI_MAX_TOKENS` | 默认 2048 → **1024**。注意：**上限不影响平均账单**（按实际产出计费，均值 135），它只限制失控长回答；生产实际值来自 `model_configs.max_tokens`，需在管理后台同步改 |
+
+### 11.6 消费计量与准入闸（§7.3）
+
+- `usage.Budget(ctx, db, redis)` — 对 `token_usage.cost_estimate` 求最近 10 分钟之和（Redis 缓存 20s），即 **Google 在量的同一个数字**。
+- **闸门**：超过 `GEMINI_SPEND_LIMIT_USD × GEMINI_SPEND_GATE_RATIO`（默认 $10 × 0.85）时主动让路 —— 平台渠道与挂件转人工并告警，认证接口返回"繁忙稍后重试"。**在撞墙前放行，而不是撞墙后收 500。**
+- **失败开放**：DB 或 Redis 不可用时视为"未超限"，计量故障绝不能阻断客户回复。
+- 新增 `GET /api/v1/platform/spend`（platform_admin）返回窗口消费、上限、比例与闸门状态，供运维看板使用。
+- ⚠️ **升到 Tier 2 后必须把 `GEMINI_SPEND_LIMIT_USD` 改成 50**，否则闸门会按 Tier 1 的阈值提前转人工。
+
+### 11.7 思考 token 不再隐形
+
+`usageFromValue` 现在把 `thoughtsTokenCount` 计入 completion —— 思考 token 按**输出价**计费却不计入库，这意味着 §三 反推 $10 档位所用的成本数字是偏低的，成本看板也一直少算。另新增 `GEMINI_THINKING_BUDGET` 旋钮（不设 = 模型默认；0 = 关闭思考，更快更省但难题质量下降）。
+
+### 11.8 显式上下文缓存（§5.1）
+
+已实现完整机制：`cachedContents` 注册、按 system instruction + 语言做缓存键、TTL 早一分钟过期、API 报缓存失效时**自动去掉缓存重试一次**（不让优化变成故障）、最小前缀守卫（`GEMINI_CACHE_MIN_TOKENS`，默认 1024）。
+
+**默认关闭（`GEMINI_CACHE_TTL=0`）**，因为算下来它不一定划算：
+
+```
+缓存读取省  $0.27/1M（$0.30 → $0.03）
+缓存存储    $1.00/1M/小时
+盈亏平衡 ≈ 1.00 / 0.27 ≈ 3.7 次请求/小时（与前缀长度无关）
+```
+
+当前生产是"一天几十条消息"，远低于该门槛，开着就是净亏；压测或活动期间（数百 RPM）则收益巨大。**需要时设 `GEMINI_CACHE_TTL=3600` 即可启用**，代码路径已就绪。
+
+### 11.9 未做（有意排除）
+
+多 GCP 项目轮换、Batch API、Vertex AI —— 前两者需实测确认粒度/异步改造，Vertex 需服务账号鉴权与 `:predict` 嵌入重写，都不适合本轮。
+
+### 11.10 复核方式
+
+```bash
+# 生效中的旋钮
+grep -E "GEMINI_MAX_TOKENS|GEMINI_CACHE_TTL|GEMINI_SPEND_LIMIT_USD|JEV_CHITCHAT_CANNED" /opt/khmer-ai-cs/.env-go
+
+# 闸门当前状态（也可用 /api/v1/platform/spend）
+psql "$DATABASE_URL" -c "select round(sum(cost_estimate)::numeric,4) spent_10m from token_usage
+  where created_at > now() - interval '10 minutes'"
+
+# 小聊模板与缓存命中是否生效：model_name 直接写在消息行上
+psql "$DATABASE_URL" -c "select model_name, count(*) from chat_messages
+  where created_at > now() - interval '1 day' group by 1 order by 2 desc"
+```

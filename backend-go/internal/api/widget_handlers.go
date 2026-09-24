@@ -406,26 +406,33 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 		_, _ = a.DB.Exec(ctx, "UPDATE sessions SET status='active', resolved_at=NULL, closed_at=NULL WHERE session_id=$1", sid)
 	}
 
+	// Reply persistence must survive a visitor hangup: r.Context() dies with
+	// the connection, and a lost model row erases the answer from every later
+	// turn's context and from the agent inbox. The handoff writes below use the
+	// same detached context for the same reason — a visitor who closes the tab
+	// during a quota stop still needs a human to pick the conversation up.
+	persistCtx := context.WithoutCancel(ctx)
+
 	// Human request → immediate handoff (AI stays silent). Shared by the
-	// keyword match and the Jev route so both paths behave identically —
-	// including queue priority, computed the same way the platform pipeline
-	// computes it instead of a hardcoded "high".
-	webEscalate := func(reason, urgency string) {
-		priority := platform.HandoffPriority("customer_request", urgency)
-		_, _ = a.DB.Exec(ctx,
+	// keyword match, the Jev route and the quota/spend degradations below so
+	// every path behaves identically — including queue priority, computed the
+	// same way the platform pipeline computes it instead of a hardcoded "high".
+	webEscalate := func(trigger, reason, urgency string) {
+		priority := platform.HandoffPriority(trigger, urgency)
+		_, _ = a.DB.Exec(persistCtx,
 			"INSERT INTO human_handoff_requests (session_id, user_id, status, priority, trigger, reason, created_at) "+
-				"VALUES ($1,$2,'pending',$3,'customer_request'::human_handoff_trigger,$4,NOW()) ON CONFLICT DO NOTHING",
-			sid, t.ownerID, priority, reason)
-		_, _ = a.DB.Exec(ctx, "UPDATE sessions SET status='handoff', escalated_at=COALESCE(escalated_at,NOW()) WHERE session_id=$1 AND status='active'", sid)
+				"VALUES ($1,$2,'pending',$3,$4::human_handoff_trigger,$5,NOW()) ON CONFLICT DO NOTHING",
+			sid, t.ownerID, priority, trigger, reason)
+		_, _ = a.DB.Exec(persistCtx, "UPDATE sessions SET status='handoff', escalated_at=COALESCE(escalated_at,NOW()) WHERE session_id=$1 AND status='active'", sid)
 		ack := platform.HandoffAcknowledgement(language)
 		a.persistSystemReply(ctx, t.ownerID, sid, ack)
-		a.notifyUser(ctx, t.ownerID, "handoff", "New human-handoff request", "customer_request (widget)", sid)
+		a.notifyUser(ctx, t.ownerID, "handoff", "New human-handoff request", trigger+" (widget)", sid)
 		a.publishSessionEvent(ctx, t.ownerID, sid)
 		sendEvent("token", map[string]string{"text": ack})
 		sendEvent("done", map[string]any{"reply": ack, "tokens_used": 0, "cached_tokens": 0, "used_mock": false, "escalated": true})
 	}
 	if keyword, matched := platform.HumanRequestKeyword(req.Message); matched {
-		webEscalate("Customer asked for a human agent (matched: "+keyword+")", "")
+		webEscalate("customer_request", "Customer asked for a human agent (matched: "+keyword+")", "")
 		return
 	}
 
@@ -461,7 +468,7 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 		if r, ok := a.Pipe.RouteInbound(ctx, req.Message); ok {
 			escalate, skip, silent := platform.RouteDecision(r.Route, r.Prob)
 			if escalate {
-				webEscalate("Jev routed the message as a human request (p="+strconv.FormatFloat(r.Prob, 'f', 2, 64)+")", r.Urgency)
+				webEscalate("customer_request", "Jev routed the message as a human request (p="+strconv.FormatFloat(r.Prob, 'f', 2, 64)+")", r.Urgency)
 				return
 			}
 			if silent {
@@ -510,8 +517,6 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 	// Reply persistence must survive a visitor hangup: r.Context() dies with
 	// the connection, and a lost model row erases the answer from every later
 	// turn's context and from the agent inbox.
-	persistCtx := context.WithoutCancel(ctx)
-
 	// Cache hit: the stored answer was generated, guarded and persisted for
 	// this tenant before — deliver it as one token, skipping generation and
 	// the guard (re-judging every replay would erase the latency win).
@@ -534,6 +539,41 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Small talk: Jev was confident the message carries no request, so the
+	// visitor gets the fixed template instead of a paid generation (see
+	// platform.SmallTalkReply) — chit-chat is the most repeated turn type there
+	// is, and the widget is the channel that pays for it most. The owner still
+	// gets the ping, like any other visitor turn. JEV_CHITCHAT_CANNED=0
+	// restores the previous path.
+	if skipGround && platform.SmallTalkCanned() {
+		replyText := platform.SmallTalkReply(language)
+		a.persistModelReply(persistCtx, t.ownerID, sid, gemini.ChatResult{}, replyText, &rag.GroundingContext{}, language, time.Now(), "smalltalk-template")
+		if a.Pipe != nil {
+			ownerID, sessID, visitorMsg := t.ownerID, sid, req.Message
+			platform.SpawnCritical(func() {
+				a.Pipe.NotifyNewCustomerMessage(persistCtx, ownerID, sessID, "web", "", visitorMsg)
+			})
+		}
+		sendEvent("token", map[string]string{"text": replyText})
+		sendEvent("done", map[string]any{
+			"reply": replyText, "tokens_used": 0, "cached_tokens": 0,
+			"used_mock": false, "smalltalk": true,
+		})
+		return
+	}
+
+	// Spend gate (see usage.Budget): the rolling Gemini window is nearly full,
+	// so hand the turn to a human now instead of collecting Google's 429 after
+	// paying for retrieval and generation — the visitor sees the same handoff
+	// message either way, but this one is not preceded by a failure.
+	if spent, limit, over := usage.Budget(ctx, a.DB, a.Redis); over {
+		if a.Pipe != nil {
+			a.Pipe.AlertSpendGate(ctx, spent, limit)
+		}
+		webEscalate("ai_decision", "Gemini 消费速率接近上限，AI 主动让路给人工", inboundUrgency)
+		return
+	}
+
 	message := req.Message
 	if groundCtx.HasMatch {
 		message = rag.AugmentMessage(req.Message, &groundCtx)
@@ -547,6 +587,20 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 	if cerr != nil {
 		a.Logger.Error("widget generation failed", "session_id", sid, "token_id", t.TokenID,
 			"grounded", groundCtx.HasMatch, "error", cerr.Error())
+		if platform.IsQuotaExhausted(cerr) {
+			// An exhausted quota will not clear inside this conversation, and a
+			// visitor must not be left holding a bare error: keep whatever
+			// streamed into the transcript, page the operator, then hand the
+			// session to a human and tell the visitor so.
+			if partial := strings.TrimSpace(streamed.String()); partial != "" {
+				a.persistModelReply(persistCtx, t.ownerID, sid, gemini.ChatResult{}, partial, &groundCtx, language, time.Now(), "")
+			}
+			if a.Pipe != nil {
+				a.Pipe.AlertQuotaExhausted(persistCtx, cerr)
+			}
+			webEscalate("ai_decision", "Gemini 配额/余额耗尽，AI 无法生成回复", inboundUrgency)
+			return
+		}
 		sendEvent("error", map[string]string{"message": "生成回答失败"})
 		// Keep whatever already streamed: the visitor may have read part of
 		// it, and the next turn must not see a question with no answer.

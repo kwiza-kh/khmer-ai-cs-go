@@ -277,6 +277,9 @@ func (a *App) Router() http.Handler {
 	authed.HandleFunc("PUT /api/v1/platform/tenants/{id}/plan", a.platformAdminTenant(a.setTenantPlan))
 	authed.Handle("POST /api/v1/platform/tenants", a.platformAdminOnly(a.handle(a.createTenant)))
 	authed.Handle("GET /api/v1/platform/analytics", a.platformAdminOnly(a.handle(a.platformAnalytics)))
+	// Gemini spend window: one billing account serves every tenant, so both the
+	// ceiling and the distance to it are platform-global, not tenant analytics.
+	authed.Handle("GET /api/v1/platform/spend", a.platformAdminOnly(a.handle(a.getSpendBudget)))
 	authed.Handle("GET /api/v1/platform/audit-logs", a.platformAdminOnly(a.handle(a.listAuditLogs)))
 
 	// 180/min per user: the admin SPA legitimately aggregates 6-10 pollers

@@ -244,8 +244,16 @@ func (s *Service) embedURL() string {
 	return fmt.Sprintf("%s/models/%s:embedContent", apiBase(), EmbeddingModel)
 }
 
-// postWithRetry posts JSON, retrying 5xx/429/transport errors up to 3 times
+// postWithRetry posts JSON, retrying 5xx and transport errors up to 3 times
 // (the path to Google drops some handshakes; one retry usually gets through).
+//
+// 429 is deliberately NOT retried. A refusal is either the rolling spend limit
+// (Tier 1 allows $10 per 10 minutes) or an exhausted balance, and both outlive
+// any backoff worth waiting on inside a reply path: retrying only multiplies
+// the number of doomed requests against the wall — measured 2026-09-24 at 6-9
+// per customer turn once the fast-model fallback is counted — and delays the
+// caller's own graceful degradation. The status and body are returned
+// unchanged so the caller can tell a spend stop from a network fault.
 func (s *Service) postWithRetry(ctx context.Context, target string, body any) (int, string, error) {
 	payload, err := json.Marshal(body)
 	if err != nil {
@@ -281,7 +289,9 @@ func (s *Service) postWithRetry(ctx context.Context, target string, body any) (i
 		_, _ = buf.ReadFrom(resp.Body)
 		resp.Body.Close()
 		text := buf.String()
-		if resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests {
+		if resp.StatusCode < http.StatusInternalServerError {
+			// Everything below 5xx comes back as-is, including 429 — see the
+			// doc comment: a refusal is not worth retrying.
 			return resp.StatusCode, text, nil
 		}
 		lastErr = fmt.Sprintf("failed (%d): %s", resp.StatusCode, truncateRunes(text, 300))
@@ -315,11 +325,25 @@ func (s *Service) chatWithModel(ctx context.Context, message string, history []H
 	if model == "" {
 		model = cfg.modelName
 	}
-	body := s.buildRequestBody(message, history, language)
+	cacheName := s.contextCacheFor(ctx, language)
+	body := s.buildRequestBody(message, history, language, cacheName)
 	status, text, err := s.postWithRetry(ctx, s.generateURLFor(model), body)
-	if err == nil && (status >= 500 || status == http.StatusTooManyRequests) && model == cfg.modelName {
-		// Degrade to the fast model once on overload.
-		status, text, err = s.postWithRetry(ctx, s.generateURLFor(s.fastModelName()), body)
+	if err == nil && cacheName != "" && contextCacheStale(status, text) {
+		// The registered cache expired or was deleted server-side (its own TTL,
+		// a cleanup, or another instance replacing it). Forget it and answer
+		// uncached rather than failing the turn over an optimisation.
+		s.forgetContextCache(language)
+		body = s.buildRequestBody(message, history, language, "")
+		status, text, err = s.postWithRetry(ctx, s.generateURLFor(model), body)
+	}
+	fast := s.fastModelName()
+	if err == nil && (status >= http.StatusInternalServerError || status == http.StatusTooManyRequests) &&
+		model == cfg.modelName && fast != model {
+		// Degrade to the fast model once on overload — only when it really is
+		// another model. fastModelName() falls back to the serving model when
+		// GEMINI_FAST_MODEL is unset, so the previous guard re-sent the
+		// identical request to the model that had just refused it.
+		status, text, err = s.postWithRetry(ctx, s.generateURLFor(fast), body)
 	}
 	if err != nil {
 		return s.chatMock(message, language), fmt.Errorf("gemini request failed: %w", err)
@@ -353,12 +377,49 @@ func TrimHistoryBudget(items []HistoryItem) []HistoryItem {
 	return items
 }
 
-func (s *Service) buildRequestBody(message string, history []HistoryItem, language string) map[string]any {
+// systemInstruction — the stable prompt prefix for one language. The uncached
+// request body and the explicit context cache are both built from this single
+// function, so a cache can never be registered for a prefix the request does
+// not actually send.
+func (s *Service) systemInstruction(language string) string {
 	system := s.snapshot().systemPrompt
 	if system == "" {
 		system = DefaultSystemPrompt
 	}
-	system = system + "\n\n[Language Preference] " + LanguageLabel(language)
+	return system + "\n\n[Language Preference] " + LanguageLabel(language)
+}
+
+// generationConfig builds the config block for one chat request.
+//
+// thinkingBudget (GEMINI_THINKING_BUDGET) is sent only when set: it caps the
+// model's internal reasoning tokens, which are billed at the OUTPUT rate
+// (usageFromValue folds them into the completion count) and dominate the tail
+// of reply latency. Unset keeps the model's own default.
+func generationConfig(maxTokens int) map[string]any {
+	cfg := map[string]any{"maxOutputTokens": maxTokens}
+	if b := thinkingBudget(); b >= 0 {
+		cfg["thinkingConfig"] = map[string]any{"thinkingBudget": b}
+	}
+	return cfg
+}
+
+// thinkingBudget returns GEMINI_THINKING_BUDGET, or -1 to send nothing (the
+// model's default). 0 disables thinking outright: cheaper and faster, at the
+// cost of accuracy on questions that need reasoning.
+func thinkingBudget() int {
+	if v := strings.TrimSpace(os.Getenv("GEMINI_THINKING_BUDGET")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			return n
+		}
+	}
+	return -1
+}
+
+// buildRequestBody assembles one generateContent request. cachedContent, when
+// non-empty, names a registered context cache that already holds the system
+// instruction — the API rejects a request that carries both, so the
+// instruction is omitted in that case.
+func (s *Service) buildRequestBody(message string, history []HistoryItem, language, cachedContent string) map[string]any {
 	contents := make([]map[string]any, 0, len(history)+1)
 	for _, h := range history {
 		role := h.Role
@@ -384,15 +445,18 @@ func (s *Service) buildRequestBody(message string, history []HistoryItem, langua
 		"role":  "user",
 		"parts": []map[string]any{{"text": message}},
 	})
-	return map[string]any{
-		"systemInstruction": map[string]any{
-			"parts": []map[string]any{{"text": system}},
-		},
-		"contents": contents,
-		"generationConfig": map[string]any{
-			"maxOutputTokens": s.snapshot().maxTokens,
-		},
+	body := map[string]any{
+		"contents":         contents,
+		"generationConfig": generationConfig(s.snapshot().maxTokens),
 	}
+	if cachedContent != "" {
+		body["cachedContent"] = cachedContent
+	} else {
+		body["systemInstruction"] = map[string]any{
+			"parts": []map[string]any{{"text": s.systemInstruction(language)}},
+		}
+	}
+	return body
 }
 
 func (s *Service) resultFromValue(v map[string]any) ChatResult {
@@ -403,6 +467,12 @@ func (s *Service) resultFromValue(v map[string]any) ChatResult {
 
 // usageFromValue extracts (prompt, completion, cached) token counts from one
 // generateContent / stream chunk response body.
+//
+// completion folds in thoughtsTokenCount: thinking tokens are billed at the
+// output rate but ride in their own field, so a thinking model's real output
+// spend was invisible in token_usage — and the spend ceiling documented in
+// docs/GEMINI-RATE-LIMIT.md was reverse-engineered from those understated
+// numbers. Folding them in makes cost_estimate track the invoice.
 func usageFromValue(v map[string]any) (int, int, int) {
 	var prompt, completion, cached int
 	usage, _ := v["usageMetadata"].(map[string]any)
@@ -412,6 +482,9 @@ func usageFromValue(v map[string]any) (int, int, int) {
 		}
 		if n, ok := usage["candidatesTokenCount"].(float64); ok {
 			completion = int(n)
+		}
+		if n, ok := usage["thoughtsTokenCount"].(float64); ok {
+			completion += int(n)
 		}
 		if n, ok := usage["cachedContentTokenCount"].(float64); ok {
 			cached = int(n)
@@ -435,7 +508,7 @@ func (s *Service) ChatStream(ctx context.Context, message string, history []Hist
 		onToken(res.Reply)
 		return res, nil
 	}
-	body := s.buildRequestBody(message, history, language)
+	body := s.buildRequestBody(message, history, language, s.contextCacheFor(ctx, language))
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return s.chatWithModel(ctx, message, history, language, "")

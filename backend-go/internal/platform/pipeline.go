@@ -521,12 +521,19 @@ func (p *Pipeline) processInboundEvent(ctx context.Context, ev *InboundEvent) er
 
 	var groundCtx rag.GroundingContext
 	var result gemini.ChatResult
+	canned := false
 	if !fromCache {
 		if skipGround {
-			// Small talk: Jev already decided retrieval is unnecessary, so drop the
-			// speculative result. The buffered channel lets the worker finish
-			// without blocking. Paying for one unused retrieval on chit-chat is
-			// cheaper than making every real question wait for the routing call.
+			// Small talk: Jev was confident the message carries no request, so
+			// answer from the fixed template and skip generation entirely. The
+			// speculative retrieval is dropped either way — the buffered channel
+			// lets that worker finish without blocking. Paying for one unused
+			// retrieval on chit-chat is cheaper than making every real question
+			// wait for the routing call.
+			if smallTalkCanned() {
+				reply = SmallTalkReply(replyLang)
+				canned = true
+			}
 		} else {
 			select {
 			case groundCtx = <-groundCh:
@@ -534,27 +541,45 @@ func (p *Pipeline) processInboundEvent(ctx context.Context, ev *InboundEvent) er
 				return ctx.Err()
 			}
 		}
-		message := content
-		if groundCtx.HasMatch {
-			message = rag.AugmentMessage(content, &groundCtx)
-		}
-		var err error
-		result, err = p.Gemini.Chat(ctx, message, history, replyLang)
-		if err != nil {
-			// An exhausted quota or a drained prepaid balance is not a transient
-			// failure: the retry loop below will burn its attempts and the inbound
-			// event ends up 'failed' with the customer unanswered. Nothing else in
-			// the system notices, so page the operator now.
-			if isQuotaExhausted(err) {
-				p.PlatformAlert(ctx, "gemini-quota", "Gemini 配额/余额耗尽",
-					"AI 回复已停止。检查 Google AI Studio 的配额与预付款余额。\n"+truncateRunes(err.Error(), 300))
+		if !canned {
+			// Spend gate: shed before Google's wall instead of after it. The
+			// rolling ceiling is the number Google itself enforces ($10 per 10
+			// minutes on Tier 1); crossing it comes back as a 429 the customer
+			// experiences as an error. Handing the turn to a human is the same
+			// outcome delivered gracefully — and unlike the 429 path it happens
+			// before the retrieval and generation are paid for.
+			if spent, limit, over := usage.Budget(ctx, p.DB, p.Redis); over {
+				p.AlertSpendGate(ctx, spent, limit)
+				p.escalateToHuman(ctx, ev, cfg, sessionID, "ai_decision",
+					"Gemini 消费速率接近上限，AI 主动让路给人工", inboundUrgency)
+				return nil
 			}
-			return fmt.Errorf("AI 响应失败: %w", err)
-		}
-		usage.Record(ctx, p.DB, cfg.UserID, &sessionID, p.Gemini.ModelName(), result.PromptTokens, result.OutputTokens, result.CachedTokens)
-		reply = result.Reply
-		if !result.UsedMock {
-			reply = gemini.StripSourceMarkers(reply)
+			message := content
+			if groundCtx.HasMatch {
+				message = rag.AugmentMessage(content, &groundCtx)
+			}
+			var err error
+			result, err = p.Gemini.Chat(ctx, message, history, replyLang)
+			if err != nil {
+				if IsQuotaExhausted(err) {
+					// An exhausted quota or a drained balance is not a transient
+					// failure: the rolling window outlives every retry the inbound
+					// queue would attempt (5 attempts spread over 5s-15min), so the
+					// event would end up 'failed' with the customer unanswered and
+					// nobody the wiser. Page the operator, hand the conversation to
+					// a human and let the event complete.
+					p.AlertQuotaExhausted(ctx, err)
+					p.escalateToHuman(ctx, ev, cfg, sessionID, "ai_decision",
+						"Gemini 配额/余额耗尽，AI 无法生成回复", inboundUrgency)
+					return nil
+				}
+				return fmt.Errorf("AI 响应失败: %w", err)
+			}
+			usage.Record(ctx, p.DB, cfg.UserID, &sessionID, p.Gemini.ModelName(), result.PromptTokens, result.OutputTokens, result.CachedTokens)
+			reply = result.Reply
+			if !result.UsedMock {
+				reply = gemini.StripSourceMarkers(reply)
+			}
 		}
 	}
 
@@ -563,9 +588,10 @@ func (p *Pipeline) processInboundEvent(ctx context.Context, ev *InboundEvent) er
 	// plus the citation check against the grounding passages. Delivery is
 	// not yet enqueued, so this path can still edit the reply.
 	// Cache hits skip the guard: the cached answer was guarded before it was
-	// stored, and re-judging every replay would erase the latency win.
+	// stored, and re-judging every replay would erase the latency win. Canned
+	// small talk is our own fixed text, so there is nothing to audit either.
 	claimsHandoff := false
-	if !fromCache {
+	if !fromCache && !canned {
 		srcTexts := make([]string, 0, len(groundCtx.Sources))
 		for _, src := range groundCtx.Sources {
 			srcTexts = append(srcTexts, src.Content)
@@ -607,6 +633,9 @@ func (p *Pipeline) processInboundEvent(ctx context.Context, ev *InboundEvent) er
 	modelName := p.Gemini.ModelName()
 	if fromCache {
 		tokensUsed, modelName = 0, "reply-cache"
+	}
+	if canned {
+		tokensUsed, modelName = 0, "smalltalk-template"
 	}
 	var modelMessageID int64
 	err = p.DB.QueryRow(ctx,
@@ -1106,6 +1135,37 @@ func JunkAcknowledgement(language string) string {
 		return "🙏 អរគុណសម្រាប់សាររបស់អ្នក!"
 	}
 }
+
+// SmallTalkReply — the fixed answer for chit-chat (greetings, thanks, "ok").
+// Jev routes small_talk only when it is confident the message carries no
+// request, and those turns are the most repeated ones the system sees:
+// answering them from this table costs nothing instead of a full generation.
+// The line invites the real question rather than conversing.
+// JEV_CHITCHAT_CANNED=0 sends them to the model again.
+func SmallTalkReply(language string) string {
+	switch language {
+	case "en":
+		return "Thanks for reaching out! Let me know if you have any questions."
+	case "zh":
+		return "谢谢您的消息！有任何问题随时告诉我。"
+	default:
+		return "សូមអរគុណ! ប្រសិនបើមានសំណួរ សូមប្រាប់ខ្ញុំ។"
+	}
+}
+
+// smallTalkCanned — whether chit-chat is answered from the template above.
+func smallTalkCanned() bool {
+	if v := strings.TrimSpace(os.Getenv("JEV_CHITCHAT_CANNED")); v != "" {
+		if on, err := strconv.ParseBool(v); err == nil {
+			return on
+		}
+	}
+	return true
+}
+
+// SmallTalkCanned is the exported switch, so the widget path answers chit-chat
+// the same way the platform channels do.
+func SmallTalkCanned() bool { return smallTalkCanned() }
 
 // ReleaseHandoffKeyword is the exported customer-cancellation matcher so the
 // web-chat path shares the pipeline's release rule.

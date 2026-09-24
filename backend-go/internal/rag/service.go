@@ -28,7 +28,15 @@ import (
 const (
 	DefaultChunkSize    = 1000
 	DefaultChunkOverlap = 200
-	DefaultTopK         = int64(5)
+	// DefaultTopK was 5. Three sources carry the answer in practice — the
+	// per-turn prompt is what the spend limit is spent on, and since Google
+	// bills every retrieved rune on every turn (there is no reuse across
+	// turns), the fourth and fifth documents were the cheapest thing to cut:
+	// measured at 2,361 prompt tokens on a thin KB against 3,400-4,200 on a
+	// thick one (docs/GEMINI-RATE-LIMIT.md §5.2). diversifyByDoc still allows
+	// at most 2 chunks per document, so this is 3 distinct documents at worst.
+	// Env RAG_TOP_K overrides, and rageval measures recall@5 against it.
+	DefaultTopK = int64(3)
 
 	indexWorkerCount      = 2
 	searchCandidateFactor = int64(4)
@@ -1172,8 +1180,26 @@ func (s *Service) Ground(ctx context.Context, userID int32, sessionID *string, m
 	topScore := float32(sources[0].Score)
 	var b strings.Builder
 	b.WriteString("📚 Knowledge base references (ground your answer ONLY in these facts):\nNever mention the sources, scores or markers like [Source 1] in your reply — answer naturally.\n\n")
+	// Total injection budget: topK × per-source limit is unbounded above, and
+	// every one of those runes is re-billed on every turn. The budget keeps the
+	// full per-source allowance while it lasts — so the best-ranked sources are
+	// never cut — and trims only the tail, which is cheaper than dropping a
+	// whole source (the model still sees that it exists).
+	budget := envI("RAG_CONTEXT_BUDGET_RUNES", 4800)
+	used := 0
 	for i, src := range sources {
-		fmt.Fprintf(&b, "--- Source %d: %s (score %.2f) ---\n%s\n\n", i+1, src.Title, src.Score, truncateRunes(src.Content, groundSourceLimit(src.Content)))
+		room := groundSourceLimit(src.Content)
+		if budget > 0 {
+			if used >= budget {
+				break
+			}
+			if room > budget-used {
+				room = budget - used
+			}
+		}
+		content := truncateRunes(src.Content, room)
+		used += len([]rune(content))
+		fmt.Fprintf(&b, "--- Source %d: %s (score %.2f) ---\n%s\n\n", i+1, src.Title, src.Score, content)
 	}
 	s.logRAGQuery(ctx, userID, sessionID, message, rewritten, len(sources), &topScore, true)
 	return GroundingContext{Sources: sources, ContextStr: b.String(), HasMatch: true}

@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"khmer-ai-cs-go/internal/auth"
+	"khmer-ai-cs-go/internal/usage"
 )
 
 // ============================================
@@ -181,6 +182,28 @@ func (a *App) applyPlan(ctx context.Context, userID int32, plan string) error {
 }
 
 // platformAnalytics — platform-wide dashboard.
+// getSpendBudget — the rolling Gemini spend window against the ceiling Google
+// enforces ($10 per 10 minutes on Tier 1, see usage.SpendLimitUSD). The same
+// figure drives the local gate that hands turns to a human before the 429
+// arrives, so this endpoint is how an operator sees the wall coming — and how
+// they confirm the gate is shedding for the right reason rather than because
+// the limit was left at the wrong tier.
+func (a *App) getSpendBudget(w http.ResponseWriter, r *http.Request) (any, error) {
+	spent, limit, over := usage.Budget(r.Context(), a.DB, a.Redis)
+	ratio := 0.0
+	if limit > 0 {
+		ratio = spent / limit
+	}
+	return map[string]any{
+		"window_minutes": 10,
+		"spent_usd":      spent,
+		"limit_usd":      limit,
+		"used_ratio":     ratio,
+		"gate_ratio":     usage.GateRatio(),
+		"over_gate":      over,
+	}, nil
+}
+
 func (a *App) platformAnalytics(w http.ResponseWriter, r *http.Request) (any, error) {
 	var totalTenants, activeTenants, totalSessions, totalMessages, totalDocuments int64
 	var totalTokens int64

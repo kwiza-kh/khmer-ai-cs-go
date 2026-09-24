@@ -237,6 +237,31 @@ func (a *App) chatPlain(w http.ResponseWriter, r *http.Request) (any, error) {
 		}, nil
 	}
 
+	// Semantic reply cache: an identical ask was already generated, guarded and
+	// stored for this tenant, so it answers without retrieval and without
+	// generation — one embedding plus one indexed search. The tenant's cache is
+	// dropped whenever its knowledge base changes (rag.Service.KBChanged).
+	if a.Cache != nil && a.Cache.Enabled() {
+		if cached, hit := a.Cache.Lookup(r.Context(), user.UserID, req.Message, language); hit {
+			a.persistModelReply(r.Context(), user.UserID, sessionID, gemini.ChatResult{}, cached, &rag.GroundingContext{}, language, time.Now(), "reply-cache")
+			return map[string]any{
+				"reply": cached, "session_id": sessionID, "tokens_used": 0, "cached_tokens": 0,
+				"used_mock": false, "cached": true,
+			}, nil
+		}
+	}
+
+	// Spend gate (see usage.Budget): when the rolling Gemini window is nearly
+	// full, this turn fails in milliseconds instead of paying for retrieval plus
+	// generation and then returning Google's 429. The operator gets the number,
+	// the caller gets a retryable status.
+	if spent, limit, over := usage.Budget(r.Context(), a.DB, a.Redis); over {
+		if a.Pipe != nil {
+			a.Pipe.AlertSpendGate(r.Context(), spent, limit)
+		}
+		return nil, ErrServiceUnavailable("AI 服务繁忙，请稍后重试")
+	}
+
 	history := a.chatHistory(r.Context(), sessionID, historyFromRequest(req), userMsgID)
 	sid := sessionID
 	groundCtx := a.RAG.Ground(r.Context(), user.UserID, &sid, req.Message, language, history, 0)
@@ -249,9 +274,14 @@ func (a *App) chatPlain(w http.ResponseWriter, r *http.Request) (any, error) {
 		// The upstream reason (quota 429, 5xx, transport) is the only thing that
 		// makes this actionable, and returning a bare 500 threw it away: a load
 		// test produced thousands of these with no way to tell an exhausted
-		// spend limit from a network fault. Log the cause, then answer generically.
+		// spend limit from a network fault. Log the cause, answer generically,
+		// and page on a quota stop — this path and the widget are the only ones
+		// that do not route through the platform pipeline's alerting.
 		a.Logger.Error("chat generation failed", "session_id", sessionID, "user_id", user.UserID,
 			"grounded", groundCtx.HasMatch, "error", err.Error())
+		if a.Pipe != nil && platform.IsQuotaExhausted(err) {
+			a.Pipe.AlertQuotaExhausted(r.Context(), err)
+		}
 		return nil, ErrInternal("生成回答失败")
 	}
 	usage.Record(r.Context(), a.DB, user.UserID, &sid, a.Gemini.ModelName(), result.PromptTokens, result.OutputTokens, result.CachedTokens)
@@ -260,6 +290,17 @@ func (a *App) chatPlain(w http.ResponseWriter, r *http.Request) (any, error) {
 		reply = gemini.StripSourceMarkers(reply)
 	}
 	a.persistModelReply(r.Context(), user.UserID, sessionID, result, reply, &groundCtx, language, time.Now(), "")
+
+	// Store the finished answer for future identical asks, after any editing and
+	// never for mock replies. Detached from the request: a client hangup must
+	// not cancel a store that is already paid for.
+	if !result.UsedMock && a.Cache != nil && a.Cache.Enabled() {
+		ownerID, cachedQuery, cachedLang, cachedReply := user.UserID, req.Message, language, reply
+		storeCtx := context.WithoutCancel(r.Context())
+		platform.SpawnClassifier(func() {
+			a.Cache.Store(storeCtx, ownerID, cachedQuery, cachedLang, cachedReply, a.Gemini.ModelName())
+		})
+	}
 
 	resp := map[string]any{
 		"reply":         reply,
@@ -343,6 +384,30 @@ func (a *App) chatStream(w http.ResponseWriter, r *http.Request) {
 	_, _ = a.DB.Exec(r.Context(), "UPDATE sessions SET user_message_count = user_message_count + 1 WHERE session_id = $1", sessionID)
 	a.publishMessageEvent(r.Context(), user.UserID, sessionID, userMsgID, "user")
 
+	// Semantic reply cache (see chatPlain): the hit is delivered as one token so
+	// the client's wire protocol stays identical to a streamed answer.
+	if a.Cache != nil && a.Cache.Enabled() {
+		if cached, hit := a.Cache.Lookup(r.Context(), user.UserID, req.Message, language); hit {
+			a.persistModelReply(r.Context(), user.UserID, sessionID, gemini.ChatResult{}, cached, &rag.GroundingContext{}, language, time.Now(), "reply-cache")
+			sendEvent("token", map[string]string{"text": cached})
+			sendEvent("done", map[string]any{
+				"reply": cached, "tokens_used": 0, "cached_tokens": 0,
+				"used_mock": false, "cached": true,
+			})
+			return
+		}
+	}
+
+	// Spend gate (see usage.Budget): refuse before paying for retrieval and
+	// generation only to collect Google's 429.
+	if spent, limit, over := usage.Budget(r.Context(), a.DB, a.Redis); over {
+		if a.Pipe != nil {
+			a.Pipe.AlertSpendGate(r.Context(), spent, limit)
+		}
+		sendEvent("error", map[string]string{"message": "AI 服务繁忙，请稍后重试"})
+		return
+	}
+
 	history := a.chatHistory(r.Context(), sessionID, historyFromRequest(req), userMsgID)
 	sid := sessionID
 	groundCtx := a.RAG.Ground(r.Context(), user.UserID, &sid, req.Message, language, history, 0)
@@ -362,6 +427,11 @@ func (a *App) chatStream(w http.ResponseWriter, r *http.Request) {
 		sendEvent("token", map[string]string{"text": chunk})
 	})
 	if err != nil {
+		a.Logger.Error("chat stream generation failed", "session_id", sessionID, "user_id", user.UserID,
+			"grounded", groundCtx.HasMatch, "error", err.Error())
+		if a.Pipe != nil && platform.IsQuotaExhausted(err) {
+			a.Pipe.AlertQuotaExhausted(r.Context(), err)
+		}
 		sendEvent("error", map[string]string{"message": "生成回答失败"})
 		if partial := strings.TrimSpace(streamed.String()); partial != "" {
 			a.persistModelReply(persistCtx, user.UserID, sessionID, gemini.ChatResult{}, partial, &groundCtx, language, time.Now(), "")
@@ -374,6 +444,15 @@ func (a *App) chatStream(w http.ResponseWriter, r *http.Request) {
 		reply = gemini.StripSourceMarkers(reply)
 	}
 	a.persistModelReply(persistCtx, user.UserID, sessionID, result, reply, &groundCtx, language, time.Now(), "")
+
+	// Store the finished answer for future identical asks (never a mock). The
+	// stream already reached the client, so this is purely for the next ask.
+	if !result.UsedMock && a.Cache != nil && a.Cache.Enabled() {
+		ownerID, cachedQuery, cachedLang, cachedReply := user.UserID, req.Message, language, reply
+		platform.SpawnClassifier(func() {
+			a.Cache.Store(persistCtx, ownerID, cachedQuery, cachedLang, cachedReply, a.Gemini.ModelName())
+		})
+	}
 
 	sendEvent("done", map[string]any{
 		"reply":         reply,
