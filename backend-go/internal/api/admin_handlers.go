@@ -218,6 +218,19 @@ type updateModelRequest struct {
 	APIKey       *string  `json:"api_key"`
 }
 
+// defaultSystemPrompt — the built-in prompt a config falls back to when its own
+// system_prompt is empty (gemini.FromPartsFull / buildRequestBody).
+//
+// This exists because the admin UI can otherwise only show the STORED value,
+// which is empty on a healthy deployment, leaving an operator unable to tell
+// whether a prompt is in effect at all — let alone what it says. It also makes
+// the inverse visible: once anything is written to system_prompt, the built-in
+// default stops applying and future code-side prompt fixes go silently
+// unnoticed.
+func (a *App) defaultSystemPrompt(w http.ResponseWriter, r *http.Request) (any, error) {
+	return map[string]any{"system_prompt": gemini.DefaultSystemPrompt}, nil
+}
+
 // updateModelConfig — update one model config (platform admin only; the
 // resource is platform-global with no tenant column, so a tenant admin must
 // never reach it even if a route gate is misconfigured elsewhere).

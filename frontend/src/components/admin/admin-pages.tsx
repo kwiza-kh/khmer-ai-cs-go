@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import useSWR from "swr";
-import { listUsers, updateUserRole, getTokenStats, listModelConfigs, listAvailableModels, testModelConfig, updateModelConfig, type AvailableModel, type ModelItem, type PaginatedResponse, type UserItem, type UsersStats } from "@/lib/api";
+import { listUsers, updateUserRole, getTokenStats, listModelConfigs, listAvailableModels, testModelConfig, updateModelConfig, getDefaultSystemPrompt, type AvailableModel, type ModelItem, type PaginatedResponse, type UserItem, type UsersStats } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -369,6 +369,13 @@ export function ModelsAdminPage() {
   const [availableModels, setAvailableModels] = useState<Record<number, AvailableModel[]>>({});
   const [modelListLoading, setModelListLoading] = useState<Record<number, boolean>>({});
   const [modelListErrors, setModelListErrors] = useState<Record<number, string>>({});
+  // The built-in prompt a config falls back to when system_prompt is empty.
+  // Without it the field below can only show the STORED value, which is empty
+  // on a healthy deployment — an operator then cannot tell whether a prompt is
+  // in effect at all, nor what it says.
+  const { data: defaultPromptData, error: defaultPromptError } = useSWR("admin-default-prompt", getDefaultSystemPrompt);
+  const defaultPrompt = defaultPromptData?.system_prompt ?? "";
+  const [showDefaultPrompt, setShowDefaultPrompt] = useState<Record<number, boolean>>({});
 
   const updateModelDraft = (model: ModelItem, patch: Partial<ModelItem>) => {
     setModelDrafts((previous) => ({
@@ -479,6 +486,13 @@ export function ModelsAdminPage() {
         <div className="space-y-3">
           {models.map((model) => {
             const draft = modelDrafts[model.config_id] ?? model;
+            // Where the prompt in force actually comes from. An empty field is
+            // a healthy, meaningful state — it means the built-in default is
+            // running — but it looks identical to "nothing configured".
+            const promptText = (draft.system_prompt ?? "").trim();
+            const promptOverridden = promptText !== "";
+            const promptSameAsDefault =
+              promptOverridden && defaultPrompt !== "" && promptText === defaultPrompt.trim();
             const testResult = testResults[model.config_id];
             const isTesting = testingConfigID === model.config_id;
             const modelOptions = availableModels[model.config_id] ?? [];
@@ -559,13 +573,66 @@ export function ModelsAdminPage() {
                     </div>
                   </div>
                   <div>
-                    <label className="mb-1 block text-xs text-muted-foreground">{t("admin.systemPrompt")}</label>
+                    <div className="mb-1 flex flex-wrap items-center gap-2">
+                      <label className="block text-xs text-muted-foreground">{t("admin.systemPrompt")}</label>
+                      <Badge
+                        variant="outline"
+                        className={
+                          promptSameAsDefault
+                            ? "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400"
+                            : promptOverridden
+                              ? "border-border bg-muted text-foreground"
+                              : "border-border bg-muted text-muted-foreground"
+                        }
+                      >
+                        {promptSameAsDefault
+                          ? t("admin.promptSameAsDefault")
+                          : promptOverridden
+                            ? t("admin.promptOverridden")
+                            : t("admin.promptUsingDefault")}
+                      </Badge>
+                    </div>
                     <Textarea
                       value={draft.system_prompt}
                       onChange={(event) => updateModelDraft(model, { system_prompt: event.target.value })}
-                      rows={3}
+                      rows={showDefaultPrompt[model.config_id] ? 8 : 3}
                       className="resize-none text-xs"
+                      placeholder={t("admin.promptEmptyPh")}
                     />
+                    <p className={`mt-1 text-xs ${promptSameAsDefault ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground"}`}>
+                      {defaultPromptError
+                        ? t("admin.promptDefaultUnavailable")
+                        : promptSameAsDefault
+                          ? t("admin.promptHintSame")
+                          : promptOverridden
+                            ? t("admin.promptHintOverridden")
+                            : t("admin.promptHintDefault")}
+                    </p>
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-xs"
+                        onClick={() => setShowDefaultPrompt((previous) => ({ ...previous, [model.config_id]: !previous[model.config_id] }))}
+                      >
+                        {showDefaultPrompt[model.config_id] ? t("admin.promptHideDefault") : t("admin.promptShowDefault")}
+                      </Button>
+                      {promptOverridden && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-xs"
+                          onClick={() => updateModelDraft(model, { system_prompt: "" })}
+                        >
+                          {t("admin.promptResetDefault")}
+                        </Button>
+                      )}
+                    </div>
+                    {showDefaultPrompt[model.config_id] && (
+                      <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap rounded-lg border border-border bg-muted/40 p-3 text-xs leading-relaxed text-muted-foreground">
+                        {defaultPrompt || t("admin.promptLoading")}
+                      </pre>
+                    )}
                   </div>
                   <div className="flex gap-3">
                     <div className="flex-1">

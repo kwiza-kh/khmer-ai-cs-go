@@ -746,6 +746,14 @@ export async function listModelConfigs() {
   return apiFetch<ModelItem[]>("/admin/models");
 }
 
+// The built-in prompt a model config falls back to when its own system_prompt
+// is empty. The admin UI needs it to answer "is a prompt actually in effect,
+// and what does it say?" — the stored value alone is empty on a healthy
+// deployment.
+export async function getDefaultSystemPrompt() {
+  return apiFetch<{ system_prompt: string }>("/admin/models/default-prompt");
+}
+
 export async function updateModelConfig(configId: number, data: Record<string, unknown>) {
   return apiFetch<{ message: string }>(`/admin/models/${configId}`, {
     method: "PUT",

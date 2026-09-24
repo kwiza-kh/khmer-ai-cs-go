@@ -130,6 +130,10 @@ func (a *App) Router() http.Handler {
 	authed.Handle("POST /api/v1/settings/canned-responses", a.handle(a.createCannedResponse))
 	authed.HandleFunc("DELETE /api/v1/settings/canned-responses/{id}", a.handleDoc(a.deleteCannedResponse))
 	authed.Handle("GET /api/v1/admin/models", a.platformAdminOnly(a.handle(a.listModelConfigs)))
+	// Read-only companion to the list: the built-in prompt a config falls back
+	// to when its system_prompt is empty. A literal segment, so it can never be
+	// swallowed by the {id} patterns below.
+	authed.Handle("GET /api/v1/admin/models/default-prompt", a.platformAdminOnly(a.handle(a.defaultSystemPrompt)))
 	authed.Handle("PUT /api/v1/admin/models/{id}", a.platformAdminOnly(a.handleDoc(a.updateModelConfig)))
 	authed.Handle("POST /api/v1/admin/models/{id}/test", a.platformAdminOnly(a.handleDoc(a.testModelConfig)))
 	authed.Handle("GET /api/v1/admin/models/{id}/available", a.platformAdminOnly(a.handleDoc(a.listAvailableModels)))
