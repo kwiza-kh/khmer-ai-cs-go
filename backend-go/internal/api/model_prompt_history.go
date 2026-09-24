@@ -19,8 +19,9 @@ import (
 //
 //  1. APPEND-ONLY. A rollback inserts a new row; history is never rewritten.
 //     That keeps the rollback itself auditable and reversible.
-//  2. '' means "no override, the built-in default in code is in effect" — a
-//     meaningful and healthy state, not a missing value. See gemini.FromPartsFull.
+//  2. An EMPTY value means "no override, the built-in default in code is in
+//     effect" — a meaningful and healthy state, not a missing value. See
+//     gemini.FromPartsFull.
 
 // maxPromptVersions bounds one history response. Each row carries a full prompt
 // (~5 KB), so the cap is what keeps the payload sane; it is far more history
@@ -34,13 +35,30 @@ const (
 )
 
 // promptValue collapses the nullable column and a request value into the single
-// representation the history stores: "" for "no override". Without this, NULL
-// and '' would look like different versions of the same state.
+// representation the history stores: an empty string for "no override". Without
+// this, a NULL column and an empty value would look like different versions of
+// the same state.
 func promptValue(p *string) string {
 	if p == nil {
 		return ""
 	}
 	return *p
+}
+
+// ensurePromptBaseline records the pre-change value once, before the first
+// recorded edit of a config that has no history at all.
+//
+// Migration 063 seeds a baseline for every config that existed when it ran, but
+// a config created afterwards would start with an empty history — so its very
+// first edit would leave nothing to roll back to, which is precisely when the
+// feature is needed. This closes that hole without any create-path coupling.
+func (a *App) ensurePromptBaseline(ctx context.Context, configID int32, previous *string) {
+	var n int
+	if err := a.DB.QueryRow(ctx,
+		"SELECT count(*) FROM model_prompt_versions WHERE config_id = $1", configID).Scan(&n); err != nil || n > 0 {
+		return
+	}
+	a.recordPromptVersion(ctx, configID, promptValue(previous), nil, promptSourceBaseline, "首次编辑前自动记录")
 }
 
 // recordPromptVersion appends one row. Best-effort: a missing history entry

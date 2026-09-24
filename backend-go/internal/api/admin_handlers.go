@@ -270,6 +270,7 @@ func (a *App) updateModelConfig(w http.ResponseWriter, r *http.Request, configID
 			return nil, ErrInternal("更新系统提示词失败")
 		}
 		if promptValue(before) != *req.SystemPrompt {
+			a.ensurePromptBaseline(r.Context(), configID, before)
 			a.recordPromptVersion(r.Context(), configID, *req.SystemPrompt, &callerID, promptSourceAdminEdit, "")
 		}
 	}
