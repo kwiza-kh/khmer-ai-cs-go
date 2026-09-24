@@ -137,6 +137,11 @@ func (a *App) Router() http.Handler {
 	authed.Handle("PUT /api/v1/admin/models/{id}", a.platformAdminOnly(a.handleDoc(a.updateModelConfig)))
 	authed.Handle("POST /api/v1/admin/models/{id}/test", a.platformAdminOnly(a.handleDoc(a.testModelConfig)))
 	authed.Handle("GET /api/v1/admin/models/{id}/available", a.platformAdminOnly(a.handleDoc(a.listAvailableModels)))
+	// System-prompt version history: the prompt defines every customer reply, so
+	// a bad edit must be recoverable. Restore is a POST because it mutates, and
+	// it lands in audit_logs via the /api/v1/admin/ prefix.
+	authed.Handle("GET /api/v1/admin/models/{id}/prompt-history", a.platformAdminOnly(a.handleDoc(a.listPromptVersions)))
+	authed.Handle("POST /api/v1/admin/models/{id}/prompt-history/{version}/restore", a.platformAdminOnly(a.handlePromptRestore()))
 	authed.Handle("GET /api/v1/admin/users", a.adminOnly(a.handle(a.listUsers)))
 	authed.Handle("PUT /api/v1/admin/users/{id}/role", a.adminOnly(a.handleDoc(a.updateUserRole)))
 	authed.Handle("GET /api/v1/admin/analytics/overview", a.adminOnly(a.handle(a.analyticsOverview)))

@@ -754,6 +754,32 @@ export async function getDefaultSystemPrompt() {
   return apiFetch<{ system_prompt: string }>("/admin/models/default-prompt");
 }
 
+export type PromptVersion = {
+  version_id: number;
+  system_prompt: string;
+  source: "baseline" | "admin_edit" | "rollback" | string;
+  note: string;
+  created_at: string;
+  changed_by: string;
+};
+
+export type PromptHistoryResponse = {
+  config_id: number;
+  current: string;
+  versions: PromptVersion[];
+};
+
+export async function listPromptVersions(configId: number) {
+  return apiFetch<PromptHistoryResponse>(`/admin/models/${configId}/prompt-history`);
+}
+
+export async function restorePromptVersion(configId: number, versionId: number) {
+  return apiFetch<{ message: string; note: string }>(
+    `/admin/models/${configId}/prompt-history/${versionId}/restore`,
+    { method: "POST" },
+  );
+}
+
 export async function updateModelConfig(configId: number, data: Record<string, unknown>) {
   return apiFetch<{ message: string }>(`/admin/models/${configId}`, {
     method: "PUT",

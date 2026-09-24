@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import useSWR from "swr";
-import { listUsers, updateUserRole, getTokenStats, listModelConfigs, listAvailableModels, testModelConfig, updateModelConfig, getDefaultSystemPrompt, type AvailableModel, type ModelItem, type PaginatedResponse, type UserItem, type UsersStats } from "@/lib/api";
+import { listUsers, updateUserRole, getTokenStats, listModelConfigs, listAvailableModels, testModelConfig, updateModelConfig, getDefaultSystemPrompt, listPromptVersions, restorePromptVersion, type AvailableModel, type ModelItem, type PaginatedResponse, type UserItem, type UsersStats } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -16,7 +16,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { BarChart3, Clock, KeyRound, MessageSquare, RefreshCw, Send, Sparkles, TrendingUp, Users, Zap, Download, ShieldCheck, Search, UserCheck, UserPlus, Coins, Lock, type LucideIcon } from "lucide-react";
+import { BarChart3, Clock, KeyRound, MessageSquare, RefreshCw, Send, Sparkles, TrendingUp, Users, Zap, Download, ShieldCheck, Search, UserCheck, UserPlus, Coins, Lock, History, RotateCcw, type LucideIcon } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
 
@@ -357,6 +357,133 @@ export function UsersAdminPage() {
   );
 }
 
+// PromptHistory renders the system-prompt version history for one model config
+// and restores an earlier version on demand.
+//
+// Fetching is lazy: the list carries full prompt texts, so it is only loaded
+// once the operator opens the section rather than on every visit to the page.
+function PromptHistory({ configId, onRestored }: { configId: number; onRestored: () => void }) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const { data, isLoading, error, mutate } = useSWR(
+    open ? ["prompt-history", configId] : null,
+    () => listPromptVersions(configId),
+  );
+  const [restoring, setRestoring] = useState<number | null>(null);
+  const [expanded, setExpanded] = useState<number | null>(null);
+
+  const versions = data?.versions ?? [];
+  const current = data?.current ?? "";
+  // The newest entry whose value equals the live one is the state in force.
+  // Comparing by value (not by position) keeps this correct even if the newest
+  // row was written by a rollback to an older text.
+  const currentVersionId = versions.find((v) => v.system_prompt === current)?.version_id;
+
+  const handleRestore = async (versionId: number) => {
+    setRestoring(versionId);
+    try {
+      await restorePromptVersion(configId, versionId);
+      toast.success(t("admin.promptRestored"));
+      // Reload the history and the model list: the restored value is now the
+      // live one, and the draft on screen is stale.
+      await mutate();
+      onRestored();
+    } catch (err: unknown) {
+      toast.error((err as Error).message);
+    } finally {
+      setRestoring(null);
+    }
+  };
+
+  const sourceLabel = (source: string) =>
+    source === "baseline"
+      ? t("admin.promptSourceBaseline")
+      : source === "rollback"
+        ? t("admin.promptSourceRollback")
+        : t("admin.promptSourceEdit");
+
+  return (
+    <div className="rounded-lg border border-border p-3">
+      <button
+        type="button"
+        className="flex w-full items-center justify-between gap-2 text-xs font-medium"
+        onClick={() => setOpen((previous) => !previous)}
+      >
+        <span className="flex items-center gap-2">
+          <History className="size-3.5 text-muted-foreground" />
+          {t("admin.promptHistory")}
+        </span>
+        <span className="text-muted-foreground">
+          {open ? t("admin.promptHistoryHide") : t("admin.promptHistoryShow")}
+        </span>
+      </button>
+
+      {open && (
+        <div className="mt-3 space-y-2">
+          {isLoading && <p className="text-xs text-muted-foreground">{t("admin.promptLoading")}</p>}
+          {error && <p className="text-xs text-destructive">{(error as Error).message}</p>}
+          {!isLoading && !error && versions.length === 0 && (
+            <p className="text-xs text-muted-foreground">{t("admin.promptHistoryEmpty")}</p>
+          )}
+          {versions.map((version) => {
+            const isCurrent = version.version_id === currentVersionId;
+            const isDefault = version.system_prompt.trim() === "";
+            const isOpen = expanded === version.version_id;
+            return (
+              <div
+                key={version.version_id}
+                className={`rounded-md border p-2 ${isCurrent ? "border-emerald-500/40 bg-emerald-500/5" : "border-border"}`}
+              >
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <span className="font-medium text-foreground">#{version.version_id}</span>
+                  <Badge variant="outline" className="text-[10px]">{sourceLabel(version.source)}</Badge>
+                  {isCurrent && (
+                    <Badge variant="outline" className="border-emerald-500/40 bg-emerald-500/10 text-[10px] text-emerald-700 dark:text-emerald-400">
+                      {t("admin.promptCurrent")}
+                    </Badge>
+                  )}
+                  <span className="text-muted-foreground">{new Date(version.created_at).toLocaleString()}</span>
+                  {version.changed_by && <span className="text-muted-foreground">· {version.changed_by}</span>}
+                </div>
+                <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
+                  {isDefault
+                    ? t("admin.promptBuiltinDefault")
+                    : version.system_prompt.slice(0, 120)}
+                </p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-6 px-2 text-[11px]"
+                    onClick={() => setExpanded(isOpen ? null : version.version_id)}
+                  >
+                    {isOpen ? t("admin.promptCollapse") : t("admin.promptExpand")}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-6 gap-1 px-2 text-[11px]"
+                    disabled={isCurrent || restoring === version.version_id}
+                    onClick={() => handleRestore(version.version_id)}
+                  >
+                    <RotateCcw className="size-3" />
+                    {restoring === version.version_id ? t("admin.promptRestoring") : t("admin.promptRestore")}
+                  </Button>
+                </div>
+                {isOpen && (
+                  <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded border border-border bg-muted/40 p-2 text-[11px] leading-relaxed text-muted-foreground">
+                    {isDefault ? t("admin.promptBuiltinDefaultExplain") : version.system_prompt}
+                  </pre>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ModelsAdminPage() {
   const { t, tf } = useI18n();
   const { data, isLoading, mutate } = useSWR<ModelItem[]>("admin-models", listModelConfigs);
@@ -633,6 +760,22 @@ export function ModelsAdminPage() {
                         {defaultPrompt || t("admin.promptLoading")}
                       </pre>
                     )}
+                    <div className="mt-2">
+                      <PromptHistory
+                        configId={model.config_id}
+                        onRestored={() => {
+                          // The server changed system_prompt; drop the local draft
+                          // so the textarea shows the restored value, and refresh
+                          // the list so has_api_key / other fields stay truthful.
+                          setModelDrafts((previous) => {
+                            const next = { ...previous };
+                            delete next[model.config_id];
+                            return next;
+                          });
+                          void mutate();
+                        }}
+                      />
+                    </div>
                   </div>
                   <div className="flex gap-3">
                     <div className="flex-1">

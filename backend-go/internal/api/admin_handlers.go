@@ -235,9 +235,11 @@ func (a *App) defaultSystemPrompt(w http.ResponseWriter, r *http.Request) (any, 
 // resource is platform-global with no tenant column, so a tenant admin must
 // never reach it even if a route gate is misconfigured elsewhere).
 func (a *App) updateModelConfig(w http.ResponseWriter, r *http.Request, configID int32) (any, error) {
-	if caller, ok := UserFrom(r); !ok || !caller.IsPlatformAdmin() {
+	caller, ok := UserFrom(r)
+	if !ok || !caller.IsPlatformAdmin() {
 		return nil, ErrForbidden("模型配置仅平台管理员可修改")
 	}
+	callerID := caller.UserID
 	var req updateModelRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		return nil, ErrBadRequest("请求格式错误")
@@ -257,7 +259,19 @@ func (a *App) updateModelConfig(w http.ResponseWriter, r *http.Request, configID
 		_, _ = a.DB.Exec(r.Context(), "UPDATE model_configs SET model_name = $1 WHERE config_id = $2", *req.ModelName, configID)
 	}
 	if req.SystemPrompt != nil {
-		_, _ = a.DB.Exec(r.Context(), "UPDATE model_configs SET system_prompt = $1 WHERE config_id = $2", *req.SystemPrompt, configID)
+		// Read the current value first. The admin UI submits every field on
+		// every save, so recording unconditionally would fill the history with
+		// identical rows and bury the one change that actually happened.
+		var before *string
+		_ = a.DB.QueryRow(r.Context(),
+			"SELECT system_prompt FROM model_configs WHERE config_id = $1", configID).Scan(&before)
+		if _, err := a.DB.Exec(r.Context(),
+			"UPDATE model_configs SET system_prompt = $1 WHERE config_id = $2", *req.SystemPrompt, configID); err != nil {
+			return nil, ErrInternal("更新系统提示词失败")
+		}
+		if promptValue(before) != *req.SystemPrompt {
+			a.recordPromptVersion(r.Context(), configID, *req.SystemPrompt, &callerID, promptSourceAdminEdit, "")
+		}
 	}
 	if req.Temperature != nil {
 		_, _ = a.DB.Exec(r.Context(), "UPDATE model_configs SET temperature = $1 WHERE config_id = $2", *req.Temperature, configID)
