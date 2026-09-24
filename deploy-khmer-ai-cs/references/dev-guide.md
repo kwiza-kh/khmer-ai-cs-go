@@ -51,7 +51,7 @@ LINE/Zalo 的 webhook 按 `platform_configs.channel_identity` (LINE = 机器人 
 | 认证 | `JWT_SECRET` (≥32 随机) `JWT_EXPIRE_HOUR` `INITIAL_ADMIN_PASSWORD` `ALLOW_REGISTRATION` `REGISTRATION_INVITE_CODE` | 改 JWT_SECRET = 全员在线会话作废 |
 | 凭据加密 | `PLATFORM_CREDENTIAL_KEY` | base64(32B); **轮换后已保存的渠道凭据不可解密** (等于渠道全挂), 除非有重加密流程 |
 | AI | `GEMINI_API_KEY` `GEMINI_MODEL`(gemini-2.5-flash) `GEMINI_MAX_TOKENS` `GEMINI_CACHE_TTL` `GEMINI_API_BASE`(可选) | **key 为空 = MOCK 模式** (模板回复, 演示/CI 用), 上线真 AI 必配; `GEMINI_API_BASE` 覆盖 REST 端点 (gemini.go 启动时读, 代码拼 `apiBase+"/models"`), 现网指向 CF AI Gateway **含 /v1beta 后缀**: `https://gateway.ai.cloudflare.com/v1/<CLOUDFLARE_ACCOUNT_ID>/gemini-relay-gw/google-ai-studio/v1beta` (绕开 Google 对服务器区域的地域封锁, 2026-09-04 起)。坑: ①后缀丢了 → 网关 404 空 body; ②DB model_configs 的 key 含非标准字符也能用 (curl/Go 原样传); ③网关的 Authentication 必须 None, 否则 401 code 2009; ④请求日志在 CF 面板 AI→AI Gateway 可查; ⑤**生产实际模型由 DB `model_configs.is_default` 覆盖** (启动时 HotReload 日志 `Gemini configured from database model config`), 上面的 `GEMINI_MODEL` 只在没有 DB 配置时生效 —— 排查"模型不对"先看那行启动日志, 别只看 `.env-go` |
-| Jev | `TYPESAFE_API_KEY` (缺失 = 客户端为 nil, 所有接入点走旧路径) `JEV_KEEPWARM_SEC`(默认 45, 0=关) `JEV_GUARD_BUDGET_MS`(默认 3000) `JEV_ROUTE_BUDGET_MS`(默认 4000) | 类型化判断模型 (单端点 `api.typesafe.ai/v1/systemone`, 无 Go SDK), 决策点优先走它。**保活是前提**: 生产主机实测冷连接 0.64-4.24s / 热连接 0.22-0.42s (纯 TLS 握手单独就 0.44-3.62s), 而本项目流量稀疏 ⇒ 几乎每次都是冷启动 ⇒ 预算被打穿后决策回落给**更慢**的快模型 (实测 Jev turn 354ms vs 快模型 3234ms, 快 9.1 倍) —— 超时等于把准确判断换成乱升级。探针间隔必须 < `http.Transport` 的 `IdleConnTimeout`(90s), 否则连接在两次探针之间就已经死了 |
+| Jev | `TYPESAFE_API_KEY` (缺失 = 客户端为 nil, 所有接入点走旧路径) `JEV_KEEPWARM_SEC`(默认 45, 0=关) `JEV_GUARD_BUDGET_MS`(默认 3000) `JEV_ROUTE_BUDGET_MS`(默认 4000) `JEV_RULE_SOLO_MIN`(默认 0.90) `JEV_TURN_ESCALATE_MIN`(默认 0.60) `JEV_RULE_CONFIRM_MIN`(默认 0.70) | 类型化判断模型 (单端点 `api.typesafe.ai/v1/systemone`, 无 Go SDK), 决策点优先走它。**保活是前提**: 生产主机实测冷连接 0.64-4.24s / 热连接 0.22-0.42s (纯 TLS 握手单独就 0.44-3.62s), 而本项目流量稀疏 ⇒ 几乎每次都是冷启动 ⇒ 预算被打穿后决策回落给**更慢**的快模型 (实测 Jev turn 354ms vs 快模型 3234ms, 快 9.1 倍) —— 超时等于把准确判断换成乱升级。探针间隔必须 < `http.Transport` 的 `IdleConnTimeout`(90s), 否则连接在两次探针之间就已经死了。⚠️ `JEV_RULE_SOLO_MIN` 与 `JEV_TURN_ESCALATE_MIN` **是两回事**: 前者是 TurnTriggerFor 的真正转人工安全阀, 后者只决定 judgeTurnJev 写进 verdict 的 Escalate 标记 (widget 等外部调用方读它)。两者曾经共用一个变量, 各有各的默认值 —— 调一个会静默带动另一个, 已拆开 |
 | 渠道 | `TELEGRAM_BOT_TOKEN` `META_VERIFY_TOKEN` `META_APP_ID/APP_SECRET` `META_OAUTH_REDIRECT_URL` `META_OAUTH_FRONTEND_URL` `META_GRAPH_API_VERSION` `META_WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID` | OAuth 回调 URL 与 Meta 后台 redirect URI **逐字符一致** |
 | 存储 | `R2_ACCOUNT_ID/ACCESS_KEY/SECRET_KEY/BUCKET/PUBLIC_URL` | 聊天文件上传 (Cloudflare R2, S3 兼容) |
 | 企业(可空=关) | `EMAIL_*` `VOICE_ENABLED`+`TWILIO_*` `SSO_*` `ALLOWED_ORIGINS` | 生产前端与 API 同源 (都挂 cs 域), CORS 不触发; 仅当前端另起 origin 直连 API 才把该 origin 加进 ALLOWED_ORIGINS |
@@ -65,6 +65,44 @@ LINE/Zalo 的 webhook 按 `platform_configs.channel_identity` (LINE = 机器人 
 - **隐私合规**: `POST /api/v1/webhook/meta/data-deletion` — Meta 数据删除回调 (Platform Terms §3(d)(i)), 无鉴权、以 `signed_request` 的 HMAC-SHA256 验签; 需在 Meta App Dashboard → User data deletion 选 **Data deletion callback URL** 并填该地址 (选 "instructions URL" 则此端点永不触发)。审计写入 `deletion_requests`; 状态页 `GET /privacy/deletion-status?code=…` + 公开查询 `GET /api/v1/privacy/deletion-status?code=…`
 - WebSocket: `GET /api/v1/realtime/inbox` (升级头), nginx 专属 location, 1h 超时
 - SSE 依赖 nginx `proxy_buffering off` — 新开流式接口不用改 nginx (/api/ 整段已关 buffering)
+
+## 4b. 运维任务
+
+**每日维护 `khmer-maintenance.timer`** (03:00 金边 = 20:00 UTC; 主机跑 UTC, 所以 unit 里写的是 UTC —— **别按 UTC 的 03:00 改, 那是当地上午 10 点营业高峰**):
+
+```
+/opt/khmer-ai-cs/maintenance.sh   ← ExecStart
+  ├─ ./retention            (dry-run, 把"将要删什么"写进 journal 留痕)
+  ├─ ./retention --apply    (真正删)
+  ├─ 裁剪 server-go.bak-*   只留最近 10 份
+  └─ 裁剪 frontend-backup-* 只留最近 3 份
+```
+
+手动跑: `systemctl start khmer-maintenance.service`；看日志: `journalctl -u khmer-maintenance`。
+停掉: `systemctl disable --now khmer-maintenance.timer`。
+
+**`cmd/retention`** — 保留期。**默认 dry-run, 不传 `--apply` 什么都不删**, 且 dry-run 用完全相同的谓词与 LIMIT 计数, 所以它报的数字就是 `--apply` 会删的量。
+
+| 规则 | 默认窗口 | 说明 |
+|---|---|---|
+| `platform_oauth_sessions` | 过期即删 | 浏览器 OAuth 往返的临时落点。**它的 `payload_json` 里存着明文 page_access_token**(没有 `platform_configs` 那份的加密), 所以放过期行 = 留明文凭据 |
+| `rag_query_logs` | 90 天 | 客户问题原文的**第二份副本** |
+| `notifications` | 90 天 | |
+| `platform_inbound_events` | 已完成且 30 天 | `content` 列是原始客户消息 |
+| `audit_logs` | **不删** | 需显式 `--audit-days N`; 审计留痕有正当长期用途, 且含 ip_address |
+| `platform_outbox` | **不删** | 需显式 `--outbox-days N` |
+
+每条规则独立事务 (一张表失败不影响其余, 重跑接着做), `--limit` 限制单次单表删除量 (默认 5000), 用 `ctid` 定位以适配不同主键。
+
+**Jev 健康告警** — `typesafe.Client` 上装了 `HealthObserver`, 在 `Judge` 一个点插桩覆盖全部 7 个调用点, 复用 `PlatformAlert` 通道 (Redis 去重 15 分钟/键):
+
+| 键 | 触发 |
+|---|---|
+| `jev-down` | 连续 3 次失败 (保活 45s ⇒ 约 2.5 分钟); 一次故障只告警一次 |
+| `jev-recovered` | 恢复时清除去重键并通知, 下次故障可再报 |
+| `jev-slow` | 调用**成功**但 ≥3s —— reply-path 预算是 guard 3s / route 4s, 这种"可达但无用"的调用产生与报错相同的静默降级 |
+
+告警**只**在 `DeadlineExceeded` 时发, 不在 `Canceled` 时发 —— 后者是服务关闭或访客挂断, 与 Jev 健康无关, 报它会让运维很快无视告警。
 
 ## 5. 渠道 webhook 模式（internal/platform）
 
