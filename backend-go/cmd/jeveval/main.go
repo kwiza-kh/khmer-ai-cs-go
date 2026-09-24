@@ -37,12 +37,12 @@ type turn struct {
 }
 
 type judged struct {
-	t     turn
-	topic string
-	raw   float64
-	ok    bool
-	intent string
-	sentiment string
+	t          turn
+	topic      string
+	raw        float64
+	ok         bool
+	intent     string
+	sentiment  string
 	confidence float64
 }
 
@@ -285,10 +285,10 @@ func runAgree(csvPath string, workers int) {
 	defer cancel()
 
 	type pair struct {
-		t                     turn
-		jv, gv                gemini.TurnVerdict
-		jok, gok              bool
-		jDecide, gDecide      bool
+		t                turn
+		jv, gv           gemini.TurnVerdict
+		jok, gok         bool
+		jDecide, gDecide bool
 	}
 	out := make([]pair, len(turns))
 	jobs := make(chan int)

@@ -3,8 +3,8 @@
 package auth
 
 import (
-	crand "crypto/rand"
 	"crypto/hmac"
+	crand "crypto/rand"
 	"crypto/sha1"
 	"encoding/binary"
 	"strings"

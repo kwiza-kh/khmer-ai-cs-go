@@ -23,9 +23,9 @@ func jevNoulServer(t *testing.T, calls *atomic.Int32, values []float64) *typesaf
 			if i > 0 {
 				answers += ","
 			}
-		answers += fmt.Sprintf(`"q%d":{"type":"noul","noul":%s}`, i, strconv.FormatFloat(v, 'f', -1, 64))
-		answers += fmt.Sprintf(`,"c%d":{"type":"noul","noul":%s}`, i, strconv.FormatFloat(v, 'f', -1, 64))
-		answers += fmt.Sprintf(`,"e%d":{"type":"noul","noul":%s}`, i, strconv.FormatFloat(v, 'f', -1, 64))
+			answers += fmt.Sprintf(`"q%d":{"type":"noul","noul":%s}`, i, strconv.FormatFloat(v, 'f', -1, 64))
+			answers += fmt.Sprintf(`,"c%d":{"type":"noul","noul":%s}`, i, strconv.FormatFloat(v, 'f', -1, 64))
+			answers += fmt.Sprintf(`,"e%d":{"type":"noul","noul":%s}`, i, strconv.FormatFloat(v, 'f', -1, 64))
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"model":"jev-1.13.0","answers":{` + answers + `}}`))

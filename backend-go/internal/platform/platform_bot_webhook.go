@@ -320,6 +320,7 @@ func (p *Pipeline) handlePlatformCallback(ctx context.Context, cb *telegramCallb
 		answer("")
 	}
 }
+
 // storeSupportRelay records which operator-facing message carries which
 // merchant conversation, so a reply to it can be routed back.
 func (p *Pipeline) storeSupportRelay(ctx context.Context, adminChat string, adminMessageID string, merchantChatID int64, supportID int64) {

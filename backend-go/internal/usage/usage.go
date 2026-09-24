@@ -14,9 +14,9 @@ import (
 // a 4x discount; overrides via env are intentionally not provided — the number
 // is an estimate for dashboards, not an invoice.
 const (
-	inputPer1M      = 0.30
-	outputPer1M     = 2.50
-	cachedInPer1M   = 0.03
+	inputPer1M    = 0.30
+	outputPer1M   = 2.50
+	cachedInPer1M = 0.03
 )
 
 // EstimateCost returns the USD cost of one turn given non-cached prompt,

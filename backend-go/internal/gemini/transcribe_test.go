@@ -7,12 +7,12 @@ import "testing"
 // flag the scripts Gemini has wrongly substituted.
 func TestHasUnexpectedScript(t *testing.T) {
 	ok := []string{
-		"ផលិតផលនេះតម្លៃប៉ុន្មាន",          // Khmer
-		"多少钱？",                          // Chinese
-		"How much is it?",              // English
-		"Price 100 $ (USD)",            // ASCII punctuation/digits
-		"ខ្ញុំចង់ទិញ 5 បន្ទះ",            // Khmer + digits
-		"",                             // empty
+		"ផលិតផលនេះតម្លៃប៉ុន្មាន", // Khmer
+		"多少钱？",              // Chinese
+		"How much is it?",   // English
+		"Price 100 $ (USD)", // ASCII punctuation/digits
+		"ខ្ញុំចង់ទិញ 5 បន្ទះ", // Khmer + digits
+		"", // empty
 	}
 	for _, s := range ok {
 		if hasUnexpectedScript(s) {
@@ -21,9 +21,9 @@ func TestHasUnexpectedScript(t *testing.T) {
 	}
 	bad := []string{
 		"ዋጋው ስንት ነው",   // Amharic / Ethiopic — the observed mis-decode
-		"ราคาเท่าไหร่",  // Thai
+		"ราคาเท่าไหร่", // Thai
 		"كم السعر",     // Arabic
-		"कितना है",      // Devanagari
+		"कितना है",     // Devanagari
 	}
 	for _, s := range bad {
 		if !hasUnexpectedScript(s) {

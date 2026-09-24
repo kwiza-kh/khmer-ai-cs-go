@@ -51,7 +51,7 @@ func (p *Pipeline) GuardReply(ctx context.Context, reply string, sources []strin
 				"contact them, or continue this conversation — even without literally saying 'transfer'?"),
 		"leaks_sources": typesafe.Noul(
 			"Does `assistant_reply` mention sources, citations, reference numbers, document or file names, " +
-			"or markers like (Source 1)?"),
+				"or markers like (Source 1)?"),
 		"unsafe_claim": typesafe.Noul(
 			"Does `assistant_reply` commit to a specific price, discount, delivery date, stock quantity, " +
 				"legal outcome, or structural/medical guarantee that a store employee would have to confirm first?"),

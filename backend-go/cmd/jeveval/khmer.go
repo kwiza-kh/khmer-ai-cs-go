@@ -68,11 +68,11 @@ func runKhmer(workers int) {
 	defer cancel()
 
 	type row struct {
-		label      string
-		jevA       float64
-		jevB       float64
-		gemA       string
-		gemB       string
+		label string
+		jevA  float64
+		jevB  float64
+		gemA  string
+		gemB  string
 	}
 	pairRows := make([]row, len(khmerPairs))
 	var wg sync.WaitGroup
