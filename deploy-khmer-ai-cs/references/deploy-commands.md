@@ -315,9 +315,21 @@ nginx 站点 (§8) + 自签证书 (复用 `/etc/nginx/ssl/wms.*` 或 openssl 新
 `Gemini configured from database model config model=…`, `.env-go` 的 `GEMINI_MODEL` 被完全忽略 (dev-guide §3 ⑤)。
 改错地方 = 以为切了, 其实没切。
 
-**模型名纪律**: 平台**没有 lite 档** (`gemini-2.5-flash-lite` / `gemini-3.5-flash-lite` 亚洲各区全 404),
-`gemini-3.6/3.7/3.8-flash` 与任何 `-latest` 别名同样不存在 ⇒ 主模型与快模型统一 `gemini-3.5-flash`。
+**模型名纪律**: 模型名必须**锁定版本**, **不要用 `-latest` 别名** (平台不认, 且它随上游漂移, 发布无法复现);
+平台**没有 lite 档** (`gemini-2.5-flash-lite` / `gemini-3.5-flash-lite` 亚洲各区全 404)。
+`gemini-3.6/3.7/3.8-flash` "平台上不存在"是**曾经的错误结论** (它是在 AI Studio / 只在 asia-southeast1 量出来的):
+实测 (2026-09-25, 生产 SA) **`gemini-3.8-flash` 在 `global` / `us` / `eu` 返回 200, 在每一个单区域 (含 asia-southeast1) 返回 404** —— 新模型名是**区域作用域**的, 不是缺席; 3.6/3.7 未重新实测, 别再假设它们不存在。
+⇒ 留在 `asia-southeast1` 就把主模型与快模型统一 `gemini-3.5-flash`; 换区域上 3.8 之前先看 dev-guide §11.6 的区域矩阵 (3.5 在 `us-central1` / `europe-west4` 也是 404, 连在用模型都要重测)。
 两者同名后, "降级到快模型"的路径会被 `fast != model` 守卫跳过 —— 这是设计如此, **不是故障**。
+
+**按区域看目录 (2026-09-25 起)**: 后台「模型」页的区域下拉走
+`GET /api/v1/admin/models/{id}/available?region=<region>` (省略 `region` = 服务端配置的区域), 区域候选走
+`GET /api/v1/admin/models/vertex-regions`。它**只影响列表, 不影响服务路径** (在用的模型/区域仍看 `.env-go` 的
+`GEMINI_VERTEX_REGION` + DB `model_configs.model_name`)。
+- 列表走 `{host}/v1beta1/publishers/google/models?pageSize=100`: **`/v1/` 形式 404, 只有 `/v1beta1/` 有**; `global` 的 host 是 `aiplatform.googleapis.com` (没有 `global-` 前缀)。
+- 列表**不是可调用性判据**: `asia-southeast1` 只列 9 条且不含 `gemini-3.5-flash`, 而它在该区**可调 (200)** —— 就是生产在用模型。所以接口 `available` 默认 `true`, 唯一权威是「测试」按钮。
+- 列表不完整时 (区域 404 / 报错 / 空) 接口仍 **200** + 带上配置中的在用模型, 原因在响应头 `X-Model-List-Warning` 里。
+- 完整说明与实测矩阵: dev-guide §11.6。
 
 ### 10.1 切流前先决定: 知识库要不要重嵌入
 

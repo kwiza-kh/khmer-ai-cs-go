@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -432,13 +433,35 @@ func (a *App) testModelConfig(w http.ResponseWriter, r *http.Request, configID i
 	}, nil
 }
 
-// listAvailableModels — list generative models available to this deployment.
+// modelListWarningHeader carries the reason a model listing is incomplete.
+//
+// The body of this endpoint is a bare array the console already consumes, so a
+// partial answer cannot be signalled inside it without changing that shape —
+// and the entries' own `available` flags say WHAT is unconfirmed, never WHY.
+// The header says why. It is deliberately best-effort: the console is served
+// from another origin and CORS exposes only the headers listed in middleware.go,
+// so an operator reading a log line or a curl response is the audience today.
+const modelListWarningHeader = "X-Model-List-Warning"
+
+// listAvailableModels — list the models an operator can pick for this config,
+// optionally in a caller-chosen Vertex region.
 //
 // The credential comes from the TRANSPORT, which is the point of the split: on
 // studio it is the config's stored key (the default config's key as fallback),
 // and on vertex it is the service account — so there an empty api_key column is
 // normal, the database is not read at all, and the list still loads.
+//
+// ?region= selects the LISTING only. Omitting it means the region the server is
+// configured with, which is what keeps the console's default request identical
+// to the one it made before the selector existed. It never selects what serves
+// traffic: that is GEMINI_VERTEX_REGION, resolved once in providerFromEnv.
 func (a *App) listAvailableModels(w http.ResponseWriter, r *http.Request, configID int32) (any, error) {
+	// Validated before it can reach a URL: the region becomes part of the
+	// request HOST on the vertex path, and that request carries a bearer token.
+	region := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("region")))
+	if region != "" && !gemini.ValidVertexRegion(region) {
+		return nil, ErrBadRequest("无效的 region: " + region)
+	}
 	apiKey := ""
 	if gemini.CredentialSourceOf().IsAPIKey() {
 		raw := studioAPIKeyFromDB(r.Context(), a.DB, configID)
@@ -447,7 +470,7 @@ func (a *App) listAvailableModels(w http.ResponseWriter, r *http.Request, config
 		}
 		apiKey = a.Sealer.DecryptOrKeep(raw)
 	}
-	names, err := gemini.ListModels(r.Context(), apiKey)
+	models, warning, err := gemini.ModelCatalog(r.Context(), apiKey, region, a.servingModelName())
 	if err != nil {
 		// The cause is reported, not just "failed": the failures that matter here
 		// are configuration ones (a missing GEMINI_VERTEX_SA_FILE, an unreadable
@@ -456,11 +479,68 @@ func (a *App) listAvailableModels(w http.ResponseWriter, r *http.Request, config
 		// blanket message turned every one of them into the same sentence.
 		return nil, &ApiError{Status: http.StatusBadGateway, Message: "获取模型列表失败: " + err.Error()}
 	}
-	out := make([]map[string]any, 0)
-	for _, n := range names {
-		out = append(out, map[string]any{"name": n, "display_name": n})
+	if warning != "" {
+		// A degraded listing is a 200 with what we have — never a 500 that
+		// leaves the operator with no picker at all — so the reason travels
+		// beside the body and into the log, where it names the region.
+		w.Header().Set(modelListWarningHeader, truncateForHeader(warning))
+		if a.Logger != nil {
+			a.Logger.Warn("model list incomplete", "region", region, "config_id", configID, "reason", warning)
+		}
+	}
+	out := make([]map[string]any, 0, len(models))
+	for _, m := range models {
+		out = append(out, map[string]any{
+			"name":         m.Name,
+			"display_name": m.DisplayName,
+			"launch_stage": m.LaunchStage,
+			"capability":   m.Capability,
+			"available":    m.Available,
+		})
 	}
 	return out, nil
+}
+
+// truncateForHeader keeps a diagnostic string inside what a header can carry:
+// an unescaped >4KB value (a platform error body is echoed into the message)
+// makes the whole response fail to write, turning a degraded 200 into no answer
+// at all. The cut moves back to a rune boundary first — the echoed body is not
+// necessarily ASCII, and a header value that ends mid-rune is invalid UTF-8.
+func truncateForHeader(msg string) string {
+	const max = 512
+	if len(msg) <= max {
+		return msg
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(msg[cut]) {
+		cut--
+	}
+	return msg[:cut]
+}
+
+// vertexRegions — the region selector's data: the candidate locations, the
+// server's configured region first, and which one is current.
+//
+// Read-only and configuration-only (`current` is GEMINI_VERTEX_REGION), so it
+// deliberately does not contact Google: a selector that needs the network to
+// render is a selector that breaks exactly when the network does.
+func (a *App) vertexRegions(w http.ResponseWriter, r *http.Request) (any, error) {
+	regions, current := gemini.VertexRegions()
+	out := make([]map[string]any, 0, len(regions))
+	for _, reg := range regions {
+		out = append(out, map[string]any{"id": reg.ID, "label": reg.Label})
+	}
+	return map[string]any{"regions": out, "current": current}, nil
+}
+
+// servingModelName is the model this deployment actually answers customers
+// with — the one the picker must never hide. Empty when no serving service is
+// wired (a test App), which the catalog reads as "nothing to union".
+func (a *App) servingModelName() string {
+	if a.Gemini == nil {
+		return ""
+	}
+	return a.Gemini.ModelName()
 }
 
 // ============================================

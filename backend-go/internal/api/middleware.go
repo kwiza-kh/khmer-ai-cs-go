@@ -67,7 +67,12 @@ func (a *App) cors(next http.Handler) http.Handler {
 		}
 		h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
 		h.Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, X-Request-ID")
-		h.Set("Access-Control-Expose-Headers", "Content-Length, Content-Disposition, X-Request-ID")
+		// X-Model-List-Warning carries why a model list came back incomplete (the
+		// region's listing 404'd or returned nothing). It is a response header
+		// rather than part of the body so the "available" contract stays a bare
+		// array, which means it is only readable by the console if it is exposed
+		// here — the admin UI is served from a different origin than the API.
+		h.Set("Access-Control-Expose-Headers", "Content-Length, Content-Disposition, X-Request-ID, X-Model-List-Warning")
 		h.Set("Access-Control-Max-Age", "600")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

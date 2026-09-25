@@ -631,8 +631,28 @@ export const en: Dict = {
   // Vertex mode: the credential is the service-account file on the server,
   // not the api_key column this page manages.
   "admin.saCredential": "Service-account credential",
+  "admin.sectionModelRegion": "Model and region",
+  "admin.sectionGeneration": "Generation parameters",
   "admin.provider": "Provider",
   "admin.modelIdentifier": "Model identifier",
+  "admin.modelNotSet": "no model set",
+  // Vertex serves a different model set per location, so the card carries a
+  // region selector next to the model it drives. Absent on AI Studio, where a
+  // region means nothing.
+  "admin.region": "Region",
+  "admin.regionHint": "Vertex serves a different model set in each region, so the list below is loaded for this region.",
+  "admin.regionUnknown": "Server default region",
+  "admin.regionLoading": "Loading the region list…",
+  "admin.regionListUnavailable": "Could not load the region list. The region configured on the server is used.",
+  "admin.regionGlobal": "Global",
+  "admin.regionChanged": "Region set to {region} — reloading the model list",
+  "admin.loadingModelsForRegion": "Loading models for {region}…",
+  "admin.connectedGeminiRegion": "Connected · {n} chat models available in {region}.",
+  // Launch stage of a listed model: GA once generally available, otherwise a
+  // preview of some kind.
+  "admin.modelStageGa": "GA",
+  "admin.modelStagePreview": "Preview",
+  "admin.modelUnavailableHere": "Not available here",
   "admin.currentSuffix": " (current)",
   "admin.saveKeyFirst": "Save the API key before refreshing the model list.",
   "admin.refreshModelsAria": "Refresh Gemini model list",

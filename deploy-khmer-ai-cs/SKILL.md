@@ -132,6 +132,7 @@ RestartSec=3
   - ⚠️ **时序**: 必须等**彻底切到 vertex（且不再需要回滚/对照）之后**再清。中继是这台机器到 AI Studio 的**唯一通路**, 提前清 = 把**回滚路径**和 `embedcmp` 路径 A 一起废掉; 而 vertex 路径**根本不读这个变量**, 所以清早了当天毫无症状, 等你真需要它时才发现没有降落伞（deploy-commands §10.5）。
 - `GEMINI_PROVIDER=vertex` 而 project/SA 缺失时 **启动即退出**（`main.go` 的启动校验）, 不再是每轮请求才 500; 校验只读本地密钥文件, 不联网。
 - 模型名必须**锁定版本**（`gemini-3.5-flash`）: **不要用 `-latest` 别名**（平台不认, 且会随上游漂移）, 平台也**没有 lite 档**。
+- ⚠️ 新模型名是**区域作用域**的, 不是"不存在": 实测 (2026-09-25, 生产 SA) `gemini-3.8-flash` 在 `global` / `us` / `eu` 返回 200, 在**每一个单区域（含生产区 asia-southeast1）返回 404**; `gemini-3.5-flash` 在 `us-central1` / `europe-west4` 也是 404。后台「模型」页有**区域下拉**可按区查看目录（只改列表, 不改服务路径）—— 机制、接口与完整实测矩阵见 references/dev-guide.md §11.6。
 
 ### 切流顺序（两步, 可分离）
 
@@ -187,9 +188,9 @@ journalctl 里周期性 `/api/v1/realtime/inbox 401 WARN` = 未带 token 的 WS 
 | HTTPS 521 | Cloudflare 连不上源站 | zone SSL 必须 Full; `cs` A 记录必须 <部署服务器IP> (不能是 CF 边缘 IP) |
 | Gemini 502 / `User location is not supported` | Google 按出口 IP 地域封锁 Gemini API (2026-09-04 起, 服务器区域被拒) | 现状用 **CF AI Gateway** 中继: `.env-go` 的 `GEMINI_API_BASE=https://gateway.ai.cloudflare.com/v1/<acc>/gemini-relay-gw/google-ai-studio/**v1beta**` — **`/v1beta` 后缀绝不能丢** (gemini.go 用 `apiBase+"/models"` 直接拼接, 丢了 = 网关 404 空 body)。CF Worker 边缘中继无效 (出口同被识别为受限区域)。**根治 = 切 Vertex** (区域内端点, 不再需要中继, 见上文「Vertex 切换」), 切完**且不再需要回滚**后把 `GEMINI_API_BASE` 留空 (⚠️ **清早了会同时废掉回滚路径与 studio 对照工具, 见 §10.5**) |
 | 模型列表 200 但为空 | gemini.go ListModels 曾按 `data` 字段解析, Google 实际返回 `models` | 已修复 (2026-09-04); 若回归先查此解析 |
-| 模型列表 404 `no longer available to new users` | 测试用了退役模型名 | 用 DB `model_configs.model_name` 里配的现役模型 (当前 `gemini-3.5-flash`; **`gemini-3.6-flash` / 3.7 / 3.8 与任何 `-latest` 别名在平台上都不存在**, 平台也无 lite 档) |
+| 模型列表 404 `no longer available to new users` | 测试用了退役模型名 | 用 DB `model_configs.model_name` 里配的现役模型 (当前 `gemini-3.5-flash`); 任何 `-latest` 别名平台都不认, 也没有 lite 档。⚠️ 但"新名字不存在"是错的: `gemini-3.8-flash` **存在**, 只是只在 `global` / `us` / `eu` 可调, 在每个单区域 (含 asia-southeast1) 是 404 (`gemini-3.6/3.7` 未重新实测) —— 按区域查后台「模型」页的区域下拉, 别再用"存不存在"下结论 (dev-guide §11.6) |
 | Vertex 切完**启动即退出** (`systemctl` = failed) | `GEMINI_PROVIDER=vertex` 但 project/SA 缺失、路径错或 `khmerai` 读不到 key → `main.go` 启动校验 `os.Exit(1)`（只读本地文件, 不联网） | 看 journal 的 `invalid Gemini provider configuration` 一行; **先回滚 provider 把服务拉起来**再修 (deploy-commands §10.4/§10.7) |
-| Vertex 切完业务请求 404 | 模型名在平台上不存在 (`-lite` / `-latest` / 3.6~3.8), 或区域填错 | 锁 `gemini-3.5-flash` + `asia-southeast1`; 探针 `-caps` 先验证 |
+| Vertex 切完业务请求 404 | 模型名与区域不匹配 (`-lite` / `-latest` 平台不认; 3.8 只在 `global` / `us` / `eu` 有 —— **不是不存在**), 或区域填错 | 锁 `gemini-3.5-flash` + `asia-southeast1`; 探针 `-caps` 先验证; 按区域查后台「模型」页的区域下拉 (dev-guide §11.6) |
 | Vertex 切完检索命中变少 | 相似度尺度整体下移 (mean top1 `0.730→0.713`), 而 `RAG_SIMILARITY_FLOOR` 是**绝对值**; 也可能知识库没重嵌入 (换 provider 不触发重嵌入) | `rageval` 对基线 → 按 deploy-commands §10.6 第 6 项用 sweep 复核 floor; 重嵌入见 §10.1 |
 | 清掉 `GEMINI_API_BASE` 后回滚失败 | 中继是这台机器到 AI Studio 的**唯一通路**, 清早了 = 没有降落伞 (vertex 路径不读它, 所以当天无症状) | 把中继地址填回 `.env-go` 再回滚 (deploy-commands §10.5) |
 | 浏览器无限重定向 | SSL 模式被改成 Flexible (源站 :80 有 301) | CF 改回 Full |

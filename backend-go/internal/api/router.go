@@ -134,6 +134,10 @@ func (a *App) Router() http.Handler {
 	// to when its system_prompt is empty. A literal segment, so it can never be
 	// swallowed by the {id} patterns below.
 	authed.Handle("GET /api/v1/admin/models/default-prompt", a.platformAdminOnly(a.handle(a.defaultSystemPrompt)))
+	// The region selector's candidate list — the companion to the {id}/available
+	// listing below, which takes ?region=. Another literal segment at this depth,
+	// for the same reason as default-prompt: it must never be read as an {id}.
+	authed.Handle("GET /api/v1/admin/models/vertex-regions", a.platformAdminOnly(a.handle(a.vertexRegions)))
 	authed.Handle("PUT /api/v1/admin/models/{id}", a.platformAdminOnly(a.handleDoc(a.updateModelConfig)))
 	authed.Handle("POST /api/v1/admin/models/{id}/test", a.platformAdminOnly(a.handleDoc(a.testModelConfig)))
 	authed.Handle("GET /api/v1/admin/models/{id}/available", a.platformAdminOnly(a.handleDoc(a.listAvailableModels)))

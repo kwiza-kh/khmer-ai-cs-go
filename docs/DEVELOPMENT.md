@@ -770,3 +770,86 @@ a69c7d1..6b8d374，修复全部 4 项发现：
   路由前，收到的消息照旧计费
 - **分类器如实报告 grounding**：缓存命中的轮次 `hasMatch=true`（答案首次
   生成时确实有 KB 依据），不再喂给「知识库零命中」转人工触发器一个假输入
+
+## 十二、Vertex 区域化模型列表（2026-09-25）
+
+### 它修的是什么
+
+后台模型下拉在 vertex 下实际上只有那一份**手写候选表**（`gemini.go` 的 `vertexPublisherModels`：3 个名字）。
+它的注释写着"平台没有 publisher 模型列表路由"——那个结论是在 **`/v1`** 上量出来的，而
+`/v1beta1/publishers/google/models` 是**存在**的（2026-09-25 实测：`global`、`us-central1`、
+`asia-southeast1`、`europe-west4` 全部 200）。旧代码实际请求的是"项目自有模型"那条路由
+（`…/locations/{l}/models`）：它列的是本项目 tuned/uploaded 的模型（生产上是空的），而且那些名字
+用本客户端拼不出可调用的 URL —— 于是这份手写表同时成了"唯一来源"和**事实上的上限**：
+运维想选的模型只要不在那 3 个里，就看不见。
+
+现在列表直接问平台，并且**按区域**问——因为目录本来就是区域作用域的，而"服务 3.8 的区域"不是
+生产跑的区域。
+
+### 机制
+
+| 项 | 值 |
+|---|---|
+| 路由 | `GET {host}/v1beta1/publishers/google/models?pageSize=100` |
+| host | 单区域 `{region}-aiplatform.googleapis.com`；`global` = `aiplatform.googleapis.com`（不带 `global-` 前缀，那个主机名不解析） |
+| 版本 | **`/v1/` 形式 404，只有 `/v1beta1/` 有用**（`GEMINI_VERTEX_API_BASE` 覆盖也会被重新限定成 v1beta1） |
+| 分页 | 有 `nextPageToken` 就继续取，页数有上限；被截断时写进警告，不假装完整 |
+| 鉴权 | 与其它 vertex 调用同一套 SA bearer token（studio key 不会上这条路） |
+
+### API 契约
+
+| 接口 | 说明 |
+|---|---|
+| `GET /api/v1/admin/models/{id}/available?region=<region>` | `region` 可省 —— 省略 = 服务端配置的区域（`GEMINI_VERTEX_REGION`）。返回**数组**：`{name, display_name, launch_stage, capability, available}`；`capability ∈ chat/embedding/image/tts/live/other`；`launch_stage` 未知为 `""` |
+| `GET /api/v1/admin/models/vertex-regions` | `{regions:[{id,label}], current}`；当前配置区域**排第一**（不在静态候选表里也会出现）；纯配置读取，不联网 |
+| 响应头 `X-Model-List-Warning` | 列表不完整（区域 404 / 报错 / 返回空）时带原因（含区域名与 HTTP 状态）；**仍是 200** + 能拿到的内容 + 配置中的在用模型 |
+
+### 两条不能违反的规则
+
+1. **配置中的在用模型永远并进结果，且排第一。** 实测：`asia-southeast1` 的列表只有 9 条、**没有
+   `gemini-3.5-flash`**，而它在该区**可以调（200）**——它就是生产在用模型。列表没提到它，不代表
+   它不可用。
+2. **`available` 默认 `true`，列表成员关系从不换算成"不可用"。** 反例同样实测过：`us-central1`
+   的列表列了 3.x，单区域 `generateContent` 却 404。所以"不在列表里"和"在列表里"都不是判据；
+   唯一权威是后台的「测试」按钮。谁把它改成"在列表里才为真"，谁就会把生产在用模型显示成不可用。
+
+### 实测的区域矩阵（2026-09-25，生产 SA）
+
+| 区域 | gemini-3.8-flash | gemini-3.5-flash | gemini-embedding-001 |
+|---|---|---|---|
+| `global` | 200 | 429（配额） | 200 |
+| `us` | 200 | 200 | 200 |
+| `eu` | 200 | 200 | 200 |
+| `asia-southeast1` ← 生产 | **404** | 200 | 200 |
+| `asia-northeast1` | 404 | 200 | 200 |
+| `asia-south1` | 404 | 200 | 200 |
+| `us-central1` | 404 | **404** | 200 |
+| `europe-west4` | 404 | **404** | 200 |
+
+3.8 同样 404 的还有 `us-east1`、`us-east5`、`us-west1`、`europe-west1`、`europe-north1`、
+`asia-east1`、`northamerica-northeast1`、`australia-southeast1`。
+之前的文档写"3.6/3.7/3.8 在平台上不存在"，那是把"AI Studio / 只在 asia-southeast1 量过"当成了
+平台事实——**3.8 存在，只是只在 `global`/`us`/`eu` 可调**；3.6/3.7 本次未重新实测。
+
+### 列表 ≠ 服务路径
+
+区域选择器**只改列表**。在用的模型与区域仍来自 `.env-go` 的 `GEMINI_VERTEX_REGION` 加 DB
+`model_configs.model_name`（启动时 `providerFromEnv` 解析一次）。换区域看目录不会让流量换区，也不会
+让目录内容拦住任何保存动作——`updateModelConfig` 完全不读目录。
+
+### 验证
+
+- `cd backend-go && go build ./... && go vet ./... && go test ./...`（另跑过 `-race`）。
+- 单测锚点：v1beta1 路径（含 `global` 主机不带 `region-` 前缀）、分页与页数上限、`launch_stage`
+  有无、能力分类（纯函数表驱动）、显示名推导、在用模型并集、列表失败仍 200 且带
+  `X-Model-List-Warning`、区域参数校验（含"恶意区域不得把带 token 的请求指向任意主机"）、
+  studio 路径零回归。
+- 回归守卫：`asia-southeast1` 的**真实 9 条列表**（不含 `gemini-3.5-flash`）必须返回
+  `available: true` 且在用模型排第一——这条测试失败就说明规则 2 被改坏了。
+
+### 未做
+
+- `available` 目前没有任何"有正向证据才置 false"的来源（探针/退役信号都没有），因此它今天是恒
+  `true` 的；字段保留是为了将来能编码这种证据而不改线上形状。
+- 区域候选表是静态的（平台没有"列出所有区域"的接口），只保证 `current` 来自真实配置。
+- 目录不做缓存：每次打开模型页都实打实问一次平台（一次一页 100 条）。

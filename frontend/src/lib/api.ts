@@ -99,6 +99,12 @@ export interface ModelItem {
    * absent value means api_key, today's production behaviour.
    */
   credential_source?: "api_key" | "service_account";
+  /**
+   * Per-config Vertex region, if a backend ever stores one. Not sent today:
+   * the region is chosen in the admin UI and passed to the model-list call.
+   * Optional so the page can prefer it without a type assertion.
+   */
+  region?: string;
 }
 
 export interface ModelTestResponse {
@@ -108,9 +114,44 @@ export interface ModelTestResponse {
   output_tokens: number;
 }
 
+/**
+ * One model the backend offers for a config, from
+ * GET /admin/models/{id}/available.
+ *
+ * The three metadata fields are optional on purpose. The endpoint used to
+ * answer {name, display_name} only, and a rolling deploy can still serve that
+ * older shape; an absent field means UNKNOWN, never "unusable" — the UI must
+ * not grey an entry out because a field is missing.
+ */
 export interface AvailableModel {
   name: string;
   display_name: string;
+  /** Publisher launch stage: "GA", "PUBLIC_PREVIEW", … Empty = not reported. */
+  launch_stage?: string;
+  /** "chat" | "embedding" | "image" | "tts" | "live" | "other". */
+  capability?: string;
+  /**
+   * false = positive evidence the model cannot be served in the selected
+   * region. true/absent = usable, or nothing known against it.
+   */
+  available?: boolean;
+}
+
+/** A Vertex location the backend can serve from. */
+export interface VertexRegion {
+  id: string;
+  /** Human label from the backend; may repeat the id. */
+  label: string;
+}
+
+export interface VertexRegionsResponse {
+  regions: VertexRegion[];
+  /**
+   * The region the backend is configured with today. It is also present in
+   * `regions` (first) even when it is not one of the static candidates, so it
+   * is always a selectable option.
+   */
+  current: string;
 }
 
 export interface PaginatedResponse<T> {
@@ -806,8 +847,20 @@ export async function testModelConfig(configId: number, message: string) {
   });
 }
 
-export async function listAvailableModels(configId: number) {
-  return apiFetch<AvailableModel[]>(`/admin/models/${configId}/available`);
+// Model list for one config, optionally resolved against a Vertex region.
+// Omitting `region` (or passing "") asks for the server's configured region —
+// the endpoint treats both the same way, so the query string is left off
+// entirely rather than sent empty.
+export async function listAvailableModels(configId: number, region?: string) {
+  const query = region ? `?region=${encodeURIComponent(region)}` : "";
+  return apiFetch<AvailableModel[]>(`/admin/models/${configId}/available${query}`);
+}
+
+// The Vertex locations the backend can serve from, plus the one it is
+// configured with. Only meaningful for configs on the service-account
+// transport; the AI Studio path ignores regions.
+export async function listVertexRegions() {
+  return apiFetch<VertexRegionsResponse>("/admin/models/vertex-regions");
 }
 
 // ============================================

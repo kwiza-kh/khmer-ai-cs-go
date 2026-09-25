@@ -104,6 +104,10 @@ func TestZeroProviderIsStudio(t *testing.T) {
 // measured with cmd/vertexprobe. The path is where the platform is least
 // forgiving: a wrong one 404s, and a model passed as a URL 400s "malformed".
 func TestVertexEndpointShapes(t *testing.T) {
+	// The catalog URL is derived from the region (and the override), not from
+	// the provider's own base, so a stray override in the environment would
+	// silently rewrite the expectation below.
+	t.Setenv("GEMINI_VERTEX_API_BASE", "")
 	r := vertexResource{
 		base:    "https://asia-southeast1-aiplatform.googleapis.com/v1",
 		project: "gen-lang-client-0354228918",
@@ -127,10 +131,11 @@ func TestVertexEndpointShapes(t *testing.T) {
 		{"cachedContent model is a resource name", p.cachedContentModel("models/gemini-3.5-flash"),
 			"projects/gen-lang-client-0354228918/locations/asia-southeast1/publishers/google/models/gemini-3.5-flash"},
 		{"models list", p.listModelsURL(),
-			// The LIST route is NOT .../publishers/google/models: that path answers 404
-			// before authentication on the platform, while .../locations/{l}/models
-			// answers 401. The 404 is what surfaced as a 502 in the admin picker.
-			r.base + "/projects/gen-lang-client-0354228918/locations/asia-southeast1/models"},
+			// The catalog route is v1beta1, NOT v1: `/v1/publishers/google/models`
+			// answers 404 on every host while `/v1beta1/...` answers 200 (measured
+			// 2026-09-25). It is also host-addressed — no project, no location — so
+			// the path is the same string for every region; only the host changes.
+			"https://asia-southeast1-aiplatform.googleapis.com/v1beta1/publishers/google/models?pageSize=100"},
 	}
 	for _, tc := range cases {
 		if tc.got != tc.want {

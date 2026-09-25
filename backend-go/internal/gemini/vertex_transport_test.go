@@ -409,24 +409,21 @@ func TestVertexListModelsStripsTheResourcePath(t *testing.T) {
 	// transport on its own.
 	_, platform, _ := vertexService(t, func(r *http.Request, body []byte) (int, string) {
 		return http.StatusOK, `{"publisherModels":[` +
-			`{"name":"publishers/google/models/gemini-3.5-flash","displayName":"3.5 Flash"},` +
+			`{"name":"publishers/google/models/gemini-2.5-flash","displayName":"2.5 Flash"},` +
 			`{"name":"publishers/google/models/text-embedding-005","displayName":"Embeddings"}]}`
 	})
 	names, err := ListModels(context.Background(), "ignored-in-vertex-mode")
 	if err != nil {
 		t.Fatalf("ListModels: %v", err)
 	}
-	// Only the PARSED entry is pinned: this test is about the parsing (non-gemini
-	// entries filtered, prefix stripped). The vertex path then appends the
-	// curated picker list, so the total length is not this test's business —
-	// the curated tail is asserted in internal/api.
-	if len(names) == 0 || names[0] != "gemini-3.5-flash" {
-		t.Fatalf("names = %v, want the parsed model first (non-gemini filtered, prefix stripped)", names)
+	if len(names) != 2 || names[0] != "gemini-2.5-flash" || names[1] != "text-embedding-005" {
+		t.Fatalf("names = %v, want both parsed entries, prefix stripped", names)
 	}
 	got := platform.last(t)
-	// See provider_test: the list route is .../locations/{l}/models, not the
-	// publishers sub-path (which 404s before auth).
-	if want := "/projects/proj-1/locations/asia-southeast1/models"; got.Path != want {
+	// See provider_test: the catalog route is /v1beta1/publishers/google/models.
+	// The old path here was .../locations/{l}/models, which lists the project's
+	// OWN models — names every URL this client builds would then mis-address.
+	if want := "/v1beta1/publishers/google/models"; got.Path != want {
 		t.Errorf("path = %q, want %q", got.Path, want)
 	}
 	if got.Auth != "Bearer tok-vertex" {

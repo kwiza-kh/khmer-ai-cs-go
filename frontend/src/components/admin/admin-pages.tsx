@@ -1,9 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import useSWR from "swr";
-import { listUsers, updateUserRole, getTokenStats, listModelConfigs, listAvailableModels, testModelConfig, updateModelConfig, getDefaultSystemPrompt, listPromptVersions, restorePromptVersion, type AvailableModel, type ModelItem, type PaginatedResponse, type UserItem, type UsersStats } from "@/lib/api";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { listUsers, updateUserRole, getTokenStats, listModelConfigs, listAvailableModels, listVertexRegions, testModelConfig, updateModelConfig, getDefaultSystemPrompt, listPromptVersions, restorePromptVersion, type AvailableModel, type ModelItem, type PaginatedResponse, type UserItem, type UsersStats } from "@/lib/api";
+import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -16,7 +16,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { BarChart3, Clock, KeyRound, MessageSquare, RefreshCw, Send, Sparkles, TrendingUp, Users, Zap, Download, ShieldCheck, Search, UserCheck, UserPlus, Coins, Lock, History, RotateCcw, type LucideIcon } from "lucide-react";
+import { AlertTriangle, BarChart3, Clock, Cpu, KeyRound, MessageSquare, RefreshCw, Send, SlidersHorizontal, Sparkles, TrendingUp, Users, Zap, Download, ShieldCheck, Search, UserCheck, UserPlus, Coins, Lock, History, RotateCcw, type LucideIcon } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
 
@@ -500,6 +500,50 @@ function usesServiceAccountCredential(model: ModelItem): boolean {
   return model.credential_source === "service_account";
 }
 
+// Launch stages are an API enum, not prose: only the two values an operator has
+// to recognise get a translated label, anything else is shown verbatim rather
+// than flattened into a vague one.
+function modelStageLabelKey(stage: string): string | null {
+  const normalized = stage.trim().toUpperCase();
+  if (!normalized) return null;
+  if (normalized === "GA" || normalized === "GENERALLY_AVAILABLE" || normalized === "STABLE") {
+    return "admin.modelStageGa";
+  }
+  if (normalized.includes("PREVIEW") || normalized.includes("BETA") || normalized.includes("EXPERIMENTAL")) {
+    return "admin.modelStagePreview";
+  }
+  return null;
+}
+
+// One labelled group inside a model card. A card carries two credentials, a
+// region-dependent model list, three generation knobs and a prompt: grouping
+// them (each group with its own divider) is what keeps that readable instead of
+// one long column of inputs.
+function ModelConfigSection({
+  icon: Icon,
+  title,
+  action,
+  children,
+}: {
+  icon: LucideIcon;
+  title: string;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="space-y-3 border-t border-border pt-4 first:border-t-0 first:pt-0">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="flex items-center gap-2 text-sm font-medium text-foreground">
+          <Icon className="size-4 text-muted-foreground" />
+          {title}
+        </h3>
+        {action}
+      </div>
+      {children}
+    </section>
+  );
+}
+
 export function ModelsAdminPage() {
   const { t, tf } = useI18n();
   const { data, isLoading, mutate } = useSWR<ModelItem[]>("admin-models", listModelConfigs);
@@ -512,6 +556,9 @@ export function ModelsAdminPage() {
   const [availableModels, setAvailableModels] = useState<Record<number, AvailableModel[]>>({});
   const [modelListLoading, setModelListLoading] = useState<Record<number, boolean>>({});
   const [modelListErrors, setModelListErrors] = useState<Record<number, string>>({});
+  // Region the operator picked per config. Absent means "follow the region the
+  // server is configured with" — the region list itself is shared by every card.
+  const [regionByConfig, setRegionByConfig] = useState<Record<number, string>>({});
   // The built-in prompt a config falls back to when system_prompt is empty.
   // Without it the field below can only show the STORED value, which is empty
   // on a healthy deployment — an operator then cannot tell whether a prompt is
@@ -520,6 +567,32 @@ export function ModelsAdminPage() {
   const defaultPrompt = defaultPromptData?.system_prompt ?? "";
   const [showDefaultPrompt, setShowDefaultPrompt] = useState<Record<number, boolean>>({});
 
+  // A region only exists on the service-account (Vertex) transport, so on an AI
+  // Studio deployment this request is never made: a region selector there would
+  // be a control with nothing behind it.
+  const hasVertexModel = models.some(usesServiceAccountCredential);
+  const { data: regionsData, error: regionsError, isLoading: regionsLoading } = useSWR(
+    hasVertexModel ? "admin-vertex-regions" : null,
+    listVertexRegions,
+  );
+  const regions = regionsData?.regions ?? [];
+  const currentRegion = regionsData?.current ?? "";
+  // A Vertex card's model list depends on the region it is loaded for, so the
+  // cards wait for the region list rather than loading twice — once for the
+  // server default and once for the region the selector ends up showing. A
+  // failing endpoint resolves this too: the cards then load exactly as they did
+  // before regions existed, with no region parameter at all.
+  const regionsResolved = !hasVertexModel || regionsData !== undefined || regionsError !== undefined;
+
+  // The region in force for one card: the operator's pick, else the region the
+  // server is configured with, else one a newer backend may report per config.
+  // A pick is never empty, hence `||` — `currentRegion` is "" when unknown, and
+  // `??` would stop there instead of falling through.
+  const regionFor = (model: ModelItem) => {
+    if (!usesServiceAccountCredential(model)) return "";
+    return regionByConfig[model.config_id] || currentRegion || model.region || "";
+  };
+
   const updateModelDraft = (model: ModelItem, patch: Partial<ModelItem>) => {
     setModelDrafts((previous) => ({
       ...previous,
@@ -527,26 +600,35 @@ export function ModelsAdminPage() {
     }));
   };
 
-  const loadAvailableModels = useCallback(async (model: ModelItem): Promise<AvailableModel[] | null> => {
+  const loadAvailableModels = useCallback(async (model: ModelItem, region?: string): Promise<AvailableModel[] | null> => {
     if (!usesServiceAccountCredential(model) && !model.has_api_key) return null;
     setModelListLoading((previous) => ({ ...previous, [model.config_id]: true }));
-    setAvailableModels((previous) => ({ ...previous, [model.config_id]: [] }));
     setModelListErrors((previous) => {
       const next = { ...previous };
       delete next[model.config_id];
       return next;
     });
     try {
-      const available = await listAvailableModels(model.config_id);
+      const available = await listAvailableModels(model.config_id, region);
       setAvailableModels((previous) => ({ ...previous, [model.config_id]: available }));
       return available;
     } catch (error: unknown) {
+      // Whatever list is on screen stays there: emptying it here would leave an
+      // operator who just switched to a region that then fails with a blank
+      // dropdown and no way to see which model the config was using.
       setModelListErrors((previous) => ({ ...previous, [model.config_id]: (error as Error).message }));
       return null;
     } finally {
       setModelListLoading((previous) => ({ ...previous, [model.config_id]: false }));
     }
   }, []);
+
+  const handleRegionChange = (model: ModelItem, region: string) => {
+    if (!region || region === regionFor(model)) return;
+    setRegionByConfig((previous) => ({ ...previous, [model.config_id]: region }));
+    void loadAvailableModels(model, region);
+    toast.success(tf("admin.regionChanged", { region }));
+  };
 
   const handleSaveModel = async (model: ModelItem) => {
     const draft = modelDrafts[model.config_id] ?? model;
@@ -576,10 +658,12 @@ export function ModelsAdminPage() {
         return next;
       });
       await mutate();
-      const available = await loadAvailableModels({
-        ...model,
-        has_api_key: Boolean(apiKey) || model.has_api_key,
-      });
+      // Verify against the region this card is set to, so the toast counts the
+      // models the operator can actually choose from.
+      const available = await loadAvailableModels(
+        { ...model, has_api_key: Boolean(apiKey) || model.has_api_key },
+        regionFor(model) || undefined,
+      );
       if (available) {
         toast.success(tf("admin.geminiConnectedToast", { n: available.length }));
       } else if (apiKey || model.has_api_key || usesServiceAccountCredential(model)) {
@@ -615,15 +699,27 @@ export function ModelsAdminPage() {
     }
   };
 
+  // Model lists load once per fetched snapshot of the config list. The guard is
+  // that snapshot: the revalidation after a save hands back a new array, which
+  // is exactly when every list should be reloaded — while a region switch (new
+  // state, same snapshot) must not reload any other card's list.
+  const loadedSnapshot = useRef<ModelItem[] | null>(null);
   useEffect(() => {
-    if (!data) return;
+    if (!data || !regionsResolved) return;
+    if (loadedSnapshot.current === data) return;
+    loadedSnapshot.current = data;
     // Under Vertex there is no key to wait for — the credential lives on the
     // server — so the model list has to load for every config, not only the
     // ones with a stored key.
-    data.filter((model) => model.has_api_key || usesServiceAccountCredential(model)).forEach((model) => {
-      void loadAvailableModels(model);
+    data.forEach((model) => {
+      if (!model.has_api_key && !usesServiceAccountCredential(model)) return;
+      const picked = regionByConfig[model.config_id];
+      const region = usesServiceAccountCredential(model)
+        ? picked || currentRegion || model.region || ""
+        : "";
+      void loadAvailableModels(model, region || undefined);
     });
-  }, [data, loadAvailableModels]);
+  }, [data, loadAvailableModels, regionsResolved, regionByConfig, currentRegion]);
 
   return (
     <AdminPageFrame
@@ -635,7 +731,7 @@ export function ModelsAdminPage() {
       {isLoading ? <PageLoadingState /> : models.length === 0 ? (
         <Card><CardContent><EmptyState icon={Zap} title={t("admin.noModels")} /></CardContent></Card>
       ) : (
-        <div className="space-y-3">
+        <div className="space-y-4">
           {models.map((model) => {
             const draft = modelDrafts[model.config_id] ?? model;
             // Where the prompt in force actually comes from. An empty field is
@@ -648,8 +744,12 @@ export function ModelsAdminPage() {
             const testResult = testResults[model.config_id];
             const isTesting = testingConfigID === model.config_id;
             const modelOptions = availableModels[model.config_id] ?? [];
-            const hasCurrentModel = modelOptions.some((option) => option.name === draft.model_name);
-            const selectOptions = hasCurrentModel || !draft.model_name
+            const selectedOption = modelOptions.find((option) => option.name === draft.model_name);
+            const hasCurrentModel = selectedOption !== undefined;
+            // The configured model stays in the dropdown even when the backend
+            // does not list it for this region — otherwise the control would
+            // show some other model than the one actually running.
+            const selectOptions: AvailableModel[] = hasCurrentModel || !draft.model_name
               ? modelOptions
               : [{ name: draft.model_name, display_name: `${draft.model_name}${t("admin.currentSuffix")}` }, ...modelOptions];
             const isLoadingModels = modelListLoading[model.config_id] ?? false;
@@ -661,68 +761,63 @@ export function ModelsAdminPage() {
             const serviceAccount = usesServiceAccountCredential(model);
             const credentialReady = serviceAccount || model.has_api_key;
             const isConnected = credentialReady && modelOptions.length > 0 && !modelListError;
+            // A Vertex card's list is not even requested until the region list
+            // has answered, and that wait has to read as loading too: otherwise
+            // the dropdown would sit empty with no explanation for one
+            // round-trip, looking exactly like a failing connection.
+            const modelsPending = isLoadingModels || (serviceAccount && !regionsResolved);
+            const region = regionFor(model);
+            const regionLabel = region
+              ? regions.find((entry) => entry.id === region)?.label || region
+              : t("admin.regionUnknown");
+            const selectedStage = selectedOption?.launch_stage?.trim() ?? "";
+            const selectedStageKey = selectedStage ? modelStageLabelKey(selectedStage) : null;
+            // Exactly false: an older backend omits the field, and "unknown"
+            // must never be rendered as "unusable".
+            const selectedUnavailable = selectedOption?.available === false;
+            // An older backend reports neither capability nor availability, and
+            // then every listed model counts — the count this hint showed before.
+            const chatModels = modelOptions.filter(
+              (option) => option.available !== false && (!option.capability || option.capability === "chat"),
+            );
             return (
               <Card key={model.config_id}>
-                <CardHeader className="pb-2">
-                  <div className="flex items-center justify-between">
-                    <CardTitle className="flex items-center gap-2 text-sm">
-                      {model.name}
-                      {model.is_default && <Badge variant="success" className="h-4 px-1.5 text-xs">{t("admin.defaultBadge")}</Badge>}
-                    </CardTitle>
-                    <Badge variant="secondary" className="h-5 text-xs">{model.provider} / {model.model_name}</Badge>
-                  </div>
+                <CardHeader className="border-b border-border">
+                  <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
+                    {model.name}
+                    {model.is_default && <Badge variant="success" className="h-4 px-1.5 text-xs">{t("admin.defaultBadge")}</Badge>}
+                  </CardTitle>
+                  <CardDescription className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                    <span className="font-medium text-foreground">{model.provider}</span>
+                    <span aria-hidden className="text-muted-foreground">·</span>
+                    <span className="font-mono text-muted-foreground">{draft.model_name || t("admin.modelNotSet")}</span>
+                    {serviceAccount && (
+                      <>
+                        <span aria-hidden className="text-muted-foreground">·</span>
+                        <span className="text-muted-foreground">{regionLabel}</span>
+                      </>
+                    )}
+                  </CardDescription>
+                  <CardAction>
+                    <Badge variant={isConnected ? "success" : "secondary"} className="h-5 text-xs">
+                      {isConnected
+                        ? t("admin.connected")
+                        : serviceAccount
+                          ? t("admin.saCredential")
+                          : model.has_api_key
+                            ? t("admin.verificationNeeded")
+                            : t("admin.apiKeyRequired")}
+                    </Badge>
+                  </CardAction>
                 </CardHeader>
-                <CardContent className="space-y-3">
-                  <div className="rounded-lg border border-border bg-muted/30 p-3">
-                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                      <div className="flex items-center gap-2 text-sm font-medium">
-                        <KeyRound className="size-4 text-muted-foreground" />
-                        {t("admin.connSettings")}
-                      </div>
-                      <Badge variant={isConnected ? "success" : "secondary"} className="h-5 text-xs">
-                        {isConnected
-                          ? t("admin.connected")
-                          : serviceAccount
-                            ? t("admin.saCredential")
-                            : model.has_api_key
-                              ? t("admin.verificationNeeded")
-                              : t("admin.apiKeyRequired")}
-                      </Badge>
-                    </div>
+                <CardContent className="space-y-4">
+                  <ModelConfigSection icon={KeyRound} title={t("admin.connSettings")}>
                     <div className="grid gap-3 sm:grid-cols-2">
                       <div>
                         <label className="mb-1 block text-xs text-muted-foreground">{t("admin.provider")}</label>
                         <Input value={serviceAccount ? "Vertex AI" : "Gemini API"} disabled className="h-8 text-xs" />
                       </div>
-                      <div>
-                        <label className="mb-1 block text-xs text-muted-foreground">{t("admin.modelIdentifier")}</label>
-                        <div className="flex gap-2">
-                          {selectOptions.length > 0 ? (
-                            <Select value={draft.model_name} onValueChange={(value) => { if (value) updateModelDraft(model, { model_name: value }); }}>
-                              <SelectTrigger className="h-8 flex-1 text-xs"><SelectValue /></SelectTrigger>
-                              <SelectContent>
-                                {selectOptions.map((option) => <SelectItem key={option.name} value={option.name}>{option.display_name || option.name}</SelectItem>)}
-                              </SelectContent>
-                            </Select>
-                          ) : (
-                            <Input value={draft.model_name} onChange={(event) => updateModelDraft(model, { model_name: event.target.value })} className="h-8 text-xs" />
-                          )}
-                          <Button size="icon-sm" variant="outline" disabled={isLoadingModels} onClick={() => {
-                            if (!credentialReady) {
-                              setModelListErrors((previous) => ({ ...previous, [model.config_id]: t("admin.saveKeyFirst") }));
-                              return;
-                            }
-                            void loadAvailableModels(model);
-                          }} aria-label={t("admin.refreshModelsAria")}>
-                            <RefreshCw className={cn(isLoadingModels && "animate-spin")} />
-                          </Button>
-                        </div>
-                        <p className="mt-1 text-xs text-muted-foreground">
-                          {isLoadingModels ? t("admin.checkingGemini") : isConnected ? tf("admin.connectedGemini", { n: modelOptions.length }) : credentialReady ? t("admin.geminiNeedsVerify") : t("admin.saveKeyToLoad")}
-                        </p>
-                        {modelListError && <p role="alert" className="mt-1 text-xs text-danger">{modelListError}</p>}
-                      </div>
-                      <div className="sm:col-span-2">
+                      <div className={cn(serviceAccount && "sm:col-span-2")}>
                         <label className="mb-1 block text-xs text-muted-foreground">
                           {serviceAccount ? t("admin.geminiCredential") : t("admin.geminiApiKey")}
                         </label>
@@ -750,10 +845,152 @@ export function ModelsAdminPage() {
                         )}
                       </div>
                     </div>
-                  </div>
-                  <div>
-                    <div className="mb-1 flex flex-wrap items-center gap-2">
-                      <label className="block text-xs text-muted-foreground">{t("admin.systemPrompt")}</label>
+                  </ModelConfigSection>
+
+                  <ModelConfigSection icon={Cpu} title={t("admin.sectionModelRegion")}>
+                    <div className={cn("grid gap-3", serviceAccount && "lg:grid-cols-2")}>
+                      {serviceAccount && (
+                        <div>
+                          <label className="mb-1 block text-xs text-muted-foreground">{t("admin.region")}</label>
+                          {regions.length > 0 ? (
+                            <Select
+                              value={region}
+                              onValueChange={(value) => { if (value) handleRegionChange(model, String(value)); }}
+                            >
+                              <SelectTrigger className="h-8 w-full text-xs">
+                                {/* Explicit label: the options carry badges, which
+                                    must not leak into the trigger. */}
+                                <SelectValue>{() => regionLabel}</SelectValue>
+                              </SelectTrigger>
+                              <SelectContent>
+                                {regions.map((entry) => (
+                                  <SelectItem key={entry.id} value={entry.id} label={entry.label || entry.id}>
+                                    {entry.label || (entry.id === "global" ? t("admin.regionGlobal") : entry.id)}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          ) : (
+                            <Input value={regionLabel} disabled className="h-8 text-xs" />
+                          )}
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            {regionsLoading
+                              ? t("admin.regionLoading")
+                              : regionsError
+                                ? t("admin.regionListUnavailable")
+                                : t("admin.regionHint")}
+                          </p>
+                        </div>
+                      )}
+                      <div>
+                        <div className="mb-1 flex flex-wrap items-center gap-2">
+                          <label className="block text-xs text-muted-foreground">{t("admin.modelIdentifier")}</label>
+                          {selectedStage && (
+                            <Badge
+                              variant={selectedStageKey === "admin.modelStageGa" ? "outline" : "info"}
+                              className="h-4 px-1.5 text-[10px]"
+                            >
+                              {selectedStageKey ? t(selectedStageKey) : selectedStage}
+                            </Badge>
+                          )}
+                        </div>
+                        <div className="flex gap-2">
+                          {selectOptions.length > 0 ? (
+                            <Select value={draft.model_name} onValueChange={(value) => { if (value) updateModelDraft(model, { model_name: value }); }}>
+                              <SelectTrigger className="h-8 min-w-0 flex-1 text-xs">
+                                {/* Label resolved from the option list rather
+                                    than from the item registry, so it reads
+                                    cleanly without the stage/availability
+                                    badges the items carry. */}
+                                <SelectValue>{() => selectedOption?.display_name || draft.model_name || t("admin.modelNotSet")}</SelectValue>
+                              </SelectTrigger>
+                              <SelectContent className="min-w-72">
+                                {selectOptions.map((option) => {
+                                  const optionStage = option.launch_stage?.trim() ?? "";
+                                  const optionStageKey = optionStage ? modelStageLabelKey(optionStage) : null;
+                                  return (
+                                    <SelectItem key={option.name} value={option.name} label={option.display_name || option.name}>
+                                      <span className="flex w-full min-w-0 items-center gap-2">
+                                        <span className="min-w-0 flex-1 truncate">{option.display_name || option.name}</span>
+                                        {optionStage && (
+                                          <Badge
+                                            variant={optionStageKey === "admin.modelStageGa" ? "outline" : "info"}
+                                            className="h-4 shrink-0 px-1.5 text-[10px]"
+                                          >
+                                            {optionStageKey ? t(optionStageKey) : optionStage}
+                                          </Badge>
+                                        )}
+                                        {/* Flagged, not disabled: the operator
+                                            may still pick it and test it. */}
+                                        {option.available === false && (
+                                          <Badge variant="warning" className="h-4 shrink-0 px-1.5 text-[10px]">
+                                            {t("admin.modelUnavailableHere")}
+                                          </Badge>
+                                        )}
+                                      </span>
+                                    </SelectItem>
+                                  );
+                                })}
+                              </SelectContent>
+                            </Select>
+                          ) : (
+                            <Input value={draft.model_name} onChange={(event) => updateModelDraft(model, { model_name: event.target.value })} className="h-8 text-xs" />
+                          )}
+                          <Button size="icon-sm" variant="outline" disabled={modelsPending} onClick={() => {
+                            if (!credentialReady) {
+                              setModelListErrors((previous) => ({ ...previous, [model.config_id]: t("admin.saveKeyFirst") }));
+                              return;
+                            }
+                            void loadAvailableModels(model, region || undefined);
+                          }} aria-label={t("admin.refreshModelsAria")}>
+                            <RefreshCw className={cn(modelsPending && "animate-spin")} />
+                          </Button>
+                        </div>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          {modelsPending
+                            ? region
+                              ? tf("admin.loadingModelsForRegion", { region })
+                              : t("admin.checkingGemini")
+                            : isConnected
+                              ? region
+                                ? tf("admin.connectedGeminiRegion", { n: chatModels.length, region })
+                                : tf("admin.connectedGemini", { n: chatModels.length })
+                              : credentialReady
+                                ? t("admin.geminiNeedsVerify")
+                                : t("admin.saveKeyToLoad")}
+                        </p>
+                        {selectedUnavailable && (
+                          <p className="mt-1 flex items-center gap-1.5 text-xs text-warning">
+                            <AlertTriangle className="size-3.5 shrink-0" />
+                            {t("admin.modelUnavailableHere")}
+                          </p>
+                        )}
+                        {modelListError && <p role="alert" className="mt-1 text-xs text-danger">{modelListError}</p>}
+                      </div>
+                    </div>
+                  </ModelConfigSection>
+
+                  <ModelConfigSection icon={SlidersHorizontal} title={t("admin.sectionGeneration")}>
+                    <div className="grid gap-3 sm:grid-cols-3">
+                      <div>
+                        <label className="mb-1 block text-xs text-muted-foreground">{t("admin.temperature")}</label>
+                        <Input type="number" step="0.1" min="0" max="2" value={draft.temperature} onChange={(event) => updateModelDraft(model, { temperature: Number(event.target.value) })} className="h-8 text-xs" />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-xs text-muted-foreground">{t("admin.maxTokens")}</label>
+                        <Input type="number" min="1" value={draft.max_tokens} onChange={(event) => updateModelDraft(model, { max_tokens: Number(event.target.value) })} className="h-8 text-xs" />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-xs text-muted-foreground">{t("admin.cacheTtl")}</label>
+                        <Input type="number" min="0" value={draft.context_cache_ttl} onChange={(event) => updateModelDraft(model, { context_cache_ttl: Number(event.target.value) })} className="h-8 text-xs" />
+                      </div>
+                    </div>
+                  </ModelConfigSection>
+
+                  <ModelConfigSection
+                    icon={Sparkles}
+                    title={t("admin.systemPrompt")}
+                    action={
                       <Badge
                         variant="outline"
                         className={
@@ -770,7 +1007,8 @@ export function ModelsAdminPage() {
                             ? t("admin.promptOverridden")
                             : t("admin.promptUsingDefault")}
                       </Badge>
-                    </div>
+                    }
+                  >
                     <Textarea
                       value={draft.system_prompt}
                       onChange={(event) => updateModelDraft(model, { system_prompt: event.target.value })}
@@ -778,7 +1016,7 @@ export function ModelsAdminPage() {
                       className="resize-none text-xs"
                       placeholder={t("admin.promptEmptyPh")}
                     />
-                    <p className={`mt-1 text-xs ${promptSameAsDefault ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground"}`}>
+                    <p className={`text-xs ${promptSameAsDefault ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground"}`}>
                       {defaultPromptError
                         ? t("admin.promptDefaultUnavailable")
                         : promptSameAsDefault
@@ -787,7 +1025,7 @@ export function ModelsAdminPage() {
                             ? t("admin.promptHintOverridden")
                             : t("admin.promptHintDefault")}
                     </p>
-                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <Button
                         size="sm"
                         variant="outline"
@@ -808,50 +1046,38 @@ export function ModelsAdminPage() {
                       )}
                     </div>
                     {showDefaultPrompt[model.config_id] && (
-                      <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap rounded-lg border border-border bg-muted/40 p-3 text-xs leading-relaxed text-muted-foreground">
+                      <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-lg border border-border bg-muted/40 p-3 text-xs leading-relaxed text-muted-foreground">
                         {defaultPrompt || t("admin.promptLoading")}
                       </pre>
                     )}
-                    <div className="mt-2">
-                      <PromptHistory
-                        configId={model.config_id}
-                        onRestored={() => {
-                          // The server changed system_prompt; drop the local draft
-                          // so the textarea shows the restored value, and refresh
-                          // the list so has_api_key / other fields stay truthful.
-                          setModelDrafts((previous) => {
-                            const next = { ...previous };
-                            delete next[model.config_id];
-                            return next;
-                          });
-                          void mutate();
-                        }}
-                      />
-                    </div>
+                    <PromptHistory
+                      configId={model.config_id}
+                      onRestored={() => {
+                        // The server changed system_prompt; drop the local draft
+                        // so the textarea shows the restored value, and refresh
+                        // the list so has_api_key / other fields stay truthful.
+                        setModelDrafts((previous) => {
+                          const next = { ...previous };
+                          delete next[model.config_id];
+                          return next;
+                        });
+                        void mutate();
+                      }}
+                    />
+                  </ModelConfigSection>
+
+                  <div className="flex flex-wrap items-center justify-end gap-3 border-t border-border pt-4">
+                    <Button size="sm" onClick={() => handleSaveModel(model)} className="h-8 gap-1.5 text-xs">
+                      <ShieldCheck className="size-3.5" />
+                      {t("admin.saveVerify")}
+                    </Button>
                   </div>
-                  <div className="flex gap-3">
-                    <div className="flex-1">
-                      <label className="mb-1 block text-xs text-muted-foreground">{t("admin.temperature")}</label>
-                      <Input type="number" step="0.1" min="0" max="2" value={draft.temperature} onChange={(event) => updateModelDraft(model, { temperature: Number(event.target.value) })} className="h-8 text-xs" />
-                    </div>
-                    <div className="flex-1">
-                      <label className="mb-1 block text-xs text-muted-foreground">{t("admin.maxTokens")}</label>
-                      <Input type="number" min="1" value={draft.max_tokens} onChange={(event) => updateModelDraft(model, { max_tokens: Number(event.target.value) })} className="h-8 text-xs" />
-                    </div>
-                    <div className="flex-1">
-                      <label className="mb-1 block text-xs text-muted-foreground">{t("admin.cacheTtl")}</label>
-                      <Input type="number" min="0" value={draft.context_cache_ttl} onChange={(event) => updateModelDraft(model, { context_cache_ttl: Number(event.target.value) })} className="h-8 text-xs" />
-                    </div>
-                  </div>
-                  <Button size="sm" onClick={() => handleSaveModel(model)} className="h-8 text-xs">{t("admin.saveVerify")}</Button>
-                  <div className="rounded-lg border border-border p-3">
-                    <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                      <div className="flex items-center gap-2 text-sm font-medium">
-                        <MessageSquare className="size-4 text-muted-foreground" />
-                        {t("admin.testChat")}
-                      </div>
-                      <span className="text-xs text-muted-foreground">{t("admin.testNotSaved")}</span>
-                    </div>
+
+                  <ModelConfigSection
+                    icon={MessageSquare}
+                    title={t("admin.testChat")}
+                    action={<span className="text-xs text-muted-foreground">{t("admin.testNotSaved")}</span>}
+                  >
                     <Textarea
                       value={testMessages[model.config_id] ?? ""}
                       onChange={(event) => setTestMessages((previous) => ({ ...previous, [model.config_id]: event.target.value }))}
@@ -859,16 +1085,16 @@ export function ModelsAdminPage() {
                       rows={2}
                       className="min-h-20 resize-none text-sm"
                     />
-                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <Button size="sm" variant="outline" disabled={!credentialReady || isTesting} onClick={() => void handleTestModel(model)}>
                         <Send data-icon="inline-start" />
                         {isTesting ? t("admin.testing") : t("admin.sendTest")}
                       </Button>
                       {!credentialReady && <span className="text-xs text-muted-foreground">{t("admin.saveKeyToTest")}</span>}
                     </div>
-                    {testResult?.error && <p role="alert" className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-danger">{testResult.error}</p>}
+                    {testResult?.error && <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-danger">{testResult.error}</p>}
                     {testResult?.reply && (
-                      <div aria-live="polite" className="mt-3 rounded-md border border-border bg-muted/40 p-3">
+                      <div aria-live="polite" className="rounded-md border border-border bg-muted/40 p-3">
                         <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
                           <span>{testResult.modelName}</span>
                           <span>{tf("admin.tokenInOut", { in: testResult.promptTokens ?? 0, out: testResult.outputTokens ?? 0 })}</span>
@@ -876,7 +1102,7 @@ export function ModelsAdminPage() {
                         <p className="whitespace-pre-wrap text-sm leading-6 text-foreground">{testResult.reply}</p>
                       </div>
                     )}
-                  </div>
+                  </ModelConfigSection>
                 </CardContent>
               </Card>
             );

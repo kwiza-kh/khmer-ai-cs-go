@@ -50,7 +50,7 @@ LINE/Zalo 的 webhook 按 `platform_configs.channel_identity` (LINE = 机器人 
 | 库 | `DATABASE_URL` `REDIS_ADDR` `REDIS_PASSWORD` `REDIS_DB` | pg: 127.0.0.1:5432/khmer_ai_cs; redis requirepass |
 | 认证 | `JWT_SECRET` (≥32 随机) `JWT_EXPIRE_HOUR` `INITIAL_ADMIN_PASSWORD` `ALLOW_REGISTRATION` `REGISTRATION_INVITE_CODE` | 改 JWT_SECRET = 全员在线会话作废 |
 | 凭据加密 | `PLATFORM_CREDENTIAL_KEY` | base64(32B); **轮换后已保存的渠道凭据不可解密** (等于渠道全挂), 除非有重加密流程 |
-| AI | `GEMINI_API_KEY` `GEMINI_MODEL`(gemini-3.5-flash) `GEMINI_FAST_MODEL` `GEMINI_MAX_TOKENS` `GEMINI_CACHE_TTL` `GEMINI_API_BASE`(可选) | **key 为空 = MOCK 模式** (模板回复, 演示/CI 用), 上线真 AI 必配; `GEMINI_API_BASE` 覆盖 REST 端点 (读 `apiBase+"/models"` 拼接), 现网指向 CF AI Gateway **含 /v1beta 后缀**: `https://gateway.ai.cloudflare.com/v1/<CLOUDFLARE_ACCOUNT_ID>/gemini-relay-gw/google-ai-studio/v1beta` (绕开 Google 对服务器区域的地域封锁, 2026-09-04 起)。坑: ①后缀丢了 → 网关 404 空 body; ②DB model_configs 的 key 含非标准字符也能用 (curl/Go 原样传); ③网关的 Authentication 必须 None, 否则 401 code 2009; ④请求日志在 CF 面板 AI→AI Gateway 可查; ⑤**生产实际模型由 DB `model_configs.is_default` 覆盖** (启动时 HotReload 日志 `Gemini configured from database model config`), 上面的 `GEMINI_MODEL` 只在没有 DB 配置时生效 —— 排查"模型不对"先看那行启动日志, 别只看 `.env-go`; ⑥**模型名必须锁定版本, 不能用 `-latest` 别名** (`gemini-flash-lite-latest` 在平台上根本不存在) 且平台**无 lite 档** (`gemini-2.5-flash-lite` / `gemini-3.5-flash-lite` 亚洲各区 404), 主模型与辅助模型统一 `gemini-3.5-flash`; `gemini-3.6-flash` / 3.7 / 3.8 同样 404 |
+| AI | `GEMINI_API_KEY` `GEMINI_MODEL`(gemini-3.5-flash) `GEMINI_FAST_MODEL` `GEMINI_MAX_TOKENS` `GEMINI_CACHE_TTL` `GEMINI_API_BASE`(可选) | **key 为空 = MOCK 模式** (模板回复, 演示/CI 用), 上线真 AI 必配; `GEMINI_API_BASE` 覆盖 REST 端点 (读 `apiBase+"/models"` 拼接), 现网指向 CF AI Gateway **含 /v1beta 后缀**: `https://gateway.ai.cloudflare.com/v1/<CLOUDFLARE_ACCOUNT_ID>/gemini-relay-gw/google-ai-studio/v1beta` (绕开 Google 对服务器区域的地域封锁, 2026-09-04 起)。坑: ①后缀丢了 → 网关 404 空 body; ②DB model_configs 的 key 含非标准字符也能用 (curl/Go 原样传); ③网关的 Authentication 必须 None, 否则 401 code 2009; ④请求日志在 CF 面板 AI→AI Gateway 可查; ⑤**生产实际模型由 DB `model_configs.is_default` 覆盖** (启动时 HotReload 日志 `Gemini configured from database model config`), 上面的 `GEMINI_MODEL` 只在没有 DB 配置时生效 —— 排查"模型不对"先看那行启动日志, 别只看 `.env-go`; ⑥**模型名必须锁定版本, 不能用 `-latest` 别名** (`gemini-flash-lite-latest` 在平台上根本不存在) 且平台**无 lite 档** (`gemini-2.5-flash-lite` / `gemini-3.5-flash-lite` 亚洲各区 404), 主模型与辅助模型统一 `gemini-3.5-flash`; **新模型名不是「不存在」而是区域作用域** —— `gemini-3.8-flash` 只在 `global` / `us` / `eu` 返回 200, 在每个单区域 (含 asia-southeast1) 是 404 (2026-09-25 实测, 矩阵见 11.6; 3.6/3.7 未重新实测) |
 | Vertex (可选) | `GEMINI_PROVIDER`(**不设 = studio, 保持现状**) `GEMINI_VERTEX_PROJECT`(SA key 自带 project_id 时可省) `GEMINI_VERTEX_REGION`(默认 `asia-southeast1`, 实测可用区, 填错 = 每次调用 404) `GEMINI_VERTEX_SA_FILE` `GEMINI_VERTEX_API_BASE`(一般留空) | 平台端点 `{region}-aiplatform.googleapis.com/v1/projects/{p}/locations/{l}/publishers/google/models/{m}:generateContent`, 鉴权换成 **OAuth2 服务账号** (`cloud-platform` scope, 不再用 `x-goog-api-key`); 嵌入从 `:embedContent` 换成 `:predict` (须显式发 `outputDimensionality=768`, 否则默认 3072 与 `vector(768)` 不符)。**SA 密钥落位** `/opt/khmer-ai-cs/vertex-sa.json` + `chown khmerai:khmerai` + `chmod 600` (systemd 以 khmerai 跑, 权限不对即启动失败); ⚠️ **绝不提交进仓库** (`.gitignore` 无对应规则, 不兜底)。**切到 vertex 后 `GEMINI_API_BASE` 可以留空** —— 平台端点在区域内, 为绕地域封锁而生的 CF AI Gateway 中继不再需要 (摘掉这一跳是迁 Vertex 的收益之一; 回滚 studio 时再填回)。⚠️ 但**必须等彻底切完再清**: 它同时是**回滚通路**与 `embedcmp` 路径 A 的唯一前提, 清早了当天无症状 (见 §11.5)。`GEMINI_PROVIDER=vertex` 但缺 project/SA 时 **启动即退出** (`cmd/server/main.go` 的启动校验, 只读本地密钥不联网), 不是每轮请求才 500。TTS 在平台上**没有可用预览模型** → `TTS_ENABLED` 保持 false |
 | Jev | `TYPESAFE_API_KEY` (缺失 = 客户端为 nil, 所有接入点走旧路径) `JEV_KEEPWARM_SEC`(默认 45, 0=关) `JEV_GUARD_BUDGET_MS`(默认 3000) `JEV_ROUTE_BUDGET_MS`(默认 4000) `JEV_RULE_SOLO_MIN`(默认 0.90) `JEV_TURN_ESCALATE_MIN`(默认 0.60) `JEV_RULE_CONFIRM_MIN`(默认 0.70) | 类型化判断模型 (单端点 `api.typesafe.ai/v1/systemone`, 无 Go SDK), 决策点优先走它。**保活是前提**: 生产主机实测冷连接 0.64-4.24s / 热连接 0.22-0.42s (纯 TLS 握手单独就 0.44-3.62s), 而本项目流量稀疏 ⇒ 几乎每次都是冷启动 ⇒ 预算被打穿后决策回落给**更慢**的快模型 (实测 Jev turn 354ms vs 快模型 3234ms, 快 9.1 倍) —— 超时等于把准确判断换成乱升级。探针间隔必须 < `http.Transport` 的 `IdleConnTimeout`(90s), 否则连接在两次探针之间就已经死了。⚠️ `JEV_RULE_SOLO_MIN` 与 `JEV_TURN_ESCALATE_MIN` **是两回事**: 前者是 TurnTriggerFor 的真正转人工安全阀, 后者只决定 judgeTurnJev 写进 verdict 的 Escalate 标记 (widget 等外部调用方读它)。两者曾经共用一个变量, 各有各的默认值 —— 调一个会静默带动另一个, 已拆开 |
 | 渠道 | `TELEGRAM_BOT_TOKEN` `META_VERIFY_TOKEN` `META_APP_ID/APP_SECRET` `META_OAUTH_REDIRECT_URL` `META_OAUTH_FRONTEND_URL` `META_GRAPH_API_VERSION` `META_WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID` | OAuth 回调 URL 与 Meta 后台 redirect URI **逐字符一致** |
@@ -164,7 +164,7 @@ LINE/Zalo 的 webhook 按 `platform_configs.channel_identity` (LINE = 机器人 
 
 - **锁版本, 不用 `-latest`**: 平台不认浮动别名 (它还会随上游漂移); 目标模型 = `gemini-3.5-flash`。
 - **平台没有 lite 档**: `gemini-2.5-flash-lite` / `gemini-3.5-flash-lite` 亚洲各区全 404 ⇒ 主模型与 `FastModel` 统一 `gemini-3.5-flash`。两者同名后 `chatWithModel` 的"降级到快模型"会被 `fast != model` 守卫跳过 —— 这是设计如此, **不是回归**。
-- `gemini-3.6/3.7/3.8-flash` 同样 404。改 `model_configs` 或前端模型下拉的候选名之前, 先用 `vertexprobe -models <a,b,c>` 探一下, 别把 404 留到生产。
+- `gemini-3.6/3.7/3.8-flash` **不是"平台上不存在"** —— 这是个曾被写进文档的错误结论, 它是"只在 AI Studio / 只在 asia-southeast1 量过"的产物。实测 (2026-09-25, 生产 SA): **`gemini-3.8-flash` 在 `global` / `us` / `eu` 返回 200, 在包括 asia-southeast1 在内的每一个单区域返回 404** ⇒ 新模型名是**区域作用域**的, 不是缺席的。3.6/3.7 没有重新实测, 不要再假设它们不存在; 用区域列表 (`vertexprobe -models <a,b,c>`, 或后台「模型」页的区域下拉) 按区域确认。完整矩阵见 11.6。
 - **生产主模型来自 DB** (`model_configs.is_default`), **不是 `.env-go`**: 管理后台保存会 `HotReload` (无需重启), `psql` 直接 UPDATE **不会** ⇒ 用 SQL 改完必须重启, 否则就是"改了但没生效" (启动日志 `Gemini configured from database model config model=…` 是唯一权威信号)。
 - **TTS**: `gemini-2.5-flash-preview-tts` 在所有测试区域**不可用** ⇒ `TTS_ENABLED` 保持 `false` (平台上没有可指向的 TTS 模型)。
 
@@ -211,3 +211,46 @@ UPDATE knowledge_documents SET index_status = 'pending'
 - `embedding_model` 列在两种情况下写的是**同一个字符串** ⇒ 从数据里看不出向量出自哪个 provider, 溯源自能靠操作记录。
 - 顺带记住: `GEMINI_API_BASE` (CF AI Gateway 中继) 是这台机器到 AI Studio 的**唯一通路**, 也是**回滚**与 `embedcmp` 路径 A 的前提。
   它必须等**彻底切到 vertex 之后**再清, 而 vertex 路径根本不读它 ⇒ 清早了当天毫无症状 (详见 deploy-commands §10.5)。
+
+### 11.6 区域化的模型目录（2026-09-25 起）
+
+**为什么需要它**: 模型目录是**按区域**给的, 而"服务 3.8 的区域"(`global`) 不是生产跑的区域 (`asia-southeast1`) ⇒ 后台必须能**按区域查看**目录, 否则永远只能看到本区那几条。
+
+**机制**: 后端不再用 gemini.go 里那份手写的 `vertexPublisherModels` 兜底列表 (它曾同时是"唯一来源"和"事实上的上限", 见 11.1)。现在直接问平台:
+
+| 项 | 值 |
+|---|---|
+| 路由 | `GET {host}/v1beta1/publishers/google/models?pageSize=100` |
+| 区域 host | 单区域 `{region}-aiplatform.googleapis.com`; `global` = `aiplatform.googleapis.com` (**不带 `global-` 前缀**, 那个主机名不解析) |
+| 分页 | 响应带 `nextPageToken` 就继续取 (有页数上限; 截断会写进警告, 不假装完整) |
+| 鉴权 | 与其它 vertex 调用同一套 SA bearer token (studio key 绝不上这条路) |
+
+**后台接口** (平台管理员):
+
+| 接口 | 说明 |
+|---|---|
+| `GET /api/v1/admin/models/{id}/available?region=<region>` | `region` 可省 —— 省略 = 服务端配置的区域 (`GEMINI_VERTEX_REGION`)。返回数组: `{name, display_name, launch_stage, capability, available}`; `capability ∈ chat/embedding/image/tts/live/other`; `launch_stage` 未知时为 `""` |
+| `GET /api/v1/admin/models/vertex-regions` | `{regions:[{id,label}], current}`; 当前配置区域**排第一** (不在静态候选表里也会出现) |
+| 响应头 `X-Model-List-Warning` | 列表不完整时 (区域 404 / 报错 / 返回空) 带上原因 (含区域名与 HTTP 状态); **同时**仍返回 200 + 能拿到的内容 + 配置中的在用模型 |
+
+**⚠️ 三个必须记住的坑**
+
+1. **`/v1/` 形式的列表路由 404, 只有 `/v1beta1/` 有用。** 之前"平台没有 publisher 列表路由"的结论就是在 `/v1` 上量出来的, 于是一份手写列表被当成了平台事实。
+2. **列表不是"可调用性"判据 (最重要)。** 实测: `asia-southeast1` 只列 9 条、其中**没有 `gemini-3.5-flash`**, 而它在那个区域**可以调 (200)** —— 它正是生产的在用模型; 反过来 `us-central1` 的列表列了 3.x, 单区域 `generateContent` 却 404。所以接口的 `available` **默认为 `true`**, 列表成员关系**从不**被换算成"不可用"; 唯一权威是后台的「测试」按钮。谁把 `available` 改成"在列表里才为真", 谁就会把生产在用模型显示成不可用。
+3. **区域选择器只作用于"列表", 不改服务路径。** 在用的模型与区域来自 `.env-go` 的 `GEMINI_VERTEX_REGION` + DB `model_configs.model_name`; 换区域看目录不会让流量换区, 也不会让目录内容拦住任何保存动作。
+
+**实测的区域矩阵** (2026-09-25, 生产 SA; 200 = 可调, 404 = 该区域无此模型):
+
+| 区域 | gemini-3.8-flash | gemini-3.5-flash | gemini-embedding-001 |
+|---|---|---|---|
+| `global` | 200 | 429 (配额) | 200 |
+| `us` | 200 | 200 | 200 |
+| `eu` | 200 | 200 | 200 |
+| `asia-southeast1` ← 生产 | **404** | 200 | 200 |
+| `asia-northeast1` | 404 | 200 | 200 |
+| `asia-south1` | 404 | 200 | 200 |
+| `us-central1` | 404 | **404** | 200 |
+| `europe-west4` | 404 | **404** | 200 |
+
+3.8 同样 404 的还有: `us-east1`、`us-east5`、`us-west1`、`europe-west1`、`europe-north1`、`asia-east1`、`northamerica-northeast1`、`australia-southeast1`。
+⇒ 想上 3.8 只能把服务搬到 `global` / `us` / `eu`; 留在 `asia-southeast1` 就是 `gemini-3.5-flash` (3.5 在 `us-central1` / `europe-west4` 也是 404 ⇒ 换区域前连在用模型都要重测)。

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 )
@@ -44,6 +45,34 @@ const (
 // default follows the measured target rather than the platform's own
 // us-central1 default, because a wrong region is a 404 on every call.
 const vertexDefaultRegion = "asia-southeast1"
+
+// vertexGlobalRegion is the one Vertex location that is not a datacentre: the
+// multi-region endpoint. Its host carries NO region prefix (measured
+// 2026-09-25: aiplatform.googleapis.com serves the publisher-model list,
+// `global-aiplatform.googleapis.com` does not resolve at all), so it is spelled
+// out instead of being interpolated like every other location.
+const vertexGlobalRegion = "global"
+
+// vertexListAPIVersion is the version of the publisher-model LIST route.
+//
+// The serving routes are v1; this one is NOT. `/v1/publishers/google/models`
+// answers 404 (measured 2026-09-25) on both the global and the regional host,
+// while `/v1beta1/...` answers 200 — which is the entire reason this package
+// once carried a hand-curated picker list. A version is a property of the
+// route, not of the platform, so it is a named constant rather than a literal
+// buried in a format string.
+const vertexListAPIVersion = "v1beta1"
+
+// vertexListPageSize is the page size of the publisher-model list: 100 is what
+// the platform was measured to accept (us-central1 has 133 entries and answers
+// a nextPageToken, so the catalog has to page).
+const vertexListPageSize = 100
+
+// vertexListMaxPages bounds the paging loop. The largest region measured 133
+// models (two pages); the cap exists so a platform that keeps handing back a
+// nextPageToken cannot turn one admin page load into an unbounded walk. Hitting
+// it is reported to the caller as a truncation, never as a complete list.
+const vertexListMaxPages = 5
 
 // cloudPlatformScope is the only scope this service needs: every Gemini call on
 // the platform is authorised by cloud-platform, and asking for less (or for
@@ -164,6 +193,14 @@ func vertexRegion() string {
 	return envOr("GEMINI_VERTEX_REGION", vertexDefaultRegion)
 }
 
+// vertexHost is the AI Platform host that serves one location.
+func vertexHost(region string) string {
+	if region == vertexGlobalRegion {
+		return "https://aiplatform.googleapis.com"
+	}
+	return fmt.Sprintf("https://%s-aiplatform.googleapis.com", region)
+}
+
 // vertexPlatformBase is the version-qualified AI Platform root.
 //
 // GEMINI_VERTEX_API_BASE overrides it for exactly the reasons GEMINI_API_BASE
@@ -174,7 +211,80 @@ func vertexPlatformBase(region string) string {
 	if v := strings.TrimSpace(os.Getenv("GEMINI_VERTEX_API_BASE")); v != "" {
 		return strings.TrimRight(v, "/")
 	}
-	return fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1", region)
+	return vertexHost(region) + "/v1"
+}
+
+// vertexVersionBase is vertexPlatformBase with a caller-chosen API version.
+//
+// The region catalog lives at v1beta1 while everything else this package sends
+// is v1, and both must be built from the same host and honour the same override
+// — so the version is substituted at the END of the base rather than appended
+// to it. Appending would produce `.../v1/v1beta1/...` on the production base
+// and, worse, would hide the version from a stub whose override already carries
+// one: the test seam has to see the path the deployment actually sends, or it
+// proves nothing.
+func vertexVersionBase(region, version string) string {
+	base := vertexPlatformBase(region)
+	if i := strings.LastIndex(base, "/"); i > len("https://") {
+		if isAPIVersionSegment(base[i+1:]) {
+			return base[:i+1] + version
+		}
+	}
+	return base + "/" + version
+}
+
+// isAPIVersionSegment reports whether one path segment names a Google API
+// version (v1, v1beta, v1beta1, v2…). Shape-based rather than a fixed list, so
+// a future v2 base is re-qualified instead of silently keeping the old segment.
+func isAPIVersionSegment(seg string) bool {
+	if len(seg) < 2 || seg[0] != 'v' || seg[1] < '0' || seg[1] > '9' {
+		return false
+	}
+	for i := 2; i < len(seg); i++ {
+		if c := seg[i]; (c < '0' || c > '9') && (c < 'a' || c > 'z') {
+			return false
+		}
+	}
+	return true
+}
+
+// ValidVertexRegion reports whether region can be used as a Vertex location.
+//
+// This is a SECURITY check, not cosmetics: the region is interpolated into the
+// request HOST, and that request carries a service-account bearer token. An
+// unvalidated value containing a dot or a slash could aim a
+// credential-bearing request at a host of the caller's choosing. Only the
+// characters a real location id uses are accepted, which makes the hostname
+// this package builds impossible to steer.
+func ValidVertexRegion(region string) bool {
+	if region == "" || len(region) > 40 {
+		return false
+	}
+	for i := 0; i < len(region); i++ {
+		c := region[i]
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
+			return false
+		}
+	}
+	return region[0] != '-' && region[len(region)-1] != '-' && !strings.Contains(region, "--")
+}
+
+// publisherModelsURL is the catalog URL for ONE location.
+//
+// This is the route that did not exist at v1: the platform serves the
+// publisher-model list at `/v1beta1/publishers/google/models` on the global and
+// on every regional host (all four measured 2026-09-25), and answers 404 on the
+// /v1 form of it. It is addressed by HOST — no project, no location segment —
+// so it is rebuilt per region instead of from a provider's single resolved
+// base; GEMINI_VERTEX_API_BASE still wins, so a relay or a test stub sees every
+// region's request.
+func publisherModelsURL(region, pageToken string) string {
+	u := fmt.Sprintf("%s/publishers/google/models?pageSize=%d",
+		vertexVersionBase(region, vertexListAPIVersion), vertexListPageSize)
+	if pageToken != "" {
+		u += "&pageToken=" + url.QueryEscape(pageToken)
+	}
+	return u
 }
 
 // ValidateProviderConfig reports, as an error, a GEMINI_PROVIDER=vertex
@@ -263,21 +373,23 @@ func (p provider) cachedContentModel(model string) string {
 	return "models/" + NormalizeModelName(model)
 }
 
-// listModelsURL — model discovery for the admin UI.
+// listModelsURL — model discovery for the admin UI on this provider's own
+// location.
 //
-// Vertex lists the publisher models under the LOCATION, not under the API root,
-// and answers with a different envelope (`publisherModels`/`models` holding
-// `publishers/google/models/{m}` names) — see modelNamesFromListValue.
+// Vertex answers with a different envelope (`publisherModels` holding
+// `publishers/google/models/{m}` names) — see publisherModelList.
+//
+// The vertex branch used to point at `.../locations/{l}/models`, on the belief
+// that the publisher-model route 404s before authentication. That belief came
+// from probing the route at /v1; at /v1beta1 it answers 200 (measured
+// 2026-09-25), while the route it fell back to lists the project's OWN
+// tuned/uploaded models — names this client cannot address, because every
+// serving URL it builds is a `publishers/google/models/{m}` path. So the old
+// fallback listed entries that could never be picked, and hid the publisher
+// models that could.
 func (p provider) listModelsURL() string {
 	if p.kind == providerVertex {
-		// Vertex has no publisher-model LIST route: .../publishers/google/models
-		// answers 404 before authentication (unlike .../locations/{l}/models,
-		// which answers 401). Pointing the admin picker at the 404 path is what
-		// produced a 502 there. Note the surviving route lists the project's OWN
-		// models (tuned/uploaded), not the Gemini publisher models — so it can
-		// legitimately come back empty; callers must render that as "no
-		// project models", not as a failure.
-		return p.vertex.location() + "/models"
+		return publisherModelsURL(p.vertex.region, "")
 	}
 	return apiBase() + "/models?pageSize=200"
 }

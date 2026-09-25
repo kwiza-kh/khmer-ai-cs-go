@@ -278,28 +278,322 @@ func CredentialSourceOf() CredentialSource {
 // New and HotReload already draw internally, exposed to the admin handlers.
 func (c CredentialSource) IsAPIKey() bool { return c == CredentialAPIKey }
 
-// ListModels returns the generative model names available for the key.
+// Model capability vocabulary. The admin console switches on these EXACT
+// strings (AvailableModel.capability), so they are named constants instead of
+// literals scattered through the classifier.
+const (
+	CapabilityChat      = "chat"
+	CapabilityEmbedding = "embedding"
+	CapabilityImage     = "image"
+	CapabilityTTS       = "tts"
+	CapabilityLive      = "live"
+	CapabilityOther     = "other"
+)
+
+// CatalogModel is one entry of the admin model picker.
+type CatalogModel struct {
+	Name        string
+	DisplayName string
+	// LaunchStage is the platform's own label ("GA", "PREVIEW", …). It is ""
+	// whenever the entry carries none — the normal case on the studio path, and
+	// also measured on some regional entries — so a caller must render "" as
+	// "unknown" rather than as a value.
+	LaunchStage string
+	Capability  string
+	// Available is true unless this deployment has POSITIVE evidence that the
+	// model cannot be used in the region that was asked about. See ModelCatalog:
+	// list membership is NOT such evidence, so nothing in this package sets it
+	// false today and the operator's Test button remains the authority.
+	Available bool
+}
+
+// VertexRegion is one selectable Vertex location.
+type VertexRegion struct {
+	ID    string
+	Label string
+}
+
+// vertexRegionCandidates is the region picker's static candidate list.
 //
-// The apiKey argument is the STUDIO credential; on the vertex path it is
-// ignored and the request is authorised with a service-account token instead
-// (provider.authorize picks the header per transport), which is why a vertex
-// caller may — and the admin console does — pass "" without losing access.
-// The signature is kept because callers (the admin model picker) hold the key
-// from model_configs and have no notion of the transport.
-// vertexPublisherModels is the curated picker list for vertex. Kept next to
-// ListModels because it exists only to compensate for the missing platform
-// route; see the comment at its use site.
-var vertexPublisherModels = []string{
+// There is no "list every region" API, so the candidates have to be static. The
+// labels are the locations' human names, NOT a claim that each one serves
+// Gemini — the listing itself is what answers that, and it answers per region.
+var vertexRegionCandidates = []VertexRegion{
+	{ID: "global", Label: "global (multi-region)"},
+	{ID: "us-central1", Label: "us-central1 (Iowa)"},
+	{ID: "us-east1", Label: "us-east1 (South Carolina)"},
+	{ID: "us-east4", Label: "us-east4 (North Virginia)"},
+	{ID: "us-west1", Label: "us-west1 (Oregon)"},
+	{ID: "us-west4", Label: "us-west4 (Las Vegas)"},
+	{ID: "northamerica-northeast1", Label: "northamerica-northeast1 (Montréal)"},
+	{ID: "southamerica-east1", Label: "southamerica-east1 (São Paulo)"},
+	{ID: "europe-west1", Label: "europe-west1 (Belgium)"},
+	{ID: "europe-west2", Label: "europe-west2 (London)"},
+	{ID: "europe-west3", Label: "europe-west3 (Frankfurt)"},
+	{ID: "europe-west4", Label: "europe-west4 (Netherlands)"},
+	{ID: "europe-central2", Label: "europe-central2 (Warsaw)"},
+	{ID: "asia-east1", Label: "asia-east1 (Taiwan)"},
+	{ID: "asia-east2", Label: "asia-east2 (Hong Kong)"},
+	{ID: "asia-northeast1", Label: "asia-northeast1 (Tokyo)"},
+	{ID: "asia-northeast3", Label: "asia-northeast3 (Seoul)"},
+	{ID: "asia-south1", Label: "asia-south1 (Mumbai)"},
+	{ID: "asia-southeast1", Label: "asia-southeast1 (Singapore)"},
+	{ID: "asia-southeast2", Label: "asia-southeast2 (Jakarta)"},
+	{ID: "australia-southeast1", Label: "australia-southeast1 (Sydney)"},
+	{ID: "me-central1", Label: "me-central1 (Doha)"},
+}
+
+// VertexRegions returns the picker's candidates with the deployment's own region
+// FIRST, plus that region as `current`.
+//
+// `current` is read from the real configuration (GEMINI_VERTEX_REGION), never
+// from the static list, and a configured region that is NOT in the static list
+// is still returned first: an operator running an unusual location must see the
+// region their service actually uses, not a selector that cannot express it.
+func VertexRegions() ([]VertexRegion, string) {
+	current := strings.ToLower(vertexRegion())
+	out := make([]VertexRegion, 0, len(vertexRegionCandidates)+1)
+	out = append(out, VertexRegion{ID: current, Label: regionLabel(current)})
+	for _, r := range vertexRegionCandidates {
+		if r.ID == current {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out, current
+}
+
+// regionLabel is the operator-facing label for one location id.
+func regionLabel(region string) string {
+	for _, r := range vertexRegionCandidates {
+		if r.ID == region {
+			return r.Label
+		}
+	}
+	return region + " (configured)"
+}
+
+// vertexFallbackNames is the LAST-RESORT picker list, used only when a region's
+// catalog cannot be fetched at all.
+//
+// It is not a gate and never was meant to be one: every entry it contributes is
+// marked Available=false, because a name typed from memory is precisely what it
+// is. Its one job is to keep a broken listing from rendering as "Gemini is
+// broken" — the failure the curated list was originally introduced to paper
+// over, back when the publisher route was believed to be unreachable at any
+// version.
+var vertexFallbackNames = []string{
 	"gemini-3.5-flash",
 	"gemini-2.5-flash",
 	"gemini-embedding-001",
 }
 
-func ListModels(ctx context.Context, apiKey string) ([]string, error) {
+// publisherModelList is the platform's model-list envelope.
+//
+// The entries arrive under `publisherModels`; `models` is read too because the
+// studio root uses that key and a relay in front of the platform may normalise
+// one to the other. Which key the platform picks is the platform's business,
+// not this package's.
+type publisherModelList struct {
+	PublisherModels []publisherModelEntry `json:"publisherModels"`
+	Models          []publisherModelEntry `json:"models"`
+	NextPageToken   string                `json:"nextPageToken"`
+}
+
+// publisherModelEntry is one model as the platform describes it.
+//
+// supportedActions is NOT a []string, and typing it as one took the model list
+// down in production. The field's shape varies per entry (measured with the
+// production service account on 2026-09-25):
+//
+//	absent            most entries
+//	{}                gemma4, gemma3
+//	{openNotebook:{…}} / {openGenerationAiStudio:{…}}   imagetext, image-segmentation-001
+//
+// A single entry of the wrong Go type fails the WHOLE page — `cannot unmarshal
+// object into Go struct field …publisherModels.2.supportedActions of type
+// []string` — and the listing then silently degrades to the three-name fallback
+// for every region, which is indistinguishable from the platform being down.
+// RawMessage accepts all three shapes, and nothing reads it (capabilityFor
+// classifies by name), so there is no reason to model its contents at all.
+//
+// launchStage is decoded but must also tolerate absence: `gemma3` answered
+// without one. Only the console's GA/preview badge consumes it, and an empty
+// value renders as no badge rather than as a wrong one.
+type publisherModelEntry struct {
+	Name             string          `json:"name"`
+	DisplayName      string          `json:"displayName"`
+	LaunchStage      string          `json:"launchStage"`
+	SupportedActions json.RawMessage `json:"supportedActions"`
+}
+
+// ModelCatalog returns the models an operator may pick from in `region`.
+//
+// The region selects the LISTING only. Nothing here changes which model or
+// which region serves traffic — the serving path resolves its own region from
+// GEMINI_VERTEX_REGION in providerFromEnv, and an empty region means exactly
+// that configured region, so the picker's default request keeps the behaviour
+// it had before region selection existed.
+//
+// Two rules make the result honest, and both exist because the platform's model
+// list is NOT a callability oracle. Measured 2026-09-25: gemini-3.5-flash serves
+// asia-southeast1 traffic while appearing in neither that region's list nor
+// reliably anywhere, and us-central1's list advertises 3.5/3.6/3.7/3.8 even
+// though a single-region generateContent there 404s.
+//
+//  1. The deployment's configured model is ALWAYS unioned in, first, and is
+//     never dropped for being absent from the list. A model that is answering
+//     customers must not become unpickable because the catalog forgot it.
+//  2. Available defaults to TRUE, and list membership is never turned into an
+//     availability verdict. The measured production proof: asia-southeast1's
+//     list holds nine entries and only ONE Gemini chat model, yet
+//     gemini-3.5-flash answers 200 OK there (measured 2026-09-25) while being
+//     absent from that list. A catalog that read "not listed" as "unusable"
+//     would paint this deployment's own serving model as unavailable — and
+//     us-central1's list advertises 3.5/3.6/3.7/3.8 whose single-region
+//     generateContent 404s, so the reverse reading is just as wrong. The only
+//     honest encoding of "we did not measure it" is true; the console's Test
+//     button is what measures.
+//
+// A listing that 404s, fails or comes back empty is NOT an error: the caller
+// gets the union plus the last-resort names and a non-empty warning naming the
+// region and the cause. Only a broken CONFIGURATION (a missing or unreadable
+// service-account key) is returned as an error, because no rendering makes that
+// list correct.
+func ModelCatalog(ctx context.Context, apiKey, region, configuredModel string) ([]CatalogModel, string, error) {
 	prov, err := providerFromEnv()
+	if err != nil {
+		return nil, "", err
+	}
+	region = strings.ToLower(strings.TrimSpace(region))
+	if prov.kind != providerVertex {
+		// Studio is one global endpoint with no region at all: the parameter is
+		// accepted (the console sends it unconditionally once a selector exists)
+		// and ignored, rather than rejected.
+		listed, err := studioCatalog(ctx, prov, apiKey)
+		if err != nil {
+			return nil, "", err
+		}
+		return withConfiguredModel(listed, configuredModel), "", nil
+	}
+	// One spelling for both the empty case and the URL: GEMINI_VERTEX_REGION is a
+	// location id (lowercase by definition), but an operator's .env is not
+	// obliged to be, and this value is interpolated into the request host.
+	configuredRegion := strings.ToLower(prov.vertex.region)
+	if region == "" {
+		region = configuredRegion
+	}
+	listed, warning := publisherCatalog(ctx, prov, region)
+	if len(listed) == 0 {
+		listed = vertexFallbackCatalog()
+		if warning == "" {
+			warning = fmt.Sprintf("region %s listed no publisher models", region)
+		}
+	}
+	return withConfiguredModel(listed, configuredModel), warning, nil
+}
+
+// ListModels returns just the model names — the pre-catalog shape, kept for the
+// callers and tests that only need names. The admin picker uses ModelCatalog,
+// which also carries the label, the launch stage and the capability.
+//
+// The apiKey argument is the STUDIO credential; on the vertex path it is
+// ignored and the request is authorised with a service-account token instead
+// (provider.authorize picks the header per transport), which is why a vertex
+// caller may — and the admin console does — pass "" without losing access.
+func ListModels(ctx context.Context, apiKey string) ([]string, error) {
+	models, _, err := ModelCatalog(ctx, apiKey, "", "")
 	if err != nil {
 		return nil, err
 	}
+	names := make([]string, 0, len(models))
+	for _, m := range models {
+		names = append(names, m.Name)
+	}
+	return names, nil
+}
+
+// publisherCatalog pages one region's publisher-model list.
+//
+// A failure on the first page leaves the result empty and names the region and
+// the cause, which is what tells the caller to fall back; a failure on a later
+// page keeps the pages already fetched and still reports — a truncated catalog
+// with a stated reason beats either a silent partial list or a hard error.
+func publisherCatalog(ctx context.Context, prov provider, region string) ([]CatalogModel, string) {
+	client := &http.Client{Timeout: 20 * time.Second}
+	listed := make([]CatalogModel, 0, vertexListPageSize)
+	seen := make(map[string]bool, vertexListPageSize)
+	pageToken := ""
+	for page := 1; page <= vertexListMaxPages; page++ {
+		entries, next, err := publisherModelPage(ctx, client, prov, region, pageToken)
+		if err != nil {
+			return listed, fmt.Sprintf("region %s: publisher model list failed on page %d: %v", region, page, err)
+		}
+		for _, e := range entries {
+			name := modelNameFromResource(e.Name)
+			if name == "" || seen[name] {
+				continue
+			}
+			seen[name] = true
+			listed = append(listed, CatalogModel{
+				Name:        name,
+				DisplayName: displayNameForEntry(name, e.DisplayName),
+				LaunchStage: strings.TrimSpace(e.LaunchStage),
+				Capability:  capabilityFor(name),
+				Available:   true,
+			})
+		}
+		if next == "" {
+			return listed, ""
+		}
+		pageToken = next
+	}
+	return listed, fmt.Sprintf("region %s: model list truncated after %d pages", region, vertexListMaxPages)
+}
+
+// publisherModelPage fetches one page of one region's publisher-model list.
+func publisherModelPage(ctx context.Context, client *http.Client, prov provider, region, pageToken string) ([]publisherModelEntry, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, publisherModelsURL(region, pageToken), nil)
+	if err != nil {
+		return nil, "", err
+	}
+	// The studio key is deliberately NOT passed through: provider.authorize
+	// picks the header per transport, and an AI Studio key reaching a platform
+	// endpoint is the one thing the provider split exists to prevent.
+	if err := prov.authorize(ctx, req, ""); err != nil {
+		return nil, "", err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		// The platform explains itself in the body ("... is not found" for a
+		// region that does not serve this route), and that sentence is the
+		// difference between "the region is wrong" and "we are not allowed".
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, "", fmt.Errorf("HTTP %d: %s", resp.StatusCode,
+			truncateRunes(strings.TrimSpace(string(body)), 200))
+	}
+	var list publisherModelList
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		return nil, "", fmt.Errorf("unparsable model list: %w", err)
+	}
+	entries := list.PublisherModels
+	if len(entries) == 0 {
+		entries = list.Models
+	}
+	return entries, strings.TrimSpace(list.NextPageToken), nil
+}
+
+// studioCatalog lists the AI Studio models — the pre-vertex request, unchanged:
+// no region, the key in x-goog-api-key, pageSize=200.
+//
+// Unlike the vertex catalog this has no fallback: a failure here is a credential
+// or connectivity problem the operator must see, and the console already
+// reports it as one.
+func studioCatalog(ctx context.Context, prov provider, apiKey string) ([]CatalogModel, error) {
 	client := &http.Client{Timeout: 20 * time.Second}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, prov.listModelsURL(), nil)
 	if err != nil {
@@ -316,54 +610,168 @@ func ListModels(ctx context.Context, apiKey string) ([]string, error) {
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("models list HTTP %d", resp.StatusCode)
 	}
-	var v struct {
-		Models []struct {
-			Name        string `json:"name"`
-			DisplayName string `json:"displayName"`
-		} `json:"models"`
-		// Vertex answers under a different key; both are read because that
-		// envelope is the platform's choice, not this package's.
-		PublisherModels []struct {
-			Name        string `json:"name"`
-			DisplayName string `json:"displayName"`
-		} `json:"publisherModels"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&v); err != nil {
+	var list publisherModelList
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
 		return nil, err
 	}
-	entries := v.Models
+	entries := list.Models
 	if len(entries) == 0 {
-		entries = v.PublisherModels
+		entries = list.PublisherModels
 	}
-	names := make([]string, 0)
-	for _, m := range entries {
-		n := modelNameFromResource(m.Name)
-		if strings.Contains(strings.ToLower(n), "gemini") {
-			names = append(names, n)
+	out := make([]CatalogModel, 0, len(entries))
+	for _, e := range entries {
+		name := modelNameFromResource(e.Name)
+		if name == "" {
+			continue
 		}
+		out = append(out, CatalogModel{
+			Name:        name,
+			DisplayName: displayNameForEntry(name, e.DisplayName),
+			LaunchStage: strings.TrimSpace(e.LaunchStage),
+			Capability:  capabilityFor(name),
+			Available:   true,
+		})
 	}
-	// On vertex this route lists the project's OWN models (tuned/uploaded), not
-	// the Gemini publisher models — the platform exposes no publisher-model list
-	// at all (…/publishers/google/models answers 404 before authentication).
-	// Without this the admin picker would present an empty dropdown on a
-	// deployment that is serving fine, which reads as "Gemini is broken".
-	// The names below are the ones measured working in this project's region;
-	// they are a convenience list for the picker, never a gate — a model missing
-	// from here can still be typed in and will work if the region serves it.
-	if prov.kind == providerVertex {
-		seen := make(map[string]bool, len(names))
-		for _, n := range names {
-			seen[n] = true
-		}
-		for _, n := range vertexPublisherModels {
-			if !seen[n] {
-				names = append(names, n)
-				seen[n] = true
-			}
-		}
-	}
+	return out, nil
+}
 
-	return names, nil
+// vertexFallbackCatalog is vertexFallbackNames as catalog entries.
+//
+// They are offered as available, like everything else here, because a failed
+// listing is evidence about the LISTING and not about any model: the same
+// measurement that showed the list is not a callability oracle also showed a
+// model answering 200 from a region whose list never mentions it. What the
+// operator needs to know is that these names are unverified, and that is what
+// the warning beside them says.
+func vertexFallbackCatalog() []CatalogModel {
+	out := make([]CatalogModel, 0, len(vertexFallbackNames))
+	for _, name := range vertexFallbackNames {
+		out = append(out, CatalogModel{
+			Name:        name,
+			DisplayName: displayNameFor(name),
+			Capability:  capabilityFor(name),
+			Available:   true,
+		})
+	}
+	return out
+}
+
+// withConfiguredModel puts the deployment's configured model at the FRONT of the
+// catalog, adding it when the list did not mention it.
+//
+// Front, not back: this is the model the operator is looking at, and burying it
+// in a 133-entry dropdown is how the current selection becomes invisible. Its
+// availability is not derived from the list either — see ModelCatalog's rule 2,
+// and note that this is the exact model (gemini-3.5-flash in asia-southeast1)
+// that a list-membership reading would wrongly hide.
+func withConfiguredModel(listed []CatalogModel, configuredModel string) []CatalogModel {
+	configured := NormalizeModelName(configuredModel)
+	if configured == "" {
+		return listed
+	}
+	var current *CatalogModel
+	rest := make([]CatalogModel, 0, len(listed)+1)
+	for _, m := range listed {
+		if m.Name == configured {
+			current = &m
+			continue
+		}
+		rest = append(rest, m)
+	}
+	if current == nil {
+		current = &CatalogModel{
+			Name:        configured,
+			DisplayName: displayNameFor(configured),
+			Capability:  capabilityFor(configured),
+			Available:   true,
+		}
+	}
+	return append([]CatalogModel{*current}, rest...)
+}
+
+// displayNameForEntry prefers the platform's own label and derives one when the
+// entry has none. The entries measured on the platform carry no displayName at
+// all, so the derived path is the one that actually runs in production.
+func displayNameForEntry(name, platformLabel string) string {
+	if label := strings.TrimSpace(platformLabel); label != "" {
+		return label
+	}
+	return displayNameFor(name)
+}
+
+// displayNameFor derives the operator-facing label from a model id:
+// "gemini-3.8-flash" -> "Gemini 3.8 Flash".
+//
+// Derived rather than stored because the picker has to label models this
+// deployment has never seen: operators type new ids into other screens, and a
+// model that the platform lists but this file has never heard of still needs a
+// label that is not its raw id in ALL CAPS or an empty string.
+func displayNameFor(name string) string {
+	parts := strings.Split(name, "-")
+	for i, p := range parts {
+		if p == "" {
+			continue
+		}
+		if upper, ok := modelNameAcronyms[strings.ToLower(p)]; ok {
+			parts[i] = upper
+			continue
+		}
+		// Version and size segments stay verbatim: "3.8" must not become "3.8"
+		// with a capital, and "2.5" must never be re-cased into a different
+		// model number.
+		if p[0] >= '0' && p[0] <= '9' {
+			continue
+		}
+		parts[i] = strings.ToUpper(p[:1]) + p[1:]
+	}
+	return strings.Join(parts, " ")
+}
+
+// modelNameAcronyms are the segments a plain title-case would mangle.
+var modelNameAcronyms = map[string]string{
+	"tts": "TTS", // gemini-2.5-flash-preview-tts -> "… Preview TTS"
+	"asr": "ASR",
+	"ocr": "OCR",
+	"ai":  "AI",
+	"api": "API",
+}
+
+// capabilityFor classifies a model id into the console's vocabulary.
+//
+// Name-based, and ONLY name-based. The platform's own action list cannot carry
+// this: it was absent on every entry a measurement against the production
+// service account checked (gemini-3.8-flash, gemini-3.5-flash,
+// gemini-2.5-flash-tts, gemini-embedding-001 all answered `actions=None`), while
+// the naming convention is stable across families — including the families that
+// would never answer a customer message, which is the mistake this classification
+// exists to prevent.
+//
+// Pure function, no I/O: the console groups and filters on these strings, so it
+// is unit-tested as a table.
+func capabilityFor(name string) string {
+	n := strings.ToLower(name)
+	switch {
+	case strings.Contains(n, "embedding"):
+		return CapabilityEmbedding
+	// "native-audio" is the one live family whose id does not contain "live"
+	// (gemini-2.5-flash-preview-native-audio).
+	case strings.Contains(n, "live"), strings.Contains(n, "native-audio"):
+		return CapabilityLive
+	// Before the chat test: gemini-…-tts and gemini-…-image are Gemini ids, and
+	// classifying them as chat is exactly the mistake that would put a speech
+	// model in a customer service deployment's reply path.
+	case strings.Contains(n, "tts") || strings.Contains(n, "text-to-speech"):
+		return CapabilityTTS
+	case strings.Contains(n, "imagen"), strings.Contains(n, "image"):
+		return CapabilityImage
+	case strings.Contains(n, "gemini"), strings.Contains(n, "gemma"), strings.Contains(n, "bison"),
+		strings.Contains(n, "palm"):
+		return CapabilityChat
+	default:
+		// Anything unrecognised is "other": guessing "chat" here is what would
+		// offer a video or speech-to-text model as a reply model.
+		return CapabilityOther
+	}
 }
 
 // fastModelName — the fast model for THIS service instance. The package

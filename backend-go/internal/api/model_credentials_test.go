@@ -27,6 +27,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -134,6 +135,10 @@ func writeTestServiceAccount(t *testing.T, tokenURI, projectID string) string {
 
 // vertexEnv wires a working vertex deployment: a token stub the key's own
 // token_uri points at, an SA file, and the platform base pointed at platform.
+//
+// The base carries a /v1 segment exactly as the production base does
+// (vertexPlatformBase), so the catalog's version substitution is exercised
+// against a realistic root rather than a version-less test-only one.
 func vertexEnv(t *testing.T, platform *modelStub) {
 	t.Helper()
 	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -144,7 +149,7 @@ func vertexEnv(t *testing.T, platform *modelStub) {
 	t.Setenv("GEMINI_VERTEX_SA_FILE", writeTestServiceAccount(t, tokenSrv.URL, "proj-1"))
 	t.Setenv("GEMINI_VERTEX_PROJECT", "proj-1")
 	t.Setenv("GEMINI_VERTEX_REGION", "asia-southeast1")
-	t.Setenv("GEMINI_VERTEX_API_BASE", platform.URL)
+	t.Setenv("GEMINI_VERTEX_API_BASE", platform.URL+"/v1")
 }
 
 func studioEnv(t *testing.T, platform *modelStub) {
@@ -154,12 +159,21 @@ func studioEnv(t *testing.T, platform *modelStub) {
 	t.Setenv("GEMINI_VERTEX_API_BASE", "")
 }
 
-func listNames(t *testing.T, result any) []string {
+// listRows is the handler's array result, asserted to be the shape the console
+// reads ([]map[string]any) rather than a typed struct: the wire keys are the
+// contract, and a struct would only prove the struct.
+func listRows(t *testing.T, result any) []map[string]any {
 	t.Helper()
 	rows, ok := result.([]map[string]any)
 	if !ok {
 		t.Fatalf("result has type %T, want []map[string]any", result)
 	}
+	return rows
+}
+
+func listNames(t *testing.T, result any) []string {
+	t.Helper()
+	rows := listRows(t, result)
 	out := make([]string, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, row["name"].(string))
@@ -167,9 +181,16 @@ func listNames(t *testing.T, result any) []string {
 	return out
 }
 
+// vertexModelListBody is the v1beta1 publisher-model envelope as the platform
+// actually answers it: no displayName anywhere, launchStage on some entries,
+// supportedActions on SOME and absent on others (measured 2026-09-25).
+//
+// It deliberately does NOT mention gemini-3.5-flash. That is the trap this whole
+// change is about: the model serving asia-southeast1 traffic appears in neither
+// that region's list nor reliably anywhere, so the catalog has to union it in.
 const vertexModelListBody = `{"publisherModels":[` +
-	`{"name":"publishers/google/models/gemini-3.5-flash","displayName":"3.5 Flash"},` +
-	`{"name":"publishers/google/models/text-embedding-005","displayName":"Embeddings"}]}`
+	`{"name":"publishers/google/models/gemini-2.5-flash","launchStage":"GA","supportedActions":["generateContent"],"versionId":"3"},` +
+	`{"name":"publishers/google/models/text-embedding-005","launchStage":"GA"}]}`
 
 const studioModelListBody = `{"models":[` +
 	`{"name":"models/gemini-3.5-flash","displayName":"3.5 Flash"},` +
@@ -179,6 +200,11 @@ const studioModelListBody = `{"models":[` +
 // load on a vertex deployment whose api_key column is EMPTY (the normal state,
 // since the private key deliberately never enters the database). Before this,
 // the handler answered 400 "未设置 API Key" and never called the platform.
+//
+// It also pins the two fixes that are the point of this endpoint: the request
+// goes to the v1beta1 publisher route (the v1 one 404s, which is what produced
+// the 502 here), and the configured model is unioned in — the stub's list does
+// NOT contain it, exactly as asia-southeast1 does not list gemini-3.5-flash.
 func TestListAvailableModelsVertexUsesTheServiceAccount(t *testing.T) {
 	platform := newModelStub(t, func(r *http.Request) (int, string) { return http.StatusOK, vertexModelListBody })
 	vertexEnv(t, platform)
@@ -190,41 +216,59 @@ func TestListAvailableModelsVertexUsesTheServiceAccount(t *testing.T) {
 	}
 	t.Cleanup(func() { studioAPIKeyFromDB = original })
 
-	// App with no DB and no Sealer: if the handler reached either, the test
-	// would fail (panic) rather than quietly pass.
-	app := &App{}
+	// No DB and no Sealer: if the handler reached either, the test would fail
+	// (panic) rather than quietly pass. The Gemini service is only here to say
+	// which model this deployment is serving.
+	app := &App{Gemini: gemini.New("", "gemini-3.5-flash", 128)}
 	result, err := app.listAvailableModels(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/v1/admin/models/7/available", nil), 7)
 	if err != nil {
 		t.Fatalf("listAvailableModels: %v", err)
 	}
-	// The stub serves one project model; the vertex path appends the curated
-	// picker list because the platform has no publisher-model list route.
-	// Assert the union in order and without duplicates — a duplicate would show
-	// the same model twice in the admin dropdown.
+	// The serving model first, then the region's own list, in order and without
+	// duplicates — a duplicate would show the same model twice in the dropdown.
 	got := listNames(t, result)
-	want := []string{"gemini-3.5-flash", "gemini-2.5-flash", "gemini-embedding-001"}
-	if len(got) != len(want) {
+	want := []string{"gemini-3.5-flash", "gemini-2.5-flash", "text-embedding-005"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("names = %v, want %v", got, want)
 	}
 	seen := map[string]bool{}
-	for i, n := range got {
-		if n != want[i] {
-			t.Fatalf("names = %v, want %v", got, want)
-		}
+	for _, n := range got {
 		if seen[n] {
 			t.Errorf("duplicate model %q in %v", n, got)
 		}
 		seen[n] = true
 	}
 
+	// The wire shape: every field the console's AvailableModel declares.
+	rows := listRows(t, result)
+	if rows[0]["available"] != true || rows[0]["launch_stage"] != "" || rows[0]["capability"] != "chat" {
+		t.Errorf("unioned row = %v, want available=true, launch_stage=\"\" (unknown) and capability=chat", rows[0])
+	}
+	if rows[0]["display_name"] != "Gemini 3.5 Flash" {
+		t.Errorf("display_name = %v, want the derived label", rows[0]["display_name"])
+	}
+	if rows[1]["launch_stage"] != "GA" || rows[1]["capability"] != "chat" || rows[1]["available"] != true {
+		t.Errorf("listed row = %v, want launch_stage=GA, capability=chat, available=true", rows[1])
+	}
+	// The second entry carried no supportedActions at all — the regional shape
+	// that must not make an entry unusable.
+	if rows[2]["capability"] != "embedding" || rows[2]["available"] != true {
+		t.Errorf("embedding row = %v, want capability=embedding and available=true", rows[2])
+	}
+
 	reqs := platform.all()
 	if len(reqs) != 1 {
 		t.Fatalf("%d request(s) reached the platform, want 1", len(reqs))
 	}
-	// The list route is .../locations/{l}/models: the publishers sub-path answers
-	// 404 before authentication on the platform, which is what showed up as a 502.
-	if want := "/projects/proj-1/locations/asia-southeast1/models"; reqs[0].Path != want {
-		t.Errorf("path = %q, want %q", reqs[0].Path, want)
+	// The catalog route is /v1beta1/publishers/google/models. The old assertion
+	// here was .../locations/{l}/models — the project-scoped route that lists the
+	// project's OWN models, whose names every URL this client builds would then
+	// mis-address.
+	if want := "/v1beta1/publishers/google/models"; reqs[0].Path != want {
+		t.Errorf("path = %q, want %q — the v1 form of this route answers 404", reqs[0].Path, want)
+	}
+	if want := "pageSize=100"; reqs[0].URI != reqs[0].Path+"?"+want {
+		t.Errorf("URI = %q, want the catalog page size", reqs[0].URI)
 	}
 	if reqs[0].Auth != "Bearer tok-vertex" {
 		t.Errorf("Authorization = %q, want the minted service-account token", reqs[0].Auth)
@@ -294,20 +338,17 @@ func TestListAvailableModelsStudioUsesTheSealedDBKey(t *testing.T) {
 	if askedConfigID != 42 {
 		t.Errorf("looked up config %d, want the requested config 42", askedConfigID)
 	}
-	// The stub serves one project model; the vertex path appends the curated
-	// picker list because the platform has no publisher-model list route.
-	// Assert the union in order and without duplicates — a duplicate would show
-	// the same model twice in the admin dropdown.
+	// Both entries the relay returned are offered, in the relay's order, with no
+	// duplicates. The embedding is here deliberately: the pre-catalog studio list
+	// dropped every non-Gemini name, so an embedding model could never be picked
+	// even though the capability vocabulary has a word for it.
 	got := listNames(t, result)
-	want := []string{"gemini-3.5-flash"} // studio: no curated append — its list comes from the relay
-	if len(got) != len(want) {
+	want := []string{"gemini-3.5-flash", "text-embedding-005"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("names = %v, want %v", got, want)
 	}
 	seen := map[string]bool{}
-	for i, n := range got {
-		if n != want[i] {
-			t.Fatalf("names = %v, want %v", got, want)
-		}
+	for _, n := range got {
 		if seen[n] {
 			t.Errorf("duplicate model %q in %v", n, got)
 		}
@@ -485,5 +526,215 @@ func TestCredentialSourceWireValues(t *testing.T) {
 		if !gemini.CredentialSourceOf().IsAPIKey() {
 			t.Errorf("GEMINI_PROVIDER=%q must keep the API-key credential", v)
 		}
+	}
+}
+
+// ============================================
+// Region-parameterised listing (the admin region selector)
+// ============================================
+
+// TestListAvailableModelsOmittedRegionUsesTheConfiguredRegion — omitting ?region=
+// is not the same as asking about some default: it must mean the region the
+// server is configured with, which is what keeps the console's pre-selector
+// request behaving exactly as it did.
+//
+// With GEMINI_VERTEX_API_BASE pointing at the stub, the region cannot appear in
+// the request HOST (that mapping is pinned against the real hosts in the gemini
+// package), so it is read back out of the warning the catalog attaches to a
+// failed listing — the same string the operator sees.
+//
+// Every entry stays available in both calls. `available` is true unless there is
+// positive evidence against a model, and a listing that failed is evidence about
+// the listing: the measured production case is gemini-3.5-flash answering 200 in
+// asia-southeast1 while appearing in none of its nine listed entries.
+func TestListAvailableModelsOmittedRegionUsesTheConfiguredRegion(t *testing.T) {
+	platform := newModelStub(t, func(r *http.Request) (int, string) {
+		return http.StatusNotFound, `{"error":{"message":"Requested entity was not found."}}`
+	})
+	vertexEnv(t, platform)
+
+	app := &App{Gemini: gemini.New("", "gemini-3.5-flash", 128)}
+	rec := httptest.NewRecorder()
+	result, err := app.listAvailableModels(rec,
+		httptest.NewRequest(http.MethodGet, "/api/v1/admin/models/7/available", nil), 7)
+	if err != nil {
+		t.Fatalf("listAvailableModels: %v", err)
+	}
+	warning := rec.Header().Get(modelListWarningHeader)
+	if !strings.Contains(warning, "asia-southeast1") || !strings.Contains(warning, "404") {
+		t.Errorf("warning = %q, want the CONFIGURED region and the cause", warning)
+	}
+	rows := listRows(t, result)
+	if rows[0]["name"] != "gemini-3.5-flash" {
+		t.Fatalf("first row = %v, want the serving model first even though nothing listed it", rows[0])
+	}
+	if rows[0]["available"] != true {
+		t.Error("the serving model must stay available in its own region — the platform's silence is not evidence")
+	}
+	if len(rows) < 2 {
+		t.Errorf("rows = %v, want the last-resort names beside the serving model", rows)
+	}
+	for _, row := range rows {
+		if row["available"] != true {
+			t.Errorf("row = %v, want available=true — a failed listing is not evidence about a model", row)
+		}
+	}
+
+	// The same failure asked about ANOTHER region: still every entry available,
+	// and the warning names the region that was actually asked about.
+	rec = httptest.NewRecorder()
+	result, err = app.listAvailableModels(rec,
+		httptest.NewRequest(http.MethodGet, "/api/v1/admin/models/7/available?region=us-central1", nil), 7)
+	if err != nil {
+		t.Fatalf("a foreign region must not be a hard failure either: %v", err)
+	}
+	if got := rec.Header().Get(modelListWarningHeader); !strings.Contains(got, "us-central1") {
+		t.Errorf("warning = %q, want the requested region", got)
+	}
+	rows = listRows(t, result)
+	if rows[0]["name"] != "gemini-3.5-flash" || rows[0]["available"] != true {
+		t.Errorf("first row = %v, want the serving model offered and still available", rows[0])
+	}
+	// Nothing about this is a 500 — that is the contract — and the body is still
+	// the bare array the console already parses.
+	if len(rows) < 2 {
+		t.Errorf("rows = %v, want the last-resort names beside the serving model", rows)
+	}
+
+	// Asserted through the real handler wrapper, so "not a hard failure" is an
+	// HTTP status and an encodable body, not merely a nil error.
+	wrapped := app.handle(func(w http.ResponseWriter, r *http.Request) (any, error) {
+		return app.listAvailableModels(w, r, 7)
+	})
+	rec = httptest.NewRecorder()
+	wrapped(rec, httptest.NewRequest(http.MethodGet, "/api/v1/admin/models/7/available?region=us-central1", nil))
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 — a region whose listing fails is a degraded picker, not an error", rec.Code)
+	}
+	if rec.Header().Get(modelListWarningHeader) == "" {
+		t.Error("the degraded listing lost its warning on the way out")
+	}
+	var body []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body = %s (err %v), want the bare array", rec.Body.String(), err)
+	}
+	if len(body) == 0 || body[0]["name"] != "gemini-3.5-flash" {
+		t.Errorf("body = %s, want the serving model in the array", rec.Body.String())
+	}
+}
+
+// TestListAvailableModelsRejectsARegionThatCouldSteerTheHost — the region is
+// interpolated into the request host, and that request carries a
+// service-account bearer token, so a rejected value must be rejected BEFORE any
+// request is built. The stub's zero request count is the assertion that matters:
+// a 400 with the request already sent would still have leaked a credential.
+func TestListAvailableModelsRejectsARegionThatCouldSteerTheHost(t *testing.T) {
+	platform := newModelStub(t, func(r *http.Request) (int, string) {
+		return http.StatusOK, vertexModelListBody
+	})
+	vertexEnv(t, platform)
+
+	app := &App{Gemini: gemini.New("", "gemini-3.5-flash", 128)}
+	for _, bad := range []string{"evil.com", "asia/southeast1", "../v1", "asia_southeast1", "asia southeast1", "-asia", "asia--southeast1"} {
+		rec := httptest.NewRecorder()
+		_, err := app.listAvailableModels(rec, httptest.NewRequest(http.MethodGet,
+			"/api/v1/admin/models/7/available?region="+url.QueryEscape(bad), nil), 7)
+		var apiErr *ApiError
+		if !errors.As(err, &apiErr) {
+			t.Errorf("region %q: err = %v (%T), want *ApiError", bad, err, err)
+			continue
+		}
+		if apiErr.Status != http.StatusBadRequest || !strings.Contains(apiErr.Message, "region") {
+			t.Errorf("region %q: got %d %q, want 400 naming the region", bad, apiErr.Status, apiErr.Message)
+		}
+	}
+	if n := len(platform.all()); n != 0 {
+		t.Fatalf("%d request(s) left the process for an invalid region, want 0 — the token must never be aimed at a caller-chosen host", n)
+	}
+}
+
+// TestVertexRegionsEndpoint — the selector's payload: the deployment's own
+// region first and reported as current, every candidate labelled, no duplicates.
+func TestVertexRegionsEndpoint(t *testing.T) {
+	t.Setenv("GEMINI_VERTEX_REGION", "asia-southeast1")
+	result, err := (&App{}).vertexRegions(httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodGet, "/api/v1/admin/models/vertex-regions", nil))
+	if err != nil {
+		t.Fatalf("vertexRegions: %v", err)
+	}
+	out, ok := result.(map[string]any)
+	if !ok {
+		t.Fatalf("result has type %T, want map[string]any", result)
+	}
+	if out["current"] != "asia-southeast1" {
+		t.Errorf("current = %v, want the configured region", out["current"])
+	}
+	regions, ok := out["regions"].([]map[string]any)
+	if !ok {
+		t.Fatalf("regions has type %T, want []map[string]any", out["regions"])
+	}
+	if len(regions) < 2 {
+		t.Fatalf("regions = %v, want a candidate list", regions)
+	}
+	if regions[0]["id"] != "asia-southeast1" || regions[0]["label"] != "asia-southeast1 (Singapore)" {
+		t.Errorf("first region = %v, want the configured region first, labelled", regions[0])
+	}
+	seen := map[any]int{}
+	for _, r := range regions {
+		if r["id"] == nil || r["label"] == nil || r["id"] == "" || r["label"] == "" {
+			t.Errorf("region %v is missing an id or a label", r)
+		}
+		seen[r["id"]]++
+	}
+	if seen["asia-southeast1"] != 1 {
+		t.Errorf("the configured region appears %d times, want exactly 1", seen["asia-southeast1"])
+	}
+	if _, ok := seen["global"]; !ok {
+		t.Error("the global (multi-region) endpoint is missing from the candidates")
+	}
+
+	// A configured region outside the static list must still be expressible —
+	// otherwise the selector cannot show the operator where their service runs.
+	t.Setenv("GEMINI_VERTEX_REGION", "me-west1")
+	result, err = (&App{}).vertexRegions(httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodGet, "/api/v1/admin/models/vertex-regions", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out = result.(map[string]any)
+	if out["current"] != "me-west1" {
+		t.Errorf("current = %v, want me-west1", out["current"])
+	}
+	if first := out["regions"].([]map[string]any)[0]; first["id"] != "me-west1" {
+		t.Errorf("first region = %v, want the unlisted configured region first", first)
+	}
+}
+
+// TestVertexRegionsRouteIsNotAnId — the new route is a literal segment at the
+// depth where {id} patterns live, which is the shape Go's ServeMux resolves by
+// specificity. Mirrors the real table's four shapes (see router_test.go for the
+// same property pinned for default-prompt); the real table itself is built by
+// TestRouterRegistersWithoutPanic, which fails if two patterns conflict.
+func TestVertexRegionsRouteIsNotAnId(t *testing.T) {
+	mux := http.NewServeMux()
+	var served string
+	mark := func(name string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) { served = name }
+	}
+	mux.HandleFunc("GET /api/v1/admin/models", mark("list"))
+	mux.HandleFunc("GET /api/v1/admin/models/default-prompt", mark("default-prompt"))
+	mux.HandleFunc("GET /api/v1/admin/models/vertex-regions", mark("vertex-regions"))
+	mux.HandleFunc("GET /api/v1/admin/models/{id}/available", mark("available"))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/models/vertex-regions", nil)
+	mux.ServeHTTP(httptest.NewRecorder(), req)
+	if served != "vertex-regions" {
+		t.Fatalf("literal route lost: served=%q", served)
+	}
+	served = ""
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/models/7/available", nil)
+	mux.ServeHTTP(httptest.NewRecorder(), req)
+	if served != "available" {
+		t.Fatalf("{id} route broken: served=%q", served)
 	}
 }
