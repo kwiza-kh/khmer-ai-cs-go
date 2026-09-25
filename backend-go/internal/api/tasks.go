@@ -3,10 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"io"
-	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"khmer-ai-cs-go/internal/platform"
@@ -16,6 +13,15 @@ import (
 // StartBackgroundTasks launches the periodic jobs that keep the platform
 // alive: campaign dispatch, SLA breach scanning, knowledge URL freshness, and
 // billing cycle rollover. These run for the lifetime of the process.
+//
+// Any job added here that fetches a URL must go through the SSRF-guarded
+// fetcher, rag.FetchURLContent (ValidateFetchURL + dial-time Control + a
+// recheck on every redirect) — the URL freshness sweep in
+// rag.SpawnIndexWorkers is the model. A bare http.Client{} is NOT equivalent:
+// it will happily reach 169.254.169.254 or any internal service the caller
+// names. This file used to carry exactly such a helper (fetchURLText and its
+// HTML stripper); both had zero callers and were deleted, because the only
+// thing left uncalled code does is tempt the next person to call it.
 func (a *App) StartBackgroundTasks(ctx context.Context) {
 	// Recover campaigns stranded in 'sending' by a crash/restart — the
 	// scanner only picks up 'scheduled', so without this reset they would be
@@ -98,6 +104,13 @@ func (a *App) sendDueDigests(ctx context.Context) {
 			ids = append(ids, id)
 		}
 	}
+	// An iteration error is not "end of rows". Unchecked, a connection that
+	// dropped mid-scan would quietly shrink the recipient list and the rest of
+	// the tenants would just not get their digest, with nothing in the log.
+	if err := rows.Err(); err != nil {
+		a.Logger.Warn("digest recipient scan failed", "error", err.Error())
+		return
+	}
 	for _, id := range ids {
 		flag := "tg-digest:" + strconv.FormatInt(int64(id), 10) + ":" + day
 		ok, err := a.Redis.IncrWindow(ctx, flag, 1, 26*time.Hour)
@@ -150,6 +163,12 @@ func (a *App) dispatchDueCampaigns(ctx context.Context) {
 		}
 	}
 	rows.Close()
+	// Same reasoning as sendDueDigests: a half-read batch would leave campaigns
+	// scheduled and silently skip them until the next tick, hiding the cause.
+	if err := rows.Err(); err != nil {
+		a.Logger.Warn("campaign scan failed", "error", err.Error())
+		return
+	}
 
 	for _, c := range due {
 		if _, err := a.DB.Exec(ctx, "UPDATE marketing_campaigns SET status='sending' WHERE campaign_id=$1 AND status='scheduled'", c.id); err != nil {
@@ -181,6 +200,13 @@ func (a *App) dispatchOneCampaign(ctx context.Context, c campRow) int {
 		}
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		// Send nobody rather than a partial batch: the caller marks the
+		// campaign done with whatever count comes back, so half a recipient
+		// list would be recorded as a complete delivery.
+		a.Logger.Warn("campaign recipient scan failed", "campaign_id", c.id, "error", err.Error())
+		return 0
+	}
 
 	sent := 0
 	for _, puid := range recipients {
@@ -251,6 +277,13 @@ func (a *App) scanSLABreaches(ctx context.Context) {
 		}
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		// A truncated policy list means some tenant's overdue sessions are
+		// never scanned. Say so: the next tick retries, but the gap has to be
+		// visible instead of looking like "no breaches".
+		a.Logger.Warn("sla policy scan failed", "error", err.Error())
+		return
+	}
 
 	for _, p := range pols {
 		if p.firstSecs > 0 {
@@ -284,6 +317,12 @@ func (a *App) scanSLABreaches(ctx context.Context) {
 						}
 					}
 				}
+				if serr := sess.Err(); serr != nil {
+					// Breaches missed here are the expensive kind: an SLA clock
+					// nobody gets alerted about. The scan retries next tick, but
+					// the partial pass must not look clean.
+					a.Logger.Warn("sla first-response scan incomplete", "user_id", p.userID, "error", serr.Error())
+				}
 				sess.Close()
 			}
 		}
@@ -309,6 +348,9 @@ func (a *App) scanSLABreaches(ctx context.Context) {
 						}
 					}
 				}
+				if serr := sess.Err(); serr != nil {
+					a.Logger.Warn("sla resolution scan incomplete", "user_id", p.userID, "error", serr.Error())
+				}
 				sess.Close()
 			}
 		}
@@ -316,88 +358,7 @@ func (a *App) scanSLABreaches(ctx context.Context) {
 }
 
 // resetBillingCycles rolls over lapsed billing cycles (reset usage counters).
-// NOTE: URL freshness for knowledge docs lives in rag.SpawnIndexWorkers
-// (refreshStaleURLDocs) — it uses the SSRF-guarded fetcher; do not duplicate
-// it here with an unguarded client.
 func (a *App) resetBillingCycles(ctx context.Context) {
 	_, _ = a.DB.Exec(ctx,
 		"UPDATE tenant_billing SET messages_used=0, docs_used=0, cycle_start=NOW(), cycle_end=NOW()+INTERVAL '30 days' WHERE cycle_end <= NOW()")
-}
-
-func fetchURLText(ctx context.Context, rawURL string) (string, string, error) {
-	client := &http.Client{Timeout: 20 * time.Second}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
-	if err != nil {
-		return "", "", err
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return "", "", &ApiError{Status: int(resp.StatusCode), Message: "upstream error"}
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 5*1024*1024))
-	if err != nil {
-		return "", "", err
-	}
-	return extractHTMLTitleText(string(body))
-}
-
-// extractHTMLTitleText strips script/style/svg and returns (title, text).
-func extractHTMLTitleText(html string) (string, string, error) {
-	var title, out strings.Builder
-	var inTitle, inTag bool
-	skip := 0
-	var tag strings.Builder
-	i := 0
-	for i < len(html) {
-		c := html[i]
-		if c == '<' {
-			inTag = true
-			tag.Reset()
-			i++
-			continue
-		}
-		if inTag {
-			if c == '>' {
-				inTag = false
-				raw := strings.TrimSpace(tag.String())
-				name := strings.ToLower(strings.TrimPrefix(raw, "/"))
-				if idx := strings.IndexAny(name, " \t\n/"); idx >= 0 {
-					name = name[:idx]
-				}
-				switch {
-				case name == "script" || name == "style" || name == "svg" || name == "noscript" || name == "template":
-					if strings.HasPrefix(raw, "/") {
-						if skip > 0 {
-							skip--
-						}
-					} else {
-						skip++
-					}
-				case name == "title":
-					inTitle = !strings.HasPrefix(raw, "/")
-				case name == "br" || name == "p" || name == "div" || name == "li" || name == "tr" || strings.HasPrefix(name, "h"):
-					if out.Len() > 0 {
-						out.WriteByte('\n')
-					}
-				}
-			} else {
-				tag.WriteByte(c)
-			}
-			i++
-			continue
-		}
-		if skip == 0 {
-			if inTitle {
-				title.WriteByte(c)
-			} else {
-				out.WriteByte(c)
-			}
-		}
-		i++
-	}
-	return strings.TrimSpace(title.String()), strings.TrimSpace(out.String()), nil
 }

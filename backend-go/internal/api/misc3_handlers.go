@@ -95,6 +95,12 @@ func (a *App) listCampaigns(w http.ResponseWriter, r *http.Request) (any, error)
 			"status": status, "sent_count": sentCount, "created_at": createdAt,
 		})
 	}
+	// A short read must not be published as a short list: the client cannot tell
+	// the two apart, so an unchecked Err() turns a dropped connection into
+	// "there are no more campaigns".
+	if err := rows.Err(); err != nil {
+		return nil, ErrInternal("查询失败")
+	}
 	return out, nil
 }
 
@@ -152,6 +158,9 @@ func (a *App) listSLABreaches(w http.ResponseWriter, r *http.Request) (any, erro
 			"breach_id": breachID, "session_id": sessionID, "sla_id": slaID, "breach_type": breachType,
 			"breached_at": breachedAt, "resolved": resolved, "resolved_at": resolvedAt, "title": title, "platform": platform,
 		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, ErrInternal("查询失败")
 	}
 	return out, nil
 }

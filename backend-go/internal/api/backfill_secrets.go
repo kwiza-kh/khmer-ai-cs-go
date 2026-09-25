@@ -39,6 +39,14 @@ func BackfillLegacySecrets(ctx context.Context, pool *pgxpool.Pool, sealer *secu
 		}
 	}
 	totpRows.Close()
+	if err := totpRows.Err(); err != nil {
+		// Every loop in this function scans into a slice and only then writes,
+		// so a read error here means "we have an incomplete work list". Carrying
+		// on would re-seal a subset, return a clean count, and leave the rest in
+		// cleartext with nothing in the log to say so — the boot-time caller
+		// logs this error, which is the only signal an operator gets.
+		return sealed, err
+	}
 	for _, r := range totp {
 		enc, err := sealer.Encrypt(r.Secret)
 		if err != nil {
@@ -78,6 +86,9 @@ func BackfillLegacySecrets(ctx context.Context, pool *pgxpool.Pool, sealer *secu
 		}
 	}
 	cfgRows.Close()
+	if err := cfgRows.Err(); err != nil {
+		return sealed, err
+	}
 	for _, c := range creds {
 		enc, err := sealer.Encrypt(c.Plaintext)
 		if err != nil {
@@ -119,6 +130,9 @@ func BackfillLegacySecrets(ctx context.Context, pool *pgxpool.Pool, sealer *secu
 		}
 	}
 	modelRows.Close()
+	if err := modelRows.Err(); err != nil {
+		return sealed, err
+	}
 	for _, r := range models {
 		enc, err := sealer.Encrypt(r.APIKey)
 		if err != nil {

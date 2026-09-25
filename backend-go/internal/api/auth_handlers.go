@@ -2,10 +2,14 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"khmer-ai-cs-go/internal/auth"
 )
@@ -13,6 +17,15 @@ import (
 const (
 	lockoutThreshold = 5
 	lockoutTTL       = 15 * time.Minute
+
+	// lockoutAccountThreshold is a second, much higher ceiling keyed on the
+	// username alone. The per-(username, IP) lock below stops a stranger from
+	// locking a merchant out with five requests, but a source-address rotation
+	// would sidestep it entirely — and unbounded distributed guessing is the
+	// worse failure of the two. Requiring this many failures before the account
+	// itself locks keeps the cheap per-IP lock as the primary protection while
+	// still ending a mass guessing run.
+	lockoutAccountThreshold = 50
 )
 
 type loginRequest struct {
@@ -50,10 +63,14 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) (any, error) {
 	}
 
 	ctx := r.Context()
-	lockKey := "lockout:" + strings.ToLower(req.Username)
-	failKey := "loginfail:" + strings.ToLower(req.Username)
+	// clientIP is the same source the login rate limiter already trusts; see
+	// loginLockKeys for why the lock is scoped to it.
+	failKey, lockKey, accountKey := loginLockKeys(req.Username, clientIP(r))
 
 	if locked, _ := a.Redis.GetJSON(ctx, lockKey); locked != nil {
+		return nil, ErrTooMany("登录尝试过多，账号已锁定，请稍后再试")
+	}
+	if locked, _ := a.Redis.GetJSON(ctx, accountKey); locked != nil {
 		return nil, ErrTooMany("登录尝试过多，账号已锁定，请稍后再试")
 	}
 
@@ -66,8 +83,8 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) (any, error) {
 		"SELECT user_id, username, COALESCE(email,''), password_hash, role::text, is_active, token_version FROM users WHERE username = $1",
 		req.Username).Scan(&userID, &username, &email, &passwordHash, &role, &isActive, &tokenVersion)
 	if err != nil {
-		if strings.Contains(err.Error(), "no rows") {
-			a.recordLoginFailure(ctx, failKey, lockKey)
+		if errors.Is(err, pgx.ErrNoRows) {
+			a.recordLoginFailure(ctx, failKey, lockKey, accountKey)
 			return nil, ErrUnauthorized("用户名或密码错误")
 		}
 		return nil, ErrInternal("用户查询失败")
@@ -75,11 +92,11 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) (any, error) {
 
 	if passwordHash == nil || *passwordHash == "" {
 		// Google-only account: there is no password to verify against.
-		a.recordLoginFailure(ctx, failKey, lockKey)
+		a.recordLoginFailure(ctx, failKey, lockKey, accountKey)
 		return nil, ErrUnauthorized("该账号使用 Google 登录，请点击「使用 Google 登录」")
 	}
 	if !auth.VerifyPassword(req.Password, *passwordHash) {
-		a.recordLoginFailure(ctx, failKey, lockKey)
+		a.recordLoginFailure(ctx, failKey, lockKey, accountKey)
 		return nil, ErrUnauthorized("用户名或密码错误")
 	}
 
@@ -105,7 +122,7 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) (any, error) {
 		// plaintext and pass through the sealer unchanged.
 		opened := a.openTOTP(secret)
 		totpSecret = &opened
-	} else if !strings.Contains(err.Error(), "no rows") {
+	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrInternal("2FA 查询失败")
 	}
 	if totpSecret != nil {
@@ -123,7 +140,7 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) (any, error) {
 			// Second-factor failures count toward the same account lockout as
 			// password failures; without this the advertised 5/15min lockout
 			// never applies to TOTP guessing once the password is known.
-			a.recordLoginFailure(ctx, failKey, lockKey)
+			a.recordLoginFailure(ctx, failKey, lockKey, accountKey)
 			return nil, ErrUnauthorized("验证码错误")
 		}
 	}
@@ -146,18 +163,42 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) (any, error) {
 	}, nil
 }
 
+// loginLockKeys derives the three Redis keys the login lockout works with.
+//
+// failKey counts every failure against the username, so a run spread over many
+// source addresses still accumulates somewhere. lockKey is the LOCK, and it is
+// scoped to the source address: keying the lock on the username alone let a
+// stranger lock any account they could name out of the product for lockoutTTL
+// with five requests — the merchant's own correct password still got a 429,
+// which is a denial of service dressed up as brute-force protection.
+// accountKey is the much higher ceiling that still ends a rotation attack; see
+// lockoutAccountThreshold.
+func loginLockKeys(username, ip string) (failKey, lockKey, accountKey string) {
+	name := strings.ToLower(username)
+	return "loginfail:" + name,
+		"lockout:" + name + "|" + ip,
+		"lockout:" + name
+}
+
 // recordLoginFailure increments the counter and sets the lockout when it
 // crosses the threshold. The increment is a single atomic INCR: the previous
 // read-modify-write lost one increment per concurrent round, so a burst of
 // simultaneous failures advanced the counter by roughly one and the advertised
 // 5-per-15min bound scaled with attacker concurrency instead of bounding it.
-func (a *App) recordLoginFailure(ctx context.Context, failKey, lockKey string) {
+//
+// It arms two locks from that one counter: the cheap per-(username, IP) lock
+// that a real merchant will essentially never trip from a stranger's address,
+// and the far higher per-username ceiling that ends a distributed guessing run.
+func (a *App) recordLoginFailure(ctx context.Context, failKey, lockKey, accountKey string) {
 	count, err := a.Redis.IncrCounter(ctx, failKey, lockoutTTL)
 	if err != nil {
 		return
 	}
 	if count >= lockoutThreshold {
 		_ = a.Redis.SetJSON(ctx, lockKey, "locked", lockoutTTL)
+	}
+	if accountKey != "" && count >= lockoutAccountThreshold {
+		_ = a.Redis.SetJSON(ctx, accountKey, "locked", lockoutTTL)
 	}
 }
 
@@ -176,7 +217,14 @@ func (a *App) register(w http.ResponseWriter, r *http.Request) (any, error) {
 		if req.InviteCode != nil {
 			supplied = strings.TrimSpace(*req.InviteCode)
 		}
-		if supplied == "" || supplied != invite {
+		// Constant-time, like every other secret comparison in this codebase
+		// (TOTP secrets, webhook secrets, API keys). Byte-by-byte equality
+		// leaks the matching prefix length; the register rate limit makes that
+		// hard to exploit, but the fix costs nothing and keeps the rule uniform.
+		// An empty supplied value is rejected explicitly: ConstantTimeCompare
+		// already returns 0 for differing lengths, and we do not want an empty
+		// invite to ever be treated as configured.
+		if supplied == "" || subtle.ConstantTimeCompare([]byte(supplied), []byte(invite)) != 1 {
 			return nil, ErrForbidden("邀请码无效")
 		}
 	}
@@ -198,7 +246,7 @@ func (a *App) register(w http.ResponseWriter, r *http.Request) (any, error) {
 	if err == nil {
 		return nil, ErrConflict("用户名或邮箱已存在")
 	}
-	if !strings.Contains(err.Error(), "no rows") {
+	if !errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrInternal("用户查询失败")
 	}
 
@@ -252,7 +300,7 @@ func (a *App) changePassword(w http.ResponseWriter, r *http.Request) (any, error
 	var hashPtr *string
 	err := a.DB.QueryRow(ctx, "SELECT password_hash FROM users WHERE user_id = $1", user.UserID).Scan(&hashPtr)
 	if err != nil {
-		if strings.Contains(err.Error(), "no rows") {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrUnauthorized("用户不存在")
 		}
 		return nil, ErrInternal("用户查询失败")

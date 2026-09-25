@@ -49,17 +49,38 @@ func main() {
 	logger.Info("connected to postgres")
 
 	// Migration 061 put RLS backstop policies on chat_messages/knowledge_chunks,
-	// keyed to the app.user_id GUC. Superusers and BYPASSRLS roles bypass row
-	// security unconditionally, which would silently disable that backstop.
-	// Warn rather than exit: the deployment ran fine before 061 and must keep
-	// starting either way — but say why the backstop is inert.
+	// keyed to the app.user_id GUC. Two independent facts make them inert today,
+	// and the warning below has to state both — the previous text ("switch to a
+	// non-superuser role for it to apply") read as if a role change were all
+	// that stood between this deployment and an active backstop.
+	//
+	//   * Nothing in Go sets app.user_id. Only the tests call app_set_tenant()
+	//     (internal/migrations/rls_backstop_test.go), so app_tenant_id() is
+	//     NULL and the policy condition `app_tenant_id() IS NULL OR …`
+	//     short-circuits to TRUE. The policies allow everything, for EVERY
+	//     role. 061 is scaffolding that is not wired up, not a live control.
+	//   * Even once wired, a superuser or BYPASSRLS role bypasses row security
+	//     unconditionally, so the role does matter — but only second.
+	//
+	// Next step is a choice: finish the wiring (a tenant-scoped executor that
+	// runs each request inside a transaction that calls app_set_tenant — the
+	// plan in docs/DEVELOPMENT.md 「十」), or keep 061 explicitly documented as
+	// inert. Warning rather than exiting: the deployment ran fine before 061 and
+	// must keep starting either way.
 	var dbRoleSuper bool
 	if err := pool.QueryRow(ctx,
 		"SELECT rolsuper FROM pg_roles WHERE rolname = current_user").Scan(&dbRoleSuper); err != nil {
 		logger.Warn("could not inspect DB role for the RLS backstop", "error", err.Error())
-	} else if dbRoleSuper {
-		logger.Warn("connected as a superuser — RLS tenant backstop (061) is bypassed; " +
-			"switch DATABASE_URL to a dedicated non-superuser role for it to apply")
+	} else {
+		roleNote := "a non-superuser role"
+		if dbRoleSuper {
+			roleNote = "a superuser role (row security is bypassed unconditionally for it)"
+		}
+		logger.Warn("RLS tenant backstop (061) is inert: no production code sets the app.user_id GUC, "+
+			"so app_tenant_id() is NULL and both policies fail open for every role. Treat it as "+
+			"unwired scaffolding, not an active control — a role change alone does not enable it; "+
+			"see docs/DEVELOPMENT.md 「十」 for the wiring plan",
+			"db_role", roleNote, "superuser", dbRoleSuper)
 	}
 
 	redisClient, err := redisstore.Connect(cfg.Redis.Addr, cfg.Redis.Password, cfg.Redis.DB)
@@ -100,11 +121,6 @@ func main() {
 	// classification, rerank, routing, guardrails, notify triage. It is nil
 	// without TYPESAFE_API_KEY, and every site then keeps its previous path.
 	jev := typesafe.NewFromEnv(logger)
-	// Production traffic is a handful of messages a day, so every turn would
-	// otherwise meet a cold connection and pay a 0.4-3.6s TLS handshake. That
-	// blows the reply-path budgets (route 4s, guard 3s) and hands the decision
-	// to the slower model Jev exists to replace. Hold the connection open.
-	jev.StartKeepWarm(ctx, typesafe.KeepWarmInterval())
 
 	// Semantic reply cache: identical asks skip retrieval+generation entirely.
 	// Any knowledge-base change drops the tenant's cache via KBChanged below.
@@ -112,17 +128,23 @@ func main() {
 
 	ragService := &rag.Service{DB: pool, Gemini: gem, Redis: redisClient, Logger: logger, Jev: jev}
 	ragService.KBChanged = replyCache.InvalidateTenant
-	ragService.SpawnIndexWorkers(ctx)
 
 	// Attribute auxiliary model spend to whichever tenant tagged the context.
 	// Previously only the four main chat paths recorded usage, so the
 	// auxiliary calls — the ingest-time compile above all, a 4096-token call
 	// per document — were invisible to every cost dashboard.
+	//
+	// Installed BEFORE SpawnIndexWorkers: those workers start compiling
+	// documents immediately, and the ingest compile is exactly the call this
+	// observer exists to record. Assigning it afterwards was an unsynchronised
+	// write racing their first reads.
 	gemini.AuxUsageObserver = func(ctx context.Context, model string, prompt, completion, cached int) {
 		if uid, ok := usage.UserFrom(ctx); ok {
 			usage.Record(ctx, pool, uid, nil, model, prompt, completion, cached)
 		}
 	}
+
+	ragService.SpawnIndexWorkers(ctx)
 
 	// R2 object storage (inbound media replay + TTS audio; inert without creds).
 	media := storager2.New(cfg.R2.AccountID, cfg.R2.AccessKey, cfg.R2.SecretKey, cfg.R2.Bucket, cfg.R2.PublicURL)
@@ -132,7 +154,20 @@ func main() {
 	// Make a Jev outage audible. Every Jev call site degrades to a slower, less
 	// accurate path when it fails, so without this the product changes
 	// behaviour and only journalctl knows (2026-09-22: a 6-hour episode).
+	//
+	// Installed BEFORE StartKeepWarm below: that call probes immediately and
+	// reports through this observer, so installing it afterwards left the first
+	// probe — the one that establishes the hot connection — writing into an
+	// observer field that was still being assigned.
 	platform.InstallJevHealth(pipe)
+
+	// Production traffic is a handful of messages a day, so every turn would
+	// otherwise meet a cold connection and pay a 0.4-3.6s TLS handshake. That
+	// blows the reply-path budgets (route 4s, guard 3s) and hands the decision
+	// to the slower model Jev exists to replace. Hold the connection open.
+	// Deliberately after InstallJevHealth — see above.
+	jev.StartKeepWarm(ctx, typesafe.KeepWarmInterval())
+
 	pipe.SpawnWorkers(ctx)
 
 	app := &api.App{

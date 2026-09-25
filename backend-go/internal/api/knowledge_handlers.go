@@ -515,7 +515,9 @@ func (a *App) listContradictions(w http.ResponseWriter, r *http.Request) (any, e
 			"items": json.RawMessage(items), "status": st, "created_at": createdAt,
 		})
 	}
-	return map[string]any{"data": out}, nil
+	// knowledgeDocQuality above already returns rows.Err() the same way: the
+	// caller cannot distinguish a complete list from one that stopped early.
+	return map[string]any{"data": out}, rows.Err()
 }
 
 func (a *App) setContradictionStatus(w http.ResponseWriter, r *http.Request, id int32, status string) (any, error) {

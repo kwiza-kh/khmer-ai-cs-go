@@ -909,6 +909,14 @@ var rerankRelevanceLevels = []string{
 	"Exact: directly and completely answers the query",
 }
 
+// jevRerankBudget bounds the Jev rerank. Like the query rewrite it sits inside
+// Search, ahead of generation, so an unbounded call held the turn for the HTTP
+// client's 10s timeout. On expiry the caller keeps the fused order (or the
+// Gemini rerank, when one is configured) rather than waiting. The default sits
+// above the production server's measured 0.8-2.1s spread to api.typesafe.ai;
+// tunable so ops can re-measure from the host without a rebuild.
+var jevRerankBudget = time.Duration(envI("JEV_RERANK_BUDGET_MS", 3000)) * time.Millisecond
+
 func (s *Service) rerankScoresJev(ctx context.Context, query string, texts []string) ([]float32, bool) {
 	if !s.Jev.Enabled() || len(texts) == 0 || len(texts) > 20 {
 		return nil, false
@@ -921,6 +929,11 @@ func (s *Service) rerankScoresJev(ctx context.Context, query string, texts []str
 			"How relevant is passage `passages["+strconv.Itoa(i)+"].text` to `query`?",
 			rerankRelevanceLevels)
 	}
+	// Armed here rather than at function entry: the guards above can return
+	// without ever calling Jev.
+	ctx, cancel := context.WithTimeout(ctx, jevRerankBudget)
+	defer cancel()
+
 	resp, err := s.Jev.Judge(ctx, map[string]any{"query": query, "passages": passages}, questions)
 	if err != nil {
 		if s.Logger != nil {

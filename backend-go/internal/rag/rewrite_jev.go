@@ -4,10 +4,19 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"khmer-ai-cs-go/internal/gemini"
 	"khmer-ai-cs-go/internal/typesafe"
 )
+
+// jevRewriteBudget bounds the query rewrite. It runs inside Search, ahead of
+// both retrieval and generation, so before this knob existed a stalled Jev held
+// the whole turn for the HTTP client's 10s timeout instead of degrading. On
+// expiry the caller falls back to the legacy Gemini rewrite. The default sits
+// above the production server's measured 0.8-2.1s spread to api.typesafe.ai;
+// tunable so ops can re-measure from the host without a rebuild.
+var jevRewriteBudget = time.Duration(envI("JEV_REWRITE_BUDGET_MS", 3000)) * time.Millisecond
 
 // rewriteQueryJev resolves follow-up phrasing into a searchable query without
 // free-text generation: code builds the candidates (raw message; previous
@@ -50,6 +59,11 @@ func (s *Service) rewriteQueryJev(ctx context.Context, message string, history [
 			"knowledge base? A good query keeps the concrete product names and question intent; carry-over context "+
 			"from `previous_customer_message` helps when `customer_message` refers back to it.",
 		criteria)
+	// Armed here rather than at function entry: the candidate checks above can
+	// return without ever calling Jev.
+	ctx, cancel := context.WithTimeout(ctx, jevRewriteBudget)
+	defer cancel()
+
 	resp, err := s.Jev.Judge(ctx, state, questions)
 	if err != nil {
 		if s.Logger != nil {

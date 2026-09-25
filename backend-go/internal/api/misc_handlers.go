@@ -227,6 +227,12 @@ func (a *App) listAPIKeys(w http.ResponseWriter, r *http.Request) (any, error) {
 			"last_used_at": lastUsed, "expires_at": expiresAt, "is_active": isActive, "created_at": createdAt,
 		})
 	}
+	// A short read must not be published as a short list: the client cannot tell
+	// the two apart, so an unchecked Err() turns a dropped connection into
+	// "there are no more API keys".
+	if err := rows.Err(); err != nil {
+		return nil, ErrInternal("查询失败")
+	}
 	return out, nil
 }
 
@@ -318,6 +324,9 @@ func (a *App) listNotifications(w http.ResponseWriter, r *http.Request) (any, er
 			"notification_id": nid, "kind": kind, "title": title, "body": body,
 			"session_id": sessionID, "is_read": isRead, "created_at": createdAt,
 		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, ErrInternal("查询失败")
 	}
 	return out, nil
 }

@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -32,9 +33,31 @@ import (
 )
 
 const (
-	maxAttempts      = 5
-	workerCount      = 4
-	staleLockMinutes = 2
+	maxAttempts = 5
+	workerCount = 4
+
+	// staleLockMinutes is how long a claimed-but-unfinished event may hold its
+	// lock before another worker is allowed to steal it. Both the inbound and
+	// the outbound claim re-take a row whose lock is older than this.
+	//
+	// It has to exceed the worst-case processing time, because nothing refreshes
+	// locked_at while an event is being handled (claim writes NOW(), the
+	// completion path writes NULL — there is no heartbeat). The worst inbound
+	// path is gemini.Chat → postWithRetry, which retries up to 3 times against a
+	// 60s timeout, i.e. ≈3 minutes before the attempt can even be classified as
+	// failed. The old value of 2 minutes sat *below* that, so a slow-but-alive
+	// event got stolen mid-flight and processed twice: the customer received two
+	// replies and the tenant was billed twice for one message.
+	//
+	// 5 minutes leaves ≈2 minutes of headroom. If a longer budget is ever given
+	// to the Gemini calls (more retries, a higher per-request timeout), this
+	// value MUST be raised with it — the two are one decision.
+	//
+	// The robust fix is a heartbeat: refresh locked_at periodically from inside
+	// processInboundEvent and gate the steal on a much shorter staleness. That is
+	// a deliberate follow-up, not something a constant can express.
+	staleLockMinutes = 5
+
 	inboundRateLimit = 15
 )
 
@@ -55,6 +78,34 @@ var (
 	classifySem = make(chan struct{}, 8)
 	criticalSem = make(chan struct{}, 64)
 )
+
+// criticalLaneOverflow counts how often the never-drop lane found no free slot
+// and ran the work unbounded.
+//
+// Only observability was added here, deliberately: the unbounded run is the
+// DESIGNED behaviour ("绝不丢弃"). Quota increments, owner notifications and
+// handoff alerts lose their meaning if they are queued behind a bounded buffer
+// and then dropped, so the overload is paid for in goroutines rather than in
+// lost work. What was missing was any way to SEE it: a sustained spike would
+// quietly run hundreds of goroutines against the pgx pool and the only trace
+// was a log line per task, buried in the same stream as everything else.
+//
+// criticalLaneOverflowPageAt is the page threshold. Paging on every multiple
+// (rather than once ever) keeps a spike that lasts hours from going silent
+// after the first page, while PlatformAlert's own 15-minute key dedup collapses
+// anything more frequent into one page per window.
+const criticalLaneOverflowPageAt = 32
+
+var criticalLaneOverflow atomic.Int64
+
+// criticalLaneOverflowPage holds the operator page (func(overflow int64)).
+//
+// It is a package variable because spawnAsync is a free function: the lane is
+// fed from package-level call sites as well as from Pipeline methods, so a
+// single overloaded call has no *Pipeline to reach. SpawnWorkers installs it
+// once at startup, before any traffic; when it is absent (unit tests, tooling)
+// the overflow is still counted and logged.
+var criticalLaneOverflowPage atomic.Value
 
 // SpawnClassifier runs fn in the background on the best-effort lane. When the
 // lane is saturated the work is DROPPED — only pass work that is safe to lose.
@@ -77,7 +128,18 @@ func spawnAsync(sem chan struct{}, fn func(), droppable bool) {
 		if droppable {
 			return
 		}
-		slog.Default().Warn("critical background lane saturated; running unbounded")
+		overflow := criticalLaneOverflow.Add(1)
+		slog.Default().Warn("critical background lane saturated; running unbounded",
+			"overflow_total", overflow, "cap", cap(sem))
+		// Page only on a threshold crossing: this branch is taken once per
+		// spilled task. Re-entrancy is bounded by construction — the page
+		// itself lands on this lane, so it consumes one more spill, and the
+		// next crossing is a further criticalLaneOverflowPageAt spills away.
+		if overflow%criticalLaneOverflowPageAt == 0 {
+			if page, ok := criticalLaneOverflowPage.Load().(func(int64)); ok && page != nil {
+				page(overflow)
+			}
+		}
 	}
 	go func() {
 		defer func() {
@@ -161,6 +223,13 @@ func (p *Pipeline) EnqueueInboundEvent(ctx context.Context, configID int32, plat
 			"ON CONFLICT (config_id, external_id) DO NOTHING",
 		configID, externalID, platform, platformUserID, displayName, content, mediaParam, now, now)
 	if err != nil {
+		// Log here, not only at the call site: the inbound webhook handlers
+		// used to swallow this error entirely, so a failed INSERT still
+		// answered the provider with 200 and produced no line anywhere — the
+		// customer's message was simply gone and nothing recorded that it had
+		// ever arrived.
+		p.Logger.Error("enqueue inbound failed",
+			"config_id", configID, "platform", platform, "external_id", externalID, "error", err.Error())
 		return fmt.Errorf("enqueue inbound: %w", err)
 	}
 	if tag.RowsAffected() > 0 {
@@ -198,6 +267,20 @@ func (p *Pipeline) SignalOutbound() {
 // SpawnWorkers starts the inbound + outbound worker pools.
 func (p *Pipeline) SpawnWorkers(ctx context.Context) {
 	p.initNotify()
+	// Install the critical-lane overflow page. spawnAsync is a free function
+	// (that lane is also fed from package-level call sites), so it cannot reach
+	// a *Pipeline by itself; SpawnWorkers is the one entry point every
+	// deployment runs exactly once, before any traffic starts. Kept off the
+	// caller's goroutine by SpawnCritical — paging does Redis and HTTP I/O, and
+	// the overflow it reports is happening on a hot path.
+	criticalLaneOverflowPage.Store(func(overflow int64) {
+		SpawnCritical(func() {
+			p.PlatformAlert(context.Background(), "critical-lane-overflow", "后台关键任务队列溢出",
+				fmt.Sprintf("关键后台通道（配额计费、商家通知、转人工告警）已无空闲槽位 %d 次，任务改为无界执行。"+
+					"不会丢任务，但进程 goroutine 与数据库连接正在被挤压，请检查出站投递是否变慢或数据库是否抖动。"+
+					"阈值 %d 次告警一次。", overflow, criticalLaneOverflowPageAt))
+		})
+	})
 	for i := 0; i < workerCount; i++ {
 		go func() {
 			for {
@@ -770,6 +853,17 @@ func (p *Pipeline) loadHistory(ctx context.Context, sessionID string, excludeMes
 		if rows.Scan(&h.Role, &h.Content) == nil {
 			rev = append(rev, h)
 		}
+	}
+	// A read that broke off midway is treated exactly like the query failing
+	// above: the rows that arrived are real but the conversation they describe
+	// is silently truncated, and the model has no way to know that the turn it
+	// is missing ever happened — the failure mode looks like an AI memory bug
+	// again. Same alert, same key, so the two paths dedup together.
+	if err := rows.Err(); err != nil {
+		p.Logger.Error("load history failed; AI will answer without context", "session_id", sessionID, "error", err.Error())
+		p.PlatformAlert(ctx, "history-load", "会话历史加载失败",
+			"AI 本轮将在无上下文状态下回复。session="+sessionID+" err="+truncateRunes(err.Error(), 200))
+		return nil
 	}
 	for i, j := 0, len(rev)-1; i < j; i, j = i+1, j-1 {
 		rev[i], rev[j] = rev[j], rev[i]
@@ -1509,6 +1603,16 @@ var turnTopicValues = map[string]bool{
 	"product": true, "price": true, "delivery": true, "complaint": true, "order": true, "other": true,
 }
 
+// turnBudget bounds the turn judgment. Two callers share it: the website
+// widget reply path (JudgeTurnFor, on the request context) and the background
+// classifier (classifyTurnAsync, detached with a 20s outer budget). Neither
+// capped the call below the HTTP client's 10s timeout, so a stalled Jev held a
+// widget turn — and pinned a classifier slot — for the full ten seconds before
+// the fast-model fallback could run. guard/route each carry their own reply-path
+// budget; this call has none of its own, hence its own knob. The default sits
+// above the production server's measured 0.8-2.1s spread to api.typesafe.ai.
+var turnBudget = envMillis("JEV_TURN_BUDGET_MS", 4000)
+
 // judgeTurnJev asks Jev the same four decisions JudgeTurn's prompt encodes,
 // as typed questions. Escalation is a Noul thresholded in code (calibrated on
 // real handoff outcomes, see JEV_TURN_ESCALATE_MIN — the verdict flag's own
@@ -1518,6 +1622,9 @@ func (p *Pipeline) judgeTurnJev(ctx context.Context, customerMsg, reply string, 
 	if !p.Jev.Enabled() {
 		return gemini.TurnVerdict{}, "", 0, false
 	}
+	ctx, cancel := context.WithTimeout(ctx, turnBudget)
+	defer cancel()
+
 	state := map[string]any{
 		"customer_message": truncateStr(customerMsg, 600),
 		"assistant_reply":  truncateStr(reply, 600),
@@ -1874,6 +1981,9 @@ func (p *Pipeline) deliver(ctx context.Context, d *outboundDelivery) {
 			_, _ = p.DB.Exec(ctx, "UPDATE platform_outbox SET status='sent', sent_at=$1, locked_at=NULL, last_error='' WHERE delivery_id=$2", time.Now(), d.DeliveryID)
 		} else {
 			_, _ = p.DB.Exec(ctx, "UPDATE platform_outbox SET status='sent', sent_at=$1, locked_at=NULL, last_error='', provider_message_id=$2, provider_status='sent' WHERE delivery_id=$3", time.Now(), providerID, d.DeliveryID)
+			// The row now carries the id a receipt needs, so any receipt that
+			// arrived while we were still sending can finally be applied.
+			p.flushDeliveryReceipts(ctx, d.ConfigID, providerID)
 		}
 		return
 	}
@@ -1884,6 +1994,67 @@ func (p *Pipeline) deliver(ctx context.Context, d *outboundDelivery) {
 		p.alertOutboundFailures(ctx, d.Platform, msg)
 	} else {
 		_, _ = p.DB.Exec(ctx, "UPDATE platform_outbox SET status='pending', next_attempt_at=$1, locked_at=NULL, last_error=$2, updated_at=NOW() WHERE delivery_id=$3", time.Now().Add(retryDelay(int(d.Attempts))), msg, d.DeliveryID)
+	}
+}
+
+// flushDeliveryReceipts replays the provider receipts that arrived before the
+// outbox row carried provider_message_id — the second half of migration 014's
+// contract, whose first half is retainDeliveryReceipt in webhooks.go.
+//
+// It runs in the worker, immediately after the id is written, and not in the
+// webhook: the receipt can only be correlated once the id exists, and the
+// worker is the one that creates that correlation.
+//
+// Receipts are applied oldest-first so the furthest provider state wins the
+// last write (a "read" that happened before a redelivered "delivered" must not
+// be overwritten), and each row is marked applied right after its own write —
+// so a crash mid-replay resumes with the rest still pending rather than
+// re-applying everything.
+func (p *Pipeline) flushDeliveryReceipts(ctx context.Context, configID int32, providerID string) {
+	rows, err := p.DB.Query(ctx,
+		"SELECT receipt_id, status, occurred_at, COALESCE(failure_detail,'') FROM platform_delivery_receipts "+
+			"WHERE config_id = $1 AND provider_message_id = $2 AND applied_at IS NULL "+
+			"ORDER BY occurred_at, receipt_id",
+		configID, providerID)
+	if err != nil {
+		p.Logger.Warn("pending delivery receipts not readable", "config_id", configID, "provider_message_id", providerID, "error", err.Error())
+		return
+	}
+	defer rows.Close()
+	type pendingReceipt struct {
+		receiptID     int64
+		state         string
+		occurredAt    time.Time
+		failureDetail string
+	}
+	var pending []pendingReceipt
+	for rows.Next() {
+		var r pendingReceipt
+		if rows.Scan(&r.receiptID, &r.state, &r.occurredAt, &r.failureDetail) == nil {
+			pending = append(pending, r)
+		}
+	}
+	// A partially read list must not be replayed as if it were complete: the
+	// rows that never arrived would stay unapplied behind receipts already
+	// marked applied, and a provider redelivery would be the only way back.
+	if err := rows.Err(); err != nil {
+		p.Logger.Warn("pending delivery receipts read failed", "config_id", configID, "provider_message_id", providerID, "error", err.Error())
+		return
+	}
+	for _, r := range pending {
+		applied, err := applyProviderReceipt(ctx, p.DB, configID, providerID, r.state, r.failureDetail)
+		if err != nil {
+			p.Logger.Warn("delivery receipt replay failed", "config_id", configID, "provider_message_id", providerID, "receipt_id", r.receiptID, "error", err.Error())
+			continue
+		}
+		if !applied {
+			// No outbox row carries this id any more, so there is nothing to
+			// apply. Leave the row pending rather than burning the record.
+			continue
+		}
+		if _, err := p.DB.Exec(ctx, "UPDATE platform_delivery_receipts SET applied_at = NOW() WHERE receipt_id = $1", r.receiptID); err != nil {
+			p.Logger.Warn("delivery receipt not marked applied", "receipt_id", r.receiptID, "error", err.Error())
+		}
 	}
 }
 

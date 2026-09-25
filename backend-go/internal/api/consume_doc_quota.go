@@ -2,9 +2,10 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
-	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -41,7 +42,11 @@ func consumeDocQuota(ctx context.Context, pool *pgxpool.Pool, userID int32) erro
 	var used, quota int64
 	err := pool.QueryRow(ctx, sqlBillingLookup, userID).Scan(&plan, &used, &quota)
 	if err != nil {
-		if strings.Contains(err.Error(), "no rows") {
+		// Match the sentinel, not the message: pgx returns pgx.ErrNoRows, and a
+		// string test silently changes branch the day that text is reworded or
+		// the error gets wrapped — a tenant without a billing row would then get
+		// a 500 instead of the intended "no quota configured, allow".
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
 		return ErrInternal("billing lookup")

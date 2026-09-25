@@ -196,9 +196,20 @@ func (a *App) resolveWidget(r *http.Request) (*widgetTokenRow, *ApiError) {
 		return nil, ErrUnauthorized("无效的小组件令牌")
 	}
 	// Origin allowlist (empty = any).
+	//
+	// Two honest caveats, so nobody mistakes this for a security boundary:
+	//   1. Origin is caller-controlled. A non-browser client can simply send the
+	//      allowed value, so this only constrains browsers (and CORS already
+	//      limits those). The load-bearing controls are the per-token daily cap
+	//      and the per-IP widget limit, both of which fail closed.
+	//   2. The widget page and the API are served from the SAME origin
+	//      (nginx: / -> Next, /api/ -> Go), and browsers may omit Origin on a
+	//      same-origin GET. So a missing Origin is tolerated only for safe
+	//      methods; anything state-changing must present one, which every
+	//      browser does for non-GET/HEAD regardless of origin.
 	if len(t.AllowedOrigin) > 0 {
 		origin := r.Header.Get("Origin")
-		ok := origin == ""
+		ok := origin == "" && (r.Method == http.MethodGet || r.Method == http.MethodHead)
 		for _, o := range t.AllowedOrigin {
 			if strings.TrimSuffix(o, "/") == strings.TrimSuffix(origin, "/") {
 				ok = true
@@ -643,8 +654,9 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	usage.Record(persistCtx, a.DB, t.ownerID, &sid, a.Gemini.ModelName(), result.PromptTokens, result.OutputTokens, result.CachedTokens)
-	// The visitor row was persisted above; persistChatTurn would store it a
-	// second time (and double-count it), so persist only the model turn.
+	// The visitor row was persisted above, so persist only the model turn.
+	// (The combined user+model helper was deleted as dead code: calling it here
+	// would store the visitor's message a second time and double-count it.)
 	a.persistModelReply(persistCtx, t.ownerID, sid, result, reply, &groundCtx, language, time.Now(), "")
 	// The reply announced a handoff ("已为您转接人工…") — create the real
 	// request so an agent is actually notified. No canned ack: the reply

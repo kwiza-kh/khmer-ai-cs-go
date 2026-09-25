@@ -3,9 +3,12 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"khmer-ai-cs-go/internal/gemini"
 	"khmer-ai-cs-go/internal/rag"
@@ -45,6 +48,12 @@ func (a *App) listSLA(w http.ResponseWriter, r *http.Request) (any, error) {
 			"sla_id": id, "name": name, "first_response_secs": firstSecs, "resolution_secs": resolutionSecs,
 			"business_hours_only": bhOnly, "priority": priority, "is_active": isActive,
 		})
+	}
+	// A short read must not be published as a short list: the client cannot tell
+	// the two apart, so an unchecked Err() turns a dropped connection into
+	// "this tenant has no more data".
+	if err := rows.Err(); err != nil {
+		return nil, ErrInternal("查询失败")
 	}
 	return out, nil
 }
@@ -124,6 +133,12 @@ func (a *App) listRouting(w http.ResponseWriter, r *http.Request) (any, error) {
 			"target_agent_id": targetAgent, "target_skills": targetSkills, "priority": priority, "is_active": isActive,
 		})
 	}
+	// A short read must not be published as a short list: the client cannot tell
+	// the two apart, so an unchecked Err() turns a dropped connection into
+	// "this tenant has no more data".
+	if err := rows.Err(); err != nil {
+		return nil, ErrInternal("查询失败")
+	}
 	return out, nil
 }
 
@@ -187,6 +202,12 @@ func (a *App) listMacros(w http.ResponseWriter, r *http.Request) (any, error) {
 		var s any
 		_ = json.Unmarshal(steps, &s)
 		out = append(out, map[string]any{"macro_id": id, "title": title, "steps": s, "category": category, "is_active": isActive})
+	}
+	// A short read must not be published as a short list: the client cannot tell
+	// the two apart, so an unchecked Err() turns a dropped connection into
+	// "this tenant has no more data".
+	if err := rows.Err(); err != nil {
+		return nil, ErrInternal("查询失败")
 	}
 	return out, nil
 }
@@ -268,6 +289,12 @@ func (a *App) listRoles(w http.ResponseWriter, r *http.Request) (any, error) {
 			continue
 		}
 		out = append(out, map[string]any{"role_id": id, "name": name, "permissions": perms, "is_system": isSystem})
+	}
+	// A short read must not be published as a short list: the client cannot tell
+	// the two apart, so an unchecked Err() turns a dropped connection into
+	// "this tenant has no more data".
+	if err := rows.Err(); err != nil {
+		return nil, ErrInternal("查询失败")
 	}
 	return out, nil
 }
@@ -387,6 +414,12 @@ func (a *App) listWebhooks(w http.ResponseWriter, r *http.Request) (any, error) 
 		}
 		out = append(out, map[string]any{"subscription_id": id, "url": url, "events": events, "is_active": isActive, "created_at": createdAt})
 	}
+	// A short read must not be published as a short list: the client cannot tell
+	// the two apart, so an unchecked Err() turns a dropped connection into
+	// "this tenant has no more data".
+	if err := rows.Err(); err != nil {
+		return nil, ErrInternal("查询失败")
+	}
 	return out, nil
 }
 
@@ -494,6 +527,11 @@ func (a *App) listHandoffs(w http.ResponseWriter, r *http.Request) (any, error) 
 			"last_message": derefStr(lastMsg), "last_message_at": lastMsgAt,
 		})
 	}
+	// `total` is counted by its own query, so a short read here shows the page
+	// as complete while the pager offers more rows that never arrive.
+	if err := rows.Err(); err != nil {
+		return nil, ErrInternal("查询失败")
+	}
 	return map[string]any{"data": out, "total": total, "page": page, "page_size": pageSize}, nil
 }
 
@@ -547,6 +585,12 @@ func (a *App) listCustomers(w http.ResponseWriter, r *http.Request) (any, error)
 			"email": email, "total_sessions": totalSessions, "total_messages": totalMessages, "last_seen_at": lastSeen,
 		})
 	}
+	// A short read must not be published as a short list: the client cannot tell
+	// the two apart, so an unchecked Err() turns a dropped connection into
+	// "this tenant has no more data".
+	if err := rows.Err(); err != nil {
+		return nil, ErrInternal("查询失败")
+	}
 	return out, nil
 }
 
@@ -576,6 +620,9 @@ func (a *App) customer360(w http.ResponseWriter, r *http.Request, profileID int3
 			if rows.Scan(&sid, &status, &title, &createdAt) == nil {
 				sessions = append(sessions, map[string]any{"session_id": sid, "status": status, "title": title, "created_at": createdAt})
 			}
+		}
+		if err := rows.Err(); err != nil {
+			return nil, ErrInternal("查询失败")
 		}
 	}
 	return map[string]any{
@@ -627,6 +674,12 @@ func (a *App) listFaqSuggestions(w http.ResponseWriter, r *http.Request) (any, e
 			continue
 		}
 		out = append(out, map[string]any{"suggestion_id": id, "question": question, "answer": answer, "status": status, "created_at": createdAt})
+	}
+	// A short read must not be published as a short list: the client cannot tell
+	// the two apart, so an unchecked Err() turns a dropped connection into
+	// "this tenant has no more data".
+	if err := rows.Err(); err != nil {
+		return nil, ErrInternal("查询失败")
 	}
 	return out, nil
 }
@@ -745,6 +798,12 @@ func (a *App) listTeam(w http.ResponseWriter, r *http.Request) (any, error) {
 			"skills": skills, "is_active": isActive, "username": username, "email": email,
 		})
 	}
+	// A short read must not be published as a short list: the client cannot tell
+	// the two apart, so an unchecked Err() turns a dropped connection into
+	// "this tenant has no more data".
+	if err := rows.Err(); err != nil {
+		return nil, ErrInternal("查询失败")
+	}
 	return out, nil
 }
 
@@ -815,6 +874,18 @@ func (a *App) addTeamAgent(w http.ResponseWriter, r *http.Request) (any, error) 
 	if err := a.DB.QueryRow(r.Context(),
 		"INSERT INTO agent_teams (owner_user_id, agent_user_id, display_name, skills, is_active) VALUES ($1,$2,$3,$4::text[],true) RETURNING team_id",
 		user.UserID, req.AgentUserID, req.DisplayName, req.Skills).Scan(&teamID); err != nil {
+		// The SELECT above and this INSERT are a check-then-act pair, so the
+		// loser of a concurrent claim — or a plain double-submit — arrives here
+		// rather than at the claimedElsewhere branch. Both unique keys that can
+		// fire mean "this account already belongs to a tenant" (059's
+		// uq_agent_teams_agent_user_id, 024's (owner_user_id, agent_user_id)),
+		// which is the same fact the pre-check reports as 409. Answering 500
+		// told the client to retry a request that can never succeed, and hid a
+		// normal race inside the server-error rate.
+		var pge *pgconn.PgError
+		if errors.As(err, &pge) && pge.Code == "23505" {
+			return nil, ErrConflict("该用户已属于其他商家")
+		}
 		return nil, ErrInternal("添加失败")
 	}
 	return map[string]any{"team_id": teamID, "message": "已添加"}, nil
@@ -896,6 +967,12 @@ func (a *App) loadSessionLatest(ctx context.Context, sessionID string) (string, 
 		if rows.Scan(&h.Role, &h.Content) == nil {
 			rev = append(rev, h)
 		}
+	}
+	if err := rows.Err(); err != nil {
+		// The history is context, not the answer: a partial one is still usable,
+		// so this is logged rather than surfaced as a failed turn. Silence would
+		// hide that the model answered from a truncated conversation.
+		a.Logger.Error("load session latest incomplete", "session_id", sessionID, "error", err.Error())
 	}
 	for i, j := 0, len(rev)-1; i < j; i, j = i+1, j-1 {
 		rev[i], rev[j] = rev[j], rev[i]

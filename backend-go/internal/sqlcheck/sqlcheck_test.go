@@ -94,10 +94,29 @@ func normalize(s string) string { return strings.Join(strings.Fields(s), " ") }
 //	go test ./internal/sqlcheck/ -v
 //
 // A failure here means an endpoint is broken in a way no other check can see.
+//
+// SQLCHECK_REQUIRED=1 turns the skip into a FAILURE. The skip is right for
+// everyday `go test ./...` — most local work has no database and a red suite
+// would just teach people to ignore it — but it also means CI, which sets no
+// DATABASE_URL, was reporting success while this check never ran. That is the
+// worst outcome for a gate against "references a column that does not exist":
+// the project shipped those bugs precisely because nothing exercised the
+// statements. So the release flow (deploy-khmer-ai-cs/SKILL.md §4, after
+// `migrate-go` and before starting the new binary) sets SQLCHECK_REQUIRED=1
+// and the missing DSN fails loudly with instructions. The switch exists to let
+// the RELEASE be strict, not to make daily `go test` red.
 func TestSQLObjectsExist(t *testing.T) {
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
-		t.Skip("DATABASE_URL not set — skipping; the schema check needs a migrated database")
+		if os.Getenv("SQLCHECK_REQUIRED") == "1" {
+			t.Fatal("SQLCHECK_REQUIRED=1, but DATABASE_URL is not set — this check is the " +
+				"only thing that catches SQL referencing columns or tables that do not exist, " +
+				"and it needs a migrated database to do it. Export DATABASE_URL (point it at " +
+				"any migrated database, production included: PREPARE never executes and every " +
+				"statement is rolled back), or unset SQLCHECK_REQUIRED if you are not releasing.")
+		}
+		t.Skip("DATABASE_URL not set — skipping; the schema check needs a migrated database " +
+			"(set SQLCHECK_REQUIRED=1 to make this a hard failure instead)")
 	}
 	root := filepath.Join("..", "..")
 	stmts, err := sqlcheck.Extract(root)

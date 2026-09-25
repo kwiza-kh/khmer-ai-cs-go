@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -71,6 +72,14 @@ func (a *App) listPlatformConfigs(w http.ResponseWriter, r *http.Request) (any, 
 			continue
 		}
 		cfgs = append(cfgs, c)
+	}
+	// The response IS this list: a truncated read would show the merchant fewer
+	// channels than they have — and a missing channel is precisely what makes
+	// someone reconnect the same account and trip the cross-tenant conflict
+	// check. Fail the request instead of serving a partial answer.
+	if err := rows.Err(); err != nil {
+		a.Logger.Warn("platform config list read failed", "user_id", user.UserID, "error", err.Error())
+		return nil, ErrInternal("查询失败")
 	}
 	out := make([]map[string]any, 0)
 	for i := range cfgs {
@@ -336,6 +345,26 @@ func (a *App) providerWebhookURL(platform string) (string, error) {
 	return raw + "/api/v1/webhook/" + platform, nil
 }
 
+// connectionCheckFailed records the failed self-check, then answers 502.
+//
+// platform_connection_health.status='error' is what the operator console counts
+// to warn "渠道连接异常" (platform_bot_reports.go), and until this existed
+// NOTHING in the codebase ever wrote that value: every check failure returned
+// 502 straight from memory without touching the table, and the only other
+// statuses ever written were 'connected' and 'unknown'. The warning therefore
+// could only ever read zero — dead code guarding against exactly the silent
+// breakage it had been written to catch. Recording first also means the
+// operator's /platforms view keeps the reason after the merchant closes the tab.
+//
+// The health write is best-effort on purpose: it must not replace the real
+// error (the provider's message is what the merchant needs to fix the token),
+// and a DB hiccup here must not turn a 502 into a 500.
+func (a *App) connectionCheckFailed(ctx context.Context, configID int32, err error) *ApiError {
+	detail := "connection check failed: " + err.Error()
+	_ = a.recordHealth(ctx, configID, "error", "", detail)
+	return &ApiError{http.StatusBadGateway, detail}
+}
+
 // verifyPlatformConfig — verify a platform connection.
 func (a *App) verifyPlatformConfig(w http.ResponseWriter, r *http.Request, configID int32) (any, error) {
 	user, _ := UserFrom(r)
@@ -360,10 +389,10 @@ func (a *App) verifyPlatformConfig(w http.ResponseWriter, r *http.Request, confi
 		client := platform.NewTelegramClient(botToken)
 		botID, username, firstName, err := client.GetMe(r.Context())
 		if err != nil {
-			return nil, &ApiError{http.StatusBadGateway, "connection check failed: " + err.Error()}
+			return nil, a.connectionCheckFailed(r.Context(), configID, err)
 		}
 		if botID == 0 {
-			return nil, &ApiError{http.StatusBadGateway, "connection check failed: invalid bot token"}
+			return nil, a.connectionCheckFailed(r.Context(), configID, errors.New("invalid bot token"))
 		}
 		webhookURL, err := a.telegramWebhookURL()
 		if err != nil {
@@ -386,7 +415,7 @@ func (a *App) verifyPlatformConfig(w http.ResponseWriter, r *http.Request, confi
 		client := platform.NewMetaClient(access, c.PageID, derefStr(c.InstagramBusinessID), a.Cfg.Meta.GraphAPIVersion)
 		name, err := client.VerifyConnection(r.Context(), c.Platform)
 		if err != nil {
-			return nil, &ApiError{http.StatusBadGateway, "connection check failed: " + err.Error()}
+			return nil, a.connectionCheckFailed(r.Context(), configID, err)
 		}
 		_ = a.recordHealth(r.Context(), configID, "connected", name, "Connection verified via Meta Graph API")
 		return map[string]any{"config_id": configID, "health": map[string]any{"config_id": configID, "status": "connected", "account_name": name}}, nil
@@ -395,7 +424,7 @@ func (a *App) verifyPlatformConfig(w http.ResponseWriter, r *http.Request, confi
 		client := platform.NewMetaClient(access, c.PageID, derefStr(c.InstagramBusinessID), a.Cfg.Meta.GraphAPIVersion)
 		name, err := client.VerifyConnection(r.Context(), "whatsapp")
 		if err != nil {
-			return nil, &ApiError{http.StatusBadGateway, "connection check failed: " + err.Error()}
+			return nil, a.connectionCheckFailed(r.Context(), configID, err)
 		}
 		_ = a.recordHealth(r.Context(), configID, "connected", name, "Connection verified via WhatsApp Cloud API")
 		return map[string]any{"config_id": configID, "health": map[string]any{"config_id": configID, "status": "connected", "account_name": name}}, nil
@@ -404,7 +433,7 @@ func (a *App) verifyPlatformConfig(w http.ResponseWriter, r *http.Request, confi
 		client := platform.NewLineClient(access)
 		name, _, botUserID, err := client.GetBotInfo(r.Context())
 		if err != nil {
-			return nil, &ApiError{http.StatusBadGateway, "connection check failed: " + err.Error()}
+			return nil, a.connectionCheckFailed(r.Context(), configID, err)
 		}
 		// Store the bot's userId: LINE stamps it on every webhook as
 		// "destination", and it is the only key that routes an inbound event
@@ -431,7 +460,7 @@ func (a *App) verifyPlatformConfig(w http.ResponseWriter, r *http.Request, confi
 		client := platform.NewZaloClient(access)
 		name, oaID, err := client.VerifyOA(r.Context())
 		if err != nil {
-			return nil, &ApiError{http.StatusBadGateway, "connection check failed: " + err.Error()}
+			return nil, a.connectionCheckFailed(r.Context(), configID, err)
 		}
 		// oa_id is the routing identity carried on every Zalo webhook.
 		_ = a.setChannelIdentity(r.Context(), configID, oaID)
@@ -515,6 +544,12 @@ func (a *App) listPlatformWork(w http.ResponseWriter, r *http.Request, configID 
 				inbound = append(inbound, map[string]any{"event_id": eventID, "external_id": externalID, "platform_user_id": puid, "content": content, "status": status, "attempts": attempts, "last_error": lastError, "created_at": createdAt})
 			}
 		}
+		// This is the operator's retry queue: a partial list would leave failed
+		// events that are never offered for retry, with nothing saying so.
+		if err := rows.Err(); err != nil {
+			a.Logger.Warn("platform inbound work read failed", "config_id", configID, "error", err.Error())
+			return nil, ErrInternal("查询失败")
+		}
 	}
 	deliveries := make([]map[string]any, 0)
 	drows, err := a.DB.Query(r.Context(),
@@ -530,6 +565,13 @@ func (a *App) listPlatformWork(w http.ResponseWriter, r *http.Request, configID 
 			if drows.Scan(&deliveryID, &chatMessageID, &recipientID, &content, &status, &lastError, &createdAt) == nil {
 				deliveries = append(deliveries, map[string]any{"delivery_id": deliveryID, "chat_message_id": chatMessageID, "recipient_id": recipientID, "content": content, "status": status, "last_error": lastError, "created_at": createdAt})
 			}
+		}
+		// Same reasoning as the inbound list above: these are the deliveries the
+		// operator may retry, and a silently short list hides the ones that most
+		// need retrying.
+		if err := drows.Err(); err != nil {
+			a.Logger.Warn("platform outbound work read failed", "config_id", configID, "error", err.Error())
+			return nil, ErrInternal("查询失败")
 		}
 	}
 	cancelled := make([]map[string]any, 0)

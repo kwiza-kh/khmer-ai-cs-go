@@ -282,38 +282,6 @@ func (a *App) resolveAPIKey(ctx context.Context, token string) (*CurrentUser, er
 	return &CurrentUser{UserID: userID, Username: username, Role: role}, nil
 }
 
-// adminOnly requires role admin or platform_admin.
-func adminOnly(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		user, ok := UserFrom(r)
-		if !ok {
-			WriteJSON(w, http.StatusUnauthorized, map[string]string{"error": "未提供认证令牌"})
-			return
-		}
-		if !user.IsAdmin() {
-			WriteJSON(w, http.StatusForbidden, map[string]string{"error": "需要管理员权限"})
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-// platformAdminOnly requires the platform super-admin role.
-func platformAdminOnly(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		user, ok := UserFrom(r)
-		if !ok {
-			WriteJSON(w, http.StatusUnauthorized, map[string]string{"error": "未提供认证令牌"})
-			return
-		}
-		if !user.IsPlatformAdmin() {
-			WriteJSON(w, http.StatusForbidden, map[string]string{"error": "需要平台管理员权限"})
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
 // rateLimit applies a Redis fixed window (per user when authenticated, else
 // per client IP). 429 + Retry-After when exceeded; 503 when Redis is down.
 func (a *App) rateLimit(maxRPM uint32) func(http.Handler) http.Handler {

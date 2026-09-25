@@ -185,14 +185,20 @@ func extractDocx(data []byte) (string, error) {
 // URL ingestion (SSRF-guarded)
 // ============================================
 
-// PublicFetchClient returns an HTTP client whose dialer refuses any address
-// that is not globally routable, plus a redirect policy that re-validates each
-// hop and caps the chain. Callers that fetch an attacker-supplied URL must use
-// it: a plain http.Client follows up to 10 redirects with no address check.
+// publicFetchTransport is built ONCE and shared.
 //
-// This is the same guard FetchURLContent applies, exported so the platform
-// media path (which fetches a webhook-supplied source_url) cannot drift from it.
-func PublicFetchClient() *http.Client {
+// It used to be constructed per call, which leaked: a fresh http.Transport has
+// a zero IdleConnTimeout, and zero means "no limit" rather than "immediate
+// close", so its idle connection was never reaped, the transport's readLoop and
+// writeLoop goroutines stayed alive, and nothing calls CloseIdleConnections.
+// Every downloaded media item and fetched URL therefore left a goroutine pair
+// and a socket behind. Measured against a keep-alive server: a shared transport
+// held a flat 5 goroutines over 30 fetches, while a per-call transport went
+// 95 -> 152 -> 302 -> 452 and stayed there after idle + GC.
+//
+// Pooling does not weaken the guard: it is the dialer's Control hook and the
+// redirect policy that refuse non-public targets, not the client's identity.
+var publicFetchTransport = func() *http.Transport {
 	dialer := &net.Dialer{
 		Timeout: 10 * time.Second,
 		Control: func(network, address string, _ syscall.RawConn) error {
@@ -207,22 +213,38 @@ func PublicFetchClient() *http.Client {
 			return nil
 		},
 	}
-	return &http.Client{
-		Timeout: 20 * time.Second,
-		Transport: &http.Transport{
-			DialContext: dialer.DialContext,
-		},
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 3 {
-				return fmt.Errorf("too many redirects")
-			}
-			if err := ensurePublicHost(req.URL.Hostname()); err != nil {
-				return fmt.Errorf("redirect host is not public")
-			}
-			return nil
-		},
+	return &http.Transport{
+		DialContext:         dialer.DialContext,
+		IdleConnTimeout:     30 * time.Second,
+		MaxIdleConns:        16,
+		MaxIdleConnsPerHost: 8,
 	}
+}()
+
+// publicFetchClient is safe to share: http.Client is goroutine-safe, and every
+// guard above is per-request.
+var publicFetchClient = &http.Client{
+	Timeout:   20 * time.Second,
+	Transport: publicFetchTransport,
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 3 {
+			return fmt.Errorf("too many redirects")
+		}
+		if err := ensurePublicHost(req.URL.Hostname()); err != nil {
+			return fmt.Errorf("redirect host is not public")
+		}
+		return nil
+	},
 }
+
+// PublicFetchClient returns an HTTP client whose dialer refuses any address
+// that is not globally routable, plus a redirect policy that re-validates each
+// hop and caps the chain. Callers that fetch an attacker-supplied URL must use
+// it: a plain http.Client follows up to 10 redirects with no address check.
+//
+// This is the same guard FetchURLContent applies, exported so the platform
+// media path (which fetches a webhook-supplied source_url) cannot drift from it.
+func PublicFetchClient() *http.Client { return publicFetchClient }
 
 // ValidateFetchURL enforces the scheme allowlist and the pre-dial public-host
 // check on a caller-supplied URL, returning the parsed URL for use.

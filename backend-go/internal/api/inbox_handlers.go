@@ -29,19 +29,8 @@ func (a *App) listInbox(w http.ResponseWriter, r *http.Request) (any, error) {
 	// "" / "active" → not archived (the default view); "archived" → only the
 	// archive. Archiving hides a conversation without destroying anything.
 	archiveFilter := r.URL.Query().Get("archived")
-	archivePredicate := " AND archived_at IS NULL"
-	if archiveFilter == "1" || archiveFilter == "true" || archiveFilter == "archived" {
-		archivePredicate = " AND archived_at IS NOT NULL"
-	}
+	archivedOnly := archiveFilter == "1" || archiveFilter == "true" || archiveFilter == "archived"
 
-	// Aliased `s` on purpose: the search predicate below is written against the
-	// page query's alias so one shared string can serve both statements.
-	countSQL := "SELECT COUNT(*) FROM sessions AS s WHERE s.user_id = $1 AND s.is_test = FALSE" + archivePredicate
-	args := []any{user.UserID}
-	if statusFilter != "" {
-		countSQL += " AND status = $" + strconv.Itoa(len(args)+1) + "::session_status"
-		args = append(args, statusFilter)
-	}
 	// Free-text search across who the conversation is with (platform user id,
 	// customer display name), who handles it (agent username), its title and
 	// its messages — applied identically to the count and the page query so
@@ -49,22 +38,35 @@ func (a *App) listInbox(w http.ResponseWriter, r *http.Request) (any, error) {
 	// without it a username search only matched whatever happened to be in
 	// the already-loaded first page.
 	searchQ := strings.TrimSpace(r.URL.Query().Get("q"))
-	searchPredicate := ""
-	if searchQ != "" {
-		searchPredicate = " AND (s.title ILIKE $Q OR s.platform_user_id ILIKE $Q" +
-			" OR EXISTS (SELECT 1 FROM platform_user_sessions pus_s WHERE pus_s.session_id = s.session_id AND pus_s.user_display_name ILIKE $Q)" +
-			" OR EXISTS (SELECT 1 FROM users u_s WHERE u_s.user_id = s.assigned_agent_id AND u_s.username ILIKE $Q)" +
-			" OR EXISTS (SELECT 1 FROM chat_messages cm_s WHERE cm_s.session_id = s.session_id AND cm_s.content ILIKE $Q))"
-		searchPredicate = strings.ReplaceAll(searchPredicate, "$Q", "$"+strconv.Itoa(len(args)+1))
-		countSQL += searchPredicate
-		args = append(args, "%"+searchQ+"%")
-	}
-	var total int64
-	if err := a.DB.QueryRow(r.Context(), countSQL, args...).Scan(&total); err != nil {
-		return nil, ErrInternal("查询失败")
-	}
 
-	selSQL := "SELECT s.session_id, s.user_id, s.platform::text, s.platform_user_id, " +
+	// Both statements below are single literals with FIXED placeholder numbers,
+	// and every optional filter is spelled `$N IS NULL OR …` instead of being
+	// appended conditionally. The aliased `s` is shared by both on purpose: one
+	// predicate, two arg lists.
+	//
+	//   * sqlcheck can only PREPARE a statement that exists verbatim in the
+	//     source. The previous version rewrote a "$Q" sentinel to a real number
+	//     at runtime (there is no $Q in SQL), so this predicate — the one query
+	//     in this file spanning four tables (sessions, platform_user_sessions,
+	//     users, chat_messages) with five ILIKEs — was invisible to the check
+	//     and to every reader. A column that does not exist would ship.
+	//   * One statement for every filter combination cannot drift between the
+	//     count query and the page query, which is what keeps pagination honest.
+	//
+	// PostgreSQL lets one placeholder be referenced any number of times, so the
+	// search term is bound once for all five ILIKEs (the count query passes four
+	// args, the page query the same four plus limit/offset). The cost is that a
+	// NULL-guarded `status` cannot drive the planner to a status index; the
+	// `s.user_id` predicate carries the selectivity either way.
+	const countSQL = "SELECT COUNT(*) FROM sessions AS s WHERE s.user_id = $1 AND s.is_test = FALSE" +
+		" AND ($2::session_status IS NULL OR s.status = $2)" +
+		" AND ((s.archived_at IS NOT NULL) = $3::boolean)" +
+		" AND ($4::text IS NULL OR s.title ILIKE $4 OR s.platform_user_id ILIKE $4" +
+		" OR EXISTS (SELECT 1 FROM platform_user_sessions pus_s WHERE pus_s.session_id = s.session_id AND pus_s.user_display_name ILIKE $4)" +
+		" OR EXISTS (SELECT 1 FROM users u_s WHERE u_s.user_id = s.assigned_agent_id AND u_s.username ILIKE $4)" +
+		" OR EXISTS (SELECT 1 FROM chat_messages cm_s WHERE cm_s.session_id = s.session_id AND cm_s.content ILIKE $4))"
+
+	const selSQL = "SELECT s.session_id, s.user_id, s.platform::text, s.platform_user_id, " +
 		"pus.user_display_name, cp.avatar_url, " +
 		"CASE WHEN s.platform IN ('whatsapp','meta','instagram') THEN pus.last_inbound_at + INTERVAL '24 hours' END AS reply_window_expires_at, " +
 		"s.status::text, s.language, s.title, s.user_message_count, s.model_message_count, " +
@@ -76,21 +78,33 @@ func (a *App) listInbox(w http.ResponseWriter, r *http.Request) (any, error) {
 		"LEFT JOIN platform_user_sessions pus ON pus.session_id = s.session_id " +
 		"LEFT JOIN customer_profiles cp ON cp.user_id = s.user_id AND cp.platform::text = s.platform::text AND cp.platform_user_id = s.platform_user_id " +
 		"LEFT JOIN LATERAL (SELECT content, created_at FROM chat_messages WHERE session_id = s.session_id ORDER BY created_at DESC, message_id DESC LIMIT 1) AS last_message ON TRUE " +
-		"WHERE s.user_id = $1 AND s.is_test = FALSE" + archivePredicate
-	selArgs := []any{user.UserID}
-	if statusFilter != "" {
-		selSQL += " AND s.status = $" + strconv.Itoa(len(selArgs)+1) + "::session_status"
-		selArgs = append(selArgs, statusFilter)
-	}
-	if searchPredicate != "" {
-		// Same predicate, re-parameterised for the page query's own arg list.
-		selSQL += strings.ReplaceAll(searchPredicate, "$"+strconv.Itoa(len(args)), "$"+strconv.Itoa(len(selArgs)+1))
-		selArgs = append(selArgs, "%"+searchQ+"%")
-	}
-	selSQL += " ORDER BY last_message.created_at DESC NULLS LAST, s.created_at DESC LIMIT $" + strconv.Itoa(len(selArgs)+1) + " OFFSET $" + strconv.Itoa(len(selArgs)+2)
-	selArgs = append(selArgs, pageSize, offset)
+		"WHERE s.user_id = $1 AND s.is_test = FALSE" +
+		" AND ($2::session_status IS NULL OR s.status = $2)" +
+		" AND ((s.archived_at IS NOT NULL) = $3::boolean)" +
+		" AND ($4::text IS NULL OR s.title ILIKE $4 OR s.platform_user_id ILIKE $4" +
+		" OR EXISTS (SELECT 1 FROM platform_user_sessions pus_s WHERE pus_s.session_id = s.session_id AND pus_s.user_display_name ILIKE $4)" +
+		" OR EXISTS (SELECT 1 FROM users u_s WHERE u_s.user_id = s.assigned_agent_id AND u_s.username ILIKE $4)" +
+		" OR EXISTS (SELECT 1 FROM chat_messages cm_s WHERE cm_s.session_id = s.session_id AND cm_s.content ILIKE $4))" +
+		" ORDER BY last_message.created_at DESC NULLS LAST, s.created_at DESC LIMIT $5 OFFSET $6"
 
-	rows, err := a.DB.Query(r.Context(), selSQL, selArgs...)
+	// nil, not "": an absent filter must be NULL so the `$N IS NULL` guard
+	// short-circuits. An empty session_status would fail the enum cast.
+	var statusArg, searchArg any
+	if statusFilter != "" {
+		statusArg = statusFilter
+	}
+	if searchQ != "" {
+		searchArg = "%" + searchQ + "%"
+	}
+	scopedArgs := []any{user.UserID, statusArg, archivedOnly, searchArg}
+
+	var total int64
+	if err := a.DB.QueryRow(r.Context(), countSQL, scopedArgs...).Scan(&total); err != nil {
+		return nil, ErrInternal("查询失败")
+	}
+
+	rows, err := a.DB.Query(r.Context(), selSQL,
+		append(append(make([]any, 0, len(scopedArgs)+2), scopedArgs...), pageSize, offset)...)
 	if err != nil {
 		return nil, ErrInternal("查询失败")
 	}
@@ -149,6 +163,12 @@ func (a *App) listInbox(w http.ResponseWriter, r *http.Request) (any, error) {
 			"tags":                    tags,
 			"intent":                  derefStr(intent),
 		})
+	}
+	// A short read must not pass for a complete page: `total` above was counted
+	// separately and the client renders "showing N of total", so silently
+	// dropping the tail makes conversations look deleted.
+	if err := rows.Err(); err != nil {
+		return nil, ErrInternal("查询失败")
 	}
 	// Surface how many rows could not be decoded: a non-zero value means the
 	// client is seeing fewer conversations than `total`, which used to happen
@@ -404,6 +424,12 @@ func (a *App) sessionSummary(w http.ResponseWriter, r *http.Request, sessionID s
 		}
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		// Summarising a truncated transcript would state conclusions the
+		// conversation never supported, so fail instead of guessing.
+		a.Logger.Warn("summary transcript scan failed", "session_id", sessionID, "error", err.Error())
+		return nil, ErrInternal("查询失败")
+	}
 	if len(turns) == 0 {
 		return map[string]any{"summary": "", "cached": false, "language": language}, nil
 	}

@@ -119,6 +119,13 @@ func (a *App) listPromptVersions(w http.ResponseWriter, r *http.Request, configI
 		}
 		out = append(out, v)
 	}
+	if err := rows.Err(); err != nil {
+		// Same reasoning as the scan-error log above: this endpoint once showed
+		// an empty history while the table held rows, so nothing that shortens
+		// the list may go unreported.
+		a.Logger.Warn("prompt version scan incomplete", "config_id", configID, "error", err.Error())
+		return nil, ErrInternal("查询失败")
+	}
 	return map[string]any{
 		"config_id": configID,
 		"current":   promptValue(current),

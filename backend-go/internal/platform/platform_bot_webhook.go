@@ -64,6 +64,10 @@ type telegramCallbackQuery struct {
 		MessageID int64 `json:"message_id"`
 		Chat      *struct {
 			ID int64 `json:"id"`
+			// Type drives the chat_id fallback in lookupLinkedUser: "private"
+			// is the only type whose id identifies the person who pressed the
+			// button rather than the room they pressed it in.
+			Type string `json:"type"`
 		} `json:"chat"`
 	} `json:"message"`
 	// Data is the callback_data the button was built with.
@@ -138,7 +142,7 @@ func (p *Pipeline) dispatchPlatformUpdate(ctx context.Context, upd *telegramUpda
 	// Everything a MERCHANT reads is resolved through merchantText. The
 	// operator console below stays Chinese on purpose — that audience is the
 	// RelayChat team, not a customer of it.
-	linkedUserID, linked := p.lookupLinkedUser(ctx, senderID, chatID)
+	linkedUserID, linked := p.lookupLinkedUser(ctx, senderID, chatID, msg.Chat.Type)
 	lang := botLang(msg.From.LanguageCode)
 	if linked {
 		lang = p.merchantLang(ctx, linkedUserID, msg.From.LanguageCode)
@@ -278,7 +282,7 @@ func (p *Pipeline) handlePlatformCallback(ctx context.Context, cb *telegramCallb
 		}
 	}
 
-	userID, linked := p.lookupLinkedUser(ctx, cb.From.ID, chatID)
+	userID, linked := p.lookupLinkedUser(ctx, cb.From.ID, chatID, cb.Message.Chat.Type)
 	lang := botLang(cb.From.LanguageCode)
 	if linked {
 		lang = p.merchantLang(ctx, userID, cb.From.LanguageCode)
@@ -357,8 +361,11 @@ func (p *Pipeline) relayAdminReply(ctx context.Context, adminChatID, adminMessag
 	adminChat := strconv.FormatInt(adminChatID, 10)
 	merchantChatID := strconv.FormatInt(merchantChat, 10)
 	// Resolve by chat: the relay row stores the merchant's chat, not their
-	// Telegram user id, so the telegram_sub branch is skipped with 0.
-	merchantUser, merchantLinked := p.lookupLinkedUser(ctx, 0, merchantChatID)
+	// Telegram user id, so the telegram_sub branch is skipped with 0. Uses the
+	// chat-scoped resolver directly — the result only picks the copy's language
+	// and never authorises anything, so it must not be gated on chat type
+	// (which this path has no way to know).
+	merchantUser, merchantLinked := p.lookupLinkedUserByChat(ctx, merchantChatID)
 	lang := "en"
 	if merchantLinked {
 		lang = p.merchantLang(ctx, merchantUser, "")
@@ -381,10 +388,29 @@ func (p *Pipeline) relayAdminReply(ctx context.Context, adminChatID, adminMessag
 	return true
 }
 
+// chatFallbackAllowed reports whether the chat-scoped fallback in
+// lookupLinkedUser may run for a Telegram chat type.
+//
+// The fallback matches on chat_id, and in a PRIVATE chat Telegram's chat id IS
+// the person's own user id — so a match there really does mean "this chat
+// belongs to the account that bound it". In a group, supergroup or channel the
+// same id belongs to the ROOM, not to whoever pressed the button: bots are
+// routinely added to a merchant's team group, and the id would then resolve to
+// the merchant for every member. That turned a 接管/解决 button on a handoff
+// notification into a way for any group member to take over or resolve that
+// merchant's customer conversation.
+func chatFallbackAllowed(chatType string) bool {
+	return chatType == "private"
+}
+
 // lookupLinkedUser resolves which RelayChat account owns this Telegram chat.
 // Matched on the numeric Telegram id via the account's linked telegram_sub —
 // never on @username, which is mutable and recyclable.
-func (p *Pipeline) lookupLinkedUser(ctx context.Context, telegramUserID int64, chatID string) (int32, bool) {
+//
+// chatType is the Bot API chat type of the update. It gates the chat_id
+// fallback; see chatFallbackAllowed. Callers that cannot know the chat type
+// must not take that fallback.
+func (p *Pipeline) lookupLinkedUser(ctx context.Context, telegramUserID int64, chatID, chatType string) (int32, bool) {
 	var userID int32
 	err := p.DB.QueryRow(ctx,
 		"SELECT user_id FROM users WHERE telegram_sub = $1 LIMIT 1",
@@ -393,8 +419,26 @@ func (p *Pipeline) lookupLinkedUser(ctx context.Context, telegramUserID int64, c
 		return userID, true
 	}
 	// Fall back to the bound chat, which covers accounts linked before they
-	// ever signed in with Telegram.
-	err = p.DB.QueryRow(ctx,
+	// ever signed in with Telegram. Private chats only: outside one, the chat
+	// belongs to a group and a match here would identify the wrong person (see
+	// chatFallbackAllowed).
+	if !chatFallbackAllowed(chatType) {
+		return 0, false
+	}
+	return p.lookupLinkedUserByChat(ctx, chatID)
+}
+
+// lookupLinkedUserByChat resolves the account bound to a Telegram chat id.
+//
+// It exists for the operator support relay, which knows only the merchant's
+// chat id (the relay row stores the chat, not the Telegram user) and needs the
+// account for one thing: the language of the reply copy. It authorises nothing,
+// so the private-chat restriction that guards lookupLinkedUser's fallback does
+// not apply here — reaching this at all already required the sender to pass the
+// operator allow-list and the platform_admin recheck.
+func (p *Pipeline) lookupLinkedUserByChat(ctx context.Context, chatID string) (int32, bool) {
+	var userID int32
+	err := p.DB.QueryRow(ctx,
 		"SELECT user_id FROM telegram_notify_settings WHERE chat_id = $1 LIMIT 1", chatID).Scan(&userID)
 	if err == nil {
 		return userID, true

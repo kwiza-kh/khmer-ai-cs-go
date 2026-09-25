@@ -92,8 +92,18 @@ func (p *Pipeline) adminTenantsReport(ctx context.Context) string {
 		b.WriteString(fmt.Sprintf("#%d %s%s\n   %s · %d 会话 · %d/%d 消息\n",
 			id, name, flag, plan, sessions, used, quota))
 	}
+	// A truncated read must announce itself. The console is how the operator
+	// decides whether a merchant is missing from RelayChat or simply missing
+	// from this list, and silence reads as the former.
+	readErr := rows.Err()
+	if readErr != nil && n == 0 {
+		return "查询失败：" + readErr.Error()
+	}
 	if n == 0 {
 		return "还没有商家。"
+	}
+	if readErr != nil {
+		b.WriteString("\n⚠️ 列表读取中断，以上可能不完整：" + readErr.Error() + "\n")
 	}
 	b.WriteString("\n/tenant <id> 看详情")
 	return b.String()
@@ -135,6 +145,11 @@ func (p *Pipeline) adminTenantReport(ctx context.Context, userID int32) string {
 			if rows.Scan(&plat, &on) == nil {
 				channels += plat + " " + mark(on) + "  "
 			}
+		}
+		// Without this the merchant's channel list would simply look shorter —
+		// or, worse, "未连接任何渠道" for a merchant who has channels.
+		if err := rows.Err(); err != nil {
+			channels += "（渠道列表读取中断：" + err.Error() + "）  "
 		}
 	}
 	if channels == "" {

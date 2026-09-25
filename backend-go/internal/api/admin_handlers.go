@@ -49,6 +49,9 @@ func (a *App) listBusinessHours(w http.ResponseWriter, r *http.Request) (any, er
 			"platform": platform, "is_active": isActive,
 		})
 	}
+	if err := rows.Err(); err != nil {
+		return nil, ErrInternal("查询失败")
+	}
 	return out, nil
 }
 
@@ -138,6 +141,9 @@ func (a *App) listCannedResponses(w http.ResponseWriter, r *http.Request) (any, 
 		}
 		out = append(out, map[string]any{"id": id, "title": title, "body": body, "category": category, "language": language})
 	}
+	if err := rows.Err(); err != nil {
+		return nil, ErrInternal("查询失败")
+	}
 	return out, nil
 }
 
@@ -203,6 +209,9 @@ func (a *App) listModelConfigs(w http.ResponseWriter, r *http.Request) (any, err
 			"temperature": temperature, "max_tokens": maxTokens, "context_cache_ttl": cacheTTL,
 			"is_default": isDefault, "has_api_key": hasKey, "system_prompt": systemPrompt,
 		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, ErrInternal("查询失败")
 	}
 	return out, nil
 }
@@ -491,6 +500,12 @@ func (a *App) listUsers(w http.ResponseWriter, r *http.Request) (any, error) {
 			"is_active": isActive, "created_at": createdAt, "auth_methods": authMethods,
 			"total_tokens": totalTokens, "cost_estimate": cost,
 		})
+	}
+	// Skipped rows are reported to the client; an iteration error is not a
+	// skipped row, it is a missing tail. Fail rather than let the page silently
+	// end early while `total` says there is more.
+	if err := rows.Err(); err != nil {
+		return nil, ErrInternal("查询失败")
 	}
 	return map[string]any{
 		"data": out, "total": total, "page": page, "page_size": pageSize, "skipped": skipped,

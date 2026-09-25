@@ -5,6 +5,7 @@ package usage
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -61,8 +62,18 @@ func Record(ctx context.Context, db *pgxpool.Pool, userID int32, sessionID *stri
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	cost := EstimateCost(prompt, completion, cached)
-	_, _ = db.Exec(ctx,
+	if _, err := db.Exec(ctx,
 		"INSERT INTO token_usage (user_id, session_id, model, prompt_tokens, completion_tokens, total_tokens, cached_tokens, cost_estimate, created_at) "+
 			"VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
-		userID, sessionID, model, prompt, completion, prompt+completion, cached, cost, time.Now())
+		userID, sessionID, model, prompt, completion, prompt+completion, cached, cost, time.Now()); err != nil {
+		// Still best-effort — the chat path must never fail on accounting — but
+		// no longer silent. This row is not only a dashboard input: the rolling
+		// spend gate (spend.go) sums exactly cost_estimate over a 10-minute
+		// window to decide whether to shed the next turn, so a dropped insert
+		// under-counts spend and weakens the guardrail that protects the account
+		// from Google's 429 wall. Losing it must therefore be audible.
+		slog.Default().Error("token usage not recorded",
+			"error", err.Error(), "user_id", userID, "model", model,
+			"prompt_tokens", prompt, "completion_tokens", completion, "cached_tokens", cached)
+	}
 }

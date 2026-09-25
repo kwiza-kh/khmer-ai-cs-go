@@ -108,6 +108,11 @@ func (a *App) chatHistory(ctx context.Context, sessionID string, reqHistory []ge
 			rev = append(rev, h)
 		}
 	}
+	if err := rows.Err(); err != nil {
+		// Same rule as the Query failure above: do not fail the turn, but never
+		// let a truncated history look like the model forgetting the thread.
+		a.Logger.Error("load history incomplete; AI context may be truncated", "session_id", sessionID, "error", err.Error())
+	}
 	if len(rev) == 0 {
 		return reqHistory
 	}
@@ -117,23 +122,12 @@ func (a *App) chatHistory(ctx context.Context, sessionID string, reqHistory []ge
 	return gemini.TrimHistoryBudget(rev)
 }
 
-// persistChatTurn stores the user message + model reply for one web/test chat
-// turn and updates session counters. Best-effort: failures are logged, not
-// surfaced (the customer already has their answer). Callers that persist the
-// visitor message themselves (widget) must call persistModelReply instead —
-// going through here would store the customer message twice.
-func (a *App) persistChatTurn(ctx context.Context, userID int32, sessionID, message string, result gemini.ChatResult, reply string, groundCtx *rag.GroundingContext, language string) {
-	now := time.Now()
-	_, _ = a.DB.Exec(ctx,
-		"INSERT INTO chat_messages (session_id, role, message_type, content, created_at) VALUES ($1,'user','text',$2,$3)",
-		sessionID, message, now)
-	_, _ = a.DB.Exec(ctx, "UPDATE sessions SET user_message_count = user_message_count + 1 WHERE session_id = $1", sessionID)
-	a.persistModelReply(ctx, userID, sessionID, result, reply, groundCtx, language, now, "")
-}
-
 // persistModelReply stores only the model turn of a chat exchange whose user
-// row already exists. Split out of persistChatTurn so streaming handlers can
-// persist the reply on a request-detached context after the client hangs up.
+// row already exists. It was split out of a combined "persist the whole turn"
+// helper so streaming handlers can persist the reply on a request-detached
+// context after the client hangs up; that combined helper had no callers left
+// and was deleted — going through it would have stored the customer message
+// twice on the widget path, which persists the visitor row itself.
 // modelName overrides the stamped model_name — cache hits pass
 // "reply-cache" so replays stay distinguishable from real generations; ""
 // stamps the live Gemini model.
@@ -555,6 +549,11 @@ func (a *App) listSessions(w http.ResponseWriter, r *http.Request) (any, error) 
 			"user_message_count": umc, "model_message_count": mmc, "created_at": createdAt,
 		})
 	}
+	// `total` is counted by its own query, so a short read here renders the page
+	// as complete while the pager offers rows that never arrive.
+	if err := rows.Err(); err != nil {
+		return nil, ErrInternal("查询失败")
+	}
 	return map[string]any{"data": sessions, "total": total, "page": page, "page_size": pageSize}, nil
 }
 
@@ -773,6 +772,12 @@ func (a *App) listSessionMessages(w http.ResponseWriter, r *http.Request, sessio
 			msg["delivery"] = delivery
 		}
 		msgs = append(msgs, msg)
+	}
+	if err := rows.Err(); err != nil {
+		// Rows that fail to scan are already logged one by one; an iteration
+		// error is different — the page ends early and the UI would show a
+		// conversation that just stops.
+		return nil, ErrInternal("查询失败")
 	}
 	// Initial + history pages come back newest-first; flip to chronological.
 	if after <= 0 {

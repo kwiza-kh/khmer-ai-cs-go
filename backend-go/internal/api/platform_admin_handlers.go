@@ -81,6 +81,12 @@ func (a *App) queryTenantOverview(r *http.Request, pattern string, size, offset 
 			"total_messages": totalMessages, "total_documents": totalDocuments,
 		})
 	}
+	if err := rws.Err(); err != nil {
+		// No error channel here (the caller renders whatever comes back), so at
+		// least make the truncation visible: an operator looking at a short
+		// tenant list should not have to guess whether that is all of them.
+		a.Logger.Error("tenant overview scan incomplete", "error", err.Error())
+	}
 	return rows
 }
 
@@ -122,6 +128,9 @@ func (a *App) tenantDetail(w http.ResponseWriter, r *http.Request, userID int32)
 					"sentiment": sentiment, "user_message_count": umc, "model_message_count": mmc, "created_at": createdAt,
 				})
 			}
+		}
+		if err := rows.Err(); err != nil {
+			return nil, ErrInternal("查询失败")
 		}
 	}
 	return map[string]any{"tenant": tenant, "sessions": sessions}, nil
@@ -225,6 +234,9 @@ func (a *App) platformAnalytics(w http.ResponseWriter, r *http.Request) (any, er
 				planDist = append(planDist, map[string]any{"plan": plan, "count": count})
 			}
 		}
+		if err := prows.Err(); err != nil {
+			return nil, ErrInternal("查询失败")
+		}
 	}
 	daily := make([]map[string]any, 0)
 	drows, err := a.DB.Query(r.Context(),
@@ -237,6 +249,9 @@ func (a *App) platformAnalytics(w http.ResponseWriter, r *http.Request) (any, er
 			if drows.Scan(&date, &count) == nil {
 				daily = append(daily, map[string]any{"date": date, "messages": count})
 			}
+		}
+		if err := drows.Err(); err != nil {
+			return nil, ErrInternal("查询失败")
 		}
 	}
 	return map[string]any{
@@ -315,6 +330,9 @@ func (a *App) listAuditLogs(w http.ResponseWriter, r *http.Request) (any, error)
 					"target_id": targetID, "details": details, "ip_address": ip, "created_at": createdAt,
 				})
 			}
+		}
+		if err := rows.Err(); err != nil {
+			return nil, ErrInternal("查询失败")
 		}
 	}
 	return map[string]any{"data": data, "total": total, "page": page, "page_size": size}, nil

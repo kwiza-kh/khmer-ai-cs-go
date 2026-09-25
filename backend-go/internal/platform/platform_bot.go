@@ -89,6 +89,10 @@ func (p *Pipeline) PlatformAlert(ctx context.Context, key, title, detail string)
 	// Dedup rides on the rate-limit counter: IncrWindow(key, 1, ttl) reports
 	// true only for the first increment inside the window. On a Redis error we
 	// send anyway — a duplicate alert beats a missed one.
+	//
+	// Note the key this ends up under: IncrWindow adds the shared rate-limit
+	// namespace itself, so the real key is "ratelimit:platform-alert:<key>".
+	// PlatformAlertResolved must delete THAT name — see it for the full story.
 	if p.Redis != nil {
 		dedupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		first, err := p.Redis.IncrWindow(dedupCtx, "platform-alert:"+key, 1, alertDedupTTL)
@@ -137,7 +141,16 @@ func (p *Pipeline) PlatformAlertResolved(ctx context.Context, key string) {
 	}
 	clearCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	_ = p.Redis.Del(clearCtx, "platform-alert:"+key)
+	// The prefix must match what PlatformAlert's IncrWindow actually created.
+	// IncrWindow prefixes its own argument with "ratelimit:" (redisstore/redis.go,
+	// the shared fixed-window counter namespace), so IncrWindow("platform-alert:"+key)
+	// writes "ratelimit:platform-alert:<key>" — while Del, which takes a raw key,
+	// was deleting the unprefixed "platform-alert:<key>". That key never existed,
+	// so every recovery path left the counter in place: the condition cleared,
+	// the dedup window did not, and the NEXT time the same thing broke the
+	// operator was told nothing for the rest of the TTL. The asymmetry is
+	// invisible at the call site because both functions take a bare string.
+	_ = p.Redis.Del(clearCtx, "ratelimit:platform-alert:"+key)
 }
 
 // ============================================
@@ -246,7 +259,15 @@ func (p *Pipeline) BroadcastToMerchants(ctx context.Context, text string) (sent,
 			chats = append(chats, c)
 		}
 	}
+	readErr := rows.Err()
 	rows.Close()
+	// A truncated list would report "已发送 N 个商家" for an announcement whose
+	// tail never received anything — and the operator cannot tell a short list
+	// from a short audience. Send nothing and let them run it again.
+	if readErr != nil {
+		p.Logger.Warn("broadcast recipient list unreadable; sending nothing", "error", readErr.Error())
+		return 0, 0
+	}
 
 	for i, chat := range chats {
 		if i > 0 {

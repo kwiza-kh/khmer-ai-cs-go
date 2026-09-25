@@ -128,6 +128,9 @@ func (a *App) analyticsTimeline(w http.ResponseWriter, r *http.Request) (any, er
 			}
 		}
 		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, ErrInternal("查询失败")
+		}
 	}
 	if rows, err := a.DB.Query(ctx, `SELECT to_char(created_at::date,'YYYY-MM-DD'), COUNT(*),
 			COALESCE(AVG(EXTRACT(EPOCH FROM (first_response_at - created_at))*1000) FILTER (WHERE first_response_at IS NOT NULL),0),
@@ -146,6 +149,9 @@ func (a *App) analyticsTimeline(w http.ResponseWriter, r *http.Request) (any, er
 			}
 		}
 		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, ErrInternal("查询失败")
+		}
 	}
 	if rows, err := a.DB.Query(ctx, `SELECT to_char(cm.created_at::date,'YYYY-MM-DD'), COUNT(*)
 		FROM chat_messages cm JOIN sessions s ON s.session_id = cm.session_id
@@ -158,6 +164,11 @@ func (a *App) analyticsTimeline(w http.ResponseWriter, r *http.Request) (any, er
 			}
 		}
 		rows.Close()
+		if err := rows.Err(); err != nil {
+			// The series above build one timeline: a short read here would
+			// silently under-report a day rather than look broken.
+			return nil, ErrInternal("查询失败")
+		}
 	}
 
 	out := make([]point, 0, days)
@@ -195,6 +206,12 @@ func (a *App) topQueries(w http.ResponseWriter, r *http.Request) (any, error) {
 			out = append(out, map[string]any{"query": q, "count": n})
 		}
 	}
+	// A short read must not be published as a short list: the client cannot tell
+	// the two apart, so an unchecked Err() turns a dropped connection into
+	// "there is no more data".
+	if err := rows.Err(); err != nil {
+		return nil, ErrInternal("查询失败")
+	}
 	return out, nil
 }
 
@@ -217,6 +234,9 @@ func (a *App) languageBreakdown(w http.ResponseWriter, r *http.Request) (any, er
 		if rows.Scan(&lang, &n) == nil {
 			out = append(out, map[string]any{"language": lang, "count": n})
 		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, ErrInternal("查询失败")
 	}
 	return out, nil
 }
@@ -255,6 +275,11 @@ func (a *App) tokenStats(w http.ResponseWriter, r *http.Request) (any, error) {
 		if rows.Scan(&d, &t, &c) == nil {
 			daily = append(daily, map[string]any{"date": d, "tokens": t, "cost": c})
 		}
+	}
+	// The totals above come from their own aggregate query, so a truncated day
+	// list would contradict them without saying why.
+	if err := rows.Err(); err != nil {
+		return nil, ErrInternal("查询失败")
 	}
 	return map[string]any{
 		"total_tokens":   totalTokens,
@@ -315,6 +340,11 @@ func (a *App) feedbackList(w http.ResponseWriter, r *http.Request) (any, error) 
 			"role": role, "message_type": mtype, "created_at": createdAt,
 		})
 	}
+	// `total` is counted separately, so a short read here shows the page as
+	// complete while the pager offers rows that never arrive.
+	if err := rows.Err(); err != nil {
+		return nil, ErrInternal("查询失败")
+	}
 	return map[string]any{"data": items, "total": total, "page": page, "page_size": pageSize}, nil
 }
 
@@ -364,6 +394,9 @@ func (a *App) agentPerformance(w http.ResponseWriter, r *http.Request) (any, err
 			"avg_handle_secs": avgHandle, "avg_csat": avgCsat, "reply_count": reply,
 		})
 	}
+	if err := rows.Err(); err != nil {
+		return nil, ErrInternal("查询失败")
+	}
 	return out, nil
 }
 
@@ -388,6 +421,9 @@ func (a *App) intentAnalytics(w http.ResponseWriter, r *http.Request) (any, erro
 		if rows.Scan(&intent, &n, &conf) == nil {
 			out = append(out, map[string]any{"intent": intent, "count": n, "avg_confidence": conf})
 		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, ErrInternal("查询失败")
 	}
 	return out, nil
 }
@@ -474,6 +510,11 @@ func (a *App) reportCSV(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			rows.Close()
+			if err := rows.Err(); err != nil {
+				// The CSV header is already on the wire, so this can no longer
+				// become a status code — but it must not pass as a complete export.
+				a.Logger.Error("report CSV scan incomplete", "report", kind, "error", err.Error())
+			}
 		}
 	case "messages":
 		_ = cw.Write([]string{"message_id", "session_id", "role", "type", "content", "tokens_used", "model", "used_mock", "feedback_rating", "feedback_comment", "created_at"})
@@ -506,6 +547,11 @@ func (a *App) reportCSV(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			rows.Close()
+			if err := rows.Err(); err != nil {
+				// The CSV header is already on the wire, so this can no longer
+				// become a status code — but it must not pass as a complete export.
+				a.Logger.Error("report CSV scan incomplete", "report", kind, "error", err.Error())
+			}
 		}
 	case "tokens":
 		_ = cw.Write([]string{"date", "model", "prompt_tokens", "completion_tokens", "total_tokens", "cached_tokens", "cost_estimate"})
@@ -527,6 +573,11 @@ func (a *App) reportCSV(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			rows.Close()
+			if err := rows.Err(); err != nil {
+				// The CSV header is already on the wire, so this can no longer
+				// become a status code — but it must not pass as a complete export.
+				a.Logger.Error("report CSV scan incomplete", "report", kind, "error", err.Error())
+			}
 		}
 	default:
 		WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "未知报表类型"})

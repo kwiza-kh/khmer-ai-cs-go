@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"khmer-ai-cs-go/internal/realtime"
@@ -60,6 +61,23 @@ func (wh *Webhooks) recordHealth(ctx context.Context, configID int32, status, ac
 		configID, status, accountName, detail, now, now)
 }
 
+// failInboundEnqueue answers a durable-enqueue failure with 5xx so the provider
+// redelivers instead of considering the event handled.
+//
+// Acking with 2xx after a failed INSERT loses the customer's message for good:
+// the provider marks it delivered and never sends it again, and nothing here
+// ever learns it existed. Retrying is safe because EnqueueInboundEvent inserts
+// with ON CONFLICT (config_id, external_id) DO NOTHING — a redelivery of a
+// message that DID persist is a no-op, not a duplicate reply. A redelivery also
+// re-runs the receipt half of a WhatsApp batch, and those writes are idempotent
+// too (outboxProviderStatusSQL's COALESCE, platform_delivery_receipts' UNIQUE).
+func (wh *Webhooks) failInboundEnqueue(w http.ResponseWriter, configID int32, platform string, err error) {
+	wh.logger().Error("inbound webhook not persisted; asking the provider to retry",
+		"config_id", configID, "platform", platform, "error", err.Error())
+	w.WriteHeader(http.StatusInternalServerError)
+	_, _ = w.Write([]byte(`{"status":"error"}`))
+}
+
 // MetaWebhook handles GET (hub.challenge verification) + POST (events).
 func (wh *Webhooks) MetaWebhook(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
@@ -97,7 +115,12 @@ func (wh *Webhooks) MetaWebhook(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			wh.recordHealth(r.Context(), cfg.ConfigID, "connected", "", "Receiving signed Meta webhook events")
-			wh.handleMetaMessaging(r.Context(), cfg, msg)
+			if err := wh.handleMetaMessaging(r.Context(), cfg, msg); err != nil {
+				// One failure answers 5xx for the whole batch: Meta redelivers
+				// the payload and the events that did land are no-ops.
+				wh.failInboundEnqueue(w, cfg.ConfigID, cfg.Platform, err)
+				return
+			}
 		}
 	}
 	w.WriteHeader(http.StatusOK)
@@ -115,11 +138,13 @@ func verifyMetaSignature(secret, signature string, body []byte) bool {
 }
 
 // handleMetaMessaging extracts one Messenger/Instagram message into the queue.
-func (wh *Webhooks) handleMetaMessaging(ctx context.Context, cfg *webhookConfig, msg map[string]any) {
+// It returns an enqueue failure to the handler so the provider can redeliver
+// rather than have the message silently vanish.
+func (wh *Webhooks) handleMetaMessaging(ctx context.Context, cfg *webhookConfig, msg map[string]any) error {
 	// Skip echoes (our own replies coming back).
 	if message, ok := msg["message"].(map[string]any); ok {
 		if isEcho, _ := message["is_echo"].(bool); isEcho {
-			return
+			return nil
 		}
 	}
 	sender := ""
@@ -128,7 +153,7 @@ func (wh *Webhooks) handleMetaMessaging(ctx context.Context, cfg *webhookConfig,
 	}
 	message, _ := msg["message"].(map[string]any)
 	if message == nil || sender == "" {
-		return
+		return nil
 	}
 	text, _ := message["text"].(string)
 	mid, _ := message["mid"].(string)
@@ -143,9 +168,9 @@ func (wh *Webhooks) handleMetaMessaging(ctx context.Context, cfg *webhookConfig,
 		}
 	}
 	if text == "" {
-		return
+		return nil
 	}
-	_ = wh.Pipe.EnqueueInboundEvent(ctx, cfg.ConfigID, cfg.Platform, mid, sender, "", text, media)
+	return wh.Pipe.EnqueueInboundEvent(ctx, cfg.ConfigID, cfg.Platform, mid, sender, "", text, media)
 }
 
 func extractMetaMedia(message map[string]any) map[string]any {
@@ -240,7 +265,10 @@ func (wh *Webhooks) TelegramWebhook(w http.ResponseWriter, r *http.Request) {
 			display = un
 		}
 	}
-	_ = wh.Pipe.EnqueueInboundEvent(r.Context(), cfg.ConfigID, "telegram", updateID, chatID, display, text, media)
+	if err := wh.Pipe.EnqueueInboundEvent(r.Context(), cfg.ConfigID, "telegram", updateID, chatID, display, text, media); err != nil {
+		wh.failInboundEnqueue(w, cfg.ConfigID, "telegram", err)
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -403,7 +431,10 @@ func (wh *Webhooks) LineWebhook(w http.ResponseWriter, r *http.Request) {
 		if externalID == "" {
 			externalID = userID
 		}
-		_ = wh.Pipe.EnqueueInboundEvent(r.Context(), cfg.ConfigID, "line", externalID, userID, "", text, media)
+		if err := wh.Pipe.EnqueueInboundEvent(r.Context(), cfg.ConfigID, "line", externalID, userID, "", text, media); err != nil {
+			wh.failInboundEnqueue(w, cfg.ConfigID, "line", err)
+			return
+		}
 	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
@@ -481,7 +512,10 @@ func (wh *Webhooks) ZaloWebhook(w http.ResponseWriter, r *http.Request) {
 	if externalID == "" {
 		externalID = userID
 	}
-	_ = wh.Pipe.EnqueueInboundEvent(r.Context(), cfg.ConfigID, "zalo", externalID, userID, "", text, media)
+	if err := wh.Pipe.EnqueueInboundEvent(r.Context(), cfg.ConfigID, "zalo", externalID, userID, "", text, media); err != nil {
+		wh.failInboundEnqueue(w, cfg.ConfigID, "zalo", err)
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
 }
@@ -610,7 +644,10 @@ func (wh *Webhooks) WhatsAppWebhook(w http.ResponseWriter, r *http.Request) {
 				if text == "" && media == nil {
 					continue
 				}
-				_ = wh.Pipe.EnqueueInboundEvent(r.Context(), cfg.ConfigID, "whatsapp", msgID, from, "", text, media)
+				if err := wh.Pipe.EnqueueInboundEvent(r.Context(), cfg.ConfigID, "whatsapp", msgID, from, "", text, media); err != nil {
+					wh.failInboundEnqueue(w, cfg.ConfigID, "whatsapp", err)
+					return
+				}
 			}
 		}
 	}
@@ -625,34 +662,188 @@ func (wh *Webhooks) WhatsAppWebhook(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(`{"status":"received"}`))
 }
 
+// ============================================
+// Provider delivery receipts
+// ============================================
+
+// receiptDB is the pgx slice the receipt writers need.
+//
+// Both halves of migration 013/014's contract — the webhook receiver
+// (*Webhooks, which sees the receipt) and the worker that finally links
+// provider_message_id (*Pipeline, which replays a retained receipt) — must
+// write the outbox with the *identical* statement. A hand-copied second copy is
+// exactly how the delivered/read receipt came to write the wrong column in the
+// first place, so the SQL lives in one place and is shared through this seam.
+type receiptDB interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+// outboxProviderStatusSQL records a provider-level delivery state on the outbox
+// row. It writes provider_status / delivered_at / read_at and NEVER `status`.
+//
+// `status` is the LOCAL durable-queue state machine, and migration 016 pins it
+// to ('pending','processing','sent','failed','cancelled'). The previous
+// "SET status = 'delivered'" therefore failed the CHECK constraint (23514) on
+// every single call — and because the error was discarded with `_, _ =`, the
+// entire delivered/read feature was dead in production while the read side
+// (SUM(CASE WHEN provider_status = 'read' ...) in api/platform_handlers.go and
+// the delivered/read ticks in api/chat_handlers.go) faithfully reported zero.
+// Relaxing the CHECK would be the wrong repair: it would break the outbox state
+// machine that the claim/retry/cancel paths depend on.
+//
+// COALESCE keeps the first timestamp: providers redeliver receipts, and the
+// moment a message was first delivered is what the UI shows.
+//
+// Every mention of $1 carries an explicit ::varchar cast. Without it PostgreSQL
+// cannot agree on one type for the parameter — the assignment into
+// provider_status (varchar) and the comparisons against text literals pull in
+// different directions, and PREPARE fails with 42P08 "inconsistent types
+// deduced for parameter $1". sqlcheck (run against a migrated database) caught
+// exactly that; the statement would have failed on the first real receipt.
+const outboxProviderStatusSQL = "UPDATE platform_outbox SET provider_status = $1::varchar, " +
+	"delivered_at = CASE WHEN $1::varchar IN ('delivered','read') THEN COALESCE(delivered_at, NOW()) ELSE delivered_at END, " +
+	"read_at = CASE WHEN $1::varchar = 'read' THEN COALESCE(read_at, NOW()) ELSE read_at END " +
+	"WHERE config_id = $2 AND provider_message_id = $3"
+
+// outboxSentSQL is the "sent" half: it links the provider's message id onto the
+// row the worker created for this send.
+//
+// The guard is on provider_status, not on status. `status` can never be
+// 'delivered'/'read' (see above), so the old `status NOT IN ('sent','delivered',
+// 'read')` test was inert for exactly the two states it named — a late "sent"
+// webhook would arrive after "read" and roll the row backwards. provider_status
+// is where those states actually live, so that is what must not be regressed.
+const outboxSentSQL = "UPDATE platform_outbox SET provider_message_id = COALESCE(NULLIF(provider_message_id,''), $1), status = 'sent' " +
+	"WHERE config_id = $2 AND provider_message_id = $1 AND provider_status IS DISTINCT FROM 'read'"
+
+// outboxProviderFailedSQL is the terminal provider rejection.
+const outboxProviderFailedSQL = "UPDATE platform_outbox SET status = 'failed', last_error = $1 " +
+	"WHERE config_id = $2 AND provider_message_id = $3"
+
+// applyProviderReceipt writes one provider receipt onto the outbox row it
+// belongs to. applied=false means no outbox row carries this provider id *yet*.
+//
+// That false is not an error: Send API and the status webhook genuinely race —
+// Meta can deliver "delivered" milliseconds after accepting the send, while the
+// worker is still writing provider_message_id back — and dropping those early
+// receipts is what left 迁移 14's table with zero Go references. The caller
+// must retain the receipt instead (see retainDeliveryReceipt) so the worker can
+// replay it as soon as the id exists.
+//
+// Only delivered/read/failed are accepted: platform_delivery_receipts' CHECK
+// allows exactly those three, so the table itself defines the retainable set.
+func applyProviderReceipt(ctx context.Context, db receiptDB, configID int32, providerID, state string, failureDetail string) (bool, error) {
+	var tag pgconn.CommandTag
+	var err error
+	switch state {
+	case "delivered", "read":
+		tag, err = db.Exec(ctx, outboxProviderStatusSQL, state, configID, providerID)
+	case "failed":
+		tag, err = db.Exec(ctx, outboxProviderFailedSQL, "provider rejected: "+failureDetail, configID, providerID)
+	default:
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// retainDeliveryReceipt parks a receipt whose outbox row is not linked yet, so
+// the worker can apply it later (migration 014's "retain now, apply later").
+//
+// ON CONFLICT DO NOTHING mirrors the table's UNIQUE(config_id,
+// provider_message_id, status, occurred_at): providers redeliver webhooks, and
+// a redelivery must neither fail the handler (which would ask for yet another
+// retry) nor accumulate duplicate rows.
+func retainDeliveryReceipt(ctx context.Context, db receiptDB, configID int32, providerID, state string, occurredAt time.Time, failureDetail string) error {
+	_, err := db.Exec(ctx,
+		"INSERT INTO platform_delivery_receipts (config_id, provider_message_id, status, occurred_at, failure_detail) "+
+			"VALUES ($1,$2,$3,$4,NULLIF($5::text,'')) "+
+			"ON CONFLICT (config_id, provider_message_id, status, occurred_at) DO NOTHING",
+		configID, providerID, state, occurredAt, failureDetail)
+	return err
+}
+
+// whatsAppOccurredAt reads the provider's own event time (Cloud API sends unix
+// seconds as a string) so a receipt replayed minutes later still records when
+// it actually happened. occurred_at is NOT NULL and the replay order depends on
+// it — a "read" that happened before a "delivered" must not win the last write.
+func whatsAppOccurredAt(status map[string]any) time.Time {
+	switch ts := status["timestamp"].(type) {
+	case string:
+		if sec, err := strconv.ParseInt(strings.TrimSpace(ts), 10, 64); err == nil && sec > 0 {
+			return time.Unix(sec, 0)
+		}
+	case float64:
+		if ts > 0 {
+			return time.Unix(int64(ts), 0)
+		}
+	}
+	return time.Now()
+}
+
 // applyWhatsAppStatus records a WhatsApp delivery receipt on the outbox row.
 func (wh *Webhooks) applyWhatsAppStatus(ctx context.Context, configID int32, status map[string]any) {
 	providerID, _ := status["id"].(string)
 	state, _ := status["status"].(string)
 	if providerID == "" || state == "" {
+		// Without the provider id there is nothing to correlate with: the id is
+		// the only key shared with the outbox row, so a receipt bearing none can
+		// never be applied. Retaining it would only accumulate unappliable rows
+		// that the pending index can never retire.
 		return
 	}
 	switch state {
 	case "sent":
-		_, _ = wh.DB.Exec(ctx,
-			"UPDATE platform_outbox SET provider_message_id = COALESCE(NULLIF(provider_message_id,''), $1), status = 'sent' "+
-				"WHERE config_id = $2 AND provider_message_id = $1 AND status NOT IN ('sent','delivered','read')",
-			providerID, configID)
-	case "delivered", "read":
-		_, _ = wh.DB.Exec(ctx,
-			"UPDATE platform_outbox SET status = $1 WHERE config_id = $2 AND provider_message_id = $3",
-			state, configID, providerID)
-	case "failed":
-		errMsg := ""
-		if errs, ok := status["errors"].([]any); ok && len(errs) > 0 {
-			if e0, ok := errs[0].(map[string]any); ok {
-				errMsg, _ = e0["title"].(string)
+		// Deliberately NOT retainable: platform_delivery_receipts' CHECK allows
+		// only delivered/read/failed, and "sent" needs no retention anyway — the
+		// worker sets provider_status='sent' in the same statement that writes
+		// provider_message_id, so once the id exists the receipt is redundant.
+		if _, err := wh.DB.Exec(ctx, outboxSentSQL, providerID, configID); err != nil {
+			wh.logReceiptFailure(configID, providerID, state, err)
+		}
+	case "delivered", "read", "failed":
+		failureDetail := ""
+		if state == "failed" {
+			if errs, ok := status["errors"].([]any); ok && len(errs) > 0 {
+				if e0, ok := errs[0].(map[string]any); ok {
+					failureDetail, _ = e0["title"].(string)
+				}
 			}
 		}
-		_, _ = wh.DB.Exec(ctx,
-			"UPDATE platform_outbox SET status = 'failed', last_error = $1 WHERE config_id = $2 AND provider_message_id = $3",
-			"provider rejected: "+errMsg, configID, providerID)
+		occurredAt := whatsAppOccurredAt(status)
+		applied, err := applyProviderReceipt(ctx, wh.DB, configID, providerID, state, failureDetail)
+		if err != nil {
+			wh.logReceiptFailure(configID, providerID, state, err)
+			return
+		}
+		if applied {
+			return
+		}
+		// Early receipt: the outbox row exists but does not carry this provider
+		// id yet. Park it for the worker to replay.
+		if err := retainDeliveryReceipt(ctx, wh.DB, configID, providerID, state, occurredAt, failureDetail); err != nil {
+			wh.logReceiptFailure(configID, providerID, state, err)
+		}
 	}
+}
+
+// logReceiptFailure — this path used to discard its error entirely (`_, _ =`),
+// which is precisely why a permanently failing UPDATE stayed invisible.
+func (wh *Webhooks) logReceiptFailure(configID int32, providerID, state string, err error) {
+	wh.logger().Error("whatsapp delivery receipt not recorded",
+		"config_id", configID, "provider_message_id", providerID, "state", state, "error", err.Error())
+}
+
+// logger returns the configured logger, falling back to the process default so
+// a partially constructed Webhooks never panics on the failure path it was
+// built to report.
+func (wh *Webhooks) logger() *slog.Logger {
+	if wh.Logger != nil {
+		return wh.Logger
+	}
+	return slog.Default()
 }
 
 // ============================================
@@ -775,6 +966,16 @@ func (wh *Webhooks) resolveChannelForAdoption(ctx context.Context, platform stri
 		}
 		n++
 		found = &cfg
+	}
+	// n is the ambiguity test, so a read that failed midway must not be used as
+	// an answer: truncating "two candidates" to one is exactly the unsafe guess
+	// this function exists to refuse (the caller goes on to bind the identity,
+	// which would hand this tenant's channel to whichever config was read).
+	// Fail closed and let the next webhook retry.
+	if err := rows.Err(); err != nil {
+		wh.logger().Warn("channel adoption candidates unreadable; refusing to pick one",
+			"platform", platform, "error", err.Error())
+		return nil
 	}
 	if n != 1 {
 		return nil

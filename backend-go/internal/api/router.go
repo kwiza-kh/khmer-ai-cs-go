@@ -462,6 +462,12 @@ func (a *App) audit(next http.Handler) http.Handler {
 }
 
 // adminOnly guards handlers that require the tenant admin (or platform admin).
+//
+// This App method is the live gate — every route uses it. middleware.go used to
+// carry a package-level function of the same name (reached by no route) that
+// answered 401 instead of 403 for a missing token; it was dead code and is
+// gone. Reinstating that shape would silently change the status code callers
+// see, so keep the gate on App and keep it single.
 func (a *App) adminOnly(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user, ok := UserFrom(r)
@@ -474,6 +480,8 @@ func (a *App) adminOnly(next http.Handler) http.Handler {
 }
 
 // platformAdminOnly guards handlers that require the platform_admin role.
+// See adminOnly: the package-level twin in middleware.go was dead code and was
+// removed for the same reason (401 vs 403 divergence).
 func (a *App) platformAdminOnly(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user, ok := UserFrom(r)
