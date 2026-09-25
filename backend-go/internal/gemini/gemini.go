@@ -77,6 +77,12 @@ type Service struct {
 	systemPrompt string
 	maxTokens    int
 
+	// provider/providerErr come from the process environment and a config file,
+	// neither of which changes while the process runs, so they are resolved once
+	// in New and read without the mutex (unlike the hot-reloadable fields above).
+	provider    provider
+	providerErr error
+
 	mu         sync.Mutex
 	embedCache map[string]embedCacheEntry
 }
@@ -88,17 +94,37 @@ type embedCacheEntry struct {
 
 // New builds a service from env-style config values. Empty key → mock mode.
 func New(apiKey, model string, maxTokens int) *Service {
+	prov, provErr := providerFromEnv()
 	s := &Service{
 		apiKey:       apiKey,
 		modelName:    NormalizeModelName(model),
 		systemPrompt: DefaultSystemPrompt,
 		maxTokens:    maxTokens,
+		provider:     prov,
+		providerErr:  provErr,
 		embedCache:   make(map[string]embedCacheEntry),
 	}
-	if apiKey != "" {
+	// An empty key means mock mode on the studio path — unchanged. Vertex
+	// authenticates with a service account, so an empty key is a valid
+	// configuration there and the service is live; and a vertex deployment whose
+	// configuration is BROKEN still counts as configured, so every turn fails
+	// with that error instead of quietly serving template replies to customers.
+	if apiKey != "" || prov.ready() || provErr != nil {
 		s.client = &http.Client{Timeout: 60 * time.Second}
 	}
 	return s
+}
+
+// activeProvider returns the transport for this deployment, or the
+// configuration error that must fail the request. Every network entry point
+// goes through this instead of reading s.provider directly: a vertex
+// deployment that is missing its key file must fail loudly, not fall back to
+// whatever URL shape a zero provider happens to produce.
+func (s *Service) activeProvider() (provider, error) {
+	if s.providerErr != nil {
+		return provider{}, s.providerErr
+	}
+	return s.provider, nil
 }
 
 // FromPartsFull builds a service from explicit settings (startup DB config /
@@ -177,15 +203,24 @@ func (s *Service) HotReload(apiKey, modelName, systemPrompt string, maxTokens in
 }
 
 // ListModels returns the generative model names available for the key.
+//
+// The apiKey argument is the STUDIO credential; on the vertex path it is
+// ignored and the request is authorised with a service-account token instead.
+// The signature is kept because callers (the admin model picker) hold the key
+// from model_configs and have no notion of the transport.
 func ListModels(ctx context.Context, apiKey string) ([]string, error) {
-	client := &http.Client{Timeout: 20 * time.Second}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiBase()+"/models?pageSize=200", nil)
+	prov, err := providerFromEnv()
 	if err != nil {
 		return nil, err
 	}
-	// The key travels in the x-goog-api-key header, never the URL query: a
-	// transport error would otherwise render the key into the error string.
-	req.Header.Set("x-goog-api-key", apiKey)
+	client := &http.Client{Timeout: 20 * time.Second}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, prov.listModelsURL(), nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := prov.authorize(ctx, req, apiKey); err != nil {
+		return nil, err
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -199,25 +234,28 @@ func ListModels(ctx context.Context, apiKey string) ([]string, error) {
 			Name        string `json:"name"`
 			DisplayName string `json:"displayName"`
 		} `json:"models"`
+		// Vertex answers under a different key; both are read because that
+		// envelope is the platform's choice, not this package's.
+		PublisherModels []struct {
+			Name        string `json:"name"`
+			DisplayName string `json:"displayName"`
+		} `json:"publisherModels"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&v); err != nil {
 		return nil, err
 	}
+	entries := v.Models
+	if len(entries) == 0 {
+		entries = v.PublisherModels
+	}
 	names := make([]string, 0)
-	for _, m := range v.Models {
-		n := strings.TrimPrefix(m.Name, "models/")
+	for _, m := range entries {
+		n := modelNameFromResource(m.Name)
 		if strings.Contains(strings.ToLower(n), "gemini") {
 			names = append(names, n)
 		}
 	}
 	return names, nil
-}
-
-func fastModel() string {
-	if v := strings.TrimSpace(os.Getenv("GEMINI_FAST_MODEL")); v != "" {
-		return v
-	}
-	return FastModel
 }
 
 // fastModelName — the fast model for THIS service instance. The package
@@ -236,12 +274,16 @@ func (s *Service) fastModelName() string {
 	return FastModel
 }
 
+// generateURLFor delegates to the transport (see provider.go) so that the
+// endpoint every model call uses is built in one place.
+//
+// streamURLFor and embedURL used to sit next to it and were removed with this
+// change: their only callers (ChatStream and embed) now hold the provider and
+// ask it directly, so keeping the wrappers would have left two dead ways to
+// build an endpoint — exactly the fragmentation that let the studio/vertex
+// split hide in the first place.
 func (s *Service) generateURLFor(model string) string {
-	return fmt.Sprintf("%s/models/%s:generateContent", apiBase(), NormalizeModelName(model))
-}
-
-func (s *Service) embedURL() string {
-	return fmt.Sprintf("%s/models/%s:embedContent", apiBase(), EmbeddingModel)
+	return s.provider.generateURL(model)
 }
 
 // postWithRetry posts JSON, retrying 5xx and transport errors up to 3 times
@@ -258,6 +300,13 @@ func (s *Service) postWithRetry(ctx context.Context, target string, body any) (i
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return 0, "", fmt.Errorf("marshal request: %w", err)
+	}
+	prov, err := s.activeProvider()
+	if err != nil {
+		// A broken transport is not a transport blip: retrying inside this turn
+		// would only multiply requests that cannot succeed, and token minting is
+		// serialised, so a burst of turns would just queue behind it.
+		return 0, "", err
 	}
 	lastErr := ""
 	// Snapshot once: Reload swaps client under the mutex when an admin saves a
@@ -276,10 +325,14 @@ func (s *Service) postWithRetry(ctx context.Context, target string, body any) (i
 			return 0, "", err
 		}
 		req.Header.Set("Content-Type", "application/json")
-		// The key travels in the header, never the URL query: a transport error
-		// would otherwise render the key inside the error string (Go's
-		// *url.Error carries the full URL, redacting only userinfo).
-		req.Header.Set("x-goog-api-key", s.snapshot().apiKey)
+		// Credential selection (studio api key vs vertex bearer token) happens in
+		// exactly one place — see provider.authorize. It used to be an inline
+		// x-goog-api-key write here; the comment that travelled with it (the key
+		// belongs in the header, never the URL query, because a transport error
+		// would otherwise render it into the error string) lives there now.
+		if err := prov.authorize(ctx, req, s.snapshot().apiKey); err != nil {
+			return 0, "", err
+		}
 		resp, err := client.Do(req)
 		if err != nil {
 			lastErr = fmt.Sprintf("request: %v", err)
@@ -415,6 +468,28 @@ func thinkingBudget() int {
 	return -1
 }
 
+// embedBudget is the ceiling for the query-embedding hop
+// (GEMINI_EMBED_BUDGET_MS, default 5000). Read per call, like the other knobs
+// in this file, so a deploy can re-tune without a rebuild.
+//
+// WHY THIS ONE NEEDS A BUDGET OF ITS OWN
+// Every other auxiliary call (RerankChunks 8s, RewriteSearchQuery 6s,
+// GenerateFastMax explicit) passes a deadline into GenerateFast before it
+// spends anything. The query embedding is the exception: it goes straight to
+// postWithRetry, which may make THREE attempts against the client's 60s
+// timeout. A wobbling embed endpoint therefore stalled the reply path for up
+// to ~3 minutes — past every caller's own patience — and the caller then
+// answered ungrounded anyway. Failing at 5s costs one retrieval leg and lands
+// in the "no ground, answer anyway" degradation the callers already implement.
+func embedBudget() time.Duration {
+	if v := strings.TrimSpace(os.Getenv("GEMINI_EMBED_BUDGET_MS")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return time.Duration(n) * time.Millisecond
+		}
+	}
+	return 5 * time.Second
+}
+
 // buildRequestBody assembles one generateContent request. cachedContent, when
 // non-empty, names a registered context cache that already holds the system
 // instruction — the API rejects a request that carries both, so the
@@ -493,12 +568,6 @@ func usageFromValue(v map[string]any) (int, int, int) {
 	return prompt, completion, cached
 }
 
-// streamURL builds the SSE streaming endpoint for a model.
-func (s *Service) streamURLFor(model string) string {
-	return fmt.Sprintf("%s/models/%s:streamGenerateContent?alt=sse",
-		apiBase(), NormalizeModelName(model))
-}
-
 // ChatStream runs a turn with token-level streaming: onToken is invoked for
 // every text delta as it arrives. On any transport/API failure it degrades to
 // the non-streaming path (the reply is still delivered, just not incrementally).
@@ -508,6 +577,14 @@ func (s *Service) ChatStream(ctx context.Context, message string, history []Hist
 		onToken(res.Reply)
 		return res, nil
 	}
+	// Resolve the transport before building anything: this path does not travel
+	// through postWithRetry, so it is the one place a configuration error has to
+	// be checked explicitly. It degrades exactly like any other streaming
+	// failure — the non-streaming path returns the error.
+	prov, perr := s.activeProvider()
+	if perr != nil {
+		return s.chatWithModel(ctx, message, history, language, "")
+	}
 	body := s.buildRequestBody(message, history, language, s.contextCacheFor(ctx, language))
 	payload, err := json.Marshal(body)
 	if err != nil {
@@ -516,13 +593,15 @@ func (s *Service) ChatStream(ctx context.Context, message string, history []Hist
 	// Read the serving config through the mutex: an admin saving a new model
 	// config calls Reload, which rewrites modelName/client under the lock.
 	cfg := s.snapshot()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.streamURLFor(cfg.modelName), bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, prov.streamURL(cfg.modelName), bytes.NewReader(payload))
 	if err != nil {
 		return s.chatWithModel(ctx, message, history, language, "")
 	}
 	req.Header.Set("Content-Type", "application/json")
-	// Key in the header, never the URL (same rule as postWithRetry).
-	req.Header.Set("x-goog-api-key", cfg.apiKey)
+	// Credential selection is shared with postWithRetry (see provider.authorize).
+	if err := prov.authorize(ctx, req, cfg.apiKey); err != nil {
+		return s.chatWithModel(ctx, message, history, language, "")
+	}
 	resp, err := cfg.client.Do(req)
 	if err != nil {
 		return s.chatWithModel(ctx, message, history, language, "")
@@ -680,7 +759,10 @@ func (s *Service) SynthesizeSpeech(ctx context.Context, text string) ([]byte, er
 			},
 		},
 	}
-	target := fmt.Sprintf("%s/models/%s:generateContent", apiBase(), NormalizeModelName(TTSModel()))
+	// TTS stays on the provider's generateContent endpoint like every other
+	// model call; it is switched off at the call sites (TTS_ENABLED), not here,
+	// so the studio request below is byte-for-byte the one that shipped.
+	target := s.provider.generateURL(TTSModel())
 	status, respText, err := s.postWithRetry(ctx, target, body)
 	if err != nil || status != http.StatusOK {
 		return nil, fmt.Errorf("tts failed (%d): %v", status, err)
@@ -961,22 +1043,23 @@ func (s *Service) GenerateEmbeddings(ctx context.Context, texts []string) ([][]f
 }
 
 func (s *Service) embedBatch(ctx context.Context, texts []string) ([][]float32, error) {
-	requests := make([]map[string]any, len(texts))
-	for i, text := range texts {
-		requests[i] = map[string]any{
-			"model":                "models/" + EmbeddingModel,
-			"content":              map[string]any{"parts": []map[string]any{{"text": text}}},
-			"taskType":             "RETRIEVAL_DOCUMENT",
-			"outputDimensionality": embeddingVectorDimension,
-		}
+	// The body differs per provider (studio: :batchEmbedContents with a
+	// `requests` array; vertex: one :predict carrying `instances`) — see
+	// provider.embedBatchBody. The return contract does not: n vectors of
+	// embeddingVectorDimension, in input order.
+	prov, err := s.activeProvider()
+	if err != nil {
+		return nil, err
 	}
-	batchURL := fmt.Sprintf("%s/models/%s:batchEmbedContents", apiBase(), EmbeddingModel)
-	status, respText, err := s.postWithRetry(ctx, batchURL, map[string]any{"requests": requests})
+	status, respText, err := s.postWithRetry(ctx, prov.batchEmbedURL(), prov.embedBatchBody(texts))
 	if err != nil {
 		return nil, fmt.Errorf("batchEmbedContents request: %w", err)
 	}
 	if status != http.StatusOK {
 		return nil, fmt.Errorf("batchEmbedContents failed (%d): %s", status, truncateRunes(respText, 300))
+	}
+	if prov.kind == providerVertex {
+		return parseVertexPredictBatch(respText, len(texts))
 	}
 	var v struct {
 		Embeddings []struct {
@@ -1005,7 +1088,12 @@ func (s *Service) GenerateQueryEmbedding(ctx context.Context, text string) ([]fl
 		return entry.vec, nil
 	}
 	s.mu.Unlock()
-	vec, err := s.embed(ctx, text, "RETRIEVAL_QUERY")
+	// The budget covers this hop only — see embedBudget. It is placed after the
+	// cache lookup on purpose: a cache hit must not be charged the deadline
+	// (or, worse, be failed by a context that expired while it waited).
+	embedCtx, cancel := context.WithTimeout(ctx, embedBudget())
+	defer cancel()
+	vec, err := s.embed(embedCtx, text, "RETRIEVAL_QUERY")
 	if err != nil {
 		return nil, err
 	}
@@ -1022,13 +1110,12 @@ func (s *Service) embed(ctx context.Context, text, taskType string) ([]float32, 
 	if !s.IsConfigured() {
 		return MockEmbedding(), nil
 	}
-	body := map[string]any{
-		"model":                "models/" + EmbeddingModel,
-		"content":              map[string]any{"parts": []map[string]any{{"text": text}}},
-		"taskType":             taskType,
-		"outputDimensionality": embeddingVectorDimension,
+	prov, err := s.activeProvider()
+	if err != nil {
+		return nil, err
 	}
-	status, respText, err := s.postWithRetry(ctx, s.embedURL(), body)
+	// Same query/document split, two different bodies — see provider.embedBody.
+	status, respText, err := s.postWithRetry(ctx, prov.embedURL(), prov.embedBody(text, taskType))
 	if err != nil {
 		return nil, fmt.Errorf("embedContent request: %w", err)
 	}
@@ -1039,9 +1126,13 @@ func (s *Service) embed(ctx context.Context, text, taskType string) ([]float32, 
 	if json.Unmarshal([]byte(respText), &v) != nil {
 		return nil, fmt.Errorf("embedContent: invalid response")
 	}
-	values := digArray(v, "embedding", "values")
+	values := prov.embeddingValues(v, 0)
 	if len(values) != embeddingVectorDimension {
-		return nil, fmt.Errorf("Gemini returned an invalid embedding")
+		// Checked here rather than at the pgvector INSERT because a wrong-width
+		// vector is not an error upstream: the call succeeds, and the mismatch
+		// only surfaces later as a failed insert or as silently bad search
+		// results. See embeddingWidthError.
+		return nil, embeddingWidthError(prov.kind, len(values))
 	}
 	out := make([]float32, len(values))
 	for i, n := range values {

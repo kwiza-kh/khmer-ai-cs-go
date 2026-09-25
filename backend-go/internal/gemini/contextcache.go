@@ -186,14 +186,21 @@ func contextCacheKey(prefix string) string {
 // registerContextCache posts the prefix as a cached content and returns the
 // name to reference it by.
 func (s *Service) registerContextCache(ctx context.Context, prefix string) (string, error) {
+	prov, err := s.activeProvider()
+	if err != nil {
+		return "", err
+	}
 	body := map[string]any{
-		"model": "models/" + NormalizeModelName(s.snapshot().modelName),
+		// The body's `model` is a RESOURCE NAME, and the two platforms spell it
+		// differently — see provider.cachedContentModel. Vertex rejects the
+		// endpoint URL here with 400 "The Model name 'https://…' is malformed".
+		"model": prov.cachedContentModel(s.snapshot().modelName),
 		"systemInstruction": map[string]any{
 			"parts": []map[string]any{{"text": prefix}},
 		},
 		"ttl": fmt.Sprintf("%ds", cacheTTLSeconds()),
 	}
-	status, text, err := s.postWithRetry(ctx, apiBase()+"/cachedContents", body)
+	status, text, err := s.postWithRetry(ctx, prov.cachedContentsURL(), body)
 	if err != nil {
 		return "", err
 	}
