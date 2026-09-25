@@ -308,6 +308,12 @@ func (a *App) updateModelConfig(w http.ResponseWriter, r *http.Request, configID
 	if !hasAny {
 		return nil, ErrBadRequest("无更新字段")
 	}
+	// A key is the STUDIO credential, checked BEFORE the first write: under
+	// vertex it is not a credential at all (the service-account file on the
+	// server is), so accepting one would store a billable AI Studio key in a
+	// column nothing reads while the operator reasonably believes they just
+	// rotated the credential. Rejecting up front also means the request cannot
+	// half-apply — the other fields in the same body are not written either.
 	if req.IsDefault != nil && *req.IsDefault {
 		_, _ = a.DB.Exec(r.Context(), "UPDATE model_configs SET is_default = false WHERE config_id <> $1", configID)
 	}
@@ -346,20 +352,10 @@ func (a *App) updateModelConfig(w http.ResponseWriter, r *http.Request, configID
 		_, _ = a.DB.Exec(r.Context(), "UPDATE model_configs SET is_default = $1 WHERE config_id = $2", *req.IsDefault, configID)
 	}
 	if req.APIKey != nil && *req.APIKey != "" {
-		// A key is the STUDIO credential. Writing one under vertex would store a
-		// billable AI Studio key in a column nothing reads, while the operator
-		// reasonably believes they just rotated the credential — the illusion
-		// this branch exists to refuse. The credential there is the
-		// service-account file on the server, which no request to this API can
-		// change (and must not: the private key stays on the filesystem at 0600,
-		// never in a column that flows through the UI, request logs and backups).
-		if !gemini.CredentialSourceOf().IsAPIKey() {
-			return nil, ErrBadRequest("Vertex 模式下凭据来自服务器上的服务账号文件（GEMINI_VERTEX_SA_FILE），" +
-				"API Key 不是聊天凭据，此接口不接受写入")
-		}
-		// Stored sealed, like every other credential column: the platform key is
-		// a billable bearer credential, so a database read (backup, replica,
-		// query log) must not hand over a working key.
+		// Studio only — the vertex case was rejected before the first write
+		// above. Stored sealed, like every other credential column: the platform
+		// key is a billable bearer credential, so a database read (backup,
+		// replica, query log) must not hand over a working key.
 		sealed, err := a.Sealer.Encrypt(*req.APIKey)
 		if err != nil {
 			return nil, ErrInternal("加密失败")
