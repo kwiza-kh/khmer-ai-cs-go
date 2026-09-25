@@ -35,3 +35,11 @@ frontend/shots/
 # macOS junk
 .DS_Store
 frontend/scripts-i18n-scan.js
+
+# GCP service-account keys must never be committed. The deploy docs say where to
+# put them on the host (/opt/khmer-ai-cs/vertex-sa.json, 600); this is the second
+# line of defence for the case where someone exports one into the repo instead.
+# See deploy-khmer-ai-cs/SKILL.md "Vertex 切换".
+*-sa.json
+vertex-sa.json
+service-account*.json

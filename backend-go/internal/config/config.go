@@ -196,7 +196,7 @@ func Load() (*Config, error) {
 		},
 		Gemini: GeminiConfig{
 			APIKey: env("GEMINI_API_KEY", ""),
-			Model:  env("GEMINI_MODEL", "gemini-2.5-flash"),
+			Model:  env("GEMINI_MODEL", "gemini-3.5-flash"),
 			// 1024, not 2048: the cap does not change the average bill (output is
 			// billed as produced — the measured mean is 135 tokens, so headroom
 			// above that costs nothing), it bounds the rare runaway answer that

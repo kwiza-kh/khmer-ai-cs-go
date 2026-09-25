@@ -564,7 +564,7 @@ topK=8 能补上长文档覆盖，但成本 +49%；缩短每条来源虽控制�
 **踩坑记录**：
 - 生产中继（Cloudflare AI Gateway）已下线 gemini-2.5-flash 系（404 "no longer
   available to new users"）→ `FastModel` 改为 `GEMINI_FAST_MODEL` 可调，默认
-  gemini-3.6-flash；嵌入模型 gemini-embedding-001 仍可用。旧 FastModel 是 const，
+  gemini-3.5-flash；嵌入模型 gemini-embedding-001 仍可用。旧 FastModel 是 const，
   辅助调用（rerank/JudgeTurn/compile）此前一旦有流量就会静默失败。
 - widget 分类器曾与管道漂移（不走 Jev、不写 tags）——已统一为
   `Pipe.JudgeTurnFor` + `Pipe.PersistTurnVerdict`；新增分类逻辑只允许走这两个入口。
