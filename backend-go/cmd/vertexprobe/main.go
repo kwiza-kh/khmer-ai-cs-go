@@ -87,6 +87,7 @@ func main() {
 	modelsFlag := flag.String("models", "", "comma-separated chat model candidates (default: built-in list)")
 	capsFlag := flag.String("caps", "", "run the capability probe against this model and exit")
 	audioDirFlag := flag.String("audiodir", "", "send every audio file in this directory as an inlineData part (needs -caps)")
+	taskTypeFlag := flag.Bool("tasktype", false, "probe whether :predict task-type parameters condition the embedding (needs -caps)")
 	flag.Parse()
 
 	if *saPath == "" {
@@ -132,6 +133,12 @@ func main() {
 	}
 	results = append(results, result{name: "oauth token minting", ok: true, detail: "bearer token acquired"})
 
+	if m := strings.TrimSpace(*capsFlag); m != "" && *taskTypeFlag {
+		if n := p.runTaskTypeProbe(ctx, m, "khmer customer service probe about delivery times"); n > 0 {
+			os.Exit(1)
+		}
+		return
+	}
 	if m := strings.TrimSpace(*capsFlag); m != "" && strings.TrimSpace(*audioDirFlag) != "" {
 		if n := p.runAudioDir(ctx, m, *audioDirFlag); n > 0 {
 			os.Exit(1)
