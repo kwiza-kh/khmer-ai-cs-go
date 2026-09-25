@@ -296,10 +296,13 @@ Jev 判定 `small_talk` 且概率过阈时，不再调用模型，改由多语�
 ### 11.6 消费计量与准入闸（§7.3）
 
 - `usage.Budget(ctx, db, redis)` — 对 `token_usage.cost_estimate` 求最近 10 分钟之和（Redis 缓存 20s），即 **Google 在量的同一个数字**。
+  （计量口径与 provider 无关，一直有效；但**上限的含义**与 provider 强相关，见 §十三。）
 - **闸门**：超过 `GEMINI_SPEND_LIMIT_USD × GEMINI_SPEND_GATE_RATIO`（默认 $10 × 0.85）时主动让路 —— 平台渠道与挂件转人工并告警，认证接口返回"繁忙稍后重试"。**在撞墙前放行，而不是撞墙后收 500。**
 - **失败开放**：DB 或 Redis 不可用时视为"未超限"，计量故障绝不能阻断客户回复。
 - 新增 `GET /api/v1/platform/spend`（platform_admin）返回窗口消费、上限、比例与闸门状态，供运维看板使用。
 - ⚠️ **升到 Tier 2 后必须把 `GEMINI_SPEND_LIMIT_USD` 改成 50**，否则闸门会按 Tier 1 的阈值提前转人工。
+  （这条只适用于 **studio**；`GEMINI_PROVIDER=vertex` 时该变量的含义完全不同，且这种"靠人记得改"的
+  做法已被代码取代——见 §十三。）
 
 ### 11.7 思考 token 不再隐形
 
@@ -351,4 +354,271 @@ psql "$DATABASE_URL" -c "select model_name, count(*) from chat_messages
 3. **预览 TTS 在所有测试区域不可用** → `TTS_ENABLED` **保持关闭**（本就是默认值，平台没有可指向的 TTS 模型）。
 4. **嵌入 `:predict` 返回 768 维，但必须显式发 `outputDimensionality`** —— 不发就是模型默认的 3072，而 `knowledge_chunks` 是 `vector(768)`。代码按 768 发，并对非 768 的响应直接报错（宁可失败，也不写入错维向量）。
 
-配额口径随之改变（§六：按区域 QPS，而非消费速率），但 **§七 的本地护栏与 §11.6 的消费计量与平台无关**：它们约束的是成本，迁移后仍需保留。
+配额口径随之改变（§六：按区域 QPS，而非消费速率）。**计量（`token_usage` / `usage.Record` /
+窗口求和）与平台无关，迁移后照旧**；但 **§11.6 那条闸门的"上限"语义与平台强相关**——studio 下它
+是 Google 的墙，vertex 下它只能是我们自设的预算。这个差异已在 `internal/usage` 与 §十三 里写死，
+不再依赖运维记得改环境变量。
+
+---
+
+## 十三、消费护栏的语义重定义（增量 4，2026-09-25）
+
+> §11.6 的护栏是为**对齐 AI Studio 的消费速率上限**而写的：`GEMINI_SPEND_LIMIT_USD` 默认 10，
+> 就是 Tier 1 那堵 $10/10 分钟的墙（§三）。迁到 Vertex 后，那堵墙**不存在**了——Vertex 按
+> 「项目 × 区域」的 RPM/TPM 配额计量，提额靠工单而不是靠多花钱，上游没有任何美元天花板可供对齐。
+> 于是同一个变量在两种 provider 下含义不同，而**危险的恰恰是它看起来仍然在生效**。
+
+### 13.1 同一个变量，两种含义
+
+| | studio（AI Studio，当前生产） | vertex（Gemini Enterprise Agent Platform） |
+|---|---|---|
+| `GEMINI_SPEND_LIMIT_USD` 的含义 | **Google 的墙**在本地的一面镜子：Tier 1 $10 / Tier 2 $50 / Tier 3 $200（每 10 分钟） | **我们自己定的预算**，上游没有任何东西与它对应 |
+| 变量未设时的默认值 | **10**（实测的 Tier 1 墙，§三） | **0 = 不设上限**（闸门与告警都不启用） |
+| 触发时谁在施压 | 上游真会在窗口满时回 429 | 没有任何人；甩掉的是我们自己定的规则 |
+| 判定式 | `limit × GEMINI_SPEND_GATE_RATIO`（默认 0.85） | 同左 |
+
+窗口长度（滚动 10 分钟）、`token_usage.cost_estimate` 的求和口径、Redis 20s 缓存、比例旋钮，
+以及**失败开放**（DB/Redis 故障一律视为未超限）在两种 provider 下完全一致——变的只有"上限从哪来"。
+
+### 13.2 事故模型：不能靠运维记得改环境变量
+
+危险配置只有一种：**provider 切成 vertex，而 `GEMINI_SPEND_LIMIT_USD` 还留着 studio 的档位数字**。
+在这种误配下，护栏会在一堵不存在的墙前面继续甩客户的回合——客户被拒，而上游毫无压力；
+`/api/v1/platform/spend` 汇报"接近上限"，日志一切安静，唯一症状是客户被转人工。**这就是增量 4
+之前的形态**：护栏忠实地执行了它被告知的规则。
+
+这与迁移 061 的 RLS 策略是**同一类失效**（见 `cmd/server/main.go` 的 RLS 警告与
+`docs/DEVELOPMENT.md`「十」）：控制看起来是生效的，其实对谁都不生效。旧设计对这一风险的答案写在
+§11.6 的一行提示里（"升到 Tier 2 后必须把 `GEMINI_SPEND_LIMIT_USD` 改成 50"）——也就是说，它依赖
+运维在忙别的事情时**记得**去改一个环境变量。那不是控制，是祈祷，而 061 已经证明这类祈祷会落空。
+
+因此护栏现在**拒绝猜**：
+
+| provider | `GEMINI_SPEND_LIMIT_USD` | 生效上限 | 行为 |
+|---|---|---|---|
+| studio | 未设 | 10 | 与迁移前**逐字节相同** |
+| studio | 任意（含解析失败） | 值本身 / 回退 10 | 同上（保留历史的宽松解析） |
+| vertex | 未设、空、0、负数 | 0 | 闸门关闭；不设上限 |
+| vertex | **10 / 50 / 200** | 0（**拒绝**） | 视为 AI Studio 遗留档位：不武装闸门 + 启动自检报错 + 运行期 ERROR 日志 |
+| vertex | 非数字 | 0（**拒绝**） | 同上（"运维以为有预算，其实没有"） |
+| vertex | 其它正数（如 25） | 值本身 | 视为**明确的自设预算**，闸门照常工作，日志说明"这是我们自己定的" |
+
+> **为什么是"拒绝"而不是"照用 + 告警"**：照用意味着事故照旧发生（客户继续被拒），只是日志里多了
+> 一行。拒绝让"无意义的阈值"在物理上无法拒绝客户——**即使启动自检那行接线没做（见 13.4）**。
+>
+> **为什么恰好是这三个数字**：10/50/200 是 AI Studio 的三档天花板，也是本仓库运维手册（§11.6）
+> 教人写进 `.env-go` 的三个值——也正是一个环境文件最可能残留的值。任何**其它**数字都是合法预算；
+> 把这三个数字留给"AI Studio 档位"这一个含义，是为了让遗留值不可能被误读成预算。
+
+### 13.3 启动自检：具体条件
+
+`usage.ValidateSpendConfig()`（`internal/usage/spend.go`）与 `gemini.ValidateProviderConfig()`
+同一形态：**studio 下是 no-op**（只读环境变量、不联网），所以接线不会改变今天的生产行为。
+
+**返回 error（`main` 应记录并 `exit 1`）仅当**：
+
+1. `GEMINI_PROVIDER=vertex` 且 `GEMINI_SPEND_LIMIT_USD` ∈ {10, 50, 200}（含 `10.00`、`1e1` 这类
+   写法）——该值在 vertex 下没有对应物，继续武装闸门只会在无意义的阈值上拒绝客户；
+2. `GEMINI_PROVIDER=vertex` 且该变量**设了但不是数字**——没有任何预算生效，而运维以为有。
+
+**返回 nil**：studio 的任何取值（包括 `nonsense` 与 `-5`）；vertex 下变量未设 / 为 0 / 为负数 /
+为其它正数。
+
+> 选**失败**而不是警告：这两种取值都不是有效配置，且只影响 opt-in 的 vertex 部署，studio（默认）
+> 永远不触发——与 `providerFromEnv` 拒绝半吊子 vertex 配置的态度一致。错误信息里写明了补救动作
+> （unset，或改成不是 10/50/200 的数字）。
+
+### 13.4 接线状态：**未完成的一步**
+
+`ValidateSpendConfig()` **尚未被 `cmd/server/main.go` 调用**——本轮改动的文件范围被限定在
+`internal/usage/**` 与本文档，而 `main.go` 不在其中。需要补的接线（放在
+`gemini.ValidateProviderConfig()` 那段旁边）：
+
+```go
+if err := usage.ValidateSpendConfig(); err != nil {
+    logger.Error("invalid Gemini spend configuration", "error", err.Error())
+    os.Exit(1)
+}
+slog.Info("gemini spend guardrail",
+    "limit_usd", usage.SpendLimitUSD(), "basis", string(usage.SpendLimitBasis()))
+```
+
+**在接线之前也不会静默**：`Budget()` 遇到被拒绝的配置时会打一条 ERROR（同一配置 5 分钟一次）
+并**放弃武装闸门**，所以误配既不会持续拒绝客户，也不会无声无息。
+
+### 13.5 可观测：谁触发的，一眼可辨
+
+护栏触发时由 `internal/usage` 自己打一条 WARN（同一窗口内**每分钟最多一条**，防止风暴刷屏）：
+
+```
+level=WARN msg="Gemini spend gate shed a turn" basis=studio-tier-ceiling
+  meaning="Google's upstream wall: AI Studio's spend-based rate limit for the account's tier is
+  real, so shedding here is what keeps the 429 off the customer's screen"
+  spent_usd=8.63 limit_usd=10 gate_ratio=0.85
+```
+
+```
+level=WARN msg="Gemini spend gate shed a turn" basis=vertex-self-budget
+  meaning="self-imposed budget only: Vertex enforces no spend-based rate limit, so no upstream
+  pressure forced this shed — raise GEMINI_SPEND_LIMIT_USD or unset it to stop shedding"
+  spent_usd=21.3 limit_usd=25 gate_ratio=0.85
+```
+
+`basis` 取值：`studio-tier-ceiling`（上游的墙）、`vertex-self-budget`（自设预算）、
+`vertex-no-budget`（未设上限）、`vertex-legacy-studio-value-refused` /
+`vertex-invalid-value-refused`（被拒绝，闸门关闭）。同一个值可由 `usage.SpendLimitBasis()` 取到，
+供调用方自行措辞。
+
+> **后续跟进（不在本轮范围）**：`internal/platform/quota_alert.go` 的 `AlertSpendGate` 文案仍写着
+> "避免撞上 429 / 升档或降载后自动恢复"，在 vertex 下不准确——它应当按 `usage.SpendLimitBasis()`
+> 分成"上游的墙"与"自设预算"两种说法。
+
+### 13.6 迁移动作（studio → vertex）
+
+1. 切 `GEMINI_PROVIDER=vertex` 时，**要么删掉 `GEMINI_SPEND_LIMIT_USD`**（推荐：vertex 下默认不设
+   上限），**要么**把它改成不是 10/50/200 的数字，作为明确的自设预算。
+2. 忘了第 1 步也不会伤客户：启动自检会失败（一旦 13.4 接线完成）并打印补救方法；**即使没接线**，
+   闸门也不会武装，且每 5 分钟打一条 ERROR。
+3. 复核：
+
+```bash
+# 生效中的旋钮与 provider
+grep -E "GEMINI_PROVIDER|GEMINI_SPEND_LIMIT_USD|GEMINI_SPEND_GATE_RATIO" /opt/khmer-ai-cs/.env-go
+
+# 闸门是否武装：vertex 下默认应当是 limit_usd=0、over_gate=false
+curl -s -H "Authorization: Bearer $TOKEN" https://<host>/api/v1/platform/spend
+
+# 被拒绝的配置长这样（"NOT armed"）；闸门触发的行则带 basis=
+journalctl -u khmer-ai-cs -g "spend (configuration refused|gate shed)" --since "-1h"
+```
+
+4. 反向（vertex → studio）同样安全：把变量留空即解析回 10（Tier 1 默认），正是 studio 一直以来的
+   行为；直接把 10 写回去也一样合法——**studio 下 10 的含义从未改变**。
+
+5. `.env.example` 的建议改法（该文件由另一个任务维护，本轮未改）：
+
+```bash
+# studio：Google 的消费速率上限（Tier 1 $10 / Tier 2 $50 / Tier 3 $200 每 10 分钟）。
+# vertex：这是我们自设的预算；留空/0 = 不设上限。10/50/200 在 vertex 下会被拒绝（见 §十三）。
+# GEMINI_SPEND_LIMIT_USD=10
+# GEMINI_SPEND_GATE_RATIO=0.85
+```
+
+### 13.7 变量去留
+
+| 变量 | studio | vertex | 结论 |
+|---|---|---|---|
+| `GEMINI_SPEND_LIMIT_USD` | Google 的墙的本地镜像 | 自设预算；未设 = 不设上限；10/50/200 被拒绝 | **不废弃**，语义按 provider 区分（见下） |
+| `GEMINI_SPEND_GATE_RATIO` | 提前量（默认 0.85） | 同义 | 保留，**无需任何迁移动作** |
+
+不建议在 vertex 下"废弃" `GEMINI_SPEND_LIMIT_USD`（即：不引入第二个变量名、也不把这个变量删掉）：
+
+- **删掉它**会让 studio 失去唯一在 429 之前让路的手段，而 studio 的墙是真的；
+- **换成另一个名字**（例如 `GEMINI_BUDGET_USD`）确实能靠变量名消除歧义，但代价是又多一个旋钮、
+  又要两处文档同步，而遗留值误读的风险已经被 13.2 的"拒绝 + 启动自检"彻底堵住——收益不抵成本。
+  若将来真的需要在 vertex 下把预算设成 **10/50/200 本身**（这三个数字当前被保留给"AI Studio 档位"
+  这一个含义），再引入独立变量名是正确做法，届时应连同本表一起改。
+
+**为什么是"按 provider 区分"而不是"统一为自设预算"**：统一只能往两个方向走，都不成立——
+向上统一（两者都叫"自设预算"）会让 studio 失去那堵真实的墙，等于为了措辞一致而改变生产行为；
+向下统一（vertex 也沿用 $10）正是本文档要修的那个 bug。而两种 provider 的**机制**（窗口、求和口径、
+比例、失败开放）本来就完全相同，唯一分歧点只是"上限从哪来"——把它写成一次分支、并把分歧讲清楚，
+比假装它们一样更诚实，也更少代码。
+
+---
+
+## 十四、切流手册（studio → vertex 两步）与发布门禁（增量 5，2026-09-25）
+
+> 代码已就位（`internal/gemini` 的 provider 层，**默认仍是 studio**），§十二 记的是"能不能迁"的实测结论，
+> 这一节只讲**怎么切、怎么验、怎么退**。命令级完整版（含预期输出、退出码、收尾清理）在
+> `deploy-khmer-ai-cs/references/deploy-commands.md` **§10**；写给凌晨三点的那份就在那里。
+
+### 14.1 为什么能分两步
+
+| 步 | 动作 | 为什么可以这样分 |
+|---|---|---|
+| **1** | DB `model_configs` 里 `is_default = true` 那行 → `gemini-3.5-flash`，**仍在 studio 上跑一段** | `gemini-3.5-flash` 在 **AI Studio 侧也返回 200** ⇒ 先换名字**不存在"新名字没人认"的窗口期**；这一步出问题一眼归因到换模型，回滚只是把名字改回去，与传输层无关 |
+| **2** | `.env-go` 加 `GEMINI_PROVIDER=vertex` + `GEMINI_VERTEX_PROJECT` / `_REGION=asia-southeast1` / `_SA_FILE`，重启 | 传输层（端点 / 鉴权 / 报文形状）一次换掉；回滚 = 改回**这一条变量** + 重启 |
+
+**主模型在 DB，不在 `.env-go`**：只要 `is_default` 行存在，`GEMINI_MODEL` 就被完全忽略
+（启动日志 `Gemini configured from database model config model=…`）。管理后台保存会热加载（不必重启），
+`psql` 直接 UPDATE **必须重启**——否则就是"以为切了，其实没切"。
+
+### 14.2 切流前门禁：`vertexprobe`（必需项失败 = `exit 1`，不许进第 2 步）
+
+```bash
+cd /root/khmer-deploy
+./vertexprobe -sa /opt/khmer-ai-cs/vertex-sa.json \
+              -project <GCP project id> -region asia-southeast1 \
+              -models gemini-3.5-flash,gemini-2.5-flash
+echo "EXIT=$?"     # 门禁只看这个数字
+```
+
+期望：`✓ embedding :predict: gemini-embedding-001  dim=768 (want 768)  [required]` + `EXIT=0`。
+两个必须知道的坑：
+
+- 必须带 `-models`：内置候选表把 `gemini-flash-lite-latest` 也标成 `[required]`，而平台**没有 lite 档也没有这个别名**（全 404）——
+  裸跑会在平台完全健康的情况下 `exit 1`。
+- **`-tasktype` 必然 `exit 1`**：那正是 §十二 第 1 条要报的结论（无 task 条件化），它是诊断工具，**永远不要放进发布门禁**。
+
+`EXIT=2` = 根本没到 API（缺 `-sa`、SA JSON 读不了或缺字段、key 里没 `project_id`）。
+
+### 14.3 ⚠️ 时序陷阱：`GEMINI_API_BASE` 必须**最后**再清
+
+- 这台机器到 AI Studio 的**唯一通路**就是 `GEMINI_API_BASE` 指向的 Cloudflare AI Gateway 中继（Google 按出口 IP 封锁直连）。
+- **vertex 路径根本不读这个变量** ⇒ 清早了**当天完全没有症状**，废掉的是**以后才需要的东西**：回滚通路
+  （把 `GEMINI_PROVIDER` 改回 studio）与 studio 侧对照工具（`embedcmp` 路径 A 需要它才能跑——实测正是在这里踩出来的）。
+- 清之前先确认"不再需要回滚"。正向证据：CF 面板 AI → AI Gateway 里那台网关的请求数**归零**
+  （**日志里没有任何一行会打印当前 provider**，这是最直接的"确实不再走 studio"证据）。
+
+### 14.4 切流后验证清单
+
+| # | 检查 | 命令 / 方式 | 通过判据 |
+|---|---|---|---|
+| 1 | 六项能力（目标模型） | `./vertexprobe -sa … -region asia-southeast1 -caps gemini-3.5-flash` | `6/6 request shapes accepted.` —— 文本+systemInstruction、内联图片、内联音频、内联 PDF、`thinkingConfig`、SSE 全部 OK |
+| 2 | 音频容器 (ogg / m4a) | `… -caps gemini-3.5-flash -audiodir /root/khmer-deploy/audio-samples` | ≥1 行 `audio/ogg` + ≥1 行 `audio/mp4`，`N/N accepted`（**`0/0` = 空目录假通过**）。高棉语语音是真实客户路径，必须过 |
+| 3 | 服务端到端 | 后台「模型」页的测试按钮；再发一条真实消息 | 返回 `reply` + `model_name=gemini-3.5-flash`；journal 无 `gemini returned HTTP …` |
+| 4 | 检索基线自检 | `rageval -eval /root/khmer-deploy/rag_eval.json -user 7 -limit 5 -pipeline` | `LEG dense recall@5 ≥ 37/45` 且 `MRR ≥ 0.655`（实测路径 B：`38/45`、`0.705`）。**对不上 = 语料或配置有问题**，先分诊再怀疑闸门 |
+| 5 | 相似度闸门复核 | `grep -E '^RAG_(SIMILARITY_FLOOR\|SIMILARITY_RATIO\|RERANK_SKIP)=' /opt/khmer-ai-cs/.env-go` + `rageval -configs` 扫描 | 见下——**这是本次迁移唯一需要动配置的地方** |
+| 6 | 429 是否消失 | `journalctl -u khmer-ai-cs-go --since "24 hours ago" --no-pager \| grep -c "spend-based rate limit"` | `0`（**迁移的主要动机**）。若出现其它 429：那是平台按区域 QPS 的配额，与消费速率无关，去 GCP 提额，不是回滚信号 |
+| 7 | 计量仍在记 | `curl -s …/api/v1/platform/spend` + `token_usage` 近一小时行数 | 有数（护栏没被 provider 改动破坏） |
+
+**第 5 项为什么必须做**：实际切点是 `max(RAG_SIMILARITY_FLOOR, RAG_SIMILARITY_RATIO × 该查询最高相似度)`。
+`ratio` 随尺度自适应，**`floor` 是绝对值**——而实测相似度尺度整体下移（mean top1 `0.730 → 0.713`），
+于是 `floor` 会更频繁地成为真正的切点，dense 腿可能被掏空，**而排序一点没变**（§十二 的 recall/MRR 是在
+`floor` 之上的排序指标，它证明不了闸门安全）。另有 `RAG_RERANK_SKIP` 与 `service.go` 里写死的 `0.60`
+两处绝对比较判据会轻微移动，复核时把 `rerank(skip/run)` 计数一起看。
+
+动作：先用 `rageval -configs "<floor>:<ratio>:<skip>,0.30:0.70:<skip>,0.33:0.75:<skip>"` 扫描，
+**选能保住 dense 腿 recall 的最高 floor**（最保守的一档）→ 写进 `.env-go` → 重启 → 重跑第 4 项。
+**没有 sweep 证据就不要调**。
+
+### 14.5 回滚（一条环境变量 + 重启）
+
+```bash
+cd /opt/khmer-ai-cs
+grep -q '^GEMINI_API_BASE=' .env-go || echo "⚠️ 中继地址不在 .env-go 里 —— studio 回滚会失败，先补回来"
+sed -i 's/^GEMINI_PROVIDER=.*/GEMINI_PROVIDER=studio/' .env-go   # 删掉该行也行：不设 = studio
+systemctl restart khmer-ai-cs-go && sleep 2 && systemctl is-active khmer-ai-cs-go
+curl -s http://127.0.0.1:8081/ready
+```
+
+回滚**不动** DB 的模型名——第 1 步可以保留（`gemini-3.5-flash` 在 studio 上也 200）。
+⚠️ 但第 2 步一旦写错（`GEMINI_PROVIDER=vertex` 而 project/SA 缺失或服务用户读不到 key），
+进程会**启动即退出** ⇒ 第一动作是回滚把服务拉起来，再修 `.env-go`（客户侧不能长时间没有服务）。
+
+### 14.6 收尾清理（迁完之后）
+
+| 资产 | 处置 | 注意 |
+|---|---|---|
+| SA 密钥 `/opt/khmer-ai-cs/vertex-sa.json` | **保留**（它是生产凭据），只收紧权限 `chown khmerai:khmerai` + `chmod 600` | 绝不进仓库；轮换 = 先落新 key、重启验证、再删旧 key |
+| AI Studio key | 留作回滚余量，或到控制台删除 | ⚠️ 删 key **且**清了 `GEMINI_API_BASE` 之后 studio 这条腿彻底死了，而 `GEMINI_PROVIDER` 一旦在后续编辑中丢掉，**缺省值就是 studio** ⇒ 生产指向一个不通的端点。要么三样一起留到不再需要回滚，要么明确记档"studio 已退役"并盯住 `/ready` 与失败率 |
+| `GEMINI_API_BASE` | **最后**清（§14.3） | 清掉后 `embedcmp` 路径 A 与 studio 对照都跑不了 |
+| **决定不迁** | `rm /opt/khmer-ai-cs/vertex-sa.json` **+** 到 GCP 控制台删除该服务账号 | 只删文件 = 留一把仍在授权中的钥匙副本；只删账号 = 留一个没人再用的密钥文件。**两个一起做** |
+
+### 14.7 与 §十三 的接口
+
+在 `.env-go` 里加 `GEMINI_PROVIDER=vertex` 的同一次编辑里，顺手处理 `GEMINI_SPEND_LIMIT_USD`：
+vertex 下它不再是 Google 的墙的镜像，**要么删掉**（= 不设上限），**要么改成一个明确的预算数字**——
+**不要留 studio 的档位 `10 / 50 / 200`**（那三个数字是 AI Studio 的天花板，在平台上没有对应物，
+留着只会让闸门在一堵不存在的墙前面继续甩客户回合）。判定细节与观测方式见 §十三。

@@ -129,8 +129,20 @@ RestartSec=3
 - **SA 密钥落位**: 上传到 `/opt/khmer-ai-cs/vertex-sa.json` 后 `chown khmerai:khmerai` + `chmod 600`（systemd 以 `khmerai` 运行, 权限不对就是启动失败）。
 - ⚠️ **绝不提交进仓库**: 仓库 `.gitignore` 里**没有**对应规则, 别指望它兜底; 密钥只存在于服务器 `/opt/khmer-ai-cs/`。
 - 切到 vertex 后 `GEMINI_API_BASE` **可以留空**: 平台端点在区域内, 当初为绕 Google 地域封锁才加的 **Cloudflare AI Gateway 中继不再需要** —— 摘掉这一跳正是迁 Vertex 的收益之一（回滚到 studio 时再填回来）。
+  - ⚠️ **时序**: 必须等**彻底切到 vertex（且不再需要回滚/对照）之后**再清。中继是这台机器到 AI Studio 的**唯一通路**, 提前清 = 把**回滚路径**和 `embedcmp` 路径 A 一起废掉; 而 vertex 路径**根本不读这个变量**, 所以清早了当天毫无症状, 等你真需要它时才发现没有降落伞（§10.5）。
 - `GEMINI_PROVIDER=vertex` 而 project/SA 缺失时 **启动即退出**（`main.go` 的启动校验）, 不再是每轮请求才 500; 校验只读本地密钥文件, 不联网。
 - 模型名必须**锁定版本**（`gemini-3.5-flash`）: **不要用 `-latest` 别名**（平台不认, 且会随上游漂移）, 平台也**没有 lite 档**。
+
+### 切流顺序（两步, 可分离）
+
+| 步 | 动作 | 为什么能分开 |
+|---|---|---|
+| **1** | 把 DB `model_configs.is_default` 那行的 `model_name` 改成 `gemini-3.5-flash`（**不是改 `.env-go`** —— 线上主模型来自 DB）, 仍在 studio 上观察 | `gemini-3.5-flash` **在 AI Studio 侧也返回 200**, 所以先换名字**没有"新名字没人认"的窗口**; 这一步出问题可一眼归因到换模型, 回滚只是把名字改回去 |
+| **2** | `.env-go` 加 `GEMINI_PROVIDER=vertex` + `GEMINI_VERTEX_PROJECT` / `_REGION=asia-southeast1` / `_SA_FILE`, 重启 | 回滚 = 改回/删掉 `GEMINI_PROVIDER`（**不设就是 studio**）+ 重启, 一条变量 |
+
+- **切流前门禁**: `vertexprobe`（必需项失败即 `exit 1`, 不许进第 2 步）; **切流后验证**: 六项能力 `-caps` / 音频容器 `-audiodir` / `rageval` 复现基线 / 复核 `RAG_SIMILARITY_FLOOR`（相似度尺度整体下移, 而它是绝对值）/ 429 是否消失 —— **确切命令、预期输出与失败判据见 `references/deploy-commands.md` §10**（含收尾清理与"决定不迁"时该删什么）。
+- ⚠️ **别拿 `vertexprobe -tasktype` 当门禁**: 平台上"没有任何拼写能条件化嵌入"就是实测结论, 它**必然 `exit 1`** —— 那是诊断工具要报的结果, 不是故障。
+- ⚠️ **换 provider 不会自动重嵌入知识库**（重嵌入扫描只认**模型名**, 而 `gemini-embedding-001` 在两个 provider 上同名）⇒ 切流后要么重建一次文档、要么立刻用 `rageval` 实测确认, 别假设等于对照实验里的路径 B（详见 §10.1）。
 
 ## 验证清单
 
@@ -156,9 +168,13 @@ journalctl 里周期性 `/api/v1/realtime/inbox 401 WARN` = 未带 token 的 WS 
 | 症状 | 原因 | 解法 |
 |---|---|---|
 | HTTPS 521 | Cloudflare 连不上源站 | zone SSL 必须 Full; `cs` A 记录必须 <部署服务器IP> (不能是 CF 边缘 IP) |
-| Gemini 502 / `User location is not supported` | Google 按出口 IP 地域封锁 Gemini API (2026-09-04 起, 服务器区域被拒) | 现状用 **CF AI Gateway** 中继: `.env-go` 的 `GEMINI_API_BASE=https://gateway.ai.cloudflare.com/v1/<acc>/gemini-relay-gw/google-ai-studio/**v1beta**` — **`/v1beta` 后缀绝不能丢** (gemini.go 用 `apiBase+"/models"` 直接拼接, 丢了 = 网关 404 空 body)。CF Worker 边缘中继无效 (出口同被识别为受限区域)。**根治 = 切 Vertex** (区域内端点, 不再需要中继, 见上文「Vertex 切换」), 切完把 `GEMINI_API_BASE` 留空 |
+| Gemini 502 / `User location is not supported` | Google 按出口 IP 地域封锁 Gemini API (2026-09-04 起, 服务器区域被拒) | 现状用 **CF AI Gateway** 中继: `.env-go` 的 `GEMINI_API_BASE=https://gateway.ai.cloudflare.com/v1/<acc>/gemini-relay-gw/google-ai-studio/**v1beta**` — **`/v1beta` 后缀绝不能丢** (gemini.go 用 `apiBase+"/models"` 直接拼接, 丢了 = 网关 404 空 body)。CF Worker 边缘中继无效 (出口同被识别为受限区域)。**根治 = 切 Vertex** (区域内端点, 不再需要中继, 见上文「Vertex 切换」), 切完**且不再需要回滚**后把 `GEMINI_API_BASE` 留空 (⚠️ **清早了会同时废掉回滚路径与 studio 对照工具, 见 §10.5**) |
 | 模型列表 200 但为空 | gemini.go ListModels 曾按 `data` 字段解析, Google 实际返回 `models` | 已修复 (2026-09-04); 若回归先查此解析 |
 | 模型列表 404 `no longer available to new users` | 测试用了退役模型名 | 用 DB `model_configs.model_name` 里配的现役模型 (当前 `gemini-3.5-flash`; **`gemini-3.6-flash` / 3.7 / 3.8 与任何 `-latest` 别名在平台上都不存在**, 平台也无 lite 档) |
+| Vertex 切完**启动即退出** (`systemctl` = failed) | `GEMINI_PROVIDER=vertex` 但 project/SA 缺失、路径错或 `khmerai` 读不到 key → `main.go` 启动校验 `os.Exit(1)`（只读本地文件, 不联网） | 看 journal 的 `invalid Gemini provider configuration` 一行; **先回滚 provider 把服务拉起来**再修 (deploy-commands §10.4/§10.7) |
+| Vertex 切完业务请求 404 | 模型名在平台上不存在 (`-lite` / `-latest` / 3.6~3.8), 或区域填错 | 锁 `gemini-3.5-flash` + `asia-southeast1`; 探针 `-caps` 先验证 |
+| Vertex 切完检索命中变少 | 相似度尺度整体下移 (mean top1 `0.730→0.713`), 而 `RAG_SIMILARITY_FLOOR` 是**绝对值**; 也可能知识库没重嵌入 (换 provider 不触发重嵌入) | `rageval` 对基线 → 按 §10.6 第 6 项用 sweep 复核 floor; 重嵌入见 §10.1 |
+| 清掉 `GEMINI_API_BASE` 后回滚失败 | 中继是这台机器到 AI Studio 的**唯一通路**, 清早了 = 没有降落伞 (vertex 路径不读它, 所以当天无症状) | 把中继地址填回 `.env-go` 再回滚 (§10.5) |
 | 浏览器无限重定向 | SSL 模式被改成 Flexible (源站 :80 有 301) | CF 改回 Full |
 | 页面能开但接口全挂 | 前端构建忘设 `NEXT_PUBLIC_API_URL` (默认烘焙 localhost:8080) | 带正确 env 重新 build + 发布前端 |
 | 回答全是模板/无 AI | `GEMINI_API_KEY` 为空 = MOCK 模式 (设计如此) | 需要真 AI 就配 key 重启 |
@@ -172,7 +188,7 @@ journalctl 里周期性 `/api/v1/realtime/inbox 401 WARN` = 未带 token 的 WS 
 
 ## 详细参考（按需阅读）
 
-- `references/deploy-commands.md` — 完整命令手册: 交叉编译/standalone 打包/上传/迁移/发布/回滚/首次搭建/nginx 全文
+- `references/deploy-commands.md` — 完整命令手册: 交叉编译/standalone 打包/上传/迁移/发布/回滚/首次搭建/nginx 全文/**Vertex 切流 + 发布门禁 (§10)**
 - `references/cloudflare.md` — cs 子域名接入、SSL Full 缘由、521 排查、CF API 操作
 - `references/troubleshooting.md` — 踩坑实录 (askpass/迁移 env 陷阱/Flexible 重定向环/备份目录权限等)
 - `references/dev-guide.md` — **开发迭代指南**: 迁移机制 (NNN_name.sql 递增, 当前见仓库)、环境变量全表、API 面、渠道 webhook、与 WMS 同机共存、回滚点管理

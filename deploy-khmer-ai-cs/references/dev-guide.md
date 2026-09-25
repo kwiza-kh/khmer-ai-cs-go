@@ -51,7 +51,7 @@ LINE/Zalo 的 webhook 按 `platform_configs.channel_identity` (LINE = 机器人 
 | 认证 | `JWT_SECRET` (≥32 随机) `JWT_EXPIRE_HOUR` `INITIAL_ADMIN_PASSWORD` `ALLOW_REGISTRATION` `REGISTRATION_INVITE_CODE` | 改 JWT_SECRET = 全员在线会话作废 |
 | 凭据加密 | `PLATFORM_CREDENTIAL_KEY` | base64(32B); **轮换后已保存的渠道凭据不可解密** (等于渠道全挂), 除非有重加密流程 |
 | AI | `GEMINI_API_KEY` `GEMINI_MODEL`(gemini-3.5-flash) `GEMINI_FAST_MODEL` `GEMINI_MAX_TOKENS` `GEMINI_CACHE_TTL` `GEMINI_API_BASE`(可选) | **key 为空 = MOCK 模式** (模板回复, 演示/CI 用), 上线真 AI 必配; `GEMINI_API_BASE` 覆盖 REST 端点 (读 `apiBase+"/models"` 拼接), 现网指向 CF AI Gateway **含 /v1beta 后缀**: `https://gateway.ai.cloudflare.com/v1/<CLOUDFLARE_ACCOUNT_ID>/gemini-relay-gw/google-ai-studio/v1beta` (绕开 Google 对服务器区域的地域封锁, 2026-09-04 起)。坑: ①后缀丢了 → 网关 404 空 body; ②DB model_configs 的 key 含非标准字符也能用 (curl/Go 原样传); ③网关的 Authentication 必须 None, 否则 401 code 2009; ④请求日志在 CF 面板 AI→AI Gateway 可查; ⑤**生产实际模型由 DB `model_configs.is_default` 覆盖** (启动时 HotReload 日志 `Gemini configured from database model config`), 上面的 `GEMINI_MODEL` 只在没有 DB 配置时生效 —— 排查"模型不对"先看那行启动日志, 别只看 `.env-go`; ⑥**模型名必须锁定版本, 不能用 `-latest` 别名** (`gemini-flash-lite-latest` 在平台上根本不存在) 且平台**无 lite 档** (`gemini-2.5-flash-lite` / `gemini-3.5-flash-lite` 亚洲各区 404), 主模型与辅助模型统一 `gemini-3.5-flash`; `gemini-3.6-flash` / 3.7 / 3.8 同样 404 |
-| Vertex (可选) | `GEMINI_PROVIDER`(**不设 = studio, 保持现状**) `GEMINI_VERTEX_PROJECT`(SA key 自带 project_id 时可省) `GEMINI_VERTEX_REGION`(默认 `asia-southeast1`, 实测可用区, 填错 = 每次调用 404) `GEMINI_VERTEX_SA_FILE` `GEMINI_VERTEX_API_BASE`(一般留空) | 平台端点 `{region}-aiplatform.googleapis.com/v1/projects/{p}/locations/{l}/publishers/google/models/{m}:generateContent`, 鉴权换成 **OAuth2 服务账号** (`cloud-platform` scope, 不再用 `x-goog-api-key`); 嵌入从 `:embedContent` 换成 `:predict` (须显式发 `outputDimensionality=768`, 否则默认 3072 与 `vector(768)` 不符)。**SA 密钥落位** `/opt/khmer-ai-cs/vertex-sa.json` + `chown khmerai:khmerai` + `chmod 600` (systemd 以 khmerai 跑, 权限不对即启动失败); ⚠️ **绝不提交进仓库** (`.gitignore` 无对应规则, 不兜底)。**切到 vertex 后 `GEMINI_API_BASE` 可以留空** —— 平台端点在区域内, 为绕地域封锁而生的 CF AI Gateway 中继不再需要 (摘掉这一跳是迁 Vertex 的收益之一; 回滚 studio 时再填回)。`GEMINI_PROVIDER=vertex` 但缺 project/SA 时 **启动即退出** (`cmd/server/main.go` 的启动校验, 只读本地密钥不联网), 不是每轮请求才 500。TTS 在平台上**没有可用预览模型** → `TTS_ENABLED` 保持 false |
+| Vertex (可选) | `GEMINI_PROVIDER`(**不设 = studio, 保持现状**) `GEMINI_VERTEX_PROJECT`(SA key 自带 project_id 时可省) `GEMINI_VERTEX_REGION`(默认 `asia-southeast1`, 实测可用区, 填错 = 每次调用 404) `GEMINI_VERTEX_SA_FILE` `GEMINI_VERTEX_API_BASE`(一般留空) | 平台端点 `{region}-aiplatform.googleapis.com/v1/projects/{p}/locations/{l}/publishers/google/models/{m}:generateContent`, 鉴权换成 **OAuth2 服务账号** (`cloud-platform` scope, 不再用 `x-goog-api-key`); 嵌入从 `:embedContent` 换成 `:predict` (须显式发 `outputDimensionality=768`, 否则默认 3072 与 `vector(768)` 不符)。**SA 密钥落位** `/opt/khmer-ai-cs/vertex-sa.json` + `chown khmerai:khmerai` + `chmod 600` (systemd 以 khmerai 跑, 权限不对即启动失败); ⚠️ **绝不提交进仓库** (`.gitignore` 无对应规则, 不兜底)。**切到 vertex 后 `GEMINI_API_BASE` 可以留空** —— 平台端点在区域内, 为绕地域封锁而生的 CF AI Gateway 中继不再需要 (摘掉这一跳是迁 Vertex 的收益之一; 回滚 studio 时再填回)。⚠️ 但**必须等彻底切完再清**: 它同时是**回滚通路**与 `embedcmp` 路径 A 的唯一前提, 清早了当天无症状 (见 §11.5)。`GEMINI_PROVIDER=vertex` 但缺 project/SA 时 **启动即退出** (`cmd/server/main.go` 的启动校验, 只读本地密钥不联网), 不是每轮请求才 500。TTS 在平台上**没有可用预览模型** → `TTS_ENABLED` 保持 false |
 | Jev | `TYPESAFE_API_KEY` (缺失 = 客户端为 nil, 所有接入点走旧路径) `JEV_KEEPWARM_SEC`(默认 45, 0=关) `JEV_GUARD_BUDGET_MS`(默认 3000) `JEV_ROUTE_BUDGET_MS`(默认 4000) `JEV_RULE_SOLO_MIN`(默认 0.90) `JEV_TURN_ESCALATE_MIN`(默认 0.60) `JEV_RULE_CONFIRM_MIN`(默认 0.70) | 类型化判断模型 (单端点 `api.typesafe.ai/v1/systemone`, 无 Go SDK), 决策点优先走它。**保活是前提**: 生产主机实测冷连接 0.64-4.24s / 热连接 0.22-0.42s (纯 TLS 握手单独就 0.44-3.62s), 而本项目流量稀疏 ⇒ 几乎每次都是冷启动 ⇒ 预算被打穿后决策回落给**更慢**的快模型 (实测 Jev turn 354ms vs 快模型 3234ms, 快 9.1 倍) —— 超时等于把准确判断换成乱升级。探针间隔必须 < `http.Transport` 的 `IdleConnTimeout`(90s), 否则连接在两次探针之间就已经死了。⚠️ `JEV_RULE_SOLO_MIN` 与 `JEV_TURN_ESCALATE_MIN` **是两回事**: 前者是 TurnTriggerFor 的真正转人工安全阀, 后者只决定 judgeTurnJev 写进 verdict 的 Escalate 标记 (widget 等外部调用方读它)。两者曾经共用一个变量, 各有各的默认值 —— 调一个会静默带动另一个, 已拆开 |
 | 渠道 | `TELEGRAM_BOT_TOKEN` `META_VERIFY_TOKEN` `META_APP_ID/APP_SECRET` `META_OAUTH_REDIRECT_URL` `META_OAUTH_FRONTEND_URL` `META_GRAPH_API_VERSION` `META_WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID` | OAuth 回调 URL 与 Meta 后台 redirect URI **逐字符一致** |
 | 存储 | `R2_ACCOUNT_ID/ACCESS_KEY/SECRET_KEY/BUCKET/PUBLIC_URL` | 聊天文件上传 (Cloudflare R2, S3 兼容) |
@@ -154,3 +154,59 @@ LINE/Zalo 的 webhook 按 `platform_configs.channel_identity` (LINE = 机器人 
 - CSP 完整头见 deploy-commands §8 — 新接第三方脚本 (如换 SDK 域) 要改 CSP 而不是 `unsafe-eval`
 - 上传走 R2, 凭据落库前用 PLATFORM_CREDENTIAL_KEY 加密 (internal/security/sealer.go)
 - 默认关闭注册 (`ALLOW_REGISTRATION`), 开注册必配 `REGISTRATION_INVITE_CODE`
+
+## 11. Vertex 切流（开发者视角）
+
+切流执行本身是运维动作 (**命令级手册 = deploy-commands §10**), 但下面四件事只有改代码的人看得见, 也最容易被当成"运维的事"而漏掉。
+
+### 11.1 模型名不是自由文本, 而是一份受平台约束的清单
+
+- **锁版本, 不用 `-latest`**: 平台不认浮动别名 (它还会随上游漂移); 目标模型 = `gemini-3.5-flash`。
+- **平台没有 lite 档**: `gemini-2.5-flash-lite` / `gemini-3.5-flash-lite` 亚洲各区全 404 ⇒ 主模型与 `FastModel` 统一 `gemini-3.5-flash`。两者同名后 `chatWithModel` 的"降级到快模型"会被 `fast != model` 守卫跳过 —— 这是设计如此, **不是回归**。
+- `gemini-3.6/3.7/3.8-flash` 同样 404。改 `model_configs` 或前端模型下拉的候选名之前, 先用 `vertexprobe -models <a,b,c>` 探一下, 别把 404 留到生产。
+- **生产主模型来自 DB** (`model_configs.is_default`), **不是 `.env-go`**: 管理后台保存会 `HotReload` (无需重启), `psql` 直接 UPDATE **不会** ⇒ 用 SQL 改完必须重启, 否则就是"改了但没生效" (启动日志 `Gemini configured from database model config model=…` 是唯一权威信号)。
+- **TTS**: `gemini-2.5-flash-preview-tts` 在所有测试区域**不可用** ⇒ `TTS_ENABLED` 保持 `false` (平台上没有可指向的 TTS 模型)。
+
+### 11.2 嵌入的报文形状, 与那次"尺度下移"
+
+- 平台嵌入走 `:predict` (**不是** `:embedContent` —— 后者在平台上 400), 且**必须显式发 `outputDimensionality=768`**: 不发就是模型默认 3072, 与 `vector(768)` 列不符。代码对非 768 的响应**直接报错**, 宁可失败也不写入错维向量。
+- 平台的 `:predict` **不支持 task 条件化**: `gemini-embedding-001` / `text-embedding-005` / `text-multilingual-embedding-002` 三个模型 × 5 种拼写 (`parameters.task_type` / `taskType` × QUERY/DOCUMENT、`instances[].task_type`) **全部 200, 但向量与不带参数的基线逐位相同** (另有跨模型与假模型名双向对照)。所以迁移等于**丢掉查询/文档不对称** —— 这是既成事实, 不是可选项; 决策依据只能是实测。
+- 实测 (租户 7, 真实 615 chunk + 45 条真实高棉语查询, 只读对比): 路径 B (Vertex 无条件) **不劣于** 路径 A (AI Studio 有 task) —— recall@5 `37→38`、recall@10 `40→41`、MRR `0.658→0.705`, 无一条低于 `RAG_SIMILARITY_FLOOR`。
+  但**相似度尺度整体略降** (mean top1 `0.730→0.713`) ⇒ 这与排序无关, 却直接威胁绝对阈值 (见 11.4)。
+
+### 11.3 三个只读工具（都别重复造）
+
+| 工具 | 源 | 干什么 | 只读保证 |
+|---|---|---|---|
+| `vertexprobe` | `cmd/vertexprobe` | 平台可用性/能力**门禁**: token、聊天模型、嵌入维度; `-caps <model>` 跑六项请求形状; `-audiodir <dir>` 测音频容器 (ogg/m4a); `-tasktype` 测 task 条件化 | 只发探针请求; 自己建的 `cachedContents` 会删掉 |
+| `embedcmp` | `cmd/embedcmp` | A/B 检索质量: 路径 A = studio+task 查询 vs **库里现存**文档向量; 路径 B = 两边都用 vertex 重算 | SELECT-only 守卫 + 会话 `default_transaction_read_only=on` + 无写入路径 (路径 B 的文档向量只在内存里) |
+| `rageval` | `cmd/rageval` | 生产检索路径评测 + `-configs floor:ratio:skip` 扫描 | 只读 (`EvalRetrieval`) |
+
+三个都在服务器 `/root/khmer-deploy/` 下跑 (SA key 与生产密钥不必离开那台机器)。
+> **`vertexprobe -tasktype` 在本平台上必然 `exit 1`** —— "没有任何拼写能条件化嵌入"正是它要报的结论。它属于诊断, 写进发布门禁 = 每次发布都红。
+> 跨工具别比数: `rageval` 的 dense 腿 SQL 截断在 `4×topK` 行, `embedcmp` 看得更深, 所以同一次运行两者的 MRR 差一点点 (`0.655` vs 路径 A 的 `0.658`) —— 已知口径差异, 各自与自己的基线比。
+
+### 11.4 尺度下移为什么会打到生产闸门
+
+生产与评测用的是同一套切点: `max(RAG_SIMILARITY_FLOOR, RAG_SIMILARITY_RATIO × 该查询最高相似度)`。
+`ratio` **随尺度自适应**, `floor` **是绝对值** ⇒ 尺度整体下移时 `floor` 会更频繁地成为真正的切点, dense 腿可能被掏空, **而排序一点没变**。
+另有两处绝对相似度判据会跟着轻微移动: `RAG_RERANK_SKIP` 现值, 以及 `service.go` 里写死的 `0.60` (`leaderClear` / `signalsAgree`)。
+调之前先跑 `rageval -configs` 扫描拿证据, 选**能保住 dense 腿 recall 的最高 floor**; 复核流程见 deploy-commands §10.6 第 6 项。
+
+### 11.5 换 provider **不会**重嵌入知识库（以及中继什么时候才能摘）
+
+`SpawnIndexWorkers` 的重嵌入扫描只比较**模型名**:
+
+```sql
+-- embedding_model <> gemini.EmbeddingModel 才重排队; 两个 provider 上是同一个常量
+UPDATE knowledge_documents SET index_status = 'pending'
+ WHERE index_status = 'ready' AND embedding_model <> '' AND embedding_model <> 'gemini-embedding-001';
+```
+
+所以切到 vertex 后, 既有 chunk 仍是 AI Studio 产的向量, 只有**新查询**是 vertex 产的 —— 这个组合**没有被 embedcmp 覆盖**
+(路径 B 是把文档向量也用 vertex 重算的; 工具注释明确把跨供应商配对排除在结论之外)。
+- 要一致语料: 重新索引文档 (`POST /api/v1/knowledge/{id}/retry`, 或按上面 SQL 批量置 `pending`, 由 worker 重嵌入)。
+  源文件/URL 已取不到的文档会变 `index_status='failed'`、`chunk_count=0`, **从密集检索里消失** ⇒ 先拿一篇试。
+- `embedding_model` 列在两种情况下写的是**同一个字符串** ⇒ 从数据里看不出向量出自哪个 provider, 溯源自能靠操作记录。
+- 顺带记住: `GEMINI_API_BASE` (CF AI Gateway 中继) 是这台机器到 AI Studio 的**唯一通路**, 也是**回滚**与 `embedcmp` 路径 A 的前提。
+  它必须等**彻底切到 vertex 之后**再清, 而 vertex 路径根本不读它 ⇒ 清早了当天毫无症状 (详见 deploy-commands §10.5)。
