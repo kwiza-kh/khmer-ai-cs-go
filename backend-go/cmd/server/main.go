@@ -130,6 +130,20 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The spend guardrail is the second half of the same check. On vertex the
+	// limit means "our own budget" while on studio it means Google's upstream
+	// wall, so a value left over from the other provider silently either bars
+	// customers for no reason or protects nothing. ValidateSpendConfig rejects
+	// exactly those leftovers; usage.Budget additionally refuses to arm the gate
+	// when the config is invalid, so a missing wiring cannot reject anyone.
+	if err := usage.ValidateSpendConfig(); err != nil {
+		logger.Error("invalid Gemini spend configuration", "error", err.Error())
+		os.Exit(1)
+	}
+	slog.Info("gemini spend guardrail",
+		"limit_usd", usage.SpendLimitUSD(),
+		"basis", string(usage.SpendLimitBasis()))
+
 	// Jev (TypeSafe System One) powers every typed judgment — turn
 	// classification, rerank, routing, guardrails, notify triage. It is nil
 	// without TYPESAFE_API_KEY, and every site then keeps its previous path.
