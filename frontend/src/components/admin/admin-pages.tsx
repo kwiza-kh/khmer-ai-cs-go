@@ -544,6 +544,31 @@ function ModelConfigSection({
   );
 }
 
+// withDeadline rejects if `promise` has not settled within `ms`, using `message`
+// as the rejection reason.
+//
+// It exists because the region-list request gates the whole page's model loading
+// and the shared apiFetch carries no timeout: without a deadline, a request that
+// never settles leaves every picker empty and every refresh button disabled,
+// with no error surfaced and nothing for the operator to retry. The timer is
+// cleared on settle, and the losing promise's own rejection is swallowed so a
+// late failure cannot surface as an unhandled rejection.
+function withDeadline<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      },
+    );
+  });
+}
+
 export function ModelsAdminPage() {
   const { t, tf } = useI18n();
   const { data, isLoading, mutate } = useSWR<ModelItem[]>("admin-models", listModelConfigs);
@@ -578,7 +603,13 @@ export function ModelsAdminPage() {
   const hasVertexModel = models.some(usesServiceAccountCredential);
   const { data: regionsData, error: regionsError, isLoading: regionsLoading } = useSWR(
     hasVertexModel ? "admin-vertex-regions" : null,
-    listVertexRegions,
+    // Bounded on purpose. The whole page's model loading is gated on this
+    // request settling (regionsResolved below), and apiFetch carries no timeout,
+    // so a request that never settles would leave every picker empty AND the
+    // refresh button disabled — with no error and nothing to retry. Racing a
+    // deadline turns that silent dead end into the same "region list
+    // unavailable" path a 404 already takes, which still loads the models.
+    () => withDeadline(listVertexRegions(), 8000, t("admin.regionListUnavailable")),
   );
   const regions = regionsData?.regions ?? [];
   const currentRegion = regionsData?.current ?? "";
@@ -607,6 +638,14 @@ export function ModelsAdminPage() {
 
   const loadAvailableModels = useCallback(async (model: ModelItem, region?: string): Promise<AvailableModel[] | null> => {
     if (!usesServiceAccountCredential(model) && !model.has_api_key) return null;
+    // Sequence stamp per config. Switching regions twice quickly leaves two
+    // requests in flight, and without this the slower one wins: the dropdown
+    // would show region A's models while the selector, the header and the saved
+    // value all say B, and the loading flag would clear when the FIRST request
+    // finished rather than the last. Only the newest request may write state.
+    const attempt = (listAttempt.current[model.config_id] ?? 0) + 1;
+    listAttempt.current[model.config_id] = attempt;
+    const isCurrent = () => listAttempt.current[model.config_id] === attempt;
     setModelListLoading((previous) => ({ ...previous, [model.config_id]: true }));
     setModelListErrors((previous) => {
       const next = { ...previous };
@@ -627,18 +666,28 @@ export function ModelsAdminPage() {
       // two states that looked identical while a decode failure was silently
       // degrading every region in production.
       const available = await listAvailableModels(model.config_id, region, (warning) => {
+        if (!isCurrent()) return;
         setModelListWarnings((previous) => ({ ...previous, [model.config_id]: warning }));
       });
+      if (!isCurrent()) return null;
       setAvailableModels((previous) => ({ ...previous, [model.config_id]: available }));
       return available;
     } catch (error: unknown) {
+      // A superseded request's failure is noise: the operator is already looking
+      // at a newer region, and reporting the old one's error would attach it to
+      // the wrong selector value.
+      if (!isCurrent()) return null;
       // Whatever list is on screen stays there: emptying it here would leave an
       // operator who just switched to a region that then fails with a blank
       // dropdown and no way to see which model the config was using.
       setModelListErrors((previous) => ({ ...previous, [model.config_id]: (error as Error).message }));
       return null;
     } finally {
-      setModelListLoading((previous) => ({ ...previous, [model.config_id]: false }));
+      // Only the newest request may clear the spinner, or the second of two
+      // in-flight requests would appear finished while it is still loading.
+      if (isCurrent()) {
+        setModelListLoading((previous) => ({ ...previous, [model.config_id]: false }));
+      }
     }
   }, []);
 
@@ -723,6 +772,10 @@ export function ModelsAdminPage() {
   // is exactly when every list should be reloaded — while a region switch (new
   // state, same snapshot) must not reload any other card's list.
   const loadedSnapshot = useRef<ModelItem[] | null>(null);
+  // Newest model-list request per config, used to discard a superseded
+  // response. A ref (not state) because it must be read and bumped
+  // synchronously inside loadAvailableModels, before any await.
+  const listAttempt = useRef<Record<number, number>>({});
   useEffect(() => {
     if (!data || !regionsResolved) return;
     if (loadedSnapshot.current === data) return;
