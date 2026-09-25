@@ -5,6 +5,7 @@ import useSWR, { mutate as globalMutate } from "swr";
 import {
   listTenants, getTenantDetail, setTenantStatus, setTenantPlan, getPlatformAnalytics,
   createTenant, listAuditLogs, TenantItem, TenantDetail, PlatformAnalytics, AuditLogItem,
+  type PaginatedTenants,
 } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -142,12 +143,30 @@ function TenantsPanel() {
     } catch (e) { toast.error((e as Error).message); }
   };
   const changePlan = async (tenant: TenantItem, plan: string) => {
+    // 乐观更新走 SWR 的 mutate(异步 fetcher, { optimisticData, rollbackOnError }):
+    // select 立即显示新套餐, 请求失败时 SWR 自己把缓存回滚到旧值 (并触发重新验证),
+    // 因此界面不会停留在 "已切换成功" 的假象上.
     try {
-      await setTenantPlan(tenant.user_id, plan);
+      await mutate(async () => {
+        await setTenantPlan(tenant.user_id, plan);
+        // populateCache: false — 该返回值不会被写进缓存 (真值仍来自服务端).
+        return undefined;
+      }, {
+        // currentData 类型上可选, 但这个 select 只在 data 就绪后才渲染, 所以
+        // 回调里列表一定存在 (SWR 的回滚快照也取自同一份缓存).
+        optimisticData: (cur) => ({
+          ...(cur as PaginatedTenants),
+          data: (cur as PaginatedTenants).data.map((x) => (x.user_id === tenant.user_id ? { ...x, plan } : x)),
+        }),
+        populateCache: false,
+        rollbackOnError: true,
+        revalidate: true,
+      });
       toast.success(`${tenant.username} → ${plan}`);
-      void mutate();
       if (detail?.tenant.user_id === tenant.user_id) { void globalMutate(`platform-tenant-${tenant.user_id}`); }
-    } catch (e) { toast.error((e as Error).message); }
+    } catch (e) {
+      toast.error((e as Error).message);
+    }
   };
   const openDetail = async (tenant: TenantItem) => {
     try {

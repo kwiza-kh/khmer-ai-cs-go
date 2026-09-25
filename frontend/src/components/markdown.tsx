@@ -24,11 +24,16 @@ export function Markdown({ children, className }: { children: string; className?
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
         components={{
+          // react-markdown v10 会给每个自定义组件注入 hast 的 `node` 对象;
+          // 直接 {...props} 展开会把它渲染成真实 DOM 属性
+          // (`node="[object Object]"`) 并触发 React 未知属性告警 —— 必须剔除.
           // Wrap <pre> so we can inject a copy button absolutely positioned.
-          pre({ children, ...props }) {
+          pre({ children, node, ...props }) {
+            void node;
             return <CodeBlock {...props}>{children}</CodeBlock>;
           },
-          a({ children, ...props }) {
+          a({ children, node, ...props }) {
+            void node;
             return (
               <a {...props} target="_blank" rel="noreferrer noopener" className="text-primary underline underline-offset-2 hover:opacity-80">
                 {children}

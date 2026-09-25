@@ -178,9 +178,21 @@ function WidgetInner() {
     if (saved && SID_RE.test(saved)) setSessionId(saved);
   }, [token]);
 
-  // Fetch the persisted transcript (gives real dbIds + agent replies). Skips
-  // the optimistic pending bubble and preserves the local id for model turns
-  // already shown, matching by order so ratings survive refresh.
+  // Fetch the persisted transcript (gives real dbIds + agent replies).
+  //
+  // 合并语义 (不能整体替换): 后端先发 session 事件 → INSERT 访客消息 →
+  // 生成结束后才落库 AI 回复. 所以 sessionId 一变化触发的同步与 6 秒轮询
+  // 常拿到 "只有访客消息" 的快照; 早期实现直接 setMessages(mapped) 会把
+  // 正在流式输出的 pending 气泡整体删掉, 之后到达的 token 因找不到 pendingId
+  // 被丢弃, 直到答完才一次性出现.
+  //
+  // 现在的规则:
+  //   * 服务端已有同 dbId 的本地气泡 → 以服务端为准刷新 (保留本地 id 以免
+  //     键变化导致重挂载闪烁; rating 沿用 r.feedback_rating ?? null 原语义);
+  //   * 本地无 dbId 的消息 → 先按 (role, content) 与尚未被认领的服务端行配对
+  //     (流结束后本地气泡可能只带 dbId 而 content 仍是流式文本);
+  //   * 仍未配对的本地消息 (pending 气泡、错误提示) 保留原位;
+  //   * 服务端有、本地还没有的其余消息 (agent 回复等) 追加到末尾。
   const syncMessages = React.useCallback(async (sid: string) => {
     if (!apiBase) return;
     try {
@@ -194,17 +206,44 @@ function WidgetInner() {
           role: (r.role === "user" ? "user" : "model") as Msg["role"],
           content: r.content, rating: r.feedback_rating ?? null,
         }));
-      if (mapped.length) {
-        // Unread ping for the host-page launcher badge: an inbound (model/
-        // agent) message arrived that the visitor hasn't seen rendered yet.
-        const fresh = mapped.some((m) => m.role === "model" && (m.dbId ?? 0) > lastSeenDbId.current && lastSeenDbId.current > 0);
-        const maxDb = mapped.reduce((mx, m) => Math.max(mx, m.dbId ?? 0), 0);
-        if (fresh) {
-          try { window.parent.postMessage({ khmerWidgetUnread: true }, "*"); } catch { /* ignore */ }
-        }
-        lastSeenDbId.current = Math.max(lastSeenDbId.current, maxDb);
-        setMessages(mapped);
+      // Unread ping for the host-page launcher badge: an inbound (model/
+      // agent) message arrived that the visitor hasn't seen rendered yet.
+      const fresh = mapped.some((m) => m.role === "model" && (m.dbId ?? 0) > lastSeenDbId.current && lastSeenDbId.current > 0);
+      const maxDb = mapped.reduce((mx, m) => Math.max(mx, m.dbId ?? 0), 0);
+      if (fresh) {
+        // Only to the direct parent: ancestorOrigins[0] is the nearest
+        // ancestor's origin (Chrome/Safari). Directly-opened widgets and old
+        // browsers get no list → fall back to "*" (the receiver in
+        // widget-embed.js still checks ev.source).
+        const targetOrigin = window.location.ancestorOrigins?.[0] || "*";
+        try { window.parent.postMessage({ khmerWidgetUnread: true }, targetOrigin); } catch { /* ignore */ }
       }
+      lastSeenDbId.current = Math.max(lastSeenDbId.current, maxDb);
+      setMessages((cur) => {
+        const byDbId = new Map<number, Msg>();
+        for (const row of mapped) byDbId.set(row.dbId as number, row);
+        // 1) 服务端已有同 dbId 的本地气泡 → 用服务端行刷新.
+        const merged: Msg[] = cur.map((m) => {
+          if (m.dbId == null) return m;
+          const row = byDbId.get(m.dbId);
+          if (!row) return m;
+          byDbId.delete(m.dbId);
+          return { ...m, role: row.role, content: row.content, rating: row.rating };
+        });
+        // 2) 本地无 dbId 的访客消息与未被认领的服务端行按 (role, content) 配对.
+        for (let i = 0; i < merged.length; i += 1) {
+          const m = merged[i];
+          if (m.dbId != null || m.role === "system") continue;
+          for (const row of byDbId.values()) {
+            if (row.role !== m.role || row.content !== m.content) continue;
+            byDbId.delete(row.dbId as number);
+            merged[i] = { ...m, dbId: row.dbId, content: row.content, rating: row.rating, pending: false };
+            break;
+          }
+        }
+        // 3) 服务端有、本地还没有的其余消息追加到末尾 (保持服务端顺序).
+        return byDbId.size > 0 ? [...merged, ...byDbId.values()] : merged;
+      });
     } catch { /* ignore */ }
   }, [apiBase, token]);
 
@@ -283,14 +322,21 @@ function WidgetInner() {
 
   const rate = async (m: Msg, rating: 1 | -1) => {
     if (!m.dbId || !apiBase) return;
+    // 乐观更新: 失败必须回滚, 否则访客看到 👍/👎 已选中、运营侧却收不到反馈.
+    const prevRating = m.rating ?? null;
     setMessages((cur) => cur.map((x) => (x.id === m.id ? { ...x, rating } : x)));
     try {
-      await fetch(`${apiBase}/widget/feedback`, {
+      const res = await fetch(`${apiBase}/widget/feedback`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ token, message_id: m.dbId, rating }),
       });
-    } catch { /* ignore */ }
+      // 服务端反馈端点没有撤销语义, 所以回滚只还原本地显示: 访客可以再点一次,
+      // 重新提交同一条反馈. (widget 保持自包含, 不引入 app 的 toast 主题. )
+      if (!res.ok) setMessages((cur) => cur.map((x) => (x.id === m.id ? { ...x, rating: prevRating } : x)));
+    } catch {
+      setMessages((cur) => cur.map((x) => (x.id === m.id ? { ...x, rating: prevRating } : x)));
+    }
   };
 
   if (!token || !apiBase) {
@@ -304,12 +350,15 @@ function WidgetInner() {
   // Only the newest AI answer offers 好评/差评. Leaving the controls on every
   // older answer clutters the history and lets a visitor rate the wrong
   // message; a rating that was already given still shows on its own bubble.
-  const lastModelKey = React.useMemo(() => {
-    for (let i = messages.length - 1; i >= 0; i -= 1) {
-      if (messages[i].role === "model" && messages[i].dbId != null) return messages[i].id;
-    }
-    return null;
-  }, [messages]);
+  // 注意: 这里之前是 React.useMemo, 但它位于上面 `!token` 提前 return 之后 —
+  // 若同一实例先以空 token 渲染一帧、随后 token 变为非空, hook 数量就会变化,
+  // React 会抛 "Rendered more hooks than during the previous render" 并卸载整棵
+  // 子树 (访客 iframe 白屏)。这是一次 O(n) 的反向遍历, 直接内联计算即可,
+  // 组件内所有 hook 因此都恒定保持在提前 return 之前。
+  let lastModelKey: number | null = null;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messages[i].role === "model" && messages[i].dbId != null) { lastModelKey = messages[i].id; break; }
+  }
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh", background: p.bg, color: p.bubbleInText, fontFamily: "'Noto Sans Khmer','Inter',system-ui,sans-serif" }}>

@@ -41,6 +41,17 @@ export default function SettingsPage() {
   }, []);
 
   const savePrefs = (patch: { language?: string; notification_pref?: string }) => {
+    // 乐观更新: 先写本地 state 让下拉框立刻响应, 失败回滚所有被改动的字段.
+    // 这里刻意不用 SWR 的 rollbackOnError: 偏好是 useState 而非 SWR key, 回滚
+    // 必须显式 setState; 同时失败要能让用户看见 (只回滚不提示会被当成没生效).
+    const rollback = {
+      aiLang,
+      notif,
+      // 具体语言选择会同步切界面语言; 回滚时要连它一起还原.
+      uiLang: patch.language !== undefined && patch.language !== "auto" ? aiLang : null,
+    };
+    // 同 id 的 loading toast 会被下面的 success/error 替换 (sonner 的去重语义).
+    const toastId = toast.loading(t("settings.saved"));
     if (patch.language !== undefined) {
       setAiLang(patch.language);
       // A concrete language choice also switches the interface immediately.
@@ -50,8 +61,13 @@ export default function SettingsPage() {
     }
     if (patch.notification_pref !== undefined) setNotif(patch.notification_pref);
     apiFetch("/auth/preferences", { method: "PUT", body: JSON.stringify(patch) })
-      .then(() => toast.success(t("settings.saved")))
-      .catch((err) => toast.error((err as Error).message || t("settings.saveFailed")));
+      .then(() => toast.success(t("settings.saved"), { id: toastId }))
+      .catch((err) => {
+        setAiLang(rollback.aiLang);
+        setNotif(rollback.notif);
+        if (rollback.uiLang !== null) setUiLang(rollback.uiLang as Lang);
+        toast.error((err as Error).message || t("settings.saveFailed"), { id: toastId });
+      });
   };
 
   return (

@@ -55,9 +55,17 @@ export function signalAuthExpired() {
  * current session so the user isn't signed out by their own action. Call this
  * with the response body; a missing/absent token is a no-op (the session will
  * simply end at the next request).
+ *
+ * localStorage alone is not enough: every in-memory consumer (notably the
+ * realtime WebSocket in lib/realtime.ts, which authenticates with the
+ * AuthProvider token) would keep using the retired JWT and fail to reconnect
+ * forever. So — mirroring signalAuthExpired — broadcast the new token and let
+ * AuthProvider sync its state.
  */
 export function adoptRefreshedToken(res: { token?: string } | null | undefined) {
-  if (res?.token) localStorage.setItem("token", res.token);
+  if (!res?.token) return;
+  localStorage.setItem("token", res.token);
+  window.dispatchEvent(new CustomEvent<string>("khmer:token-refreshed", { detail: res.token }));
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -166,6 +174,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     window.addEventListener("khmer:auth-expired", onAuthExpired);
     return () => window.removeEventListener("khmer:auth-expired", onAuthExpired);
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 改密码 / 改 2FA 后服务端会让旧 token_version 失效并下发新 JWT:
+  // adoptRefreshedToken 广播新 token, 这里同步内存态, 否则 WebSocket 会一直用
+  // 死 token 无限重连失败 (只能等手动刷新页面).
+  useEffect(() => {
+    const onTokenRefreshed = (e: Event) => {
+      const next = (e as CustomEvent<string>).detail;
+      if (typeof next === "string" && next) setToken(next);
+    };
+    window.addEventListener("khmer:token-refreshed", onTokenRefreshed);
+    return () => window.removeEventListener("khmer:token-refreshed", onTokenRefreshed);
   }, []);
 
   return (

@@ -1794,6 +1794,14 @@ export async function uploadAvatar(file: File) {
     body: form,
   }));
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || "头像上传失败");
+  if (!res.ok) {
+    const message = localizeCurrentLang((data as { error?: string }).error || "头像上传失败");
+    // 与 apiFetch 一致: token 过期/无效时清凭据 + 广播登出, 否则用户困在
+    // "假已登录" 状态反复上传失败.
+    if (res.status === 401) {
+      signalAuthExpired();
+    }
+    throw new ApiError(message, res.status);
+  }
   return data as UserProfile;
 }

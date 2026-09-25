@@ -21,6 +21,11 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 # Build-time env: the browser-visible API URL. Default points at the backend
 # container's published port; override with --build-arg for production domains.
+# NOTE: `next build` now FAILS (see the assertion in next.config.ts) when this is
+# missing or a localhost URL, because the value is unrecoverable at runtime and
+# silently points the embedded widget at each VISITOR's own machine. The default
+# below is therefore only usable for local docker-compose, and even that needs
+# NEXT_PUBLIC_ALLOW_LOCALHOST_API_URL=1 passed as a build arg to opt in.
 ARG NEXT_PUBLIC_API_URL=http://localhost:8080/api/v1
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 RUN npm run build
