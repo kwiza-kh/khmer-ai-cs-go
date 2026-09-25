@@ -156,7 +156,19 @@ func FromPartsFull(apiKey, modelName, systemPrompt string, maxTokens int) *Servi
 func (s *Service) IsConfigured() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.client != nil
+	if s.client != nil {
+		return true
+	}
+	// Under vertex the credential is the service-account file, not an API key,
+	// so an empty model_configs.api_key is a VALID configuration there. Returning
+	// false would send main.go down its "falling back to env/mock" branch and
+	// answer customers with mock templates while a working service account sat
+	// unused — and the startup check cannot catch it, because that check
+	// validates the key file rather than this flag.
+	//
+	// No file is read here: the provider was validated at boot, and re-reading
+	// per call would put filesystem I/O on the reply path.
+	return CredentialSourceOf() == CredentialServiceAccount
 }
 
 func (s *Service) ModelName() string {

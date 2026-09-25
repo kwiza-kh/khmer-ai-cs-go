@@ -105,7 +105,13 @@ func main() {
 	if apiKey, modelName, systemPrompt, maxTokens, ok := gemini.LoadDefaultConfig(ctx, pool); ok {
 		gem = gemini.FromPartsFull(sealer.DecryptOrKeep(apiKey), modelName, systemPrompt, maxTokens)
 		if gem.IsConfigured() {
-			logger.Info("Gemini configured from database model config", "model", gem.ModelName())
+			logger.Info("Gemini configured from database model config",
+				"model", gem.ModelName(),
+				// Which credential is actually in use. Under vertex the DB key
+				// is dead data and the service-account file authenticates, so a
+				// log line naming only the model sends whoever is debugging a
+				// 401 to rotate a key that was never read.
+				"credential", string(gemini.CredentialSourceOf()))
 		} else {
 			logger.Warn("Gemini DB config has no key — falling back to env/mock")
 			gem = gemini.New(cfg.Gemini.APIKey, cfg.Gemini.Model, cfg.Gemini.MaxTokens)
