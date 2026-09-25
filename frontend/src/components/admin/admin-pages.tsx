@@ -556,6 +556,11 @@ export function ModelsAdminPage() {
   const [availableModels, setAvailableModels] = useState<Record<number, AvailableModel[]>>({});
   const [modelListLoading, setModelListLoading] = useState<Record<number, boolean>>({});
   const [modelListErrors, setModelListErrors] = useState<Record<number, string>>({});
+  // Non-fatal reason a model list is incomplete (the backend's
+  // X-Model-List-Warning header). Deliberately separate from modelListErrors:
+  // the list is still usable, so this must not read as a failure — it explains
+  // why a region looks smaller than it should.
+  const [modelListWarnings, setModelListWarnings] = useState<Record<number, string>>({});
   // Region the operator picked per config. Absent means "follow the region the
   // server is configured with" — the region list itself is shared by every card.
   const [regionByConfig, setRegionByConfig] = useState<Record<number, string>>({});
@@ -608,8 +613,22 @@ export function ModelsAdminPage() {
       delete next[model.config_id];
       return next;
     });
+    setModelListWarnings((previous) => {
+      const next = { ...previous };
+      delete next[model.config_id];
+      return next;
+    });
     try {
-      const available = await listAvailableModels(model.config_id, region);
+      // The warning arrives as a header on a 200, not as an error: the request
+      // succeeded and the entries below are real, but the region's published
+      // list could not be read, so this is the configured/fallback subset rather
+      // than that region's catalog. Surfacing it is the difference between
+      // "this region has three models" and "we could not list this region" —
+      // two states that looked identical while a decode failure was silently
+      // degrading every region in production.
+      const available = await listAvailableModels(model.config_id, region, (warning) => {
+        setModelListWarnings((previous) => ({ ...previous, [model.config_id]: warning }));
+      });
       setAvailableModels((previous) => ({ ...previous, [model.config_id]: available }));
       return available;
     } catch (error: unknown) {
@@ -754,6 +773,7 @@ export function ModelsAdminPage() {
               : [{ name: draft.model_name, display_name: `${draft.model_name}${t("admin.currentSuffix")}` }, ...modelOptions];
             const isLoadingModels = modelListLoading[model.config_id] ?? false;
             const modelListError = modelListErrors[model.config_id];
+            const modelListWarning = modelListWarnings[model.config_id];
             // Two credentials, two places: the service-account file on the
             // server (Vertex) or the key stored in this config (AI Studio). The
             // difference decides whether "no stored key" means "needs setup" or
@@ -966,6 +986,17 @@ export function ModelsAdminPage() {
                           </p>
                         )}
                         {modelListError && <p role="alert" className="mt-1 text-xs text-danger">{modelListError}</p>}
+                        {/* Non-fatal: the list below is real and selectable, but
+                            the region's published catalog could not be read, so
+                            it is the configured/fallback subset. Warning tone,
+                            not error tone — and it names the region so the
+                            operator can switch away from a broken one. */}
+                        {modelListWarning && (
+                          <p role="status" className="mt-1 flex items-start gap-1.5 text-xs text-warning">
+                            <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+                            <span>{tf("admin.modelListIncomplete", { region: region || t("admin.regionUnknown"), reason: modelListWarning })}</span>
+                          </p>
+                        )}
                       </div>
                     </div>
                   </ModelConfigSection>

@@ -302,8 +302,11 @@ type CatalogModel struct {
 	Capability  string
 	// Available is true unless this deployment has POSITIVE evidence that the
 	// model cannot be used in the region that was asked about. See ModelCatalog:
-	// list membership is NOT such evidence, so nothing in this package sets it
-	// false today and the operator's Test button remains the authority.
+	// list membership is NOT such evidence (it under-reports in production's own
+	// region), so nothing in this package sets it false today and the operator's
+	// Test button remains the authority. It stays in the wire contract so a
+	// future probe can add positive evidence without a shape change; today it is
+	// constant-true, and a console must not read "true" as a guarantee.
 	Available bool
 }
 
@@ -436,24 +439,29 @@ type publisherModelEntry struct {
 // it had before region selection existed.
 //
 // Two rules make the result honest, and both exist because the platform's model
-// list is NOT a callability oracle. Measured 2026-09-25: gemini-3.5-flash serves
-// asia-southeast1 traffic while appearing in neither that region's list nor
-// reliably anywhere, and us-central1's list advertises 3.5/3.6/3.7/3.8 even
-// though a single-region generateContent there 404s.
+// list is NOT a callability oracle. Measured 2026-09-25, listing vs a real
+// generateContent in the same region:
+//
+//	us-central1     gemini-2.5-flash  listed, 200   | gemini-3.5-flash  unlisted, 404
+//	europe-west4    gemini-2.5-flash  listed, 200   | gemini-3.5-flash  unlisted, 404
+//	asia-southeast1 gemini-2.5-flash  listed, 200   | gemini-3.5-flash  UNLISTED, 200  <-- the anomaly
+//
+// So the list can AGREE with callability (us-central1, europe-west4) and can
+// also UNDER-report it (asia-southeast1, which serves the model it omits). It is
+// never over-reporting in the measurements taken, but nothing guarantees that,
+// and the under-report is the one that would do damage: reading "not listed" as
+// "unusable" paints this deployment's own serving model as unavailable.
 //
 //  1. The deployment's configured model is ALWAYS unioned in, first, and is
 //     never dropped for being absent from the list. A model that is answering
 //     customers must not become unpickable because the catalog forgot it.
 //  2. Available defaults to TRUE, and list membership is never turned into an
-//     availability verdict. The measured production proof: asia-southeast1's
-//     list holds nine entries and only ONE Gemini chat model, yet
-//     gemini-3.5-flash answers 200 OK there (measured 2026-09-25) while being
-//     absent from that list. A catalog that read "not listed" as "unusable"
-//     would paint this deployment's own serving model as unavailable — and
-//     us-central1's list advertises 3.5/3.6/3.7/3.8 whose single-region
-//     generateContent 404s, so the reverse reading is just as wrong. The only
-//     honest encoding of "we did not measure it" is true; the console's Test
-//     button is what measures.
+//     availability verdict in EITHER direction. The only honest encoding of "we
+//     did not measure it" is true; the console's Test button is what measures.
+//     Deliberately not encoded here: a per-model callability probe. It would
+//     cost one billed request per listed model per region (133 in us-central1)
+//     to sharpen a hint, and a probe that fails for quota or network reasons
+//     would report a healthy model as unusable.
 //
 // A listing that 404s, fails or comes back empty is NOT an error: the caller
 // gets the union plus the last-resort names and a non-empty warning naming the

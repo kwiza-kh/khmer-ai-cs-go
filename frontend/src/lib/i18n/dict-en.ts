@@ -644,6 +644,7 @@ export const en: Dict = {
   "admin.regionUnknown": "Server default region",
   "admin.regionLoading": "Loading the region list…",
   "admin.regionListUnavailable": "Could not load the region list. The region configured on the server is used.",
+  "admin.modelListIncomplete": "The model list for {region} is incomplete — that region's catalog could not be read, so this is the configured/fallback set. Reason: {reason}",
   "admin.regionGlobal": "Global",
   "admin.regionChanged": "Region set to {region} — reloading the model list",
   "admin.loadingModelsForRegion": "Loading models for {region}…",

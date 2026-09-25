@@ -350,7 +350,7 @@ psql "$DATABASE_URL" -c "select model_name, count(*) from chat_messages
 > 只记四条影响决策的实测结论：
 
 1. **`:predict` 不支持 task 条件化** —— 平台上的嵌入统一走 `:predict`，`taskType` 那套字段不被接受（3 个模型 × 5 种拼写，并做了双向对照），所以嵌入只有 `instances` + `parameters` 一种报文形状。
-2. **亚洲区没有 lite 档** —— `gemini-2.5-flash-lite` / `gemini-3.5-flash-lite` 在亚洲各区**全部 404**。于是不再分主/辅档位：**全线 `gemini-3.5-flash`**（3.6 / 3.7 / 3.8 与任何 `-latest` 别名在平台上都不存在，浮动别名还会随上游漂移）。
+2. **亚洲区没有 lite 档** —— `gemini-2.5-flash-lite` / `gemini-3.5-flash-lite` 在亚洲各区**全部 404**。于是不再分主/辅档位：**全线 `gemini-3.5-flash`**（任何 `-latest` 别名平台都不认，浮动别名还会随上游漂移）。⚠️ **订正**：本行曾写「3.6 / 3.7 / 3.8 在平台上都不存在」，那是**错误结论** —— 真实情况是**区域作用域**：`gemini-3.8-flash` 在 Vertex 上存在，但只有 `global` / `us` / `eu` 返回 200，每个单区域（含生产的 `asia-southeast1`）都是 404。实测矩阵见 `deploy-khmer-ai-cs/references/dev-guide.md` §11.6 与 `docs/DEVELOPMENT.md` 第十二节。
 3. **预览 TTS 在所有测试区域不可用** → `TTS_ENABLED` **保持关闭**（本就是默认值，平台没有可指向的 TTS 模型）。
 4. **嵌入 `:predict` 返回 768 维，但必须显式发 `outputDimensionality`** —— 不发就是模型默认的 3072，而 `knowledge_chunks` 是 `vector(768)`。代码按 768 发，并对非 768 的响应直接报错（宁可失败，也不写入错维向量）。
 

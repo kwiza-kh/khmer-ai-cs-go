@@ -11,15 +11,36 @@ export class ApiError extends Error {
   }
 }
 
-export async function apiFetch<T = unknown>(path: string, options: RequestInit = {}): Promise<T> {
+// apiFetch issues one authenticated JSON request.
+//
+// `onWarning` is an optional additive extension to RequestInit. It exists for
+// headers that explain a DEGRADED-but-successful response, which is where the
+// backend puts a partial model listing: the body stays a bare array so the
+// "available" contract cannot drift, and the reason travels in
+// `X-Model-List-Warning` instead. Without a reader that reason only ever reaches
+// the server log, and a degraded listing is then indistinguishable in the UI
+// from a region that genuinely has three models — which is precisely how a
+// production decode failure stayed invisible. Callers that do not pass it are
+// unaffected, and the header is only readable at all because the CORS expose
+// list names it.
+export async function apiFetch<T = unknown>(
+  path: string,
+  options: RequestInit & { onWarning?: (warning: string) => void } = {},
+): Promise<T> {
+  const { onWarning, ...init } = options;
   const token = localStorage.getItem("token");
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
-    ...(options.headers as Record<string, string>),
+    ...(init.headers as Record<string, string>),
   };
   if (token) headers["Authorization"] = `Bearer ${token}`;
 
-  const res = await settle(fetch(`${API_BASE}${path}`, { ...options, headers }));
+  const res = await settle(fetch(`${API_BASE}${path}`, { ...init, headers }));
+
+  if (onWarning) {
+    const warning = res.headers.get("X-Model-List-Warning");
+    if (warning) onWarning(warning);
+  }
 
   // 204 No Content / 空 body 时直接返回, 否则 res.json() 会抛错.
   if (res.status === 204) {
@@ -851,9 +872,24 @@ export async function testModelConfig(configId: number, message: string) {
 // Omitting `region` (or passing "") asks for the server's configured region —
 // the endpoint treats both the same way, so the query string is left off
 // entirely rather than sent empty.
-export async function listAvailableModels(configId: number, region?: string) {
+//
+// Note the page does NOT rely on that: a Vertex card resolves its region first
+// and then sends it explicitly, so the first load after the region list arrives
+// carries `?region=<configured>`. Same result, different bytes from the
+// pre-region console — the parameter and the omission mean the same thing
+// server-side.
+//
+// `onWarning` receives the backend's reason when the listing came back
+// incomplete (that region's publisher list failed, so the result is the
+// configured/fallback subset rather than the region's catalog). Without it the
+// caller cannot tell a degraded listing from a genuinely small region.
+export async function listAvailableModels(
+  configId: number,
+  region?: string,
+  onWarning?: (warning: string) => void,
+) {
   const query = region ? `?region=${encodeURIComponent(region)}` : "";
-  return apiFetch<AvailableModel[]>(`/admin/models/${configId}/available${query}`);
+  return apiFetch<AvailableModel[]>(`/admin/models/${configId}/available${query}`, { onWarning });
 }
 
 // The Vertex locations the backend can serve from, plus the one it is

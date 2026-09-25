@@ -628,6 +628,7 @@ export const km: Dict = {
   "admin.regionUnknown": "តំបន់លំនាំដើមរបស់ម៉ាស៊ីនបម្រើ",
   "admin.regionLoading": "កំពុងផ្ទុកបញ្ជីតំបន់…",
   "admin.regionListUnavailable": "មិនអាចផ្ទុកបញ្ជីតំបន់បានទេ។ ប្រើតំបន់ដែលបានកំណត់នៅលើម៉ាស៊ីនបម្រើជំនួសវិញ។",
+  "admin.modelListIncomplete": "បញ្ជីម៉ូដែលសម្រាប់ {region} មិនពេញលេញទេ — មិនអាចអានបញ្ជីម៉ូដែលរបស់តំបន់នោះបានឡើយ ដូច្នេះនេះគឺជាបញ្ជីលំនាំដើម/បម្រុង។ មូលហេតុ៖ {reason}",
   "admin.regionGlobal": "សកល",
   "admin.regionChanged": "បានកំណត់តំបន់ទៅ {region} — កំពុងផ្ទុកបញ្ជីម៉ូដែលឡើងវិញ",
   "admin.loadingModelsForRegion": "កំពុងផ្ទុកម៉ូដែលសម្រាប់ {region}…",

@@ -628,6 +628,7 @@ export const zh: Dict = {
   "admin.regionUnknown": "服务器默认区域",
   "admin.regionLoading": "正在加载区域列表…",
   "admin.regionListUnavailable": "未能加载区域列表，改用服务器上配置的区域。",
+  "admin.modelListIncomplete": "{region} 的模型列表不完整 —— 无法读取该区域的模型目录，当前显示的是已配置/兜底的模型集合。原因：{reason}",
   "admin.regionGlobal": "全球",
   "admin.regionChanged": "区域已切换为 {region} —— 正在重新加载模型列表",
   "admin.loadingModelsForRegion": "正在加载 {region} 的模型…",
