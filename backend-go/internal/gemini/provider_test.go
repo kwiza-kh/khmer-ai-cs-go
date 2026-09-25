@@ -127,7 +127,10 @@ func TestVertexEndpointShapes(t *testing.T) {
 		{"cachedContent model is a resource name", p.cachedContentModel("models/gemini-3.5-flash"),
 			"projects/gen-lang-client-0354228918/locations/asia-southeast1/publishers/google/models/gemini-3.5-flash"},
 		{"models list", p.listModelsURL(),
-			r.base + "/projects/gen-lang-client-0354228918/locations/asia-southeast1/publishers/google/models"},
+			// The LIST route is NOT .../publishers/google/models: that path answers 404
+			// before authentication on the platform, while .../locations/{l}/models
+			// answers 401. The 404 is what surfaced as a 502 in the admin picker.
+			r.base + "/projects/gen-lang-client-0354228918/locations/asia-southeast1/models"},
 	}
 	for _, tc := range cases {
 		if tc.got != tc.want {

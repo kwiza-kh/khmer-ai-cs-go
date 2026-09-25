@@ -270,7 +270,14 @@ func (p provider) cachedContentModel(model string) string {
 // `publishers/google/models/{m}` names) — see modelNamesFromListValue.
 func (p provider) listModelsURL() string {
 	if p.kind == providerVertex {
-		return p.vertex.location() + "/publishers/google/models"
+		// Vertex has no publisher-model LIST route: .../publishers/google/models
+		// answers 404 before authentication (unlike .../locations/{l}/models,
+		// which answers 401). Pointing the admin picker at the 404 path is what
+		// produced a 502 there. Note the surviving route lists the project's OWN
+		// models (tuned/uploaded), not the Gemini publisher models — so it can
+		// legitimately come back empty; callers must render that as "no
+		// project models", not as a failure.
+		return p.vertex.location() + "/models"
 	}
 	return apiBase() + "/models?pageSize=200"
 }

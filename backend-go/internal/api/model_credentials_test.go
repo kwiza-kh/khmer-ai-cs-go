@@ -205,7 +205,9 @@ func TestListAvailableModelsVertexUsesTheServiceAccount(t *testing.T) {
 	if len(reqs) != 1 {
 		t.Fatalf("%d request(s) reached the platform, want 1", len(reqs))
 	}
-	if want := "/projects/proj-1/locations/asia-southeast1/publishers/google/models"; reqs[0].Path != want {
+	// The list route is .../locations/{l}/models: the publishers sub-path answers
+	// 404 before authentication on the platform, which is what showed up as a 502.
+	if want := "/projects/proj-1/locations/asia-southeast1/models"; reqs[0].Path != want {
 		t.Errorf("path = %q, want %q", reqs[0].Path, want)
 	}
 	if reqs[0].Auth != "Bearer tok-vertex" {

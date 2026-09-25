@@ -420,7 +420,9 @@ func TestVertexListModelsStripsTheResourcePath(t *testing.T) {
 		t.Fatalf("names = %v, want [gemini-3.5-flash] (non-gemini entries filtered, prefix stripped)", names)
 	}
 	got := platform.last(t)
-	if want := "/projects/proj-1/locations/asia-southeast1/publishers/google/models"; got.Path != want {
+	// See provider_test: the list route is .../locations/{l}/models, not the
+	// publishers sub-path (which 404s before auth).
+	if want := "/projects/proj-1/locations/asia-southeast1/models"; got.Path != want {
 		t.Errorf("path = %q, want %q", got.Path, want)
 	}
 	if got.Auth != "Bearer tok-vertex" {
