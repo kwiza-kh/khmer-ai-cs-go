@@ -170,7 +170,7 @@ Tier 2 把天花板从约 1,000 RPM 抬到约 5,000 RPM，是实测最坏情况�
 ## 六、解法三：架构层面的容量扩展
 
 - **多 GCP 项目**：限额按项目算，同一结算账户下多个项目各有独立额度。合法，但增加密钥管理复杂度；**需实测确认**消费上限是否也按项目独立。
-- **Vertex AI**：换了配额体系（按区域 QPS 而非消费速率）。**不是改 `GEMINI_API_BASE` 就能切**——Vertex 需要 OAuth2 服务账号鉴权，URL 结构也不同（`{region}-aiplatform.googleapis.com/v1/projects/{p}/locations/{l}/publishers/google/models/{m}:generateContent`），`x-goog-api-key` 那套要改代码。
+- **Vertex AI**：换了配额体系（按区域 QPS 而非消费速率）。**不是改 `GEMINI_API_BASE` 就能切**——Vertex 需要 OAuth2 服务账号鉴权，URL 结构也不同（`{region}-aiplatform.googleapis.com/v1/projects/{p}/locations/{l}/publishers/google/models/{m}:generateContent`），`x-goog-api-key` 那套要改代码。（**已开工，实测结论见 §十二**。）
 - **Batch API**：独立额度且约半价，但异步。适合知识库编译、摘要、翻译回填这类非交互任务——把它们移出交互预算，等于给实时对话腾额度。
 - **Cloudflare AI Gateway**：已在使用（`GEMINI_API_BASE` 指向它）。它能做缓存与限流观测，但**不会提高 Google 上游的限额**。
 
@@ -321,7 +321,7 @@ Jev 判定 `small_talk` 且概率过阈时，不再调用模型，改由多语�
 
 ### 11.9 未做（有意排除）
 
-多 GCP 项目轮换、Batch API、Vertex AI —— 前两者需实测确认粒度/异步改造，Vertex 需服务账号鉴权与 `:predict` 嵌入重写，都不适合本轮。
+多 GCP 项目轮换、Batch API、Vertex AI —— 前两者需实测确认粒度/异步改造，Vertex 需服务账号鉴权与 `:predict` 嵌入重写，都不适合本轮。（**Vertex 后来已开工，实测结论见 §十二**。）
 
 ### 11.10 复核方式
 
@@ -337,3 +337,18 @@ psql "$DATABASE_URL" -c "select round(sum(cost_estimate)::numeric,4) spent_10m f
 psql "$DATABASE_URL" -c "select model_name, count(*) from chat_messages
   where created_at > now() - interval '1 day' group by 1 order by 2 desc"
 ```
+
+---
+
+## 十二、Vertex 迁移进展（实测结论，2026-09-25）
+
+> §六 那条「**不是改 `GEMINI_API_BASE` 就能切**」已被实测证实：需要 OAuth2 服务账号 +
+> 完全不同的 URL 形状。代码已就位（`internal/gemini/provider.go` 起，**默认仍是 studio**）。
+> 只记四条影响决策的实测结论：
+
+1. **`:predict` 不支持 task 条件化** —— 平台上的嵌入统一走 `:predict`，`taskType` 那套字段不被接受（3 个模型 × 5 种拼写，并做了双向对照），所以嵌入只有 `instances` + `parameters` 一种报文形状。
+2. **亚洲区没有 lite 档** —— `gemini-2.5-flash-lite` / `gemini-3.5-flash-lite` 在亚洲各区**全部 404**。于是不再分主/辅档位：**全线 `gemini-3.5-flash`**（3.6 / 3.7 / 3.8 与任何 `-latest` 别名在平台上都不存在，浮动别名还会随上游漂移）。
+3. **预览 TTS 在所有测试区域不可用** → `TTS_ENABLED` **保持关闭**（本就是默认值，平台没有可指向的 TTS 模型）。
+4. **嵌入 `:predict` 返回 768 维，但必须显式发 `outputDimensionality`** —— 不发就是模型默认的 3072，而 `knowledge_chunks` 是 `vector(768)`。代码按 768 发，并对非 768 的响应直接报错（宁可失败，也不写入错维向量）。
+
+配额口径随之改变（§六：按区域 QPS，而非消费速率），但 **§七 的本地护栏与 §11.6 的消费计量与平台无关**：它们约束的是成本，迁移后仍需保留。

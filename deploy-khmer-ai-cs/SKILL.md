@@ -114,6 +114,24 @@ RestartSec=3
 - `location /api/v1/realtime/inbox` → 8081, WebSocket Upgrade 头 + `proxy_read/send_timeout 3600s` (**必须排在 /api/ 之前**)
 - `location /` → 3001 (Next standalone), 安全头含 CSP (`connect.facebook.net` 允许 Meta SDK; `media-src https:` 允许 R2 音频回放), 80 块 `return 301 https://`
 
+## Vertex 切换（可选，默认仍走 studio）
+
+不设 `GEMINI_PROVIDER` 就是 studio（现状），所以下面这一整块**只在决定迁移时**才碰。
+
+| 变量 | 值 / 要点 |
+|---|---|
+| `GEMINI_PROVIDER` | 不设/`studio` = 现状；`vertex` = 平台端点 + OAuth2 服务账号。**默认 studio 是刻意的**: 切换是运维动作, 拼错的值只会当 studio, 不会悄悄把生产改道 |
+| `GEMINI_VERTEX_PROJECT` | GCP 项目 id。SA key 自带 `project_id` 时可省（缺了才报错） |
+| `GEMINI_VERTEX_REGION` | 默认 `asia-southeast1` —— **实测可用的区域**, 填错 = 每次调用都 404 |
+| `GEMINI_VERTEX_SA_FILE` | `/opt/khmer-ai-cs/vertex-sa.json` |
+| `GEMINI_VERTEX_API_BASE` | 一般**留空**（区域已决定端点）; 仅中继/测试时才覆盖, 末尾不带 `/` |
+
+- **SA 密钥落位**: 上传到 `/opt/khmer-ai-cs/vertex-sa.json` 后 `chown khmerai:khmerai` + `chmod 600`（systemd 以 `khmerai` 运行, 权限不对就是启动失败）。
+- ⚠️ **绝不提交进仓库**: 仓库 `.gitignore` 里**没有**对应规则, 别指望它兜底; 密钥只存在于服务器 `/opt/khmer-ai-cs/`。
+- 切到 vertex 后 `GEMINI_API_BASE` **可以留空**: 平台端点在区域内, 当初为绕 Google 地域封锁才加的 **Cloudflare AI Gateway 中继不再需要** —— 摘掉这一跳正是迁 Vertex 的收益之一（回滚到 studio 时再填回来）。
+- `GEMINI_PROVIDER=vertex` 而 project/SA 缺失时 **启动即退出**（`main.go` 的启动校验）, 不再是每轮请求才 500; 校验只读本地密钥文件, 不联网。
+- 模型名必须**锁定版本**（`gemini-3.5-flash`）: **不要用 `-latest` 别名**（平台不认, 且会随上游漂移）, 平台也**没有 lite 档**。
+
 ## 验证清单
 
 ```bash
@@ -138,9 +156,9 @@ journalctl 里周期性 `/api/v1/realtime/inbox 401 WARN` = 未带 token 的 WS 
 | 症状 | 原因 | 解法 |
 |---|---|---|
 | HTTPS 521 | Cloudflare 连不上源站 | zone SSL 必须 Full; `cs` A 记录必须 <部署服务器IP> (不能是 CF 边缘 IP) |
-| Gemini 502 / `User location is not supported` | Google 按出口 IP 地域封锁 Gemini API (2026-09-04 起, 服务器区域被拒) | 已用 **CF AI Gateway** 中继: `.env-go` 的 `GEMINI_API_BASE=https://gateway.ai.cloudflare.com/v1/<acc>/gemini-relay-gw/google-ai-studio/**v1beta**` — **`/v1beta` 后缀绝不能丢** (gemini.go 用 `apiBase+"/models"` 直接拼接, 丢了 = 网关 404 空 body)。CF Worker 边缘中继无效 (出口同被识别为受限区域) |
+| Gemini 502 / `User location is not supported` | Google 按出口 IP 地域封锁 Gemini API (2026-09-04 起, 服务器区域被拒) | 现状用 **CF AI Gateway** 中继: `.env-go` 的 `GEMINI_API_BASE=https://gateway.ai.cloudflare.com/v1/<acc>/gemini-relay-gw/google-ai-studio/**v1beta**` — **`/v1beta` 后缀绝不能丢** (gemini.go 用 `apiBase+"/models"` 直接拼接, 丢了 = 网关 404 空 body)。CF Worker 边缘中继无效 (出口同被识别为受限区域)。**根治 = 切 Vertex** (区域内端点, 不再需要中继, 见上文「Vertex 切换」), 切完把 `GEMINI_API_BASE` 留空 |
 | 模型列表 200 但为空 | gemini.go ListModels 曾按 `data` 字段解析, Google 实际返回 `models` | 已修复 (2026-09-04); 若回归先查此解析 |
-| 模型列表 404 `no longer available to new users` | 测试用了退役模型名 | 用 DB `model_configs.model_name` 里配的现役模型 (当前 gemini-3.6-flash) |
+| 模型列表 404 `no longer available to new users` | 测试用了退役模型名 | 用 DB `model_configs.model_name` 里配的现役模型 (当前 `gemini-3.5-flash`; **`gemini-3.6-flash` / 3.7 / 3.8 与任何 `-latest` 别名在平台上都不存在**, 平台也无 lite 档) |
 | 浏览器无限重定向 | SSL 模式被改成 Flexible (源站 :80 有 301) | CF 改回 Full |
 | 页面能开但接口全挂 | 前端构建忘设 `NEXT_PUBLIC_API_URL` (默认烘焙 localhost:8080) | 带正确 env 重新 build + 发布前端 |
 | 回答全是模板/无 AI | `GEMINI_API_KEY` 为空 = MOCK 模式 (设计如此) | 需要真 AI 就配 key 重启 |

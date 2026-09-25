@@ -117,6 +117,19 @@ func main() {
 		logger.Warn("Gemini not configured — running in mock mode")
 	}
 
+	// Fail the boot, not every turn, on a GEMINI_PROVIDER=vertex deployment
+	// that cannot work (missing service-account file, no project). Without
+	// this the process starts healthy and the first customer turn is the one
+	// that discovers the misconfiguration — as a 500 — while /ready, systemd
+	// and every dashboard still report a serving backend. No-op for studio
+	// (the default), so it cannot change today's behaviour; it reads only the
+	// local key file and never the network, so a Google outage cannot block a
+	// deploy.
+	if err := gemini.ValidateProviderConfig(); err != nil {
+		logger.Error("invalid Gemini provider configuration", "error", err.Error())
+		os.Exit(1)
+	}
+
 	// Jev (TypeSafe System One) powers every typed judgment — turn
 	// classification, rerank, routing, guardrails, notify triage. It is nil
 	// without TYPESAFE_API_KEY, and every site then keeps its previous path.

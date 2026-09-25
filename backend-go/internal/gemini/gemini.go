@@ -30,10 +30,24 @@ const (
 )
 
 // FastModel routes auxiliary calls (rewrite/rerank/audit) to a cheap model.
-// The 2.5 generation was withdrawn from the production relay (404 "no longer
-// available to new users", observed 2026-09-21), so the default tracks the
-// relay's suggested successor and GEMINI_FAST_MODEL overrides it per deploy.
-var FastModel = envOr("GEMINI_FAST_MODEL", "gemini-3.6-flash")
+// GEMINI_FAST_MODEL overrides it per deploy.
+//
+// The default is a LOCKED model version, and that is the point of this comment:
+// two earlier defaults each failed in a different way.
+//
+//   - "gemini-3.6-flash" (the previous default) does not exist on the platform:
+//     every call 404s. Nothing caught it at startup, so auxiliary calls —
+//     rerank / JudgeTurn / document compile — failed one request at a time,
+//     each degrading silently to its fallback path.
+//   - a floating alias such as "gemini-flash-lite-latest" is worse, because it
+//     works until Google moves it: the name is not a version, it is "whatever
+//     upstream serves today", and it does not exist on the platform at all.
+//     A default that drifts with upstream cannot be verified by a deploy.
+//
+// So: never leave a retired name, and never default to -latest. When the
+// platform retires 3.5-flash the fix is a new pinned default here, chosen from
+// a measured `ListModels` answer — not an alias.
+var FastModel = envOr("GEMINI_FAST_MODEL", "gemini-3.5-flash")
 
 func envOr(name, fallback string) string {
 	if v := strings.TrimSpace(os.Getenv(name)); v != "" {
@@ -723,6 +737,13 @@ func (s *Service) ExtractDocumentText(ctx context.Context, data []byte, mimeType
 }
 
 // ttsModel / ttsVoice — speech-synthesis settings (env-overridable).
+//
+// The default below is a STUDIO-only name: no preview TTS model exists on the
+// platform (probed across the Asian regions), so a vertex deployment must leave
+// TTS_ENABLED=false — which is the shipped default. There is deliberately no
+// pinned replacement here: inventing one would turn "TTS is off" into "TTS is
+// on and 404s on every reply", and the measured answer is that this platform
+// has nothing to point at yet.
 func TTSModel() string {
 	if v := strings.TrimSpace(os.Getenv("GEMINI_TTS_MODEL")); v != "" {
 		return v
