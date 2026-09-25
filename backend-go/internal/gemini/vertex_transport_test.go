@@ -416,8 +416,12 @@ func TestVertexListModelsStripsTheResourcePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListModels: %v", err)
 	}
-	if len(names) != 1 || names[0] != "gemini-3.5-flash" {
-		t.Fatalf("names = %v, want [gemini-3.5-flash] (non-gemini entries filtered, prefix stripped)", names)
+	// Only the PARSED entry is pinned: this test is about the parsing (non-gemini
+	// entries filtered, prefix stripped). The vertex path then appends the
+	// curated picker list, so the total length is not this test's business —
+	// the curated tail is asserted in internal/api.
+	if len(names) == 0 || names[0] != "gemini-3.5-flash" {
+		t.Fatalf("names = %v, want the parsed model first (non-gemini filtered, prefix stripped)", names)
 	}
 	got := platform.last(t)
 	// See provider_test: the list route is .../locations/{l}/models, not the

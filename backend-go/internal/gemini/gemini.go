@@ -286,6 +286,15 @@ func (c CredentialSource) IsAPIKey() bool { return c == CredentialAPIKey }
 // caller may — and the admin console does — pass "" without losing access.
 // The signature is kept because callers (the admin model picker) hold the key
 // from model_configs and have no notion of the transport.
+// vertexPublisherModels is the curated picker list for vertex. Kept next to
+// ListModels because it exists only to compensate for the missing platform
+// route; see the comment at its use site.
+var vertexPublisherModels = []string{
+	"gemini-3.5-flash",
+	"gemini-2.5-flash",
+	"gemini-embedding-001",
+}
+
 func ListModels(ctx context.Context, apiKey string) ([]string, error) {
 	prov, err := providerFromEnv()
 	if err != nil {
@@ -333,6 +342,27 @@ func ListModels(ctx context.Context, apiKey string) ([]string, error) {
 			names = append(names, n)
 		}
 	}
+	// On vertex this route lists the project's OWN models (tuned/uploaded), not
+	// the Gemini publisher models — the platform exposes no publisher-model list
+	// at all (…/publishers/google/models answers 404 before authentication).
+	// Without this the admin picker would present an empty dropdown on a
+	// deployment that is serving fine, which reads as "Gemini is broken".
+	// The names below are the ones measured working in this project's region;
+	// they are a convenience list for the picker, never a gate — a model missing
+	// from here can still be typed in and will work if the region serves it.
+	if prov.kind == providerVertex {
+		seen := make(map[string]bool, len(names))
+		for _, n := range names {
+			seen[n] = true
+		}
+		for _, n := range vertexPublisherModels {
+			if !seen[n] {
+				names = append(names, n)
+				seen[n] = true
+			}
+		}
+	}
+
 	return names, nil
 }
 

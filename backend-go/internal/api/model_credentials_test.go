@@ -197,8 +197,24 @@ func TestListAvailableModelsVertexUsesTheServiceAccount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listAvailableModels: %v", err)
 	}
-	if got := listNames(t, result); len(got) != 1 || got[0] != "gemini-3.5-flash" {
-		t.Fatalf("names = %v, want [gemini-3.5-flash]", got)
+	// The stub serves one project model; the vertex path appends the curated
+	// picker list because the platform has no publisher-model list route.
+	// Assert the union in order and without duplicates — a duplicate would show
+	// the same model twice in the admin dropdown.
+	got := listNames(t, result)
+	want := []string{"gemini-3.5-flash", "gemini-2.5-flash", "gemini-embedding-001"}
+	if len(got) != len(want) {
+		t.Fatalf("names = %v, want %v", got, want)
+	}
+	seen := map[string]bool{}
+	for i, n := range got {
+		if n != want[i] {
+			t.Fatalf("names = %v, want %v", got, want)
+		}
+		if seen[n] {
+			t.Errorf("duplicate model %q in %v", n, got)
+		}
+		seen[n] = true
 	}
 
 	reqs := platform.all()
@@ -278,8 +294,24 @@ func TestListAvailableModelsStudioUsesTheSealedDBKey(t *testing.T) {
 	if askedConfigID != 42 {
 		t.Errorf("looked up config %d, want the requested config 42", askedConfigID)
 	}
-	if got := listNames(t, result); len(got) != 1 || got[0] != "gemini-3.5-flash" {
-		t.Fatalf("names = %v, want [gemini-3.5-flash]", got)
+	// The stub serves one project model; the vertex path appends the curated
+	// picker list because the platform has no publisher-model list route.
+	// Assert the union in order and without duplicates — a duplicate would show
+	// the same model twice in the admin dropdown.
+	got := listNames(t, result)
+	want := []string{"gemini-3.5-flash"} // studio: no curated append — its list comes from the relay
+	if len(got) != len(want) {
+		t.Fatalf("names = %v, want %v", got, want)
+	}
+	seen := map[string]bool{}
+	for i, n := range got {
+		if n != want[i] {
+			t.Fatalf("names = %v, want %v", got, want)
+		}
+		if seen[n] {
+			t.Errorf("duplicate model %q in %v", n, got)
+		}
+		seen[n] = true
 	}
 	reqs := platform.all()
 	if len(reqs) != 1 {
