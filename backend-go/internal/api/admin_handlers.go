@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"khmer-ai-cs-go/internal/gemini"
 	"khmer-ai-cs-go/internal/platform"
 )
@@ -186,6 +188,47 @@ func (a *App) deleteCannedResponse(w http.ResponseWriter, r *http.Request, id in
 // Model configs (admin)
 // ============================================
 
+// studioAPIKeyFromDB reads the AI Studio credential the admin model routes
+// list/verify with: this config's key, falling back to the default config's.
+//
+// It is a package-level seam for one reason: it is the ONLY database read on
+// these routes, so a test that swaps it can prove the vertex path never touches
+// the api_key column at all (and a studio test can pin the key it sends without
+// a database).
+var studioAPIKeyFromDB = func(ctx context.Context, db *pgxpool.Pool, configID int32) string {
+	var apiKey string
+	if err := db.QueryRow(ctx, "SELECT api_key FROM model_configs WHERE config_id = $1", configID).Scan(&apiKey); err != nil || apiKey == "" {
+		// Fall back to the default config's key.
+		_ = db.QueryRow(ctx, "SELECT api_key FROM model_configs WHERE is_default = true ORDER BY config_id LIMIT 1").Scan(&apiKey)
+	}
+	return apiKey
+}
+
+// defaultModelConfigFromDB reads the default config row the hot-reload pushes
+// into the serving service: (api_key, model_name, system_prompt, max_tokens),
+// with ok=false when there is no default row. Same seam, same reason: the
+// hot-reload's behaviour under vertex (empty key must still reload) is only
+// observable if the row can be supplied without a database.
+var defaultModelConfigFromDB = func(ctx context.Context, db *pgxpool.Pool) (apiKey, modelName, systemPrompt string, maxTokens int, ok bool) {
+	err := db.QueryRow(ctx,
+		"SELECT api_key, model_name, COALESCE(system_prompt,''), COALESCE(max_tokens,2048) FROM model_configs WHERE is_default = true ORDER BY config_id LIMIT 1").
+		Scan(&apiKey, &modelName, &systemPrompt, &maxTokens)
+	if err != nil {
+		return "", "", "", 0, false
+	}
+	return apiKey, modelName, systemPrompt, maxTokens, true
+}
+
+// The model-config routes below were written when there was only AI Studio, so
+// they treated an empty model_configs.api_key as "no credential configured" and
+// refused. The transport decides that, not the column: under vertex the
+// credential is the service-account file (GEMINI_VERTEX_SA_FILE) and the private
+// key deliberately never enters the database (see gemini.CredentialSource), so
+// an empty column is the NORMAL state there and the old refusal told the
+// operator to paste a key that could never be used. Every branch on
+// gemini.CredentialSourceOf().IsAPIKey() below is about that difference; the
+// studio branch of each is the expression it had before.
+
 // listModelConfigs — all model configs.
 func (a *App) listModelConfigs(w http.ResponseWriter, r *http.Request) (any, error) {
 	rows, err := a.DB.Query(r.Context(),
@@ -195,6 +238,12 @@ func (a *App) listModelConfigs(w http.ResponseWriter, r *http.Request) (any, err
 		return nil, ErrInternal("查询失败")
 	}
 	defer rows.Close()
+	// Reported per config so the console can render the truth about
+	// credentials: which secret is in force, and that the api_key column is or
+	// is not a credential. Without it the page has only has_api_key and paints
+	// a vertex deployment as "needs an API key" with an input box that would
+	// mislead whoever filled it in.
+	credentialSource := string(gemini.CredentialSourceOf())
 	out := make([]map[string]any, 0)
 	for rows.Next() {
 		var configID, maxTokens, cacheTTL int
@@ -208,6 +257,7 @@ func (a *App) listModelConfigs(w http.ResponseWriter, r *http.Request) (any, err
 			"config_id": configID, "name": name, "provider": provider, "model_name": modelName,
 			"temperature": temperature, "max_tokens": maxTokens, "context_cache_ttl": cacheTTL,
 			"is_default": isDefault, "has_api_key": hasKey, "system_prompt": systemPrompt,
+			"credential_source": credentialSource,
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -296,6 +346,17 @@ func (a *App) updateModelConfig(w http.ResponseWriter, r *http.Request, configID
 		_, _ = a.DB.Exec(r.Context(), "UPDATE model_configs SET is_default = $1 WHERE config_id = $2", *req.IsDefault, configID)
 	}
 	if req.APIKey != nil && *req.APIKey != "" {
+		// A key is the STUDIO credential. Writing one under vertex would store a
+		// billable AI Studio key in a column nothing reads, while the operator
+		// reasonably believes they just rotated the credential — the illusion
+		// this branch exists to refuse. The credential there is the
+		// service-account file on the server, which no request to this API can
+		// change (and must not: the private key stays on the filesystem at 0600,
+		// never in a column that flows through the UI, request logs and backups).
+		if !gemini.CredentialSourceOf().IsAPIKey() {
+			return nil, ErrBadRequest("Vertex 模式下凭据来自服务器上的服务账号文件（GEMINI_VERTEX_SA_FILE），" +
+				"API Key 不是聊天凭据，此接口不接受写入")
+		}
 		// Stored sealed, like every other credential column: the platform key is
 		// a billable bearer credential, so a database read (backup, replica,
 		// query log) must not hand over a working key.
@@ -313,15 +374,28 @@ func (a *App) updateModelConfig(w http.ResponseWriter, r *http.Request, configID
 // reloadGeminiFromDB rebuilds the serving Gemini service from the default DB
 // model config, so admin edits apply without a process restart.
 func (a *App) reloadGeminiFromDB(ctx context.Context) {
-	var apiKey, modelName, systemPrompt string
-	var maxTokens int
-	err := a.DB.QueryRow(ctx,
-		"SELECT api_key, model_name, COALESCE(system_prompt,''), COALESCE(max_tokens,2048) FROM model_configs WHERE is_default = true ORDER BY config_id LIMIT 1").
-		Scan(&apiKey, &modelName, &systemPrompt, &maxTokens)
-	if err != nil || apiKey == "" {
+	apiKey, modelName, systemPrompt, maxTokens, ok := defaultModelConfigFromDB(ctx, a.DB)
+	if !ok {
 		return
 	}
-	a.Gemini.HotReload(a.Sealer.DecryptOrKeep(apiKey), modelName, systemPrompt, maxTokens)
+	if gemini.CredentialSourceOf().IsAPIKey() {
+		// Studio: with no stored key the serving client must keep whatever
+		// credential it booted with (env, or mock), so there is nothing to push.
+		if apiKey == "" {
+			return
+		}
+		apiKey = a.Sealer.DecryptOrKeep(apiKey)
+	} else {
+		// Vertex: the column is not a credential (the service account is), and an
+		// empty one must NOT cancel the reload — that early return was this bug:
+		// on a vertex deployment an edited model / prompt / max_tokens was stored
+		// and answered "已更新", but never applied until the next restart. Passing
+		// "" keeps it that way in both directions: the reload carries only the
+		// settings, never a key, so it cannot look like the credential rotation
+		// it is not (HotReload ignores the key on this path regardless).
+		apiKey = ""
+	}
+	a.Gemini.HotReload(apiKey, modelName, systemPrompt, maxTokens)
 }
 
 // testModelConfig — run a test prompt against one model config.
@@ -334,10 +408,20 @@ func (a *App) testModelConfig(w http.ResponseWriter, r *http.Request, configID i
 	if err != nil {
 		return nil, ErrNotFound("model config not found")
 	}
-	if apiKey == "" {
-		return nil, ErrBadRequest("该配置未设置 API Key")
+	if gemini.CredentialSourceOf().IsAPIKey() {
+		// Studio only: an empty key means mock mode, and a "connection test" that
+		// answered from a template would be a lie.
+		if apiKey == "" {
+			return nil, ErrBadRequest("该配置未设置 API Key")
+		}
+		apiKey = a.Sealer.DecryptOrKeep(apiKey)
+	} else {
+		// Vertex: FromPartsFull("") is a LIVE service there — the transport mints
+		// a service-account token — so the test reaches the platform instead of
+		// demanding a key this deployment does not use.
+		apiKey = ""
 	}
-	client := gemini.FromPartsFull(a.Sealer.DecryptOrKeep(apiKey), modelName, systemPrompt, maxTokens)
+	client := gemini.FromPartsFull(apiKey, modelName, systemPrompt, maxTokens)
 	result, err := client.Chat(r.Context(), "Reply with the single word: ok", nil, "en")
 	if err != nil || result.UsedMock {
 		return nil, &ApiError{Status: http.StatusBadGateway, Message: "模型连接测试失败"}
@@ -348,20 +432,29 @@ func (a *App) testModelConfig(w http.ResponseWriter, r *http.Request, configID i
 	}, nil
 }
 
-// listAvailableModels — list generative models available for the config's key.
+// listAvailableModels — list generative models available to this deployment.
+//
+// The credential comes from the TRANSPORT, which is the point of the split: on
+// studio it is the config's stored key (the default config's key as fallback),
+// and on vertex it is the service account — so there an empty api_key column is
+// normal, the database is not read at all, and the list still loads.
 func (a *App) listAvailableModels(w http.ResponseWriter, r *http.Request, configID int32) (any, error) {
-	var apiKey string
-	err := a.DB.QueryRow(r.Context(), "SELECT api_key FROM model_configs WHERE config_id = $1", configID).Scan(&apiKey)
-	if err != nil || apiKey == "" {
-		// Fall back to the default config's key.
-		_ = a.DB.QueryRow(r.Context(), "SELECT api_key FROM model_configs WHERE is_default = true ORDER BY config_id LIMIT 1").Scan(&apiKey)
+	apiKey := ""
+	if gemini.CredentialSourceOf().IsAPIKey() {
+		raw := studioAPIKeyFromDB(r.Context(), a.DB, configID)
+		if raw == "" {
+			return nil, ErrBadRequest("未设置 API Key")
+		}
+		apiKey = a.Sealer.DecryptOrKeep(raw)
 	}
-	if apiKey == "" {
-		return nil, ErrBadRequest("未设置 API Key")
-	}
-	names, err := gemini.ListModels(r.Context(), a.Sealer.DecryptOrKeep(apiKey))
+	names, err := gemini.ListModels(r.Context(), apiKey)
 	if err != nil {
-		return nil, &ApiError{Status: http.StatusBadGateway, Message: "获取模型列表失败"}
+		// The cause is reported, not just "failed": the failures that matter here
+		// are configuration ones (a missing GEMINI_VERTEX_SA_FILE, an unreadable
+		// or malformed key file, a region the platform does not serve), and the
+		// operator reading this toast is the only one who can fix them. The old
+		// blanket message turned every one of them into the same sentence.
+		return nil, &ApiError{Status: http.StatusBadGateway, Message: "获取模型列表失败: " + err.Error()}
 	}
 	out := make([]map[string]any, 0)
 	for _, n := range names {

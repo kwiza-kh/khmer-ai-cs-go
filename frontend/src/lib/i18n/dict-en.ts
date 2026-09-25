@@ -628,6 +628,9 @@ export const en: Dict = {
   "admin.connected": "Connected",
   "admin.verificationNeeded": "Verification needed",
   "admin.apiKeyRequired": "API key required",
+  // Vertex mode: the credential is the service-account file on the server,
+  // not the api_key column this page manages.
+  "admin.saCredential": "Service-account credential",
   "admin.provider": "Provider",
   "admin.modelIdentifier": "Model identifier",
   "admin.currentSuffix": " (current)",
@@ -638,6 +641,8 @@ export const en: Dict = {
   "admin.geminiNeedsVerify": "Gemini connection needs verification.",
   "admin.saveKeyToLoad": "Save an API key to load the available model list.",
   "admin.geminiApiKey": "Gemini API key",
+  "admin.geminiCredential": "Gemini credential",
+  "admin.saCredentialHint": "The credential comes from the service-account file on the server (GEMINI_VERTEX_SA_FILE), so there is no API key to enter here. The private key is deliberately never stored in the database: it would then travel through this page, the request logs and every DB backup, which a 0600 key file does not.",
   "admin.keySavedPh": "A key is saved. Enter a new key to replace it.",
   "admin.pasteKeyPh": "Paste your Gemini API key",
   "admin.keyNeverShown": "Saved keys are never shown again. Saving verifies the Gemini connection automatically.",

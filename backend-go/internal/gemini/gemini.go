@@ -196,6 +196,12 @@ func (s *Service) SetSystemPrompt(prompt string) {
 
 // HotReload swaps the serving client's credentials/model/prompt in place so
 // admin edits apply without a restart. Empty key leaves the client in place.
+//
+// The key is the STUDIO credential only. It cannot override a vertex
+// deployment's authentication, because provider.authorize never reads it on
+// that path — so passing "" under vertex reloads the model/prompt/max_tokens it
+// was called with, and that is the whole intent: an empty model_configs.api_key
+// is normal there and must not be read as "nothing to reload".
 func (s *Service) HotReload(apiKey, modelName, systemPrompt string, maxTokens int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -216,10 +222,56 @@ func (s *Service) HotReload(apiKey, modelName, systemPrompt string, maxTokens in
 	}
 }
 
+// CredentialSource names the secret the ACTIVE transport authenticates with.
+//
+// It exists because the two credentials live in different places and have
+// different lifecycles, and every caller that owns one of them (the admin
+// console owns model_configs.api_key) was left guessing about the other. The
+// guess is only visible as a wrong answer: on vertex the api_key column is
+// empty, and a caller that read "empty key" as "not configured" refused to
+// list models or to hot-reload an edit that had nothing to do with the key.
+type CredentialSource string
+
+const (
+	// CredentialAPIKey — AI Studio: the key in model_configs.api_key, sealed by
+	// security.Sealer, sent as x-goog-api-key. This is today's production.
+	CredentialAPIKey CredentialSource = "api_key"
+	// CredentialServiceAccount — Vertex: the service-account JSON named by
+	// GEMINI_VERTEX_SA_FILE, exchanged for a Bearer token by vertex.go.
+	//
+	// The private key deliberately never enters the database. It is not a
+	// bearer string that can be rotated and revoked in seconds — it is the
+	// long-lived private half of an identity — and model_configs.api_key is a
+	// column that travels through the admin UI, request logs and DB backups,
+	// all of which a 0600 file owned by the service account does not. So in
+	// vertex mode that column is not a chat credential at all: nothing in this
+	// package reads it on the vertex path (provider.authorize ignores it).
+	CredentialServiceAccount CredentialSource = "service_account"
+)
+
+// CredentialSourceOf reports where the active transport's credential comes
+// from. It resolves the SAME environment the transport itself resolves
+// (provider.go), so a caller branching on it branches on the transport's own
+// opinion rather than on a second copy of the configuration that could drift.
+func CredentialSourceOf() CredentialSource {
+	if providerKindFromEnv() == providerVertex {
+		return CredentialServiceAccount
+	}
+	return CredentialAPIKey
+}
+
+// IsAPIKey reports whether serving requires a caller-supplied API key. False
+// means the transport authenticates itself, so an empty model_configs.api_key
+// is a VALID configuration and not a missing credential — the same distinction
+// New and HotReload already draw internally, exposed to the admin handlers.
+func (c CredentialSource) IsAPIKey() bool { return c == CredentialAPIKey }
+
 // ListModels returns the generative model names available for the key.
 //
 // The apiKey argument is the STUDIO credential; on the vertex path it is
-// ignored and the request is authorised with a service-account token instead.
+// ignored and the request is authorised with a service-account token instead
+// (provider.authorize picks the header per transport), which is why a vertex
+// caller may — and the admin console does — pass "" without losing access.
 // The signature is kept because callers (the admin model picker) hold the key
 // from model_configs and have no notion of the transport.
 func ListModels(ctx context.Context, apiKey string) ([]string, error) {
@@ -1493,6 +1545,13 @@ func ExtractTextFromValue(v map[string]any) string {
 
 // LoadDefaultConfig reads the default model config row from the DB:
 // (api_key, model_name, system_prompt, max_tokens).
+//
+// The first return value is the STUDIO credential (see CredentialSourceOf), and
+// callers must treat it that way: under vertex it is irrelevant to serving and
+// may be empty, so it must never be required, validated or used to decide
+// whether the service is configured — New already answers that (IsConfigured),
+// and on the vertex path the transport authenticates from the service-account
+// file no matter what this column holds.
 func LoadDefaultConfig(ctx context.Context, pool *pgxpool.Pool) (string, string, string, int, bool) {
 	var apiKey, modelName, systemPrompt string
 	var maxTokens int

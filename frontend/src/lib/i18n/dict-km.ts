@@ -615,6 +615,8 @@ export const km: Dict = {
   "admin.connected": "បានតភ្ជាប់",
   "admin.verificationNeeded": "ត្រូវការការផ្ទៀងផ្ទាត់",
   "admin.apiKeyRequired": "ត្រូវការសោ API",
+  // Vertex: ព័ត៌មានសម្គាល់ស្ថិតនៅក្នុងឯកសារគណនីសេវាកម្ម មិនមែននៅក្នុង api_key ទេ។
+  "admin.saCredential": "គណនីសេវាកម្ម",
   "admin.provider": "អ្នកផ្តល់សេវា",
   "admin.modelIdentifier": "អត្តសញ្ញាណម៉ូដែល",
   "admin.currentSuffix": " (បច្ចុប្បន្ន)",
@@ -625,6 +627,8 @@ export const km: Dict = {
   "admin.geminiNeedsVerify": "ការតភ្ជាប់ Gemini ត្រូវការការផ្ទៀងផ្ទាត់។",
   "admin.saveKeyToLoad": "រក្សាទុកសោ API ដើម្បីផ្ទុកបញ្ជីម៉ូដែលដែលមាន។",
   "admin.geminiApiKey": "សោ Gemini API",
+  "admin.geminiCredential": "ព័ត៌មានសម្គាល់ Gemini",
+  "admin.saCredentialHint": "ព័ត៌មានសម្គាល់មកពីឯកសារគណនីសេវាកម្មនៅលើម៉ាស៊ីនបម្រើ (GEMINI_VERTEX_SA_FILE) ដូច្នេះមិនចាំបាច់បញ្ចូល API Key នៅទីនេះទេ។ សោឯកជនរបស់គណនីសេវាកម្មមិនត្រូវបានរក្សាទុកក្នុងឃ្លាំងទិន្នន័យឡើយ ព្រោះវានឹងឆ្លងកាត់ទំព័រនេះ កំណត់ហេតុសំណើ និងការបម្រុងទុកឃ្លាំងទិន្នន័យ ខណៈឯកសារសិទ្ធិ 0600 មិនឆ្លងកាត់។",
   "admin.keySavedPh": "សោត្រូវបានរក្សាទុក។ បញ្ចូលសោថ្មីដើម្បីជំនួស។",
   "admin.pasteKeyPh": "បិទភ្ជាប់សោ Gemini API របស់អ្នក",
   "admin.keyNeverShown": "សោដែលបានរក្សាទុកមិនបង្ហាញម្តងទៀតទេ។ ការរក្សាទុកផ្ទៀងផ្ទាត់ការតភ្ជាប់ Gemini ដោយស្វ័យប្រវត្តិ។",

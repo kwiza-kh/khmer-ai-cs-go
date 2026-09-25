@@ -87,6 +87,18 @@ export interface ModelItem {
   max_tokens: number;
   context_cache_ttl: number;
   is_default: boolean;
+  /**
+   * Which secret the RUNNING backend authenticates with (server-side
+   * gemini.CredentialSource): "api_key" = AI Studio, the key in
+   * model_configs.api_key; "service_account" = Vertex, the service-account
+   * file on the server, where api_key is NOT a credential and is usually empty.
+   *
+   * The page must branch on this and not on has_api_key: under Vertex an empty
+   * api_key is normal, so "no key" means "nothing to do", not "not configured".
+   * Optional so an older backend (rolling deploy) still type-checks — an
+   * absent value means api_key, today's production behaviour.
+   */
+  credential_source?: "api_key" | "service_account";
 }
 
 export interface ModelTestResponse {

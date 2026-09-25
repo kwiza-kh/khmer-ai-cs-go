@@ -615,6 +615,8 @@ export const zh: Dict = {
   "admin.connected": "已连接",
   "admin.verificationNeeded": "需要验证",
   "admin.apiKeyRequired": "需要 API Key",
+  // Vertex 模式: 凭据是服务器上的服务账号文件, 不是这里的 api_key 列.
+  "admin.saCredential": "服务账号凭据",
   "admin.provider": "服务商",
   "admin.modelIdentifier": "模型标识",
   "admin.currentSuffix": "（当前）",
@@ -625,6 +627,8 @@ export const zh: Dict = {
   "admin.geminiNeedsVerify": "Gemini 连接需要验证。",
   "admin.saveKeyToLoad": "保存 API Key 以加载可用模型列表。",
   "admin.geminiApiKey": "Gemini API Key",
+  "admin.geminiCredential": "Gemini 凭据",
+  "admin.saCredentialHint": "凭据来自服务器上的服务账号文件（GEMINI_VERTEX_SA_FILE），此处无需填写 API Key。服务账号私钥故意不入库：它会流经本页面、请求日志与数据库备份，而 0600 的密钥文件不会。",
   "admin.keySavedPh": "已保存密钥。输入新密钥可替换。",
   "admin.pasteKeyPh": "粘贴你的 Gemini API Key",
   "admin.keyNeverShown": "保存后的密钥不会再次显示。保存时会自动验证 Gemini 连接。",

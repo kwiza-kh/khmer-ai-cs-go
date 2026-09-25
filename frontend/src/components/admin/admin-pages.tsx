@@ -484,6 +484,22 @@ function PromptHistory({ configId, onRestored }: { configId: number; onRestored:
   );
 }
 
+// Which secret the backend is actually serving with, reported per config by
+// GET /admin/models (ModelItem.credential_source).
+//
+// "service_account" means Vertex: the credential is a file on the server
+// (GEMINI_VERTEX_SA_FILE), so model_configs.api_key is NOT a credential there
+// and is normally empty — an empty key must not be read as "not configured".
+// Anything else (including an older backend that sends no value) is AI Studio,
+// today's production behaviour.
+//
+// The private key deliberately never enters the database: it would then travel
+// through this page, the request logs and every DB backup, which a 0600 file
+// owned by the service account does not.
+function usesServiceAccountCredential(model: ModelItem): boolean {
+  return model.credential_source === "service_account";
+}
+
 export function ModelsAdminPage() {
   const { t, tf } = useI18n();
   const { data, isLoading, mutate } = useSWR<ModelItem[]>("admin-models", listModelConfigs);
@@ -512,7 +528,7 @@ export function ModelsAdminPage() {
   };
 
   const loadAvailableModels = useCallback(async (model: ModelItem): Promise<AvailableModel[] | null> => {
-    if (!model.has_api_key) return null;
+    if (!usesServiceAccountCredential(model) && !model.has_api_key) return null;
     setModelListLoading((previous) => ({ ...previous, [model.config_id]: true }));
     setAvailableModels((previous) => ({ ...previous, [model.config_id]: [] }));
     setModelListErrors((previous) => {
@@ -544,7 +560,10 @@ export function ModelsAdminPage() {
         max_tokens: draft.max_tokens,
         context_cache_ttl: draft.context_cache_ttl,
         is_default: draft.is_default,
-        ...(apiKey ? { api_key: apiKey } : {}),
+        // The key is only sent where it is a credential. Under Vertex the
+        // backend refuses it outright (nothing would read it), so sending an
+        // empty/leftover value would turn a settings save into a 400.
+        ...(apiKey && !usesServiceAccountCredential(model) ? { api_key: apiKey } : {}),
       });
       setModelDrafts((previous) => {
         const next = { ...previous };
@@ -557,10 +576,13 @@ export function ModelsAdminPage() {
         return next;
       });
       await mutate();
-      const available = await loadAvailableModels({ ...model, has_api_key: Boolean(apiKey) || model.has_api_key });
+      const available = await loadAvailableModels({
+        ...model,
+        has_api_key: Boolean(apiKey) || model.has_api_key,
+      });
       if (available) {
         toast.success(tf("admin.geminiConnectedToast", { n: available.length }));
-      } else if (apiKey || model.has_api_key) {
+      } else if (apiKey || model.has_api_key || usesServiceAccountCredential(model)) {
         toast.error(t("admin.settingsSavedUnconfirmed"));
       } else {
         toast.success(t("admin.modelSaved"));
@@ -595,7 +617,10 @@ export function ModelsAdminPage() {
 
   useEffect(() => {
     if (!data) return;
-    data.filter((model) => model.has_api_key).forEach((model) => {
+    // Under Vertex there is no key to wait for — the credential lives on the
+    // server — so the model list has to load for every config, not only the
+    // ones with a stored key.
+    data.filter((model) => model.has_api_key || usesServiceAccountCredential(model)).forEach((model) => {
       void loadAvailableModels(model);
     });
   }, [data, loadAvailableModels]);
@@ -629,7 +654,13 @@ export function ModelsAdminPage() {
               : [{ name: draft.model_name, display_name: `${draft.model_name}${t("admin.currentSuffix")}` }, ...modelOptions];
             const isLoadingModels = modelListLoading[model.config_id] ?? false;
             const modelListError = modelListErrors[model.config_id];
-            const isConnected = model.has_api_key && modelOptions.length > 0 && !modelListError;
+            // Two credentials, two places: the service-account file on the
+            // server (Vertex) or the key stored in this config (AI Studio). The
+            // difference decides whether "no stored key" means "needs setup" or
+            // "nothing to do here".
+            const serviceAccount = usesServiceAccountCredential(model);
+            const credentialReady = serviceAccount || model.has_api_key;
+            const isConnected = credentialReady && modelOptions.length > 0 && !modelListError;
             return (
               <Card key={model.config_id}>
                 <CardHeader className="pb-2">
@@ -649,13 +680,19 @@ export function ModelsAdminPage() {
                         {t("admin.connSettings")}
                       </div>
                       <Badge variant={isConnected ? "success" : "secondary"} className="h-5 text-xs">
-                        {isConnected ? t("admin.connected") : model.has_api_key ? t("admin.verificationNeeded") : t("admin.apiKeyRequired")}
+                        {isConnected
+                          ? t("admin.connected")
+                          : serviceAccount
+                            ? t("admin.saCredential")
+                            : model.has_api_key
+                              ? t("admin.verificationNeeded")
+                              : t("admin.apiKeyRequired")}
                       </Badge>
                     </div>
                     <div className="grid gap-3 sm:grid-cols-2">
                       <div>
                         <label className="mb-1 block text-xs text-muted-foreground">{t("admin.provider")}</label>
-                        <Input value="Gemini API" disabled className="h-8 text-xs" />
+                        <Input value={serviceAccount ? "Vertex AI" : "Gemini API"} disabled className="h-8 text-xs" />
                       </div>
                       <div>
                         <label className="mb-1 block text-xs text-muted-foreground">{t("admin.modelIdentifier")}</label>
@@ -671,7 +708,7 @@ export function ModelsAdminPage() {
                             <Input value={draft.model_name} onChange={(event) => updateModelDraft(model, { model_name: event.target.value })} className="h-8 text-xs" />
                           )}
                           <Button size="icon-sm" variant="outline" disabled={isLoadingModels} onClick={() => {
-                            if (!model.has_api_key) {
+                            if (!credentialReady) {
                               setModelListErrors((previous) => ({ ...previous, [model.config_id]: t("admin.saveKeyFirst") }));
                               return;
                             }
@@ -681,21 +718,36 @@ export function ModelsAdminPage() {
                           </Button>
                         </div>
                         <p className="mt-1 text-xs text-muted-foreground">
-                          {isLoadingModels ? t("admin.checkingGemini") : isConnected ? tf("admin.connectedGemini", { n: modelOptions.length }) : model.has_api_key ? t("admin.geminiNeedsVerify") : t("admin.saveKeyToLoad")}
+                          {isLoadingModels ? t("admin.checkingGemini") : isConnected ? tf("admin.connectedGemini", { n: modelOptions.length }) : credentialReady ? t("admin.geminiNeedsVerify") : t("admin.saveKeyToLoad")}
                         </p>
                         {modelListError && <p role="alert" className="mt-1 text-xs text-danger">{modelListError}</p>}
                       </div>
                       <div className="sm:col-span-2">
-                        <label className="mb-1 block text-xs text-muted-foreground">{t("admin.geminiApiKey")}</label>
-                        <Input
-                          type="password"
-                          autoComplete="off"
-                          value={apiKeys[model.config_id] ?? ""}
-                          onChange={(event) => setAPIKeys((previous) => ({ ...previous, [model.config_id]: event.target.value }))}
-                          placeholder={model.has_api_key ? t("admin.keySavedPh") : t("admin.pasteKeyPh")}
-                          className="h-8 text-xs"
-                        />
-                        <p className="mt-1 text-xs text-muted-foreground">{t("admin.keyNeverShown")}</p>
+                        <label className="mb-1 block text-xs text-muted-foreground">
+                          {serviceAccount ? t("admin.geminiCredential") : t("admin.geminiApiKey")}
+                        </label>
+                        {serviceAccount ? (
+                          // No input at all under Vertex. An API-key box here is
+                          // not a harmless extra: it invites an operator to paste
+                          // a key the backend refuses to store (nothing reads that
+                          // column on this transport), which reads as "the
+                          // credential was rotated" when nothing changed.
+                          <p className="rounded-md border border-border bg-muted/40 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+                            {t("admin.saCredentialHint")}
+                          </p>
+                        ) : (
+                          <>
+                            <Input
+                              type="password"
+                              autoComplete="off"
+                              value={apiKeys[model.config_id] ?? ""}
+                              onChange={(event) => setAPIKeys((previous) => ({ ...previous, [model.config_id]: event.target.value }))}
+                              placeholder={model.has_api_key ? t("admin.keySavedPh") : t("admin.pasteKeyPh")}
+                              className="h-8 text-xs"
+                            />
+                            <p className="mt-1 text-xs text-muted-foreground">{t("admin.keyNeverShown")}</p>
+                          </>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -808,11 +860,11 @@ export function ModelsAdminPage() {
                       className="min-h-20 resize-none text-sm"
                     />
                     <div className="mt-2 flex flex-wrap items-center gap-2">
-                      <Button size="sm" variant="outline" disabled={!model.has_api_key || isTesting} onClick={() => void handleTestModel(model)}>
+                      <Button size="sm" variant="outline" disabled={!credentialReady || isTesting} onClick={() => void handleTestModel(model)}>
                         <Send data-icon="inline-start" />
                         {isTesting ? t("admin.testing") : t("admin.sendTest")}
                       </Button>
-                      {!model.has_api_key && <span className="text-xs text-muted-foreground">{t("admin.saveKeyToTest")}</span>}
+                      {!credentialReady && <span className="text-xs text-muted-foreground">{t("admin.saveKeyToTest")}</span>}
                     </div>
                     {testResult?.error && <p role="alert" className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-danger">{testResult.error}</p>}
                     {testResult?.reply && (
