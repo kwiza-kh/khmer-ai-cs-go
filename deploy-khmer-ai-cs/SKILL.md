@@ -135,6 +135,23 @@ RestartSec=3
 
 ### 切流顺序（两步, 可分离）
 
+**发布门禁（切到 vertex 之后每次发布都跑）**：在改任何生产配置之前先证明目标区域仍然
+提供我们依赖的能力。必需项失败会以 `exit 1` 退出，直接中断发布：
+
+```bash
+/root/khmer-deploy/vertexprobe -sa /opt/khmer-ai-cs/vertex-sa.json \
+  -project gen-lang-client-0354228918 -region asia-southeast1 \
+  -models gemini-3.5-flash -timeout 45s
+# 期望: "All required checks passed." + 退出码 0
+# 必需项 = OAuth 令牌签发 / 聊天模型可用 / 嵌入返回 768 维
+```
+
+两个**假通过陷阱**（都会让门禁看起来是绿的）：
+- `-tasktype` 在本平台**必然 exit 1** —— 那是"平台不支持 task 条件化"的诊断结论，
+  不是故障；把它放进任何门禁都会常红。
+- `-audiodir` 指向空目录会打印 `0/0` 并 **exit 0**。要肉眼看输出里有 ogg 与 m4a 行。
+
+
 | 步 | 动作 | 为什么能分开 |
 |---|---|---|
 | **1** | 把 DB `model_configs.is_default` 那行的 `model_name` 改成 `gemini-3.5-flash`（**不是改 `.env-go`** —— 线上主模型来自 DB）, 仍在 studio 上观察 | `gemini-3.5-flash` **在 AI Studio 侧也返回 200**, 所以先换名字**没有"新名字没人认"的窗口**; 这一步出问题可一眼归因到换模型, 回滚只是把名字改回去 |
