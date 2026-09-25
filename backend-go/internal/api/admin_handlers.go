@@ -314,6 +314,10 @@ func (a *App) updateModelConfig(w http.ResponseWriter, r *http.Request, configID
 	// column nothing reads while the operator reasonably believes they just
 	// rotated the credential. Rejecting up front also means the request cannot
 	// half-apply — the other fields in the same body are not written either.
+	if req.APIKey != nil && *req.APIKey != "" && !gemini.CredentialSourceOf().IsAPIKey() {
+		return nil, ErrBadRequest("Vertex 模式下凭据来自服务器上的服务账号文件（GEMINI_VERTEX_SA_FILE），" +
+			"API Key 不是聊天凭据，此接口不接受写入")
+	}
 	if req.IsDefault != nil && *req.IsDefault {
 		_, _ = a.DB.Exec(r.Context(), "UPDATE model_configs SET is_default = false WHERE config_id <> $1", configID)
 	}

@@ -320,13 +320,15 @@ func TestListAvailableModelsStudioWithoutAKeyStillRefuses(t *testing.T) {
 
 // TestUpdateModelConfigVertexRefusesAKeyWrite — under vertex the api_key column
 // is not the credential, so accepting a key here would let an operator believe
-// they had rotated one. The refusal happens before any database write, which is
-// why this test needs no database: it asserts the App was never touched.
+// they had rotated one. The refusal must also come BEFORE the first write: the
+// body below carries a model_name as well, so a guard placed after the other
+// fields would touch the (nil) pool here and fail this test.
 func TestUpdateModelConfigVertexRefusesAKeyWrite(t *testing.T) {
 	t.Setenv("GEMINI_PROVIDER", "vertex")
 	t.Setenv("GEMINI_VERTEX_SA_FILE", "")
 
-	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/models/7", strings.NewReader(`{"api_key":"AIza-pasted-key"}`))
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/models/7",
+		strings.NewReader(`{"model_name":"gemini-3.5-flash","api_key":"AIza-pasted-key"}`))
 	// The route is platform-admin only, and that gate runs first — so the
 	// request has to carry a real caller for the credential branch to be the
 	// thing under test.
