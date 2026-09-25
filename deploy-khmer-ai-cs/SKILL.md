@@ -57,6 +57,15 @@ description: 将「Khmer AI 客服系统 (khmer-ai-cs-go, Go 后端 + Next.js �
 2. **构建前端**: `NEXT_PUBLIC_API_URL=https://<部署域名>/api/v1 npm run build`, 组装 standalone + `.next/static` + `public` 打 tar (§2)
 3. **上传**: scp 到 `root@$KHMER_DEPLOY_HOST:/root/khmer-deploy/` (§3)
 4. **后端发布**: 备份旧二进制 → `systemctl stop khmer-ai-cs-go` → (有迁移则) 跑 `migrate-go` → cp 新二进制 → `chown khmerai` → start (§4; 先 stop 再 cp, 否则 Text file busy)
+   - **迁移跑完、新二进制 start 之前, 强制**跑一次 SQL 引用检查 —— 这是本工作流里唯一一次"库已是新 schema"的窗口:
+     老 schema + 老二进制是自洽的, 而新二进制引用新列时, 编译器/单测都看不见 (历史事故正是这类: 列被代码引用但没迁移)。
+     ```bash
+     cd backend-go
+     DATABASE_URL=postgres://khmerai:...@127.0.0.1:5432/khmer_ai_cs \
+       SQLCHECK_REQUIRED=1 go test -count=1 ./internal/sqlcheck/
+     ```
+     `SQLCHECK_REQUIRED=1` 把"没有 DATABASE_URL 就 skip"变成**硬失败**: 不加它, 忘了设 DSN 时这个门禁会静默通过 (`PREPARE` 只解析不执行, 指生产库是安全的)。
+     跑不通过就**不要** start 新二进制 —— 回到上一步修 SQL 或补迁移。
 5. **前端发布**: `cp -a frontend frontend-backup-<ts>` → 解包新目录 → `chown -R khmerai` → `systemctl restart khmer-ai-cs-web` (§5)
 6. **验证**: 服务器 `/ready` 双检查 + 本地走域名 `POST /api/v1/auth/login` 有 JSON 响应 (§6)
 7. **回滚**: 后端 = 还原备份二进制 + restart; 前端 = 换回 backup 目录 (§7)
