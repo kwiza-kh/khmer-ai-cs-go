@@ -158,6 +158,7 @@ LINE/Zalo 的 webhook 按 `platform_configs.channel_identity` (LINE = 机器人 
 ## 11. Vertex 切流（开发者视角）
 
 切流执行本身是运维动作 (**命令级手册 = deploy-commands §10**), 但下面四件事只有改代码的人看得见, 也最容易被当成"运维的事"而漏掉。
+实测数据与决策记录见 `docs/GEMINI-RATE-LIMIT.md` §十二（能不能迁）/ **§十四（怎么切、怎么验、怎么退）**。
 
 ### 11.1 模型名不是自由文本, 而是一份受平台约束的清单
 

@@ -550,15 +550,16 @@ journalctl -u khmer-ai-cs -g "spend (configuration refused|gate shed)" --since "
 cd /root/khmer-deploy
 ./vertexprobe -sa /opt/khmer-ai-cs/vertex-sa.json \
               -project <GCP project id> -region asia-southeast1 \
-              -models gemini-3.5-flash,gemini-2.5-flash
+              -models gemini-3.5-flash
 echo "EXIT=$?"     # 门禁只看这个数字
 ```
 
 期望：`✓ embedding :predict: gemini-embedding-001  dim=768 (want 768)  [required]` + `EXIT=0`。
 两个必须知道的坑：
 
-- 必须带 `-models`：内置候选表把 `gemini-flash-lite-latest` 也标成 `[required]`，而平台**没有 lite 档也没有这个别名**（全 404）——
-  裸跑会在平台完全健康的情况下 `exit 1`。
+- 必须带 `-models`：内置候选表把 `gemini-2.5-flash` 与 `gemini-flash-lite-latest` 标成 `[required]`，而平台**没有 lite 档也没有这个别名**（全 404）——
+  裸跑会在平台完全健康的情况下 `exit 1`。只列 `gemini-3.5-flash` 时，唯一的 `[required]` 就是嵌入那条（768 维），退出码因此只反映真正决定迁移的项目。
+  （想顺带验一下备用档 `gemini-2.5-flash` 就写成 `-models gemini-3.5-flash,gemini-2.5-flash`：它在必需名单里，会变成第二条必需项，该区实测可用。）
 - **`-tasktype` 必然 `exit 1`**：那正是 §十二 第 1 条要报的结论（无 task 条件化），它是诊断工具，**永远不要放进发布门禁**。
 
 `EXIT=2` = 根本没到 API（缺 `-sa`、SA JSON 读不了或缺字段、key 里没 `project_id`）。

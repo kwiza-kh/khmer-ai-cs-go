@@ -296,7 +296,7 @@ nginx 站点 (§8) + 自签证书 (复用 `/etc/nginx/ssl/wms.*` 或 openssl 新
 ## 10. Vertex 切流手册（studio → vertex, 两步 + 发布门禁）
 
 > 写给**凌晨三点被叫起来的人**: 每条命令可直接复制, 每步有预期输出, 每个失败都有判据和回滚动作。
-> 背景与全部实测数据见 `docs/GEMINI-RATE-LIMIT.md` §十二 / §十三; 变量语义见 SKILL.md「Vertex 切换」与 dev-guide §3。
+> 背景与全部实测数据见 `docs/GEMINI-RATE-LIMIT.md` §十二 / §十四 (§十三 是消费护栏在 vertex 下的语义, 同一次改 `.env-go` 时一起处理); 变量语义见 SKILL.md「Vertex 切换」与 dev-guide §3。
 > 下面命令都在**服务器本机**执行 (三个工具、SA key 都在那台机器上, 密钥不必离开它); 从 mac 跑时按 §0 包一层,
 > 多行脚本用 base64 传参 (同 §4 的写法)。
 
@@ -347,13 +347,16 @@ UPDATE knowledge_documents SET index_status = 'pending'
 cd /root/khmer-deploy
 ./vertexprobe -sa /opt/khmer-ai-cs/vertex-sa.json \
               -project <GCP project id> -region asia-southeast1 \
-              -models gemini-3.5-flash,gemini-2.5-flash
+              -models gemini-3.5-flash
 echo "EXIT=$?"          # 门禁看这个数字, 不是看输出好不好看
 ```
 
-**为什么带 `-models`**: 内置候选表把 `gemini-flash-lite-latest` / `gemini-2.5-flash` 标成 `[required]`,
+**为什么带 `-models`**: 内置候选表把 `gemini-2.5-flash` 与 `gemini-flash-lite-latest` 标成 `[required]`,
 而平台上**没有 lite 档也没有这个浮动别名** (全 404) —— 裸跑会在"平台完全健康"的情况下 `exit 1` (假报警)。
-带 `-models` 后唯一的 `[required]` 是嵌入那条, 而那正是决定能不能迁的一项 (**768 维**)。
+用 `-models` 显式列出本次要验的模型, 是为了让**退出码只反映真正决定迁移的项目**: 只列 `gemini-3.5-flash` 时,
+唯一的 `[required]` 就是嵌入那条 (**768 维**)。
+> 想顺带确认 `gemini-2.5-flash`(备用档) 也可用, 就写成 `-models gemini-3.5-flash,gemini-2.5-flash` ——
+> 它在探针的必需名单里, 会变成第二条必需项 (该区实测可用 ✅); 只做门禁的话没必要把它捆进来。
 
 预期输出 (必需项被排到最前):
 ```
@@ -364,7 +367,6 @@ vertexprobe — project=<project-id> region=asia-southeast1
 ✓ embedding :predict: gemini-embedding-001      dim=768 (want 768)  [required]
 ✓ oauth token minting                           bearer token acquired
 ✓ chat: gemini-3.5-flash                        OK
-✓ chat: gemini-2.5-flash                        OK
 • embedding :embedContent: gemini-embedding-001 HTTP 400 INVALID_ARGUMENT: …   ← 平台走 :predict; 这条**预期就失败**, 非必需
 • chat: gemini-2.5-flash-preview-tts            HTTP 404 NOT_FOUND: …          ← 平台无 TTS 预览模型, 符合预期
 
@@ -506,6 +508,10 @@ B64=$(echo "$SCRIPT" | base64)
 | 6 | 相似度闸门复核 | 见下 | dense 腿不被掏空; 有 sweep 证据才准调 |
 | 7 | 429 是否消失 | `journalctl -u khmer-ai-cs-go --since "24 hours ago" --no-pager \| grep -c "spend-based rate limit"` | `0` (迁移的主要动机) |
 | 8 | 消费计量仍在记 | `curl -s …/api/v1/platform/spend` + `psql "$DATABASE_URL" -c "select count(*) from token_usage where created_at > now() - interval '1 hour'"` | 窗口消费有数 / 有新增行 (护栏没被 provider 改动破坏) |
+
+第 2 项的样本要**自备**: 把真实语音导出到 `/root/khmer-deploy/audio-samples/` ——
+`ogg` 取 WhatsApp/Telegram 的语音条, `m4a` 取 LINE/手机录音 (扩展名决定 mime, 不认识的扩展名会被**静默跳过**)。
+目录不存在时探针报 `cannot read …` 并 `exit 1` —— 那是**缺样本**, 不是平台不支持。
 
 第 5 项的完整命令 (rageval **继承 `.env-go` 的 provider**, 所以必须 source; 顺手把 provider 打出来留证):
 
