@@ -718,3 +718,91 @@ func (s *platformStub) recorded() []stubRequest {
 	defer s.mu.Unlock()
 	return append([]stubRequest(nil), s.requests...)
 }
+
+// TestProbeModelOnlyVetoesOnNotFound pins the single property that makes the
+// admin save guard safe: it may refuse a save ONLY when the platform itself said
+// the model is not there.
+//
+// This is the difference between a guard and an outage. Treating any non-200 as
+// "unusable" would refuse to save a perfectly good model during a quota spike
+// (429), behind a permission gap (403) or through a blip (503) — and because the
+// guard runs on the one write that decides which model answers customers, a
+// false refusal is an operational dead end while a false acceptance is merely a
+// failed test. So the mapping is deliberately asymmetric.
+func TestProbeModelOnlyVetoesOnNotFound(t *testing.T) {
+	cases := []struct {
+		name string
+		code int
+		body string
+		want ProbeOutcome
+	}{
+		{"accepted", http.StatusOK, `{"candidates":[]}`, ProbeServed},
+		{"quota is not absence", http.StatusTooManyRequests,
+			`{"error":{"status":"RESOURCE_EXHAUSTED"}}`, ProbeIndeterminate},
+		{"permission is not absence", http.StatusForbidden,
+			`{"error":{"status":"PERMISSION_DENIED"}}`, ProbeIndeterminate},
+		{"server fault is not absence", http.StatusServiceUnavailable,
+			`{"error":{"status":"UNAVAILABLE"}}`, ProbeIndeterminate},
+		{"bad request is not absence", http.StatusBadRequest,
+			`{"error":{"status":"INVALID_ARGUMENT"}}`, ProbeIndeterminate},
+		{"NOT_FOUND is the one veto", http.StatusNotFound,
+			`{"error":{"status":"NOT_FOUND","message":"Publisher model ... was not found"}}`, ProbeNotServed},
+		// A 404 with a non-NOT_FOUND status tells us about the ROUTE, not the
+		// model, so it must not block a save either.
+		{"404 without NOT_FOUND says nothing", http.StatusNotFound,
+			`{"error":{"status":"PERMISSION_DENIED"}}`, ProbeIndeterminate},
+		{"unparsable 404 says nothing", http.StatusNotFound,
+			`<html>gateway</html>`, ProbeIndeterminate},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			platform := catalogEnv(t, func(r *http.Request) (int, string) { return tc.code, tc.body })
+			if got := ProbeModel(context.Background(), "asia-southeast1", "gemini-3.8-flash"); got != tc.want {
+				t.Errorf("outcome = %q, want %q", got, tc.want)
+			}
+			// The probe must address the region and model it was asked about, or
+			// the guard would be answering a different question than the caller's.
+			last := platform.last(t)
+			if !strings.Contains(last.Path, "/locations/asia-southeast1/") ||
+				!strings.Contains(last.Path, "gemini-3.8-flash:generateContent") {
+				t.Errorf("path = %q, want the region and model under test", last.Path)
+			}
+		})
+	}
+}
+
+// TestProbeModelRefusesToGuessWithoutAVertexDeployment — on the studio transport
+// there is one endpoint and one catalog, so a region-shaped question has no
+// answer and the guard must stay out of the way.
+func TestProbeModelRefusesToGuessWithoutAVertexDeployment(t *testing.T) {
+	t.Setenv("GEMINI_PROVIDER", "studio")
+	if got := ProbeModel(context.Background(), "asia-southeast1", "gemini-3.5-flash"); got != ProbeIndeterminate {
+		t.Errorf("outcome = %q, want %q on the studio transport", got, ProbeIndeterminate)
+	}
+}
+
+// TestProbeModelRejectsAHostSteeringRegion — the region reaches the request HOST,
+// so an unvalidated value would aim an authenticated request at a caller-chosen
+// host. The probe must refuse to build that request at all.
+func TestProbeModelRejectsAHostSteeringRegion(t *testing.T) {
+	platform := catalogEnv(t, func(r *http.Request) (int, string) { return http.StatusOK, `{}` })
+	for _, region := range []string{"evil.example/x", "as ia", "../etc", "asia-southeast1.evil.com"} {
+		if got := ProbeModel(context.Background(), region, "gemini-3.5-flash"); got != ProbeIndeterminate {
+			t.Errorf("region %q: outcome = %q, want %q (must not build a request)", region, got, ProbeIndeterminate)
+		}
+	}
+	if n := platform.count(); n != 0 {
+		t.Errorf("requests = %d, want 0 — a rejected region must not reach the network", n)
+	}
+}
+
+// TestProbeModelAcceptsAMixedCaseRegion — GEMINI_VERTEX_REGION is hand-written in
+// a shell env file, so "Asia-Southeast1" can reach the probe. Rejecting it would
+// make the save guard silently stop guarding (indeterminate = allow), which is
+// precisely the failure mode it exists to prevent.
+func TestProbeModelAcceptsAMixedCaseRegion(t *testing.T) {
+	catalogEnv(t, func(r *http.Request) (int, string) { return http.StatusOK, `{}` })
+	if got := ProbeModel(context.Background(), "Asia-Southeast1", "gemini-3.5-flash"); got != ProbeServed {
+		t.Errorf("outcome = %q, want %q — a mixed-case region must be normalised, not rejected", got, ProbeServed)
+	}
+}

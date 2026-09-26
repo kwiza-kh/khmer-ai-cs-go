@@ -951,7 +951,12 @@ export function ModelsAdminPage() {
                               ? t("admin.regionLoading")
                               : regionsError
                                 ? t("admin.regionListUnavailable")
-                                : t("admin.regionHint")}
+                                // Names the region this config actually serves from.
+                                // Without it the picker above reads as "where this
+                                // runs", which is how picking global + a global-only
+                                // model ended up saving a model the serving region
+                                // 404s — the failure the save guard now refuses.
+                                : tf("admin.regionHint", { servingRegion: currentRegion || t("admin.regionUnknown") })}
                           </p>
                         </div>
                       )}

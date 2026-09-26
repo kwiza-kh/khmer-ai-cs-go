@@ -319,6 +319,30 @@ func (a *App) updateModelConfig(w http.ResponseWriter, r *http.Request, configID
 		return nil, ErrBadRequest("Vertex 模式下凭据来自服务器上的服务账号文件（GEMINI_VERTEX_SA_FILE），" +
 			"API Key 不是聊天凭据，此接口不接受写入")
 	}
+	// Saving a model this deployment cannot serve is the one write that takes
+	// customer chat down, and the console makes it easy to reach by accident: the
+	// region picker on the model page chooses which catalog to LIST, so selecting
+	// `global` (the only region serving gemini-3.8-flash) and then that model
+	// reads as "switch to 3.8", while serving stays on GEMINI_VERTEX_REGION. The
+	// result is that every call 404s — the admin Test button surfaces it only as
+	// a generic 502 (measured 2026-09-25) — and on the default config that is a
+	// production outage rather than a failed experiment.
+	//
+	// Probed against the SERVING region, never the browsed one, and only a
+	// NOT_FOUND vetoes: quota, permission and network failures are indeterminate
+	// and must not block a legitimate save.
+	if req.ModelName != nil && strings.TrimSpace(*req.ModelName) != "" {
+		serving := gemini.ServingRegion()
+		candidate := gemini.NormalizeModelName(strings.TrimSpace(*req.ModelName))
+		if gemini.ProbeModel(r.Context(), serving, candidate) == gemini.ProbeNotServed {
+			return nil, ErrBadRequest(fmt.Sprintf(
+				"模型 %s 在本部署的服务区域（%s）不存在，保存后每次调用都会 404。"+
+					"Vertex 只在部分区域提供该模型（例如 gemini-3.8-flash 仅 global / us / eu 可用）。"+
+					"要用它，需要把 GEMINI_VERTEX_REGION 改为对应区域并重启服务；"+
+					"否则请改选在 %s 可用的模型（如 gemini-3.5-flash）。本次未写入任何改动。",
+				candidate, serving, serving))
+		}
+	}
 	if req.IsDefault != nil && *req.IsDefault {
 		_, _ = a.DB.Exec(r.Context(), "UPDATE model_configs SET is_default = false WHERE config_id <> $1", configID)
 	}

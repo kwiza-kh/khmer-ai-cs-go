@@ -744,6 +744,117 @@ var modelNameAcronyms = map[string]string{
 	"api": "API",
 }
 
+// ProbeOutcome is what a callability probe learned about one model in one
+// region. The third value is the point: it separates "the platform told us this
+// model is not here" from "we could not ask", and only the former is allowed to
+// stop an operator from saving. Quota exhaustion (429), a permission problem and
+// a network failure are all Indeterminate — treating any of them as "unusable"
+// would refuse a healthy model because of a transient condition.
+type ProbeOutcome string
+
+const (
+	// ProbeServed — the region accepted the request.
+	ProbeServed ProbeOutcome = "served"
+	// ProbeNotServed — the region answered NOT_FOUND for this model. This is the
+	// only evidence strong enough to block a save.
+	ProbeNotServed ProbeOutcome = "not_served"
+	// ProbeIndeterminate — no answer, or an answer that is not about the model.
+	ProbeIndeterminate ProbeOutcome = "indeterminate"
+)
+
+// ServingRegion is the region every chat/generate call this deployment makes is
+// sent to (GEMINI_VERTEX_REGION, or the measured default). It is NOT the region
+// an operator browses in the console: the region picker on the model page only
+// chooses which catalog to LIST, while serving always stays here. Exported
+// because the admin save guard must reason about "will this model name work
+// where it will actually be called", and that question cannot be answered
+// without this value.
+func ServingRegion() string {
+	return strings.ToLower(strings.TrimSpace(vertexRegion()))
+}
+
+// ProbeModel answers one question that neither the publisher list nor a region's
+// documentation can answer reliably: does THIS region serve THIS model?
+//
+// It is a real (tiny) generateContent call, because that is the only API that
+// reflects routing. Measured 2026-09-25 against the production service account:
+// gemini-3.8-flash answers 200 on global/us/eu and 404 on asia-southeast1,
+// us-central1, europe-west4 and nine other single regions. The publisher list
+// cannot be used instead — it UNDER-reports (asia-southeast1 serves
+// gemini-3.5-flash while omitting it from its list), so absence from a list is
+// not evidence, and turning it into a verdict would mark this deployment's own
+// serving model unusable.
+//
+// Cost is one request of a handful of tokens, and callers are expected to use it
+// only where a wrong answer has consequences (see the save guard in the admin
+// handler), never across a whole catalog — us-central1 lists 133 models.
+//
+// maxOutputTokens is 1 because only the status matters; the body is discarded.
+// `?region=` on the console never reaches this function: the region passed here
+// is always the deployment's configured SERVING region, which is the one a
+// saved model name will actually be called against.
+func ProbeModel(ctx context.Context, region, model string) ProbeOutcome {
+	prov, err := providerFromEnv()
+	if err != nil || prov.kind != providerVertex {
+		// Nothing to probe on the studio transport: there is one endpoint and one
+		// catalog, so a region-shaped question has no answer there.
+		return ProbeIndeterminate
+	}
+	region = strings.ToLower(strings.TrimSpace(region))
+	model = NormalizeModelName(strings.TrimSpace(model))
+	if model == "" || !ValidVertexRegion(region) {
+		return ProbeIndeterminate
+	}
+	body, err := json.Marshal(map[string]any{
+		"contents":         []map[string]any{{"role": "user", "parts": []map[string]any{{"text": "ok"}}}},
+		"generationConfig": map[string]any{"maxOutputTokens": 1},
+	})
+	if err != nil {
+		return ProbeIndeterminate
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		prov.vertex.model(model)+":generateContent", bytes.NewReader(body))
+	if err != nil {
+		return ProbeIndeterminate
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if err := prov.authorize(ctx, req, ""); err != nil {
+		return ProbeIndeterminate
+	}
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return ProbeIndeterminate
+	}
+	defer resp.Body.Close()
+
+	switch {
+	case resp.StatusCode == http.StatusNotFound:
+		// The platform names the model and the location in the body; NOT_FOUND is
+		// its answer to "this location does not serve this model".
+		payload, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		var envelope struct {
+			Error struct {
+				Status string `json:"status"`
+			} `json:"error"`
+		}
+		if json.Unmarshal(payload, &envelope) == nil && envelope.Error.Status == "NOT_FOUND" {
+			return ProbeNotServed
+		}
+		// A 404 that is not NOT_FOUND (a wrong path, for instance) says nothing
+		// about the model.
+		return ProbeIndeterminate
+	case resp.StatusCode == http.StatusTooManyRequests:
+		// Quota, not availability: the model is served and merely busy.
+		return ProbeIndeterminate
+	case resp.StatusCode >= 400:
+		// 400/401/403/5xx — a request or permission problem, not a routing answer.
+		return ProbeIndeterminate
+	default:
+		return ProbeServed
+	}
+}
+
 // capabilityFor classifies a model id into the console's vocabulary.
 //
 // Name-based, and ONLY name-based. The platform's own action list cannot carry

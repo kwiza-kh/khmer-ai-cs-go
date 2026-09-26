@@ -623,8 +623,8 @@ export const zh: Dict = {
   "admin.modelIdentifier": "模型标识",
   "admin.modelNotSet": "未设置模型",
   // Vertex 各区域提供的模型不同, 故卡片在模型旁带一个区域选择器; AI Studio 路径没有区域概念, 不显示。
-  "admin.region": "区域",
-  "admin.regionHint": "Vertex 各区域提供的模型不同，下方列表按此区域加载。",
+  "admin.region": "按区域浏览模型",
+  "admin.regionHint": "仅用于浏览筛选 —— **不会**改变这套配置的服务区域。Vertex 各区域提供的模型不同，下方列表按你选的区域加载。本部署的服务区域是 {servingRegion}；该区域没有的模型无法保存。",
   "admin.regionUnknown": "服务器默认区域",
   "admin.regionLoading": "正在加载区域列表…",
   "admin.regionListUnavailable": "未能加载区域列表，改用服务器上配置的区域。",

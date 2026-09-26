@@ -639,8 +639,8 @@ export const en: Dict = {
   // Vertex serves a different model set per location, so the card carries a
   // region selector next to the model it drives. Absent on AI Studio, where a
   // region means nothing.
-  "admin.region": "Region",
-  "admin.regionHint": "Vertex serves a different model set in each region, so the list below is loaded for this region.",
+  "admin.region": "Browse models by region",
+  "admin.regionHint": "Browsing filter only — it does NOT change where this config runs. Each Vertex region offers a different model set, so the list below loads for the region you pick. This deployment serves from {servingRegion}; a model missing there cannot be saved.",
   "admin.regionUnknown": "Server default region",
   "admin.regionLoading": "Loading the region list…",
   "admin.regionListUnavailable": "Could not load the region list. The region configured on the server is used.",
