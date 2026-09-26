@@ -150,6 +150,15 @@ func main() {
 		"limit_usd", usage.SpendLimitUSD(),
 		"basis", string(usage.SpendLimitBasis()))
 
+	// Hold a pooled connection to the model host open, so the first query
+	// embedding of a turn does not pay the handshake. On the multi-region
+	// (global) endpoint the cold cost is ~11.2s against a 5s embedding budget,
+	// so a cold turn loses its dense retrieval leg entirely and answers from
+	// lexical+trigram only. Regional endpoints measure ~0.3s cold and do not
+	// need this, but the probe is one tiny embedding either way and
+	// GEMINI_EMBED_KEEPWARM_SEC=0 turns it off.
+	gem.StartEmbedKeepWarm(ctx, gemini.EmbedKeepWarmInterval())
+
 	// Jev (TypeSafe System One) powers every typed judgment — turn
 	// classification, rerank, routing, guardrails, notify triage. It is nil
 	// without TYPESAFE_API_KEY, and every site then keeps its previous path.
