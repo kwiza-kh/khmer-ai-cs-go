@@ -40,10 +40,14 @@ const (
 	providerVertex providerKind = "vertex"
 )
 
-// vertexDefaultRegion — the platform serves Gemini per region, and the
-// deployment target (measured with cmd/vertexprobe) is asia-southeast1. The
-// default follows the measured target rather than the platform's own
-// us-central1 default, because a wrong region is a 404 on every call.
+// vertexDefaultRegion — the fallback for a deployment that never says where it
+// lives. It is NOT a statement about where production is: the live box pins
+// GEMINI_VERTEX_REGION=global (measured 2026-09-26: the serving pair
+// `gemini-3.8-flash` + `gemini-3.5-flash-lite` answers 404 in
+// asia-southeast1 and 200 in global, so the region is now load-bearing).
+// The default stays a single region on purpose — a wrong region is a 404 on
+// every call, and a *silent* default is what makes that visible instead of
+// quietly routing an unset deployment to a multi-home endpoint nobody audited.
 const vertexDefaultRegion = "asia-southeast1"
 
 // vertexGlobalRegion is the one Vertex location that is not a datacentre: the
@@ -172,7 +176,7 @@ func providerFromEnv() (provider, error) {
 	region := vertexRegion()
 	return provider{
 		kind:   providerVertex,
-		vertex: vertexResource{base: vertexPlatformBase(region), project: project, region: region},
+		vertex: vertexResource{base: VertexPlatformBase(region), project: project, region: region},
 		tokens: tokens,
 	}, nil
 }
@@ -193,28 +197,38 @@ func vertexRegion() string {
 	return envOr("GEMINI_VERTEX_REGION", vertexDefaultRegion)
 }
 
-// vertexHost is the AI Platform host that serves one location.
-func vertexHost(region string) string {
+// VertexHost is the AI Platform host that serves one location.
+//
+// Exported because cmd/vertexprobe used to interpolate the region into the host
+// itself and therefore probed `global-aiplatform.googleapis.com`, a host that
+// answers a bare HTML 404 for every model — which read as "global serves
+// nothing" while production, going through the function below, served
+// everything. One host rule, shared by the client and the gate, is the only way
+// that cannot drift again.
+func VertexHost(region string) string {
 	if region == vertexGlobalRegion {
 		return "https://aiplatform.googleapis.com"
 	}
 	return fmt.Sprintf("https://%s-aiplatform.googleapis.com", region)
 }
 
-// vertexPlatformBase is the version-qualified AI Platform root.
+// VertexPlatformBase is the version-qualified AI Platform root.
 //
 // GEMINI_VERTEX_API_BASE overrides it for exactly the reasons GEMINI_API_BASE
 // exists on the studio side: to route through a relay when the host's egress is
 // geo-blocked, and to let tests point the whole vertex path at a local stub.
 // Value must include the /v1 segment, no trailing slash.
-func vertexPlatformBase(region string) string {
+//
+// Exported for the same reason as VertexHost: a probe that rebuilds this string
+// is a probe that can disagree with the client it certifies.
+func VertexPlatformBase(region string) string {
 	if v := strings.TrimSpace(os.Getenv("GEMINI_VERTEX_API_BASE")); v != "" {
 		return strings.TrimRight(v, "/")
 	}
-	return vertexHost(region) + "/v1"
+	return VertexHost(region) + "/v1"
 }
 
-// vertexVersionBase is vertexPlatformBase with a caller-chosen API version.
+// vertexVersionBase is VertexPlatformBase with a caller-chosen API version.
 //
 // The region catalog lives at v1beta1 while everything else this package sends
 // is v1, and both must be built from the same host and honour the same override
@@ -224,7 +238,7 @@ func vertexPlatformBase(region string) string {
 // one: the test seam has to see the path the deployment actually sends, or it
 // proves nothing.
 func vertexVersionBase(region, version string) string {
-	base := vertexPlatformBase(region)
+	base := VertexPlatformBase(region)
 	if i := strings.LastIndex(base, "/"); i > len("https://") {
 		if isAPIVersionSegment(base[i+1:]) {
 			return base[:i+1] + version

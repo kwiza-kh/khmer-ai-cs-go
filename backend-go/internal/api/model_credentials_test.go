@@ -137,7 +137,7 @@ func writeTestServiceAccount(t *testing.T, tokenURI, projectID string) string {
 // token_uri points at, an SA file, and the platform base pointed at platform.
 //
 // The base carries a /v1 segment exactly as the production base does
-// (vertexPlatformBase), so the catalog's version substitution is exercised
+// (VertexPlatformBase), so the catalog's version substitution is exercised
 // against a realistic root rather than a version-less test-only one.
 func vertexEnv(t *testing.T, platform *modelStub) {
 	t.Helper()

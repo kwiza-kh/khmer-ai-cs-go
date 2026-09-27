@@ -1,13 +1,13 @@
 // Command vertexprobe is a READ-ONLY availability probe for Vertex AI
 // (Gemini Enterprise Agent Platform). It answers, before anyone rewrites the
-// Gemini client, the questions that decide whether the migration is even
-// possible:
+// Gemini client, the questions that decide whether a region/provider is usable:
 //
 //  1. Can this service account mint an OAuth token at all?
 //  2. Which of the Gemini models this product depends on exist in the target
-//     region? (The production config uses the floating alias
-//     `gemini-flash-lite-latest`; the platform generally requires a pinned
-//     version, so the probe reports which pinned names resolve.)
+//     region? Model availability is REGION SCOPED, and the pinned names the
+//     deployment serves today are not the names the platform served when this
+//     probe was written — so the required set is a flag (-require), not a
+//     constant nobody can update from the shell.
 //  3. Do embeddings work, and do they still return 768 dimensions? The whole
 //     knowledge base was embedded with gemini-embedding-001 at that width, so a
 //     different width would force a re-embed of every chunk.
@@ -20,11 +20,19 @@
 // resource it creates. Run it on the application host so the service-account
 // key never has to leave the machine:
 //
-//	vertexprobe -sa /opt/khmer-ai-cs/vertex-sa.json \
-//	            -project gen-lang-client-0354228918 -region asia-southeast1
+//	vertexprobe -sa /opt/khmer-ai-cs/vertex-sa.json -project <project> \
+//	            -region global
 //
-// Exit status is 0 when the mandatory checks pass (token, chat, embeddings) and
-// 1 otherwise, so it can gate a deployment.
+// Every URL is built through gemini.VertexPlatformBase — the same function the
+// serving client uses — because `global` is the one location whose host carries
+// NO region prefix. This binary used to interpolate `{region}-aiplatform...`
+// itself, so `-region global` probed a host that answers a bare HTML 404 for
+// every model and reported "required check failed" on a deployment that was
+// serving traffic fine. A gate that disagrees with the thing it certifies is
+// worse than no gate.
+//
+// Exit status is 0 when the mandatory checks pass (token, the -require models,
+// embeddings) and 1 otherwise, so it can gate a deployment.
 package main
 
 import (
@@ -42,6 +50,8 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+
+	"khmer-ai-cs-go/internal/gemini"
 )
 
 const cloudPlatformScope = "https://www.googleapis.com/auth/cloud-platform"
@@ -50,6 +60,18 @@ const cloudPlatformScope = "https://www.googleapis.com/auth/cloud-platform"
 // knowledge_chunks' vector(768) column: a different width would make every
 // stored chunk unsearchable, and the model's own default (3072) is wrong here.
 const embeddingWidth = 768
+
+// defaultRequiredModels are the two names the live deployment serves: the DB
+// model_configs default (the main chat model) and GEMINI_FAST_MODEL (the
+// auxiliary path). Both are region-scoped — in asia-southeast1 they answer 404
+// while global answers 200 (measured 2026-09-26) — which is the entire reason
+// this set has to be required rather than merely listed.
+//
+// It used to be `gemini-2.5-flash` plus the `gemini-flash-lite-latest` alias.
+// Neither is served anywhere on the platform, so the gate was red on a healthy
+// box and, worse, stayed green if the model production actually ran on
+// disappeared from the region.
+const defaultRequiredModels = "gemini-3.8-flash,gemini-3.5-flash-lite"
 
 // serviceAccount is the subset of the downloaded JSON key this probe needs.
 type serviceAccount struct {
@@ -64,6 +86,7 @@ type probe struct {
 	token     string
 	project   string
 	region    string
+	root      string // https://<host>/v1 — see gemini.VertexPlatformBase
 	modelBase string // .../publishers/google/models
 	locBase   string // .../locations/<region>
 }
@@ -82,9 +105,10 @@ type result struct {
 func main() {
 	saPath := flag.String("sa", "", "path to the service-account JSON key")
 	project := flag.String("project", "", "GCP project ID (default: project_id from the key)")
-	region := flag.String("region", "asia-southeast1", "Vertex region")
+	region := flag.String("region", "global", "Vertex region (production lives in global; pass -region to audit another)")
 	timeout := flag.Duration("timeout", 30*time.Second, "per-request timeout")
-	modelsFlag := flag.String("models", "", "comma-separated chat model candidates (default: built-in list)")
+	modelsFlag := flag.String("models", "", "comma-separated chat model candidates to list (default: built-in list)")
+	requireFlag := flag.String("require", defaultRequiredModels, "comma-separated models that MUST resolve; a missing one fails the gate")
 	capsFlag := flag.String("caps", "", "run the capability probe against this model and exit")
 	audioDirFlag := flag.String("audiodir", "", "send every audio file in this directory as an inlineData part (needs -caps)")
 	taskTypeFlag := flag.Bool("tasktype", false, "probe whether :predict task-type parameters condition the embedding (needs -caps)")
@@ -109,15 +133,29 @@ func main() {
 	if sa.TokenURI == "" {
 		sa.TokenURI = "https://oauth2.googleapis.com/token"
 	}
+	// The region goes into the request HOST of a credential-bearing request, so
+	// the client's own validation applies here too — a probe must not be able to
+	// aim a service-account token at a host of the operator's choosing.
+	if !gemini.ValidVertexRegion(*region) {
+		fmt.Fprintf(os.Stderr, "vertexprobe: -region %q is not a valid location id\n", *region)
+		os.Exit(2)
+	}
+	required := splitNames(*requireFlag)
+	if len(required) == 0 {
+		fmt.Fprintln(os.Stderr, "vertexprobe: -require must name at least one model")
+		os.Exit(2)
+	}
 
+	// One shared root with the serving client. Everything below is relative to
+	// it, so no URL in this binary can disagree with the host rule again.
+	root := gemini.VertexPlatformBase(*region)
 	p := &probe{
-		http:    &http.Client{Timeout: *timeout},
-		project: *project,
-		region:  *region,
-		modelBase: fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models",
-			*region, *project, *region),
-		locBase: fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s",
-			*region, *project, *region),
+		http:      &http.Client{Timeout: *timeout},
+		project:   *project,
+		region:    *region,
+		root:      root,
+		modelBase: fmt.Sprintf("%s/projects/%s/locations/%s/publishers/google/models", root, *project, *region),
+		locBase:   fmt.Sprintf("%s/projects/%s/locations/%s", root, *project, *region),
 	}
 
 	fmt.Printf("vertexprobe — project=%s region=%s\n", p.project, p.region)
@@ -153,15 +191,19 @@ func main() {
 		return
 	}
 
-	// 2. Chat models. The alias is probed alongside pinned candidates because
-	//    production currently runs the alias and the platform may not serve it.
+	// 2. Chat models. The built-in list is a survey of what the region serves —
+	//    it includes names this product does NOT run (a retired release, an
+	//    alias the platform never recognised) purely because seeing them 404 is
+	//    how an operator learns the list is region-scoped. The models that
+	//    actually gate a deployment are -require, and they are probed even when
+	//    -models replaces the survey list: a flag that can delete the checks it
+	//    is supposed to fail is not a gate.
 	chatCandidates := []string{
 		"gemini-2.5-flash",
 		"gemini-2.5-flash-lite",
 		"gemini-flash-lite-latest",
 		"gemini-3.6-flash",
 		"gemini-3.5-flash",
-		"gemini-3.5-flash-lite",
 	}
 	if strings.TrimSpace(*modelsFlag) != "" {
 		chatCandidates = nil
@@ -171,9 +213,13 @@ func main() {
 			}
 		}
 	}
-	// The first two are the ones the product actually needs today (GEMINI_MODEL
-	// and FastModel); mark them fatal when absent.
-	fatalModels := map[string]bool{"gemini-2.5-flash": true, "gemini-flash-lite-latest": true}
+	fatalModels := make(map[string]bool, len(required))
+	for _, m := range required {
+		fatalModels[m] = true
+		if !containsString(chatCandidates, m) {
+			chatCandidates = append(chatCandidates, m)
+		}
+	}
 	for _, m := range chatCandidates {
 		results = append(results, p.checkChat(ctx, m, fatalModels[m]))
 	}
@@ -183,8 +229,11 @@ func main() {
 	results = append(results, p.checkEmbedPredict(ctx, "gemini-embedding-001"))
 	results = append(results, p.checkEmbedContent(ctx, "gemini-embedding-001"))
 
-	// 4. Explicit context caching — creatable and removable.
-	results = append(results, p.checkCachedContents(ctx))
+	// 4. Explicit context caching — creatable and removable. Cached content is
+	//    pinned to a model, so the probe uses a required one: pointing it at a
+	//    model the region does not serve reports "caching is broken" when only
+	//    the name is wrong.
+	results = append(results, p.checkCachedContents(ctx, required[0]))
 
 	// 5. Preview TTS — the capability most likely to be missing.
 	results = append(results, p.checkChat(ctx, "gemini-2.5-flash-preview-tts", false))
@@ -351,17 +400,23 @@ func (p *probe) checkEmbedContent(ctx context.Context, model string) result {
 	return r
 }
 
-// checkCachedContents creates a tiny cache and deletes it again. The create
-// needs a model resource name and at least ~1024 tokens of content on flash
-// models, so the probe reports whatever the API says rather than guessing.
-func (p *probe) checkCachedContents(ctx context.Context) result {
-	r := result{name: "context caching: cachedContents"}
+// checkCachedContents creates a tiny cache and deletes it again.
+//
+// The create needs a model resource name and a prefix over the platform's
+// minimum: measured 2026-09-27 on global + gemini-3.8-flash, the API answers
+// `INVALID_ARGUMENT: The cached content is of 401 tokens. The minimum token
+// count to start explicit caching is 4096`. The payload below is sized past
+// that floor on purpose — "probe " costs one token per repetition — because a
+// check that can only ever fail is how a capability gets written off as absent.
+// The app's own guard (minCacheableTokens, default 1024) predates that number.
+func (p *probe) checkCachedContents(ctx context.Context, model string) result {
+	r := result{name: "context caching: cachedContents (" + model + ")"}
 	payload := map[string]any{
 		// model 必须是资源名而非 URL：传完整 endpoint 会得到 400 "The Model name
 		// 'https://…' is malformed"。区域由已鉴权的 endpoint 隐含。
-		"model":       fmt.Sprintf("projects/%s/locations/%s/publishers/google/models/gemini-2.5-flash", p.project, p.region),
+		"model":       fmt.Sprintf("projects/%s/locations/%s/publishers/google/models/%s", p.project, p.region, model),
 		"ttl":         "60s",
-		"contents":    []map[string]any{{"role": "user", "parts": []map[string]any{{"text": strings.Repeat("probe ", 400)}}}},
+		"contents":    []map[string]any{{"role": "user", "parts": []map[string]any{{"text": strings.Repeat("probe ", 4600)}}}},
 		"displayName": "vertexprobe",
 	}
 	status, body, err := p.post(ctx, p.locBase+"/cachedContents", payload)
@@ -379,9 +434,11 @@ func (p *probe) checkCachedContents(ctx context.Context) result {
 		Name string `json:"name"`
 	}
 	_ = json.Unmarshal(body, &created)
-	// Always clean up: leaving a cache behind bills by token-hour.
+	// Always clean up: leaving a cache behind bills by token-hour. The name the
+	// API returns is resource-relative, so it goes onto the same root the create
+	// used — never a host rebuilt from the region.
 	if created.Name != "" {
-		if delErr := p.delete(ctx, "https://"+p.region+"-aiplatform.googleapis.com/v1/"+created.Name); delErr != nil {
+		if delErr := p.delete(ctx, p.root+"/"+created.Name); delErr != nil {
 			r.detail = "created OK but delete failed: " + delErr.Error()
 			return r
 		}
@@ -468,6 +525,27 @@ func firstLine(b []byte) string {
 		s = s[:240] + "…"
 	}
 	return s
+}
+
+// splitNames parses a comma-separated flag value, dropping blanks so
+// `-require "a, ,b"` reads as exactly two models.
+func splitNames(v string) []string {
+	var out []string
+	for _, p := range strings.Split(v, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func containsString(hay []string, needle string) bool {
+	for _, h := range hay {
+		if h == needle {
+			return true
+		}
+	}
+	return false
 }
 
 func printReport(rs []result) {

@@ -220,3 +220,31 @@ func TestVertexWithoutCredentialsFailsTheRequest(t *testing.T) {
 		t.Error("a credential-less vertex provider must not attach any credential")
 	}
 }
+
+// TestVertexHostIsNotInterpolatedForGlobal pins the one location whose host
+// breaks the usual shape. `global` is served by the unprefixed
+// aiplatform.googleapis.com; `global-aiplatform.googleapis.com` answers a bare
+// HTML 404 for every model. cmd/vertexprobe built that host by interpolation and
+// so reported "required checks failed" against a region that was serving live
+// traffic — which is why the host rule is exported instead of duplicated.
+func TestVertexHostIsNotInterpolatedForGlobal(t *testing.T) {
+	t.Setenv("GEMINI_VERTEX_API_BASE", "")
+	if got, want := VertexHost(vertexGlobalRegion), "https://aiplatform.googleapis.com"; got != want {
+		t.Errorf("VertexHost(global) = %q, want %q — the multi-home endpoint has no region prefix", got, want)
+	}
+	if got, want := VertexHost("asia-southeast1"), "https://asia-southeast1-aiplatform.googleapis.com"; got != want {
+		t.Errorf("VertexHost(asia-southeast1) = %q, want %q", got, want)
+	}
+	// The root both the client and the probe build URLs from.
+	if got, want := VertexPlatformBase(vertexGlobalRegion)+"/publishers", "https://aiplatform.googleapis.com/v1/publishers"; got != want {
+		t.Errorf("VertexPlatformBase(global) = %q, want %q", got, want)
+	}
+	// An override still wins for every region, or a relay/stub would only cover
+	// the default one and the gate would probe the live platform by accident.
+	t.Setenv("GEMINI_VERTEX_API_BASE", "https://stub.test/v1")
+	for _, region := range []string{vertexGlobalRegion, "us", "asia-southeast1"} {
+		if got := VertexPlatformBase(region); got != "https://stub.test/v1" {
+			t.Errorf("VertexPlatformBase(%s) ignored the override: %q", region, got)
+		}
+	}
+}
