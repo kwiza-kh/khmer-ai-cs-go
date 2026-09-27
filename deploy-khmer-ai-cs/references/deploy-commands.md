@@ -304,7 +304,7 @@ nginx 站点 (§8) + 自签证书 (复用 `/etc/nginx/ssl/wms.*` 或 openssl 新
 
 | 步 | 换掉什么 | 生效方式 |
 |---|---|---|
-| **1** | **DB `model_configs` 里 `is_default = true` 那行的 `model_name`** → `gemini-3.5-flash` | 管理后台保存 = 立刻热加载; `psql` 直接 UPDATE = **必须重启** |
+| **1** | **DB `model_configs` 里 `is_default = true` 那行的 `model_name`** (2026-09-26 起为 `gemini-3.8-flash`) | 管理后台保存 = 立刻热加载; `psql` 直接 UPDATE = **必须重启** |
 | **2** | `.env-go`: `GEMINI_PROVIDER=vertex` + `GEMINI_VERTEX_PROJECT` / `_REGION` / `_SA_FILE` | 只能重启 (provider 在进程启动时解析一次) |
 
 分两步安全, 是因为 `gemini-3.5-flash` **在 AI Studio 侧也返回 200**: 第 1 步先换模型名, 不存在"新名字没人认"的窗口期,
@@ -315,12 +315,22 @@ nginx 站点 (§8) + 自签证书 (复用 `/etc/nginx/ssl/wms.*` 或 openssl 新
 `Gemini configured from database model config model=…`, `.env-go` 的 `GEMINI_MODEL` 被完全忽略 (dev-guide §3 ⑤)。
 改错地方 = 以为切了, 其实没切。
 
-**模型名纪律**: 模型名必须**锁定版本**, **不要用 `-latest` 别名** (平台不认, 且它随上游漂移, 发布无法复现);
-平台**没有 lite 档** (`gemini-2.5-flash-lite` / `gemini-3.5-flash-lite` 亚洲各区全 404)。
-`gemini-3.6/3.7/3.8-flash` "平台上不存在"是**曾经的错误结论** (它是在 AI Studio / 只在 asia-southeast1 量出来的):
-实测 (2026-09-25, 生产 SA) **`gemini-3.8-flash` 在 `global` / `us` / `eu` 返回 200, 在每一个单区域 (含 asia-southeast1) 返回 404** —— 新模型名是**区域作用域**的, 不是缺席; 3.6/3.7 未重新实测, 别再假设它们不存在。
-⇒ 留在 `asia-southeast1` 就把主模型与快模型统一 `gemini-3.5-flash`; 换区域上 3.8 之前先看 dev-guide §11.6 的区域矩阵 (3.5 在 `us-central1` / `europe-west4` 也是 404, 连在用模型都要重测)。
-两者同名后, "降级到快模型"的路径会被 `fast != model` 守卫跳过 —— 这是设计如此, **不是故障**。
+**模型名纪律**: 模型名必须**锁定版本** —— 不要用 `-latest` 别名做**配置值** (它随上游漂移, 发布无法复现)。
+平台**可用性是按区域算的**, 而 2026-09-25 那份矩阵后来被证明只量了单区域, 结论不能外推:
+
+| 名称 | `asia-southeast1` (2026-09-25/27) | `global` (2026-09-27 实测) |
+|---|---|---|
+| `gemini-3.8-flash` | **404** | 200 ✅ |
+| `gemini-3.5-flash-lite` | **404** | 200 ✅ |
+| `gemini-3.5-flash` | 200 ✅ | 200 ✅ |
+| `gemini-2.5-flash` / `-lite` | 200 / **404** | 200 / 200 ✅ |
+| `gemini-flash-lite-latest` (别名) | 404 | **200** —— "平台不认别名"也是单区域的错结论 |
+| `gemini-2.5-flash-preview-tts` | 404 | 400 (形状不合, 非缺席) |
+
+⇒ **生产现行 = `global` + 主模型 `gemini-3.8-flash` + 快模型 `gemini-3.5-flash-lite`** (2026-09-26 19:11 起)。
+这两个名字在 `asia-southeast1` 都是 404, 所以**区域现在是硬依赖**: 把 `GEMINI_VERTEX_REGION` 改回单区域 = 主模型与快模型同时挂。
+反过来说, 换区域前必须按 dev-guide §11.6 用**新 probe** 重测 —— 连在用模型都要重测 (`gemini-3.5-flash` 在 `us-central1` / `europe-west4` 也是 404)。
+若把主模型与快模型配成同一个名字, "降级到快模型"的路径会被 `fast != model` 守卫跳过 —— 这是设计如此, **不是故障**。
 
 **按区域看目录 (2026-09-25 起)**: 后台「模型」页的区域下拉走
 `GET /api/v1/admin/models/{id}/available?region=<region>` (省略 `region` = 服务端配置的区域), 区域候选走
@@ -358,33 +368,52 @@ UPDATE knowledge_documents SET index_status = 'pending'
 ```bash
 cd /root/khmer-deploy
 ./vertexprobe -sa /opt/khmer-ai-cs/vertex-sa.json \
-              -project <GCP project id> -region asia-southeast1 \
-              -models gemini-3.5-flash
+              -project <GCP project id> -region global
 echo "EXIT=$?"          # 门禁看这个数字, 不是看输出好不好看
 ```
 
-**为什么带 `-models`**: 内置候选表把 `gemini-2.5-flash` 与 `gemini-flash-lite-latest` 标成 `[required]`,
-而平台上**没有 lite 档也没有这个浮动别名** (全 404) —— 裸跑会在"平台完全健康"的情况下 `exit 1` (假报警)。
-用 `-models` 显式列出本次要验的模型, 是为了让**退出码只反映真正决定迁移的项目**: 只列 `gemini-3.5-flash` 时,
-唯一的 `[required]` 就是嵌入那条 (**768 维**)。
-> 想顺带确认 `gemini-2.5-flash`(备用档) 也可用, 就写成 `-models gemini-3.5-flash,gemini-2.5-flash` ——
-> 它在探针的必需名单里, 会变成第二条必需项 (该区实测可用 ✅); 只做门禁的话没必要把它捆进来。
+默认值就是生产现行: `-region global` + `-require gemini-3.8-flash,gemini-3.5-flash-lite`。
+`-require` 列出的模型**一定会被探测**, 就算 `-models` 换了候选表也删不掉它们 —— 能用参数把要验的项目删掉的门禁不是门禁。
 
-预期输出 (必需项被排到最前):
+> ⚠️ **2026-09-27 之前的 vertexprobe 对 `global` 必然假报警**。它自己拼 `{region}-aiplatform.googleapis.com`,
+> 而 `global` 的 host **不带区域前缀** (`aiplatform.googleapis.com`) —— 那个错误 host 对每个模型都回一坨 HTML 404,
+> 于是门禁在"生产正在正常出话"的情况下打印 `1 required check(s) failed`。修法是把 URL 根交给客户端同一个函数
+> (`gemini.VertexPlatformBase`, 见 `internal/gemini/provider.go` 的 `VertexHost`) —— 已修, 修后 global 与单区域的
+> 对照见下。**判断手上这个二进制是新是旧**: `./vertexprobe -h 2>&1 | grep -- -require` 有输出才是新版。
+> 旧版在仓库里还留了个备份: `/root/khmer-deploy/vertexprobe.pre-global-fix-20260927`。
+
+预期输出 (`global`, 新版, 必需项排到最前):
 ```
-vertexprobe — project=<project-id> region=asia-southeast1
+vertexprobe — project=<project-id> region=global
   service account: <name>@<project-id>.iam.gserviceaccount.com
 
 ── results ──────────────────────────────────────────────
+✓ chat: gemini-3.8-flash                        OK  [required]
+✓ chat: gemini-3.5-flash-lite                   OK  [required]
 ✓ embedding :predict: gemini-embedding-001      dim=768 (want 768)  [required]
 ✓ oauth token minting                           bearer token acquired
-✓ chat: gemini-3.5-flash                        OK
+✓ chat: gemini-2.5-flash / -lite / …           OK                       ← 只是"这个区还有什么"
 • embedding :embedContent: gemini-embedding-001 HTTP 400 INVALID_ARGUMENT: …   ← 平台走 :predict; 这条**预期就失败**, 非必需
-• chat: gemini-2.5-flash-preview-tts            HTTP 404 NOT_FOUND: …          ← 平台无 TTS 预览模型, 符合预期
+• chat: gemini-2.5-flash-preview-tts            HTTP 400 INVALID_ARGUMENT: …    ← global 里名字存在(400≠404), 是请求形状不合
+✓ context caching: cachedContents (gemini-3.8-flash) created and deleted
 
 All required checks passed. Review the non-fatal rows for TTS/caching coverage.
 ```
-报告里还会有一行 `context caching: cachedContents` —— **非必需**, 成败都不影响门禁, 原样抄进值班记录即可。
+
+对照 (`-region asia-southeast1`, 生产模型缺席 —— 这才是门禁**应该**红的样子):
+```
+✗ chat: gemini-3.8-flash                         HTTP 404 NOT_FOUND …  [required]
+✗ chat: gemini-3.5-flash-lite                    HTTP 404 NOT_FOUND …  [required]
+✓ embedding :predict: gemini-embedding-001       dim=768 (want 768)  [required]
+…
+2 required check(s) failed — do not start the migration yet.   (EXIT=1)
+```
+
+报告里 `context caching: cachedContents` 那行**非必需**, 但它有自己的坑: 平台的最小可缓存前缀实测 **4096 token**
+(2026-09-27, global + `gemini-3.8-flash`: `The cached content is of 401 tokens. The minimum token count to start
+explicit caching is 4096`), 而应用侧的守卫 `minCacheableTokens()` 仍按 1024 判 (可用
+`GEMINI_CACHE_MIN_TOKENS` 覆盖)。旧 probe 的载荷只有 401 token, 所以那行永远显示"失败" —— 现在载荷已放大到
+4600 token, 在 global 是 `created and deleted`。**别拿旧二进制的这一行下"平台不支持显式缓存"的结论。**
 
 退出码语义 (门禁只认这个):
 
@@ -414,7 +443,7 @@ runuser -u khmerai -- head -c 1 /opt/khmer-ai-cs/vertex-sa.json >/dev/null && ec
 **这套探针切流前跑一次就是基线**: 10.6 的第 1 / 2 项在切流后**原样再跑一遍**, 两次输出一致才叫"没有回归"
 (平台侧能力也可能随区域调整而漂移, 只跑一次说明不了问题)。
 
-### 10.3 第 1 步: 主模型换 `gemini-3.5-flash`（仍在 studio 上观察）
+### 10.3 第 1 步: 换主模型（现行 `gemini-3.8-flash`；历史上先走的是 `gemini-3.5-flash`，因为旧名在 studio 上也返回 200）
 
 **方式 A (推荐)**: 管理后台 → 模型 → 编辑默认配置 → `model_name` = `gemini-3.5-flash` → 保存。
 保存走 `PUT /api/v1/admin/models/{id}` → `reloadGeminiFromDB()` → `HotReload`, **不用重启**, 旁边的「测试」按钮还能当场跑一次真实调用。
@@ -438,7 +467,14 @@ B64=$(echo "$SCRIPT" | base64)
 /tmp/khmer-deploy/sshrun.sh "echo $B64 | base64 -d | bash"
 ```
 
-预期 (两种方式都要核对): `level=INFO msg="Gemini configured from database model config" model=gemini-3.5-flash`。
+预期 (两种方式都要核对): `level=INFO msg="Gemini configured from database model config" model=<新名字>`。
+
+> ⚠️ **两个只能当“当时”证据的信号**（2026-09-26 真实踩到，判错会怀疑自己看错了库）:
+> - **启动日志在“后台保存”之后会失真**。那行 `model=` 只反映**启动那一刻** DB 里的值；方式 A 的 `HotReload` 就地改了运行时模型，日志不会再打。
+>   所以“日志与现状不一致”不一定是环境有问题 —— 以 `token_usage.model` / `chat_messages.model_name` / 「测试」按钮为准。
+> - **`model_configs.updated_at` 没有触发器**（`pg_trigger` 查该表为 0 行，handler 也不写它），所以改完 `model_name` 后那一列还是旧时间。
+>   拿它当“最后一次修改时间”会得出错误结论；要时间线索就看 `model_prompt_versions` 和 journal 里的 `PUT /api/v1/admin/models/{id}`。
+
 观察期判据 (跑一段真实流量; 建议隔夜, 至少覆盖一次知识库问答):
 
 ```bash
@@ -447,7 +483,7 @@ psql "$DATABASE_URL" -c "select model_name, count(*) from chat_messages
   where created_at > now() - interval '1 hour' group by 1 order by 2 desc"
 ```
 
-期望: `gemini-3.5-flash` 有行, 且**旧名字没有新行**。旧名还在涨 = `is_default` 那行没改到。
+期望: 新名字有行, 且**旧名字没有新行**。旧名还在涨 = `is_default` 那行没改到（或者方式 B 忘了重启）。
 失败判据: 出现 `404 … no longer available` / `NOT_FOUND` 且模型名是新名 ⇒ 名字拼错 (无 lite 档, 也别加 `-latest`)。
 回滚: 把模型名改回原值 (方式 A 不用重启 / 方式 B 重启)。
 
@@ -462,7 +498,7 @@ sed -i '/^GEMINI_PROVIDER=/d; /^GEMINI_VERTEX_/d' .env-go      # 幂等: 先删�
 cat >> .env-go <<'EOF'
 GEMINI_PROVIDER=vertex
 GEMINI_VERTEX_PROJECT=<GCP project id>
-GEMINI_VERTEX_REGION=asia-southeast1
+GEMINI_VERTEX_REGION=global
 GEMINI_VERTEX_SA_FILE=/opt/khmer-ai-cs/vertex-sa.json
 EOF
 chown khmerai:khmerai .env-go
@@ -512,9 +548,9 @@ B64=$(echo "$SCRIPT" | base64)
 | # | 检查 | 命令 (服务器上) | 通过判据 |
 |---|---|---|---|
 | 0 | 服务活着 | `systemctl is-active khmer-ai-cs-go; curl -s http://127.0.0.1:8081/ready` | `active` + `"status":"ok"` |
-| 1 | 六项能力 | `./vertexprobe -sa … -region asia-southeast1 -caps gemini-3.5-flash; echo EXIT=$?` | `6/6 request shapes accepted.` + `EXIT=0` |
-| 2 | 音频容器 ogg/m4a | `./vertexprobe … -caps gemini-3.5-flash -audiodir /root/khmer-deploy/audio-samples; echo EXIT=$?` | ≥1 行 `audio/ogg` + ≥1 行 `audio/mp4`, `N/N accepted`, `EXIT=0` (**`0/0` = 假通过**) |
-| 3 | 服务端到端 | 后台「模型」页的**测试**按钮 (`POST /api/v1/admin/models/{id}/test`); 再发一条真实消息 | 返回 `reply` + `model_name=gemini-3.5-flash`; 近 50 行 journal 无 `gemini returned HTTP` |
+| 1 | 六项能力 | `./vertexprobe -sa … -region global -caps gemini-3.8-flash; echo EXIT=$?` | `6/6 request shapes accepted.` + `EXIT=0` (2026-09-27 实测全绿, 含 `thinkingConfig` 与流式 SSE) |
+| 2 | 音频容器 ogg/m4a | `./vertexprobe … -caps gemini-3.8-flash -audiodir /root/khmer-deploy/audio-samples; echo EXIT=$?` | ≥1 行 `audio/ogg` + ≥1 行 `audio/mp4`, `N/N accepted`, `EXIT=0` (**`0/0` = 假通过**) |
+| 3 | 服务端到端 | 后台「模型」页的**测试**按钮 (`POST /api/v1/admin/models/{id}/test`); 再发一条真实消息 | 返回 `reply` + `model_name` 等于在用模型; 近 50 行 journal 无 `gemini returned HTTP`; **并看 `token_usage.model` 新行** —— 启动日志的那行在这一步会失真 (§10.3) |
 | 4 | 真实多模态路径 | 用一条**真实高棉语语音**走客户渠道 (或在后台发语音/图/PDF) | 有转写/回答, 无 500 |
 | 5 | 检索基线 | 见下 (rageval) | `LEG dense recall@5 ≥ 37/45` 且 `MRR ≥ 0.655` |
 | 6 | 相似度闸门复核 | 见下 | dense 腿不被掏空; 有 sweep 证据才准调 |
