@@ -53,6 +53,16 @@ description: 将「Khmer AI 客服系统 (khmer-ai-cs-go, Go 后端 + Next.js �
 
 ## 部署工作流（迭代发布）
 
+0. **先问一句“线上那个二进制到底是从哪棵树构建的”** —— 版本号不一致不一定是“线上落后”，也可能是**线上有仓库里没有的代码**（它不以任何方式报错，只能在这一步发现）：
+   ```bash
+   strings -a /opt/khmer-ai-cs/server-go | grep -oE "vcs\.(revision|modified|time)=[^ ]*" | sort -u
+   git -C <仓库> cat-file -t <上面的 revision>        # fatal: Not a valid object = 这个提交从未进过仓库/origin
+   ```
+   拿它跟本地 `git log` 对：对不上就**先别编译**，去构建树（通常是那台 macOS）把缺的提交推上来。
+   2026-09-27 实例：线上 `9333fb1…` + `vcs.modified=false`（干净树构建）但本地与 origin **都没有这个对象**，
+   而且二进制里有 `embed keep-warm: connection established` 等三条字面量、仓库 grep 不到 ——
+   **直接部署本地 HEAD 会把线上的 embed keep-warm 默默删掉**。发布因此暂停。
+   补充：`/ready` 的 `version` 是构建期 ldflags 注的短哈希，它只告诉你“哪个 commit”，不告诉你“那些 commit 在不在仓库里”。
 1. **构建后端** (本地, 需 go ≥1.26, `brew install go`): `backend-go/` 下交叉编译 `server-go` 与 `migrate-go`; 发布前跑一次 SQL 引用检查 (`go test ./internal/sqlcheck/`, 需 `DATABASE_URL`, 未设会 skip) 质量门 —— 它挡的是编译器看不见的那类 bug (命令见 references/deploy-commands.md §1)
 2. **构建前端**: `NEXT_PUBLIC_API_URL=https://<部署域名>/api/v1 npm run build`, 组装 standalone + `.next/static` + `public` 打 tar (§2)
 3. **上传**: scp 到 `root@$KHMER_DEPLOY_HOST:/root/khmer-deploy/` (§3)
@@ -95,6 +105,16 @@ sshrun() {
 - ⚠️ `sshrun`/`scprun` 把输出过了 `grep -v` 管道：**scp 成功时没有任何输出，grep 退 1** —— 用 `&&` 链下一步会把“上传成功”误判成失败。用 `;` 分段，或下一步自己 `[ -f 远端文件 ]` + `sha256sum` 对账（上传后比对校验和本来就是必做的，二进制没有其它完整性信号）。
 - 复杂远程命令 (引号嵌套/heredoc) 一律 **base64 传参执行**: `B64=$(echo "<脚本>" | base64); sshrun "echo $B64 | base64 -d | bash"`, 避免转义地狱
 - **⚠️ 远程命令里不要用 `pkill -f "<模式>"`** — 会匹配并杀掉当前 ssh 会话自身; 清进程用 `pgrep` 拿 PID 再精确 kill
+- **⚠️ 上面这套 askpass 是“没密钥时的退路”，不是默认。先试密钥，它能省掉整段密码流程：**
+  ```bash
+  ssh -o BatchMode=yes -o ConnectTimeout=15 root@$KHMER_DEPLOY_HOST 'echo KEY_AUTH_OK; hostname'
+  ```
+  2026-09-27 实测：这台机器 `~/.ssh` 里早就有可用密钥、`BatchMode` 一次就登上，而下面两个 wrapper 里的
+  `-o PubkeyAuthentication=no` 反而把可用的密钥认证**主动关掉了**，天天逼着从环境变量递明文密码。
+  所以：**先跑上面那行，能过就全程用裸 `ssh`/`scp`（或去掉那个选项的 wrapper）**；只有它报
+  `Permission denied (publickey)` 才回落到 askpass。
+- ⚠️ 密码只在确实需要时才 `export`，**不要落盘**。另：`sshrun`/`scprun` 末尾的 `grep -v` 在“无输出”时退 1，
+  用 `&&` 链下一步会把成功当失败（scp 成功本来就没输出）——用 `;` 分段，上传后按 sha256 对账。
 
 ## 核心配置模板
 
@@ -229,6 +249,11 @@ journalctl 里周期性 `/api/v1/realtime/inbox 401 WARN` = 未带 token 的 WS 
 1. SSH 密码在本对话出现过明文, 建议尽快更换并改用密钥登录
 2. `.env-go` 里 `JWT_SECRET` / `PLATFORM_CREDENTIAL_KEY` **不可随意轮换**: 前者杀光在线会话, 后者使已保存的渠道凭据无法解密
 3. 新库首次启动必须设 `INITIAL_ADMIN_PASSWORD` (≥12 位), 001 迁移自带的默认 admin bcrypt 哈希是不安全占位
-4. `/opt/khmer-ai-cs/frontend-backup-*` 定期清理, 只留最近 3 份
+4. **备份目录与配置副本的清理纪律**（两件事不一样，分开处理）：
+   - `/opt/khmer-ai-cs/frontend-backup-*` 只留最近 3 份；不在该命名规范里的旧树（`frontend-old` /
+     `frontend.old` / `frontend.bak-*`）先 `grep -rlo <目录名> /etc/nginx/ /etc/systemd/system/` 确认无人引用再删。
+   - `.env-go.bak-*` 不要直接 `rm`：每份里既有**明文密钥**（副本越多越脏）也可能躺着**唯一的回滚值**。
+     做法：留最近 3 份在位，其余 `tar -czf /root/archive/env-go-backups-<date>.tgz`（`chmod 600`）后删原件。
+     2026-09-27 实例：studio 中继地址（§10.5 的降落伞）在现行 `.env-go` 里已被清空，**只剩在归档里** —— 直接 `rm` 就把它删没了。
 5. Postgres 备份: `pg_dump -d khmer_ai_cs` 定时跑 (pgvector 索引大, dump 会慢)
 6. `server-go` 监听 0.0.0.0:8081 公网可直连 (未走 nginx 的路径也暴露), 建议防火墙限 127.0.0.1 或加 nft 规则
