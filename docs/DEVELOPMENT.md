@@ -901,19 +901,23 @@ a69c7d1..6b8d374，修复全部 4 项发现：
 - 区域候选表是静态的（平台没有"列出所有区域"的接口），只保证 `current` 来自真实配置。
 - 目录不做缓存：每次打开模型页都实打实问一次平台（一次一页 100 条）。
 
-### 订正（2026-09-28）：生产早就在 `global` + 3.8-flash 上
+### 订正（2026-09-28）：3.8 的 p50 被生产否掉，长尾没卸
 
-本节的区域矩阵与 `deploy-khmer-ai-cs/references/dev-guide.md` §11.7 曾据一轮基准
-（global / 3.8-flash p50 22.51s）得出「不搬到 global 用 3.8」。生产实际状态与该结论相反：
+本节区域矩阵与 `deploy-khmer-ai-cs/references/dev-guide.md` §11.7 据一轮基准（global /
+3.8-flash p50 22.51s、p95 106s）得出「不切」。生产数字只否掉其中一半：
 
-- `model_configs.is_default = true` → `gemini-3.8-flash`（`max_tokens` 2048），
-  `GEMINI_VERTEX_REGION=global`；`token_usage` 里主路径自 **2026-09-06** 起就是
-  `gemini-3.8-flash`（904 行，至 09-26）⇒ 那轮基准得出结论时，主模型已经在 global 上
-  跑了 20 天。
-- 近 3 天 `/api/v1/chat` 的 200 响应（n=72）p90 **4516ms** / p95 **5814ms** /
-  max **9626ms**，连最大值都不到基准 p50 的一半 ⇒ 22.51s 在真实流量里不复现。
-- `GEMINI_FAST_MODEL` 那条路（`JudgeTurn`/rerank/路由/护栏/notify）的延迟量级完全不同：
-  实测 3.8 p50 **2421ms**，比 `gemini-3.5-flash` 的 3564ms 还快约 1.5×。
+- 搬迁后（`GEMINI_VERTEX_REGION=global`、DB 默认模型 `gemini-3.8-flash`，2026-09-26 19:11
+  改区域）`/api/v1/chat` 的 200 响应 72 条中有 **28 条真正在生成**（其余 44 条 <50ms，命中
+  `reply_cache`）：p50 **3285ms** / p90 **6612ms** / max **9626ms**，**无一条 >10s、无读
+  超时** ⇒ 生产最慢的一条都不到基准 p50 的一半，**p50 不复现**。
+- ⚠️ 但 28 条量不出 p95：§11.7 正文那条「`s.client.Timeout = 60s` × `postWithRetry` 最多
+  3 次 ⇒ 单回合最坏接近 180s」的风险**仍然成立**，只是这份样本里没出现。§11.7「已搬，
+  风险未卸」的框架照旧 —— 别把「否掉 p50」读成「否掉长尾」。
+- `GEMINI_FAST_MODEL` 那条路（`JudgeTurn`/rerank/路由/护栏/notify）是另一条量级：实测 3.8
+  p50 **2421ms**，比 `gemini-3.5-flash` 的 3564ms 还快约 1.5× ⇒ 2026-09-28 起
+  `.env-go` 的 `GEMINI_FAST_MODEL=gemini-3.8-flash`。
+- **未查清**：`token_usage` 里 `gemini-3.8-flash` 有 904 行、自 2026-09-06 04:17 起，与
+  §11.7「09-26 19:11 才改区域」并存不上（按区域矩阵 3.8 在 `asia-southeast1` 该 404）。
+  查清前别拿它推断区域历史。
 
-⇒ 2026-09-28 起 `.env-go` 的 `GEMINI_FAST_MODEL=gemini-3.8-flash`。判断准则：**基准与生产
-差一个数量级时先信生产，再回头查基准为什么偏。**
+准则：**基准与生产差一个数量级时先信生产，但「否掉 p50」与「否掉 p95 长尾」是两件事。**
