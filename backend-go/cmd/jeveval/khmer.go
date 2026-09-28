@@ -52,7 +52,7 @@ var khmerControls = []struct {
 }
 
 func runKhmer(workers int) {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	jev := typesafe.NewFromEnv(logger)
 	if !jev.Enabled() {
 		fmt.Fprintln(os.Stderr, "TYPESAFE_API_KEY not set")

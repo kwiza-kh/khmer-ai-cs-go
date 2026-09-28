@@ -546,10 +546,14 @@ topK=8 能补上长文档覆盖，但成本 +49%；缩短每条来源虽控制�
 | 5 | 通知分流 `worthPinging` | Noul（fail-open） | 照旧 ping |
 | 6 | topic 打标 → `sessions.tags` 的 `topic:*` | Choice（随 #1 同批） | 不写 tag |
 
-**阈值旋钮（env，默认值均在真实数据上校准过）**：`JEV_TURN_ESCALATE_MIN=0.90`
-（独立 Noul 安全阀）、`JEV_RULE_CONFIRM_MIN=0.70`（intent/情绪规则需 Noul 确认）、
+**阈值旋钮（env，默认值均在真实数据上校准过）**：`JEV_RULE_SOLO_MIN=0.90`
+（`TurnTriggerFor` 的独立 Noul 安全阀）、`JEV_TURN_ESCALATE_MIN=0.60`
+（`judgeTurnJev` 写入 `verdict.Escalate` 的阈值——**与上一个不是同一个 bar**；
+本行曾把它俩并写成 `JEV_TURN_ESCALATE_MIN=0.90`，2026-09-28 核对代码后更正）、
+`JEV_RULE_CONFIRM_MIN=0.70`（intent/情绪规则需 Noul 确认）、
 `JEV_ROUTE_HANDOFF_MIN=0.80`、`JEV_ROUTE_CHITCHAT_MIN=0.80`、`JEV_GUARD_MIN=0.70`、
-`JEV_GUARD_HANDOFF_MIN=0.85`、`JEV_NOTIFY_WORTH_MIN=0.30`。
+`JEV_GUARD_HANDOFF_MIN=0.85`、`JEV_NOTIFY_WORTH_MIN=0.30`、`JEV_NOTIFY_BUDGET_MS=2000`
+（新消息 ping 的 Jev 预算，超时 fail-open）、`JEV_CONTRADICTION_MIN=0.60`（入库矛盾复核）。
 
 **校准结论（cmd/jeveval，370 条真实轮次，ground truth=30 分钟内是否产生 handoff）**：
 - Jev 0 失败；sentiment 与快模型一致 99.2%、intent 81.1%、最终决策 86.8%（分歧全部是

@@ -76,7 +76,7 @@ func liveCases() []liveCase {
 // runLive executes the battery against the real API and prints per-case
 // verdicts with raw probabilities and latencies.
 func runLive(workers int) {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	pipe := &platform.Pipeline{Jev: typesafe.NewFromEnv(logger), Logger: logger}
 	if !pipe.Jev.Enabled() {
 		fmt.Fprintln(os.Stderr, "TYPESAFE_API_KEY not set")

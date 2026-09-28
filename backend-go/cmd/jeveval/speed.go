@@ -23,7 +23,7 @@ import (
 // Run it once with GEMINI_FAST_MODEL left at the deployed value, then again
 // with the model you are weighing it against; nothing is hardcoded here.
 func runSpeed(_ int) {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	gemKey := os.Getenv("GEMINI_API_KEY")
 	if gemKey == "" {
 		fmt.Fprintln(os.Stderr, "GEMINI_API_KEY not set")

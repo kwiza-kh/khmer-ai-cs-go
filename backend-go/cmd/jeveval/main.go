@@ -73,7 +73,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "usage: jeveval -csv turns.csv")
 		os.Exit(2)
 	}
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	pipe := &platform.Pipeline{Jev: typesafe.NewFromEnv(logger), Logger: logger}
 	if !pipe.Jev.Enabled() {
 		fmt.Fprintln(os.Stderr, "TYPESAFE_API_KEY not set")
@@ -271,7 +271,7 @@ func runAgree(csvPath string, workers int) {
 		fmt.Fprintln(os.Stderr, "load csv:", err)
 		os.Exit(1)
 	}
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	gemKey := os.Getenv("GEMINI_API_KEY")
 	if gemKey == "" {
 		fmt.Fprintln(os.Stderr, "GEMINI_API_KEY not set")
@@ -317,9 +317,15 @@ func runAgree(csvPath string, workers int) {
 	wg.Wait()
 
 	var both, intentAgree, sentAgree, escAgree, decAgree int
-	var jOnly, gOnly int
+	var jOnly, gOnly, jFail, gFail int
 	var samples []string
 	for _, p := range out {
+		if !p.jok {
+			jFail++
+		}
+		if !p.gok {
+			gFail++
+		}
 		if !p.jok || !p.gok {
 			continue
 		}
@@ -349,7 +355,7 @@ func runAgree(csvPath string, workers int) {
 		}
 	}
 	pct := func(n int) float64 { return 100 * float64(n) / float64(both) }
-	fmt.Printf("compared=%d (jev-only failures and gemini-only failures skipped)\n", both)
+	fmt.Printf("compared=%d of %d  failures: jev=%d gem=%d\n", both, len(out), jFail, gFail)
 	fmt.Printf("intent agreement    %.1f%%\n", pct(intentAgree))
 	fmt.Printf("sentiment agreement %.1f%%\n", pct(sentAgree))
 	fmt.Printf("escalate agreement  %.1f%%\n", pct(escAgree))
@@ -392,7 +398,7 @@ func runRerank(csvPath string, workers int) {
 		fmt.Fprintln(os.Stderr, "GEMINI_API_KEY not set")
 		os.Exit(2)
 	}
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 	pool, err := db.Connect(ctx, dsn)
