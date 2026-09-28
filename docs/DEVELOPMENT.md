@@ -554,9 +554,12 @@ topK=8 能补上长文档覆盖，但成本 +49%；缩短每条来源虽控制�
 `JEV_ROUTE_HANDOFF_MIN=0.80`、`JEV_ROUTE_CHITCHAT_MIN=0.80`、`JEV_GUARD_MIN=0.70`、
 `JEV_GUARD_HANDOFF_MIN=0.85`、`JEV_NOTIFY_WORTH_MIN=0.30`、`JEV_NOTIFY_BUDGET_MS=2000`
 （新消息 ping 的 Jev 预算，超时 fail-open）、`JEV_CONTRADICTION_MIN=0.60`（入库矛盾复核）、
-`JEV_TURN_BUDGET_MS=10000`（`JudgeTurn` 的判定预算，`internal/gemini/gemini.go` 的
-`JudgeTurnBudget`；超时即判失败、调用方静默降级到回退分类器，所以这个值直接决定
-有多少轮次落到快模型上）。
+`JEV_TURN_BUDGET_MS=4000`（**Jev** 侧轮次判定预算，`internal/platform/pipeline.go` 的
+`turnBudget`；超时即判 Jev 失败、退回快模型）、`GEMINI_JUDGE_BUDGET_MS=10000`
+（**快模型回退**侧的判定预算，`internal/gemini/gemini.go` 的 `JudgeTurnBudget`；超时或 JSON
+解析失败即判失败、调用方静默降级）。
+**这两个不是同一个旋钮**：2026-09-28 加后者时误用了已存在的 `JEV_TURN_BUDGET_MS` 名字，
+结果一个变量同时管两侧、默认值 4000 与 10000 打架，已改名。
 
 **校准结论（cmd/jeveval，370 条真实轮次，ground truth=30 分钟内是否产生 handoff）**：
 - Jev 0 失败；sentiment 与快模型一致 99.2%、intent 81.1%、最终决策 86.8%（分歧全部是
@@ -575,6 +578,7 @@ topK=8 能补上长文档覆盖，但成本 +49%；缩短每条来源虽控制�
 | `gemini-3.5-flash-lite`（当时线上实配） | 413/415 | 0 / 2 | 85.7% | 93.7% | 78.7% | 1 | 58 |
 | `gemini-3.5-flash` | 383/415 | 0 / 32 | 85.9% | 98.4% | 85.1% | 0 | 54 |
 | **`gemini-3.8-flash`** | 403/415 | 0 / 12 | **87.1%** | 98.8% | 81.9% | 1 | 51 |
+| `gemini-3.8-flash`（部署配置复跑, `-workers 3`） | 397/415 | 0 / 18 | 87.2% | 99.2% | 81.4% | 0 | 51 |
 
 - 上表那种 86.8% / sentiment 99.2% 的组合是 **flash 时代**的数字：线上
   `GEMINI_FAST_MODEL` 之后换成了 `-lite`，sentiment 一致掉到 93.7%，决策一致率基本**没变**
@@ -582,11 +586,19 @@ topK=8 能补上长文档覆盖，但成本 +49%；缩短每条来源虽控制�
 - 上表的两件事完整复现：**Jev 单方升级 0–1 次**、分歧**全是快模型多升级**（47–58 条）。
 - 3.8 一致率最高且最稳（三次复跑 86.9 / 86.9 / 87.1，极差 0.2 个点）、误升级最少
   ⇒ 2026-09-28 起 `GEMINI_FAST_MODEL=gemini-3.8-flash`。
-- **快模型的"失败"是超时预算，不是能力。** `JudgeTurn` 只有 `JEV_TURN_BUDGET_MS`（默认 10s）
-  一个预算，超时或 JSON 解析失败就返回失败、调用方静默降级。同一提示词在同一台机器上，
+- **快模型的"失败"是超时预算，不是能力。** `JudgeTurn` 的预算是 `GEMINI_JUDGE_BUDGET_MS`
+  （默认 10s），超时或 JSON 解析失败就返回失败、调用方静默降级。同一提示词在同一台机器上，
   dropout 在 2.4%–13.5% 之间摆动，上游降级窗口里到 18%–32%，**与并发无关**
   （`@workers=8` 为 2.4–2.9%，`@workers=2` 反而 13.5%）。单次看到某个快模型"不行"是误判，
   要看分布。
+- **换 3.8-flash 不是免费升级，代价要一起看。** 它答得更好（决策一致 87.2% / sentiment
+  99.2%）但也更常撞上那个预算：同一份 415 条语料，`-lite` 只丢 2 行、`gemini-3.5-flash`
+  丢 32 行、3.8-flash 丢 12–18 行（同一模型两次复跑 12 与 18 ⇒ 与上游窗口相关）。丢的行走
+  Jev→快模型的降级链，不是丢掉判定；要换这个取舍就调 `GEMINI_JUDGE_BUDGET_MS`（免重建）。
+- **这条路的权重远小于 100%。** `judgeTurn`（`internal/platform/pipeline.go`）先问
+  `judgeTurnJev`，只有 Jev `!ok` 时才调 `p.Gemini.JudgeTurn` ⇒ 快模型对**轮次判定**的影响
+  正比于 Jev 的 dropout（本仓实测 Jev 0 失败）；它 100% 负责的是 rerank / 路由 / 护栏 /
+  notify 分流。上表的"决策一致"量的是**回退模型的备胎质量**，不是线上主路径的准确率。
 - **这份语料撑不起 precision/F1。** 418 轮里只有 136 条不同消息，其中 2026-09-14 一天占 282 条；
   ground truth 只有 10 个正样本，其中 5 个是客户自己要求转人工 ⇒ 分类器可负责的正样本只有 5 个。
   线上 gate=stack@0.60 在这个 population 上的 TP=5 / FP=31，precision 13.9%，但那是

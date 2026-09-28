@@ -58,7 +58,11 @@ var FastModel = envOr("GEMINI_FAST_MODEL", "gemini-3.5-flash")
 // degradation window — it tracked the upstream window, not concurrency. Raise
 // it to trade a slower turn for coverage; lower it when a late verdict is
 // worse than a fallback one.
-var JudgeTurnBudget = envMillisOr("JEV_TURN_BUDGET_MS", 10*time.Second)
+//
+// Distinct from JEV_TURN_BUDGET_MS (the Jev-side budget, pipeline.go turnBudget,
+// default 4000): this one bounds only the fast-model fallback that runs when Jev
+// returns !ok. Do not merge the two knobs — they default to 4000 vs 10000.
+var JudgeTurnBudget = envMillisOr("GEMINI_JUDGE_BUDGET_MS", 10*time.Second)
 
 func envOr(name, fallback string) string {
 	if v := strings.TrimSpace(os.Getenv(name)); v != "" {
