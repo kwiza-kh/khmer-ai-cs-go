@@ -53,13 +53,16 @@ func (a *App) cors(next http.Handler) http.Handler {
 			return
 		}
 		h := w.Header()
-		if isWidget {
-			if origin != "" {
-				h.Set("Access-Control-Allow-Origin", origin)
-				h.Add("Vary", "Origin")
-			} else {
-				h.Set("Access-Control-Allow-Origin", "*")
-			}
+		if isWidget && origin != "" {
+			// Any origin, deliberately: the widget is embedded on arbitrary
+			// customer domains and authenticated by its own publishable token,
+			// so the Allow-Origin echo cannot be narrowed. The dangerous shape
+			// is a wildcard *paired with* Access-Control-Allow-Credentials, and
+			// this branch never sets it. A request with no Origin is not a CORS
+			// request at all, so the old unconditional `*` fallback was dead
+			// weight that read like a credentialed wildcard.
+			h.Set("Access-Control-Allow-Origin", origin)
+			h.Add("Vary", "Origin")
 		} else if isAllowed {
 			h.Set("Access-Control-Allow-Origin", origin)
 			h.Set("Access-Control-Allow-Credentials", "true")
@@ -112,12 +115,30 @@ func (a *App) logging(next http.Handler) http.Handler {
 
 type statusRecorder struct {
 	http.ResponseWriter
-	status int
+	status      int
+	wroteHeader bool
 }
 
+// WriteHeader is idempotent. net/http ignores a second call and only logs
+// "superfluous response.WriteHeader call" (29 such lines in three production
+// days); the previous version forwarded that second call and *also* overwrote
+// status, so the access log named a code that never reached the wire.
 func (s *statusRecorder) WriteHeader(code int) {
+	if s.wroteHeader {
+		return
+	}
+	s.wroteHeader = true
 	s.status = code
 	s.ResponseWriter.WriteHeader(code)
+}
+
+// Write marks the header as sent. Without it a handler that writes a body
+// (the implicit 200) and later calls WriteHeader would have that later code
+// recorded as the status while net/http, header already sent, ignores it —
+// the same log/reality split from the other direction.
+func (s *statusRecorder) Write(b []byte) (int, error) {
+	s.wroteHeader = true
+	return s.ResponseWriter.Write(b)
 }
 
 // Hijack, Flush and Unwrap pass through so WebSocket upgrades (gorilla) and

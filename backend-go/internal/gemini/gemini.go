@@ -49,11 +49,32 @@ const (
 // a measured `ListModels` answer — not an alias.
 var FastModel = envOr("GEMINI_FAST_MODEL", "gemini-3.5-flash")
 
+// JudgeTurnBudget bounds the auxiliary call that audits one customer-service
+// turn. It is a real budget, not a nicety: on timeout JudgeTurn reports
+// failure and every caller silently degrades to its fallback classifier, so an
+// upstream slowdown is indistinguishable from a model that cannot do the job.
+// Measured on the production host against one unchanged prompt, the dropout
+// moved from 2.4% to 13.5% across runs and reached 18%-32% during an upstream
+// degradation window — it tracked the upstream window, not concurrency. Raise
+// it to trade a slower turn for coverage; lower it when a late verdict is
+// worse than a fallback one.
+var JudgeTurnBudget = envMillisOr("JEV_TURN_BUDGET_MS", 10*time.Second)
+
 func envOr(name, fallback string) string {
 	if v := strings.TrimSpace(os.Getenv(name)); v != "" {
 		return v
 	}
 	return fallback
+}
+
+// envMillisOr reads a millisecond count. A non-numeric or non-positive value
+// falls back rather than disabling the budget.
+func envMillisOr(name string, fallback time.Duration) time.Duration {
+	ms, err := strconv.Atoi(strings.TrimSpace(os.Getenv(name)))
+	if err != nil || ms <= 0 {
+		return fallback
+	}
+	return time.Duration(ms) * time.Millisecond
 }
 
 // apiBase — Gemini REST endpoint. Override with GEMINI_API_BASE to route
@@ -1588,7 +1609,7 @@ func (s *Service) JudgeTurn(ctx context.Context, customerMsg, reply string, hasM
 		"Customer: " + truncateRunes(customerMsg, 600) + "\n" +
 		"Assistant: " + truncateRunes(reply, 600)
 
-	out, ok := s.GenerateFast(ctx, prompt, 10*time.Second)
+	out, ok := s.GenerateFast(ctx, prompt, JudgeTurnBudget)
 	if !ok {
 		return TurnVerdict{}, false
 	}

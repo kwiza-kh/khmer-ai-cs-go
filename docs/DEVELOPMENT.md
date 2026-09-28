@@ -553,7 +553,10 @@ topK=8 能补上长文档覆盖，但成本 +49%；缩短每条来源虽控制�
 `JEV_RULE_CONFIRM_MIN=0.70`（intent/情绪规则需 Noul 确认）、
 `JEV_ROUTE_HANDOFF_MIN=0.80`、`JEV_ROUTE_CHITCHAT_MIN=0.80`、`JEV_GUARD_MIN=0.70`、
 `JEV_GUARD_HANDOFF_MIN=0.85`、`JEV_NOTIFY_WORTH_MIN=0.30`、`JEV_NOTIFY_BUDGET_MS=2000`
-（新消息 ping 的 Jev 预算，超时 fail-open）、`JEV_CONTRADICTION_MIN=0.60`（入库矛盾复核）。
+（新消息 ping 的 Jev 预算，超时 fail-open）、`JEV_CONTRADICTION_MIN=0.60`（入库矛盾复核）、
+`JEV_TURN_BUDGET_MS=10000`（`JudgeTurn` 的判定预算，`internal/gemini/gemini.go` 的
+`JudgeTurnBudget`；超时即判失败、调用方静默降级到回退分类器，所以这个值直接决定
+有多少轮次落到快模型上）。
 
 **校准结论（cmd/jeveval，370 条真实轮次，ground truth=30 分钟内是否产生 handoff）**：
 - Jev 0 失败；sentiment 与快模型一致 99.2%、intent 81.1%、最终决策 86.8%（分歧全部是
@@ -565,6 +568,30 @@ topK=8 能补上长文档覆盖，但成本 +49%；缩短每条来源虽控制�
 - ground truth 是旧系统行为而非正确性oracle，precision 无绝对标准；上述数字用于
   选旋钮，不用于宣称准确率。
 
+**复测（2026-09-28，415 条去重真实轮次）**：
+
+| 快模型 | 计入 | 失败 Jev/快模型 | 决策一致 | sentiment | intent | Jev 单方升级 | 快模型单方升级 |
+|---|---|---|---|---|---|---|---|
+| `gemini-3.5-flash-lite`（当时线上实配） | 413/415 | 0 / 2 | 85.7% | 93.7% | 78.7% | 1 | 58 |
+| `gemini-3.5-flash` | 383/415 | 0 / 32 | 85.9% | 98.4% | 85.1% | 0 | 54 |
+| **`gemini-3.8-flash`** | 403/415 | 0 / 12 | **87.1%** | 98.8% | 81.9% | 1 | 51 |
+
+- 上表那种 86.8% / sentiment 99.2% 的组合是 **flash 时代**的数字：线上
+  `GEMINI_FAST_MODEL` 之后换成了 `-lite`，sentiment 一致掉到 93.7%，决策一致率基本**没变**
+  （85.7%–87.1% 随快模型浮动）。差额来自快模型换档，不是 Jev 决策层回归。
+- 上表的两件事完整复现：**Jev 单方升级 0–1 次**、分歧**全是快模型多升级**（47–58 条）。
+- 3.8 一致率最高且最稳（三次复跑 86.9 / 86.9 / 87.1，极差 0.2 个点）、误升级最少
+  ⇒ 2026-09-28 起 `GEMINI_FAST_MODEL=gemini-3.8-flash`。
+- **快模型的"失败"是超时预算，不是能力。** `JudgeTurn` 只有 `JEV_TURN_BUDGET_MS`（默认 10s）
+  一个预算，超时或 JSON 解析失败就返回失败、调用方静默降级。同一提示词在同一台机器上，
+  dropout 在 2.4%–13.5% 之间摆动，上游降级窗口里到 18%–32%，**与并发无关**
+  （`@workers=8` 为 2.4–2.9%，`@workers=2` 反而 13.5%）。单次看到某个快模型"不行"是误判，
+  要看分布。
+- **这份语料撑不起 precision/F1。** 418 轮里只有 136 条不同消息，其中 2026-09-14 一天占 282 条；
+  ground truth 只有 10 个正样本，其中 5 个是客户自己要求转人工 ⇒ 分类器可负责的正样本只有 5 个。
+  线上 gate=stack@0.60 在这个 population 上的 TP=5 / FP=31，precision 13.9%，但那是
+  5 个正样本算出来的数字，没有统计意义。
+
 **踩坑记录**：
 - 生产中继（Cloudflare AI Gateway）已下线 gemini-2.5-flash 系（404 "no longer
   available to new users"）→ `FastModel` 改为 `GEMINI_FAST_MODEL` 可调，默认
@@ -574,9 +601,13 @@ topK=8 能补上长文档覆盖，但成本 +49%；缩短每条来源虽控制�
   `Pipe.JudgeTurnFor` + `Pipe.PersistTurnVerdict`；新增分类逻辑只允许走这两个入口。
 - widget 流式回复后的护栏必须用 `persistCtx`（访客挂断会取消请求 ctx）。
 
-复跑校准：导出 CSV（chat_messages ⋈ sessions ⋈ 30 分钟窗口 handoff trigger）后
-`TYPESAFE_API_KEY=… go run ./cmd/jeveval -csv turns.csv [-gate stack|noul|jev|confirm]`；
-`-mode agree` 对比快模型、`-mode rerank` 需 `DATABASE_URL` 隧道做检索 A/B。
+复跑校准：导出 SQL 在 `backend-go/cmd/jeveval/turns.sql`（`chat_messages` ⋈ `sessions`
+⋈ 30 分钟窗口 handoff trigger，`COPY … TO STDOUT WITH (FORMAT csv, HEADER true)`），
+在服务器上 `set -a; . ./.env-go; set +a; psql "$DATABASE_URL" -f turns.sql > turns.csv` 即可；
+然后 `TYPESAFE_API_KEY=… go run ./cmd/jeveval -csv turns.csv [-gate stack|noul|jev|confirm]`。
+`-mode agree` 对比快模型（**必须看它印的 `failures: jev=/gem=`**，否则会像 2026-09-28 那样
+把 32% 的静默 dropout 当成模型结论）、`-mode speed` 做同输入延迟 A/B、`-mode rerank`
+需 `DATABASE_URL` 隧道做检索 A/B。
 
 复跑线上能力实测：`TYPESAFE_API_KEY=… go run ./cmd/jeveval -mode live`（22 个
 高棉语客服场景，含否定转人工、混合语言、逐 flag 护栏用例；2026-09-21 首跑
