@@ -170,8 +170,8 @@ func (p *Pipeline) NotifyNewCustomerMessage(ctx context.Context, userID int32, s
 		return
 	}
 	// Jev triage: filler turns ("ok", "thanks", emoji-only) should not buzz
-	// the owner's phone. Bounded at 1s and fail-open — a dead or slow Jev
-	// pings exactly as today.
+	// the owner's phone. Bounded (JEV_NOTIFY_BUDGET_MS, default 2s) and
+	// fail-open — a dead or slow Jev pings exactly as today.
 	if !p.worthPinging(ctx, content) {
 		return
 	}
@@ -337,6 +337,13 @@ func (p *Pipeline) WorthPinging(ctx context.Context, content string) bool {
 	return p.worthPinging(ctx, content)
 }
 
+// notifyWorthBudget bounds the Jev triage call below. It sits on a background
+// goroutine (SpawnCritical), never on the customer's reply path, so it uses the
+// same generous budget as the other Jev calls instead of the 1s it once had:
+// a hardcoded 1s timed out during routine upstream spikes (api.typesafe.ai
+// p50 ~2.3s) and fail-opened, pinging the owner for every "ok 👍".
+var notifyWorthBudget = envMillis("JEV_NOTIFY_BUDGET_MS", 2000)
+
 // worthPinging asks Jev whether a customer message deserves interrupting the
 // store owner. Fail-open on any doubt: no Jev, errors, incomplete answers,
 // and mid-range probabilities all keep today's behaviour (ping). Only a
@@ -345,7 +352,7 @@ func (p *Pipeline) worthPinging(ctx context.Context, content string) bool {
 	if !p.Jev.Enabled() {
 		return true
 	}
-	ctx, cancel := context.WithTimeout(ctx, time.Second)
+	ctx, cancel := context.WithTimeout(ctx, notifyWorthBudget)
 	defer cancel()
 
 	resp, err := p.Jev.Judge(ctx, map[string]any{"customer_message": truncateStr(content, 300)},
