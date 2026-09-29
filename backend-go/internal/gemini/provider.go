@@ -181,6 +181,32 @@ func providerFromEnv() (provider, error) {
 	}, nil
 }
 
+// withRegion aims an existing provider at another location.
+//
+// Only the host and the resource path depend on the region: the service
+// account, its project and its minted-token source are properties of the
+// DEPLOYMENT, not of a location. Re-reading the key file or re-minting tokens on
+// a switch would be work that can only fail while changing nothing.
+func (p provider) withRegion(region string) provider {
+	if p.kind != providerVertex {
+		return p
+	}
+	p.vertex.region = region
+	p.vertex.base = VertexPlatformBase(region)
+	return p
+}
+
+// NormalizeRegion is the one spelling of a location id: lowercase, trimmed.
+//
+// The value is interpolated into the HOST of a credentialed request and compared
+// against the region the deployment serves from, so a value that differs only in
+// case must not read as a different region: an admin console sending "GLOBAL"
+// would otherwise look like a switch while the vertex host rule produced a host
+// that does not resolve.
+func NormalizeRegion(region string) string {
+	return strings.ToLower(strings.TrimSpace(region))
+}
+
 // providerKindFromEnv reads GEMINI_PROVIDER. Anything that is not exactly
 // "vertex" (case-insensitive) — unset, "studio", an empty string, a typo — is
 // studio. This is the red line of the migration: the new path must be opt-in,

@@ -70,9 +70,16 @@ func main() {
 	must(err)
 	defer pool.Close()
 	svc := &rag.Service{DB: pool, Logger: slog.Default()}
-	if apiKey, model, prompt, maxTokens, ok := gemini.LoadDefaultConfig(ctx, pool); ok {
+	if apiKey, model, prompt, maxTokens, region, ok := gemini.LoadDefaultConfig(ctx, pool); ok {
 		// model_configs.api_key is sealed at rest; open it before use.
 		svc.Gemini = gemini.FromPartsFull(decryptModelKey(apiKey), model, prompt, maxTokens)
+		// The same location production serves from, or this measures an endpoint
+		// the service never calls: a model offered only in `global` answers 404 in
+		// a regional one, which reads as a model failure rather than a region
+		// difference.
+		if err := svc.Gemini.SetVertexRegion(region); err != nil {
+			slog.Warn("ignoring the stored Vertex region", "region", region, "error", err.Error())
+		}
 	} else {
 		svc.Gemini = gemini.New(os.Getenv("GEMINI_API_KEY"), os.Getenv("GEMINI_MODEL"), 0)
 	}

@@ -439,8 +439,8 @@ func TestReloadGeminiFromDBVertexAppliesEditsWithoutAKey(t *testing.T) {
 	}
 
 	original := defaultModelConfigFromDB
-	defaultModelConfigFromDB = func(ctx context.Context, db *pgxpool.Pool) (string, string, string, int, bool) {
-		return "", "gemini-3.5-flash", "", 512, true
+	defaultModelConfigFromDB = func(ctx context.Context, db *pgxpool.Pool) (string, string, string, int, string, bool) {
+		return "", "gemini-3.5-flash", "", 512, "", true
 	}
 	t.Cleanup(func() { defaultModelConfigFromDB = original })
 
@@ -471,8 +471,8 @@ func TestReloadGeminiFromDBStudioIsUnchanged(t *testing.T) {
 	t.Cleanup(func() { defaultModelConfigFromDB = original })
 
 	// (a) empty stored key → nothing is pushed.
-	defaultModelConfigFromDB = func(ctx context.Context, db *pgxpool.Pool) (string, string, string, int, bool) {
-		return "", "gemini-3.5-flash", "", 512, true
+	defaultModelConfigFromDB = func(ctx context.Context, db *pgxpool.Pool) (string, string, string, int, string, bool) {
+		return "", "gemini-3.5-flash", "", 512, "", true
 	}
 	app.reloadGeminiFromDB(context.Background())
 	if got := serving.ModelName(); got != "gemini-2.0-flash" {
@@ -484,8 +484,8 @@ func TestReloadGeminiFromDBStudioIsUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defaultModelConfigFromDB = func(ctx context.Context, db *pgxpool.Pool) (string, string, string, int, bool) {
-		return sealed, "gemini-3.5-flash", "", 512, true
+	defaultModelConfigFromDB = func(ctx context.Context, db *pgxpool.Pool) (string, string, string, int, string, bool) {
+		return sealed, "gemini-3.5-flash", "", 512, "", true
 	}
 	app.reloadGeminiFromDB(context.Background())
 	if got := serving.ModelName(); got != "gemini-3.5-flash" {
@@ -656,8 +656,15 @@ func TestListAvailableModelsRejectsARegionThatCouldSteerTheHost(t *testing.T) {
 // TestVertexRegionsEndpoint — the selector's payload: the deployment's own
 // region first and reported as current, every candidate labelled, no duplicates.
 func TestVertexRegionsEndpoint(t *testing.T) {
-	t.Setenv("GEMINI_VERTEX_REGION", "asia-southeast1")
-	result, err := (&App{}).vertexRegions(httptest.NewRecorder(),
+	platform := newModelStub(t, func(r *http.Request) (int, string) {
+		return http.StatusOK, `{"candidates":[]}`
+	})
+	vertexEnv(t, platform)
+	// A real serving service, not a bare App: `current` is the region the SERVICE
+	// is on (the environment's value at boot, then the console's last switch), so
+	// an App with no service has no region to report at all.
+	app := &App{Gemini: gemini.New("", "gemini-3.5-flash", 0)}
+	result, err := app.vertexRegions(httptest.NewRecorder(),
 		httptest.NewRequest(http.MethodGet, "/api/v1/admin/models/vertex-regions", nil))
 	if err != nil {
 		t.Fatalf("vertexRegions: %v", err)
@@ -695,8 +702,13 @@ func TestVertexRegionsEndpoint(t *testing.T) {
 
 	// A configured region outside the static list must still be expressible —
 	// otherwise the selector cannot show the operator where their service runs.
-	t.Setenv("GEMINI_VERTEX_REGION", "me-west1")
-	result, err = (&App{}).vertexRegions(httptest.NewRecorder(),
+	// Switched, rather than re-read from the environment: this is the value the
+	// request path will use, so the selector has to follow it instead of
+	// GEMINI_VERTEX_REGION, which is only the boot default.
+	if err := app.Gemini.SetVertexRegion("me-west1"); err != nil {
+		t.Fatal(err)
+	}
+	result, err = app.vertexRegions(httptest.NewRecorder(),
 		httptest.NewRequest(http.MethodGet, "/api/v1/admin/models/vertex-regions", nil))
 	if err != nil {
 		t.Fatal(err)

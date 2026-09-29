@@ -116,11 +116,19 @@ type Service struct {
 	systemPrompt string
 	maxTokens    int
 
-	// provider/providerErr come from the process environment and a config file,
-	// neither of which changes while the process runs, so they are resolved once
-	// in New and read without the mutex (unlike the hot-reloadable fields above).
+	// provider/providerErr are resolved once in New from the process environment
+	// and a config file. The provider is NOT immutable: SetVertexRegion re-aims
+	// it at another location while requests are in flight, so it is read and
+	// written under the mutex like the hot-reloadable fields above (it used to be
+	// read without one, on the grounds that only the environment could set it —
+	// which the console can now do too). providerErr never changes; a broken
+	// service-account file is not repaired by switching regions.
 	provider    provider
 	providerErr error
+	// region is the Vertex location in force: the environment's default resolved
+	// in New, then whatever the console last switched to. Empty on the studio
+	// transport, which has no locations at all.
+	region string
 
 	mu         sync.Mutex
 	embedCache map[string]embedCacheEntry
@@ -141,6 +149,7 @@ func New(apiKey, model string, maxTokens int) *Service {
 		maxTokens:    maxTokens,
 		provider:     prov,
 		providerErr:  provErr,
+		region:       NormalizeRegion(prov.vertex.region),
 		embedCache:   make(map[string]embedCacheEntry),
 	}
 	// An empty key means mock mode on the studio path — unchanged. Vertex
@@ -160,6 +169,8 @@ func New(apiKey, model string, maxTokens int) *Service {
 // deployment that is missing its key file must fail loudly, not fall back to
 // whatever URL shape a zero provider happens to produce.
 func (s *Service) activeProvider() (provider, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.providerErr != nil {
 		return provider{}, s.providerErr
 	}
@@ -374,12 +385,19 @@ var vertexRegionCandidates = []VertexRegion{
 // VertexRegions returns the picker's candidates with the deployment's own region
 // FIRST, plus that region as `current`.
 //
-// `current` is read from the real configuration (GEMINI_VERTEX_REGION), never
-// from the static list, and a configured region that is NOT in the static list
-// is still returned first: an operator running an unusual location must see the
-// region their service actually uses, not a selector that cannot express it.
-func VertexRegions() ([]VertexRegion, string) {
-	current := strings.ToLower(vertexRegion())
+// `current` is passed in by the caller because it is NOT the environment's value
+// any more: it is the region the serving service is on RIGHT NOW (Service.Region,
+// env default overridden by whatever the console last switched to). Reading the
+// environment here would paint the selector with a region the deployment no
+// longer uses — and it is the same value the admin save guard reasons about, so
+// two sources would disagree about where traffic goes.
+//
+// It is never taken from the static list, and a configured region that is NOT in
+// that list is still returned first: an operator running an unusual location
+// must see the region their service actually uses, not a selector that cannot
+// express it.
+func VertexRegions(current string) ([]VertexRegion, string) {
+	current = NormalizeRegion(current)
 	out := make([]VertexRegion, 0, len(vertexRegionCandidates)+1)
 	out = append(out, VertexRegion{ID: current, Label: regionLabel(current)})
 	for _, r := range vertexRegionCandidates {
@@ -787,15 +805,59 @@ const (
 	ProbeIndeterminate ProbeOutcome = "indeterminate"
 )
 
-// ServingRegion is the region every chat/generate call this deployment makes is
-// sent to (GEMINI_VERTEX_REGION, or the measured default). It is NOT the region
-// an operator browses in the console: the region picker on the model page only
-// chooses which catalog to LIST, while serving always stays here. Exported
-// because the admin save guard must reason about "will this model name work
-// where it will actually be called", and that question cannot be answered
-// without this value.
-func ServingRegion() string {
-	return strings.ToLower(strings.TrimSpace(vertexRegion()))
+// Region is the Vertex location every chat/generate call this deployment makes
+// is sent to right now: GEMINI_VERTEX_REGION (or the measured default) as the
+// boot value, then whatever the console last switched to.
+//
+// It is NOT the region an operator browses in the console — browsing picks a
+// catalog to LIST and stays free — but it IS the region the model-save guard
+// must reason about, because "will this model name work where it will actually
+// be called" cannot be answered without it. One accessor for that question, so
+// the picker's `current`, the guard and the request URL cannot disagree.
+func (s *Service) Region() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.region
+}
+
+// SetVertexRegion moves the deployment to another Vertex location in place.
+//
+// Empty means "no change" rather than "reset to the environment": the console
+// never sends an empty region, and a caller that cleared the column would
+// otherwise silently relocate serving back to a value from a `.env` file it
+// cannot see.
+//
+// The region is interpolated into the HOST of a request that carries a bearer
+// token, so it is validated here with the same rule the request path uses
+// (ValidVertexRegion) — an unvalidated one would be a way to aim this
+// deployment's credential at an arbitrary host.
+//
+// On the studio transport there is nothing to aim (studio is one global endpoint
+// with no location concept), so this is a no-op there rather than an error: the
+// console is where a region request is refused, because only the console knows
+// which transport the operator is looking at.
+func (s *Service) SetVertexRegion(region string) error {
+	region = NormalizeRegion(region)
+	if region == "" {
+		return nil
+	}
+	if !ValidVertexRegion(region) {
+		return fmt.Errorf("invalid Vertex region %q", region)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.providerErr != nil {
+		// A broken service-account configuration is not repaired by aiming it at
+		// another location, and reporting "invalid region" for it would hide the
+		// cause the operator has to fix.
+		return s.providerErr
+	}
+	if s.provider.kind != providerVertex {
+		return nil
+	}
+	s.provider = s.provider.withRegion(region)
+	s.region = region
+	return nil
 }
 
 // ProbeModel answers one question that neither the publisher list nor a region's
@@ -943,7 +1005,15 @@ func (s *Service) fastModelName() string {
 // build an endpoint — exactly the fragmentation that let the studio/vertex
 // split hide in the first place.
 func (s *Service) generateURLFor(model string) string {
-	return s.provider.generateURL(model)
+	prov, err := s.activeProvider()
+	if err != nil {
+		// The caller resolved the transport first and already returned this
+		// error (postWithRetry/cmd paths), so an unusable provider here means the
+		// deployment was switched to a region with no credential between those
+		// two reads — an empty URL fails the request the same way.
+		return ""
+	}
+	return prov.generateURL(model)
 }
 
 // postWithRetry posts JSON, retrying 5xx and transport errors up to 3 times
@@ -1429,7 +1499,7 @@ func (s *Service) SynthesizeSpeech(ctx context.Context, text string) ([]byte, er
 	// TTS stays on the provider's generateContent endpoint like every other
 	// model call; it is switched off at the call sites (TTS_ENABLED), not here,
 	// so the studio request below is byte-for-byte the one that shipped.
-	target := s.provider.generateURL(TTSModel())
+	target := s.generateURLFor(TTSModel())
 	status, respText, err := s.postWithRetry(ctx, target, body)
 	if err != nil || status != http.StatusOK {
 		return nil, fmt.Errorf("tts failed (%d): %v", status, err)
@@ -2138,7 +2208,7 @@ func ExtractTextFromValue(v map[string]any) string {
 }
 
 // LoadDefaultConfig reads the default model config row from the DB:
-// (api_key, model_name, system_prompt, max_tokens).
+// (api_key, model_name, system_prompt, max_tokens, vertex_region).
 //
 // The first return value is the STUDIO credential (see CredentialSourceOf), and
 // callers must treat it that way: under vertex it is irrelevant to serving and
@@ -2146,17 +2216,23 @@ func ExtractTextFromValue(v map[string]any) string {
 // whether the service is configured — New already answers that (IsConfigured),
 // and on the vertex path the transport authenticates from the service-account
 // file no matter what this column holds.
-func LoadDefaultConfig(ctx context.Context, pool *pgxpool.Pool) (string, string, string, int, bool) {
-	var apiKey, modelName, systemPrompt string
+//
+// vertex_region is the location the console last switched to, empty when the
+// deployment never switched. Callers that SERVE must apply it (SetVertexRegion):
+// without that, a restart quietly sends traffic back to the region in `.env-go`
+// while the console still displays the switched one.
+func LoadDefaultConfig(ctx context.Context, pool *pgxpool.Pool) (string, string, string, int, string, bool) {
+	var apiKey, modelName, systemPrompt, region string
 	var maxTokens int
 	err := pool.QueryRow(ctx,
-		"SELECT api_key, model_name, COALESCE(system_prompt, ''), COALESCE(max_tokens, 2048) "+
+		"SELECT api_key, model_name, COALESCE(system_prompt, ''), COALESCE(max_tokens, 2048), "+
+			"COALESCE(vertex_region, '') "+
 			"FROM model_configs WHERE is_default = true ORDER BY config_id LIMIT 1",
-	).Scan(&apiKey, &modelName, &systemPrompt, &maxTokens)
+	).Scan(&apiKey, &modelName, &systemPrompt, &maxTokens, &region)
 	if err != nil {
-		return "", "", "", 0, false
+		return "", "", "", 0, "", false
 	}
-	return apiKey, modelName, systemPrompt, maxTokens, true
+	return apiKey, modelName, systemPrompt, maxTokens, NormalizeRegion(region), true
 }
 
 func digArray(v map[string]any, keys ...string) []float64 {

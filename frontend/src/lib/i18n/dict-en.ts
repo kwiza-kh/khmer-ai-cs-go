@@ -640,13 +640,16 @@ export const en: Dict = {
   // region selector next to the model it drives. Absent on AI Studio, where a
   // region means nothing.
   "admin.region": "Browse models by region",
-  "admin.regionHint": "Browsing filter only — it does NOT change where this config runs. Each Vertex region offers a different model set, so the list below loads for the region you pick. This deployment serves from {servingRegion}; a model missing there cannot be saved.",
+  "admin.regionHint": "Browsing filter only — picking a region here does NOT change where this deployment runs; the list below loads for the region you pick. Each Vertex region offers a different model set, and this deployment currently serves from {servingRegion}. A model missing there cannot be saved. To actually move traffic, use the button below (it probes the model in use against the new region and refuses if that region does not serve it).",
   "admin.regionUnknown": "Server default region",
   "admin.regionLoading": "Loading the region list…",
   "admin.regionListUnavailable": "Could not load the region list. The region configured on the server is used.",
   "admin.modelListIncomplete": "The model list for {region} is incomplete — that region's catalog could not be read, so this is the configured/fallback set. Reason: {reason}",
   "admin.regionGlobal": "Global",
   "admin.regionChanged": "Region set to {region} — reloading the model list",
+  "admin.regionApply": "Serve from {region}",
+  "admin.regionApplying": "Switching…",
+  "admin.regionApplied": "Now serving from {region} — new conversations go there",
   "admin.loadingModelsForRegion": "Loading models for {region}…",
   "admin.connectedGeminiRegion": "Connected · {n} chat models available in {region}.",
   // Launch stage of a listed model: GA once generally available, otherwise a

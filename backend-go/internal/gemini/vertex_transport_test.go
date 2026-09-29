@@ -100,6 +100,81 @@ func vertexService(t *testing.T, reply func(r *http.Request, body []byte) (int, 
 	return New("", "gemini-3.5-flash", 128), platform, &tokenCalls
 }
 
+// TestSetVertexRegionAimsTheTransport — the console's region switch has to move
+// the URL every model call is built from, and has to refuse anything that could
+// aim a token-bearing request at another host. No stub base here on purpose:
+// the HOST is exactly what this test is about, so GEMINI_VERTEX_API_BASE stays
+// unset (it is the one knob that hides the region from the URL).
+func TestSetVertexRegionAimsTheTransport(t *testing.T) {
+	saPath, _ := writeTestServiceAccount(t, "https://oauth2.googleapis.com/token", "proj-1")
+	t.Setenv("GEMINI_PROVIDER", "vertex")
+	t.Setenv("GEMINI_VERTEX_SA_FILE", saPath)
+	t.Setenv("GEMINI_VERTEX_PROJECT", "proj-1")
+	t.Setenv("GEMINI_VERTEX_REGION", "asia-southeast1")
+	t.Setenv("GEMINI_VERTEX_API_BASE", "")
+
+	s := New("", "gemini-3.5-flash", 128)
+	if got := s.Region(); got != "asia-southeast1" {
+		t.Fatalf("boot region = %q, want the environment's asia-southeast1", got)
+	}
+	if got := s.generateURLFor("m"); !strings.Contains(got, "asia-southeast1-aiplatform.googleapis.com") {
+		t.Fatalf("boot URL = %q, want the configured region's host", got)
+	}
+
+	// A switch, with the console's own casing and padding: the value is
+	// normalized, and `global` is the one location whose host carries no prefix.
+	if err := s.SetVertexRegion(" GLOBAL "); err != nil {
+		t.Fatalf("switch to global: %v", err)
+	}
+	if got := s.Region(); got != "global" {
+		t.Errorf("region after switch = %q, want global", got)
+	}
+	want := "https://aiplatform.googleapis.com/v1/projects/proj-1/locations/global/publishers/google/models/m:generateContent"
+	if got := s.generateURLFor("m"); got != want {
+		t.Errorf("URL after switch = %q, want %q", got, want)
+	}
+
+	// Values that could steer the host of a credentialed request are refused, and
+	// a refusal changes nothing — the deployment keeps serving where it was.
+	for _, bad := range []string{"us.example.com", "us/east", "-us", "us-", "a--b", "us central", strings.Repeat("x", 41)} {
+		if err := s.SetVertexRegion(bad); err == nil {
+			t.Errorf("SetVertexRegion(%q) was accepted", bad)
+		}
+	}
+	if got := s.Region(); got != "global" {
+		t.Errorf("region after refused values = %q, want it unchanged (global)", got)
+	}
+
+	// Empty is "no change", not "reset to the environment": a caller clearing
+	// the column must not silently relocate serving to a value it cannot see.
+	if err := s.SetVertexRegion(""); err != nil {
+		t.Fatalf("empty region: %v", err)
+	}
+	if got := s.Region(); got != "global" {
+		t.Errorf("region after an empty switch = %q, want it unchanged (global)", got)
+	}
+}
+
+// TestSetVertexRegionIsANoOpOnStudio — studio is one global endpoint with no
+// locations, so a stored region is inert there rather than an error: the column
+// can outlive a switch back to AI Studio, exactly as api_key outlives the switch
+// the other way.
+func TestSetVertexRegionIsANoOpOnStudio(t *testing.T) {
+	t.Setenv("GEMINI_PROVIDER", "studio")
+	t.Setenv("GEMINI_API_BASE", "")
+
+	s := New("AIza-key", "gemini-3.5-flash", 0)
+	if err := s.SetVertexRegion("us"); err != nil {
+		t.Fatalf("studio switch: %v", err)
+	}
+	if got := s.Region(); got != "" {
+		t.Errorf("studio region = %q, want empty", got)
+	}
+	if got := s.generateURLFor("m"); !strings.Contains(got, "generativelanguage.googleapis.com") {
+		t.Errorf("studio URL = %q, want the studio endpoint", got)
+	}
+}
+
 // vertexModelResource is the BARE resource name (no host, no /v1) — what the
 // cachedContents body's `model` field takes; vertexModelPrefix is the same
 // thing as a URL path.

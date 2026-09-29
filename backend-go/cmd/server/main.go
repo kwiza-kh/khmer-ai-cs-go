@@ -102,11 +102,28 @@ func main() {
 	// Gemini service — prefer the DB default model config (admin Models page is
 	// the source of truth once a key is saved), fall back to env.
 	var gem *gemini.Service
-	if apiKey, modelName, systemPrompt, maxTokens, ok := gemini.LoadDefaultConfig(ctx, pool); ok {
+	if apiKey, modelName, systemPrompt, maxTokens, region, ok := gemini.LoadDefaultConfig(ctx, pool); ok {
 		gem = gemini.FromPartsFull(sealer.DecryptOrKeep(apiKey), modelName, systemPrompt, maxTokens)
+		// The Vertex location the console last switched to, applied before anything
+		// can serve. This is what makes a switch survive a restart: without it the
+		// process would quietly go back to GEMINI_VERTEX_REGION on every deploy
+		// while the console still displayed the switched one.
+		//
+		// A stored value that does not validate is WARNED about and skipped, not
+		// fatal: the deployment then serves from the region it booted with — a
+		// working state — instead of refusing to start the whole platform (inbox,
+		// webhooks, TTS) over one setting that was ignored anyway. The API cannot
+		// store such a value (it validates what it writes), so reaching this means
+		// the row was edited by hand.
+		if err := gem.SetVertexRegion(region); err != nil {
+			logger.Warn("ignoring the Vertex region stored in the model config; serving from the environment's region",
+				"stored_region", region, "serving_region", gem.Region(), "error", err.Error())
+		}
 		if gem.IsConfigured() {
 			logger.Info("Gemini configured from database model config",
 				"model", gem.ModelName(),
+				// Empty on the studio transport, which has no locations at all.
+				"region", gem.Region(),
 				// Which credential is actually in use. Under vertex the DB key
 				// is dead data and the service-account file authenticates, so a
 				// log line naming only the model sends whoever is debugging a

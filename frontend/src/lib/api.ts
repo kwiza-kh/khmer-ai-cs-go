@@ -121,9 +121,11 @@ export interface ModelItem {
    */
   credential_source?: "api_key" | "service_account";
   /**
-   * Per-config Vertex region, if a backend ever stores one. Not sent today:
-   * the region is chosen in the admin UI and passed to the model-list call.
-   * Optional so the page can prefer it without a type assertion.
+   * Per-config Vertex region, if a backend reports one. Not sent today: the
+   * SERVING region is a property of the deployment, not of one config, and the
+   * admin page reads it from GET /admin/models/vertex-regions (`current`).
+   * Optional so the page can prefer a per-config value without a type
+   * assertion if one ever exists.
    */
   region?: string;
 }
@@ -168,9 +170,12 @@ export interface VertexRegion {
 export interface VertexRegionsResponse {
   regions: VertexRegion[];
   /**
-   * The region the backend is configured with today. It is also present in
-   * `regions` (first) even when it is not one of the static candidates, so it
-   * is always a selectable option.
+   * The region the backend SERVES from right now: the environment's value at
+   * boot, then whatever the console last applied (PUT model configs/{id} with
+   * `vertex_region`). It is not the region the model list is browsed in — that
+   * is the local selector state — and it is also present in `regions` (first)
+   * even when it is not one of the static candidates, so it is always a
+   * selectable option.
    */
   current: string;
 }

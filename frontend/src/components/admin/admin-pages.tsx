@@ -589,6 +589,10 @@ export function ModelsAdminPage() {
   // Region the operator picked per config. Absent means "follow the region the
   // server is configured with" — the region list itself is shared by every card.
   const [regionByConfig, setRegionByConfig] = useState<Record<number, string>>({});
+  // Config whose browsed region is being applied as the SERVING region right
+  // now. One id, not a set: the serving region is a deployment-wide setting, so
+  // two cards applying at once would race each other's write.
+  const [applyingRegionID, setApplyingRegionID] = useState<number | null>(null);
   // The built-in prompt a config falls back to when system_prompt is empty.
   // Without it the field below can only show the STORED value, which is empty
   // on a healthy deployment — an operator then cannot tell whether a prompt is
@@ -696,6 +700,29 @@ export function ModelsAdminPage() {
     setRegionByConfig((previous) => ({ ...previous, [model.config_id]: region }));
     void loadAvailableModels(model, region);
     toast.success(tf("admin.regionChanged", { region }));
+  };
+
+  // Apply the browsed region as the SERVING region.
+  //
+  // Kept as a second, explicit action instead of making the picker above do it:
+  // browsing a catalog is free and reversible, while this one moves every
+  // customer call (and with it embeddings, context caches and TTS). The backend
+  // refuses a region that does not serve the model in use, so the honest failure
+  // mod is an error toast, not a silent switch — and `currentRegion` is re-read
+  // from the server rather than assumed, so a refused switch never displays as
+  // applied.
+  const handleApplyRegion = async (model: ModelItem, region: string) => {
+    if (!region || region === currentRegion) return;
+    setApplyingRegionID(model.config_id);
+    try {
+      await updateModelConfig(model.config_id, { vertex_region: region });
+      await mutate();
+      toast.success(tf("admin.regionApplied", { region }));
+    } catch (error: unknown) {
+      toast.error((error as Error).message);
+    } finally {
+      setApplyingRegionID(null);
+    }
   };
 
   const handleSaveModel = async (model: ModelItem) => {
@@ -958,6 +985,23 @@ export function ModelsAdminPage() {
                                 // 404s — the failure the save guard now refuses.
                                 : tf("admin.regionHint", { servingRegion: currentRegion || t("admin.regionUnknown") })}
                           </p>
+                          {/* Offered only when the pick above differs from what is
+                              serving: a button that says "switch" while already
+                              there teaches the operator to ignore it. */}
+                          {region && currentRegion && region !== currentRegion && (
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              size="sm"
+                              className="mt-2 h-7 text-xs"
+                              disabled={applyingRegionID !== null}
+                              onClick={() => void handleApplyRegion(model, region)}
+                            >
+                              {applyingRegionID === model.config_id
+                                ? t("admin.regionApplying")
+                                : tf("admin.regionApply", { region })}
+                            </Button>
+                          )}
                         </div>
                       )}
                       <div>

@@ -624,13 +624,16 @@ export const zh: Dict = {
   "admin.modelNotSet": "未设置模型",
   // Vertex 各区域提供的模型不同, 故卡片在模型旁带一个区域选择器; AI Studio 路径没有区域概念, 不显示。
   "admin.region": "按区域浏览模型",
-  "admin.regionHint": "仅用于浏览筛选 —— **不会**改变这套配置的服务区域。Vertex 各区域提供的模型不同，下方列表按你选的区域加载。本部署的服务区域是 {servingRegion}；该区域没有的模型无法保存。",
+  "admin.regionHint": "仅用于浏览筛选 —— 选它**不会**改变服务区域，下方列表按你选的区域加载。Vertex 各区域提供的模型不同，本部署当前的服务区域是 {servingRegion}；该区域没有的模型无法保存。要真的把流量切过去，用下面的按钮（它会先用当前在用的模型在新区域实测一次，模型不存在则拒绝）。",
   "admin.regionUnknown": "服务器默认区域",
   "admin.regionLoading": "正在加载区域列表…",
   "admin.regionListUnavailable": "未能加载区域列表，改用服务器上配置的区域。",
   "admin.modelListIncomplete": "{region} 的模型列表不完整 —— 无法读取该区域的模型目录，当前显示的是已配置/兜底的模型集合。原因：{reason}",
   "admin.regionGlobal": "全球",
   "admin.regionChanged": "区域已切换为 {region} —— 正在重新加载模型列表",
+  "admin.regionApply": "让服务改用 {region}",
+  "admin.regionApplying": "正在切换…",
+  "admin.regionApplied": "服务区域已切到 {region} —— 新的对话从该区域发出",
   "admin.loadingModelsForRegion": "正在加载 {region} 的模型…",
   "admin.connectedGeminiRegion": "已连接 · {region} 有 {n} 个可对话模型可用。",
   // 列表里模型的发布阶段: 正式版(GA) 或预览版。

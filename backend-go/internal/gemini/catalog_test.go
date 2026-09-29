@@ -560,7 +560,7 @@ func TestCapabilityClassification(t *testing.T) {
 // static candidate list (there is no "list all regions" API to fall back on).
 func TestVertexRegionsPutsTheConfiguredRegionFirst(t *testing.T) {
 	t.Setenv("GEMINI_VERTEX_REGION", "asia-southeast1")
-	regions, current := VertexRegions()
+	regions, current := VertexRegions(NormalizeRegion(vertexRegion()))
 	if current != "asia-southeast1" {
 		t.Fatalf("current = %q, want the configured region", current)
 	}
@@ -585,13 +585,13 @@ func TestVertexRegionsPutsTheConfiguredRegionFirst(t *testing.T) {
 	// The default region is the measured target, so an unset variable still
 	// resolves to the region production serves from.
 	t.Setenv("GEMINI_VERTEX_REGION", "")
-	if regions, current := VertexRegions(); current != vertexDefaultRegion || regions[0].ID != vertexDefaultRegion {
+	if regions, current := VertexRegions(NormalizeRegion(vertexRegion())); current != vertexDefaultRegion || regions[0].ID != vertexDefaultRegion {
 		t.Errorf("unset region resolved to current=%q first=%q, want %q", current, regions[0].ID, vertexDefaultRegion)
 	}
 	// A region the static list has never heard of is still first and still
 	// labelled — the operator's own deployment is not an edge case.
 	t.Setenv("GEMINI_VERTEX_REGION", "me-west1")
-	regions, current = VertexRegions()
+	regions, current = VertexRegions(NormalizeRegion(vertexRegion()))
 	if current != "me-west1" || regions[0].ID != "me-west1" {
 		t.Fatalf("current = %q first = %q, want me-west1", current, regions[0].ID)
 	}

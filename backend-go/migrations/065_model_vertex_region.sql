@@ -1,0 +1,20 @@
+-- Vertex serving region, switchable from the console (2026-09).
+--
+-- WHY a column on model_configs and not a table of its own: this row already IS
+-- the deployment's model configuration (one default row, edited in the admin
+-- console, hot-reloaded into the running service), and "which location does this
+-- deployment call" is part of the same edit. A separate table would give the
+-- console two places to write one setting, and a second lifecycle to keep in
+-- step with the model name the region has to be able to serve.
+--
+-- Empty (or NULL, on a row that predates this migration) means "never switched":
+-- the service keeps the region from GEMINI_VERTEX_REGION, which stays the boot
+-- default. A non-empty value is what the console last applied, it overrides the
+-- environment, and it is applied at boot as well as on save — so a switch
+-- survives a restart and a `.env-go` edit no longer moves serving on its own.
+--
+-- The value becomes part of the request HOST on the Vertex transport, so the
+-- API validates it (gemini.ValidVertexRegion) before writing; it is not a
+-- free-form string, and a value that does not validate is ignored at boot with a
+-- warning rather than allowed to steer a credentialed request.
+ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS vertex_region VARCHAR(40);

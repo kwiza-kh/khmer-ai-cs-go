@@ -206,18 +206,24 @@ var studioAPIKeyFromDB = func(ctx context.Context, db *pgxpool.Pool, configID in
 }
 
 // defaultModelConfigFromDB reads the default config row the hot-reload pushes
-// into the serving service: (api_key, model_name, system_prompt, max_tokens),
-// with ok=false when there is no default row. Same seam, same reason: the
-// hot-reload's behaviour under vertex (empty key must still reload) is only
-// observable if the row can be supplied without a database.
-var defaultModelConfigFromDB = func(ctx context.Context, db *pgxpool.Pool) (apiKey, modelName, systemPrompt string, maxTokens int, ok bool) {
+// into the serving service: (api_key, model_name, system_prompt, max_tokens,
+// vertex_region), with ok=false when there is no default row. Same seam, same
+// reason: the hot-reload's behaviour under vertex (empty key must still reload)
+// is only observable if the row can be supplied without a database.
+//
+// vertex_region is the location the console last switched to, empty when it
+// never switched. Both the boot path and the hot-reload need it: without it a
+// restart would quietly move serving back to the region in `.env-go` while the
+// console still showed the switched one.
+var defaultModelConfigFromDB = func(ctx context.Context, db *pgxpool.Pool) (apiKey, modelName, systemPrompt string, maxTokens int, region string, ok bool) {
 	err := db.QueryRow(ctx,
-		"SELECT api_key, model_name, COALESCE(system_prompt,''), COALESCE(max_tokens,2048) FROM model_configs WHERE is_default = true ORDER BY config_id LIMIT 1").
-		Scan(&apiKey, &modelName, &systemPrompt, &maxTokens)
+		"SELECT api_key, model_name, COALESCE(system_prompt,''), COALESCE(max_tokens,2048), "+
+			"COALESCE(vertex_region,'') FROM model_configs WHERE is_default = true ORDER BY config_id LIMIT 1").
+		Scan(&apiKey, &modelName, &systemPrompt, &maxTokens, &region)
 	if err != nil {
-		return "", "", "", 0, false
+		return "", "", "", 0, "", false
 	}
-	return apiKey, modelName, systemPrompt, maxTokens, true
+	return apiKey, modelName, systemPrompt, maxTokens, gemini.NormalizeRegion(region), true
 }
 
 // The model-config routes below were written when there was only AI Studio, so
@@ -276,6 +282,12 @@ type updateModelRequest struct {
 	ContextCache *int     `json:"context_cache_ttl"`
 	IsDefault    *bool    `json:"is_default"`
 	APIKey       *string  `json:"api_key"`
+	// VertexRegion is the SERVING location (model_configs.vertex_region), not
+	// the one the model list is browsed in: browsing a catalog stays free and
+	// has no effect on where calls go. Absent means "do not touch it" — the
+	// difference between that and an empty string is what keeps a settings save
+	// from silently relocating serving back to the environment's default.
+	VertexRegion *string `json:"vertex_region"`
 }
 
 // defaultSystemPrompt — the built-in prompt a config falls back to when its own
@@ -305,7 +317,8 @@ func (a *App) updateModelConfig(w http.ResponseWriter, r *http.Request, configID
 		return nil, ErrBadRequest("请求格式错误")
 	}
 	hasAny := req.Name != nil || req.ModelName != nil || req.SystemPrompt != nil || req.Temperature != nil ||
-		req.MaxTokens != nil || req.ContextCache != nil || req.IsDefault != nil || (req.APIKey != nil && *req.APIKey != "")
+		req.MaxTokens != nil || req.ContextCache != nil || req.IsDefault != nil || req.VertexRegion != nil ||
+		(req.APIKey != nil && *req.APIKey != "")
 	if !hasAny {
 		return nil, ErrBadRequest("无更新字段")
 	}
@@ -319,26 +332,50 @@ func (a *App) updateModelConfig(w http.ResponseWriter, r *http.Request, configID
 		return nil, ErrBadRequest("Vertex 模式下凭据来自服务器上的服务账号文件（GEMINI_VERTEX_SA_FILE），" +
 			"API Key 不是聊天凭据，此接口不接受写入")
 	}
-	// Saving a model this deployment cannot serve is the one write that takes
-	// customer chat down, and the console makes it easy to reach by accident: the
-	// region picker on the model page chooses which catalog to LIST, so selecting
-	// `global` (the only region serving gemini-3.8-flash) and then that model
-	// reads as "switch to 3.8", while serving stays on GEMINI_VERTEX_REGION. The
-	// result is that every call 404s — the admin Test button surfaces it only as
-	// a generic 502 (measured 2026-09-25) — and on the default config that is a
-	// production outage rather than a failed experiment.
+	// Two writes below can take customer chat down, and both are guarded the same
+	// way: only a NOT_FOUND from a real call vetoes. Quota, permission and network
+	// failures are indeterminate and must not block a legitimate save.
 	//
-	// Probed against the SERVING region, never the browsed one, and only a
-	// NOT_FOUND vetoes: quota, permission and network failures are indeterminate
-	// and must not block a legitimate save.
+	// (a) Switching the SERVING region. The console's picker browses catalogs, and
+	// a listing is NOT callability (see gemini.ModelCatalog): a region can list the
+	// serving model and still 404 every call. Probed with the model this
+	// deployment actually answers customers with, because that pair is the one
+	// that has to keep working.
+	if req.VertexRegion != nil {
+		if gemini.CredentialSourceOf().IsAPIKey() {
+			return nil, ErrBadRequest("region 只在 Vertex（服务账号）传输下有意义：" +
+				"AI Studio 只有一个全局端点，写入后不会被任何请求读取")
+		}
+		target := gemini.NormalizeRegion(*req.VertexRegion)
+		if !gemini.ValidVertexRegion(target) {
+			return nil, ErrBadRequest("无效的 region: " + target)
+		}
+		if serving := a.servingRegion(); target != serving {
+			if model := a.servingModelName(); model != "" &&
+				gemini.ProbeModel(r.Context(), target, model) == gemini.ProbeNotServed {
+				return nil, ErrBadRequest(fmt.Sprintf(
+					"在 %s 区域测试在用的模型 %s 时返回 NOT_FOUND：切过去之后每一次调用都会 404。"+
+						"Vertex 只在部分区域提供该模型（例如 gemini-3.8-flash 仅 global / us / eu 可用）。"+
+						"请先保存一个在 %s 可用的模型，或改选区域。本次未写入任何改动。",
+					target, model, target))
+			}
+		}
+	}
+	// (b) Saving a model this deployment cannot serve, which the console makes easy
+	// to reach by accident: selecting `global` (the only region serving
+	// gemini-3.8-flash) and then that model reads as "switch to 3.8". Every call
+	// then 404s — the admin Test button surfaces it only as a generic 502
+	// (measured 2026-09-25) — and on the default config that is a production
+	// outage rather than a failed experiment. Probed against the SERVING region,
+	// never the browsed one.
 	if req.ModelName != nil && strings.TrimSpace(*req.ModelName) != "" {
-		serving := gemini.ServingRegion()
+		serving := a.servingRegion()
 		candidate := gemini.NormalizeModelName(strings.TrimSpace(*req.ModelName))
 		if gemini.ProbeModel(r.Context(), serving, candidate) == gemini.ProbeNotServed {
 			return nil, ErrBadRequest(fmt.Sprintf(
 				"模型 %s 在本部署的服务区域（%s）不存在，保存后每次调用都会 404。"+
 					"Vertex 只在部分区域提供该模型（例如 gemini-3.8-flash 仅 global / us / eu 可用）。"+
-					"要用它，需要把 GEMINI_VERTEX_REGION 改为对应区域并重启服务；"+
+					"要用它，请在上方「区域」里切到 global / us / eu 之一并应用，再保存模型；"+
 					"否则请改选在 %s 可用的模型（如 gemini-3.5-flash）。本次未写入任何改动。",
 				candidate, serving, serving))
 		}
@@ -391,6 +428,12 @@ func (a *App) updateModelConfig(w http.ResponseWriter, r *http.Request, configID
 		}
 		_, _ = a.DB.Exec(r.Context(), "UPDATE model_configs SET api_key = $1 WHERE config_id = $2", sealed, configID)
 	}
+	if req.VertexRegion != nil {
+		// Written raw and normalized: the value becomes part of a request HOST,
+		// so what is stored has to be exactly what was validated above.
+		_, _ = a.DB.Exec(r.Context(), "UPDATE model_configs SET vertex_region = $1 WHERE config_id = $2",
+			gemini.NormalizeRegion(*req.VertexRegion), configID)
+	}
 	// Hot-reload the serving Gemini service so edits take effect without restart.
 	a.reloadGeminiFromDB(r.Context())
 	return map[string]string{"message": "已更新"}, nil
@@ -399,7 +442,7 @@ func (a *App) updateModelConfig(w http.ResponseWriter, r *http.Request, configID
 // reloadGeminiFromDB rebuilds the serving Gemini service from the default DB
 // model config, so admin edits apply without a process restart.
 func (a *App) reloadGeminiFromDB(ctx context.Context) {
-	apiKey, modelName, systemPrompt, maxTokens, ok := defaultModelConfigFromDB(ctx, a.DB)
+	apiKey, modelName, systemPrompt, maxTokens, region, ok := defaultModelConfigFromDB(ctx, a.DB)
 	if !ok {
 		return
 	}
@@ -421,6 +464,15 @@ func (a *App) reloadGeminiFromDB(ctx context.Context) {
 		apiKey = ""
 	}
 	a.Gemini.HotReload(apiKey, modelName, systemPrompt, maxTokens)
+	// The region is a property of the TRANSPORT, not of the config HotReload
+	// swaps, so it is applied separately — and idempotently: re-saving anything
+	// else on the page re-applies the region that is already in force. On the
+	// studio transport this is a no-op, and on a vertex deployment the value can
+	// only be one the API validated, so a failure here means the row was edited
+	// by hand and is reported rather than silently ignored.
+	if err := a.Gemini.SetVertexRegion(region); err != nil {
+		a.Logger.Warn("could not apply the stored vertex region", "region", region, "error", err.Error())
+	}
 }
 
 // testModelConfig — run a test prompt against one model config.
@@ -475,16 +527,21 @@ const modelListWarningHeader = "X-Model-List-Warning"
 // and on vertex it is the service account — so there an empty api_key column is
 // normal, the database is not read at all, and the list still loads.
 //
-// ?region= selects the LISTING only. Omitting it means the region the server is
-// configured with, which is what keeps the console's default request identical
-// to the one it made before the selector existed. It never selects what serves
-// traffic: that is GEMINI_VERTEX_REGION, resolved once in providerFromEnv.
+// ?region= selects the LISTING only. Omitting it means the region the deployment
+// is serving from RIGHT NOW (Service.Region), resolved from the serving service
+// rather than from the environment: since the console can move it, the
+// environment's value is only the boot default and the selector would otherwise
+// open on a region the deployment has left. It never selects what serves
+// traffic — that is the same Service.Region, set by the console or by boot.
 func (a *App) listAvailableModels(w http.ResponseWriter, r *http.Request, configID int32) (any, error) {
 	// Validated before it can reach a URL: the region becomes part of the
 	// request HOST on the vertex path, and that request carries a bearer token.
-	region := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("region")))
+	region := gemini.NormalizeRegion(r.URL.Query().Get("region"))
 	if region != "" && !gemini.ValidVertexRegion(region) {
 		return nil, ErrBadRequest("无效的 region: " + region)
+	}
+	if region == "" {
+		region = a.servingRegion()
 	}
 	apiKey := ""
 	if gemini.CredentialSourceOf().IsAPIKey() {
@@ -543,13 +600,19 @@ func truncateForHeader(msg string) string {
 }
 
 // vertexRegions — the region selector's data: the candidate locations, the
-// server's configured region first, and which one is current.
+// deployment's own region first, and which one is currently serving.
 //
-// Read-only and configuration-only (`current` is GEMINI_VERTEX_REGION), so it
-// deliberately does not contact Google: a selector that needs the network to
-// render is a selector that breaks exactly when the network does.
+// `current` is the SERVING region (Service.Region): the environment's value at
+// boot, then whatever was last switched from this console. It is the same value
+// the request path puts into the host and the save guard reasons about, so the
+// selector cannot show one region while traffic goes to another — which is
+// exactly how "picked global, kept serving from asia-southeast1" happened.
+//
+// Read-only and configuration-only (no network), so it deliberately does not
+// contact Google: a selector that needs the network to render is a selector that
+// breaks exactly when the network does.
 func (a *App) vertexRegions(w http.ResponseWriter, r *http.Request) (any, error) {
-	regions, current := gemini.VertexRegions()
+	regions, current := gemini.VertexRegions(a.servingRegion())
 	out := make([]map[string]any, 0, len(regions))
 	for _, reg := range regions {
 		out = append(out, map[string]any{"id": reg.ID, "label": reg.Label})
@@ -565,6 +628,17 @@ func (a *App) servingModelName() string {
 		return ""
 	}
 	return a.Gemini.ModelName()
+}
+
+// servingRegion is the Vertex location this deployment sends calls to right now
+// (see gemini.Service.Region): the env default, then the console's last switch.
+// Empty when no serving service is wired (a test App) — which on the studio
+// transport is also the normal, permanent answer.
+func (a *App) servingRegion() string {
+	if a.Gemini == nil {
+		return ""
+	}
+	return a.Gemini.Region()
 }
 
 // ============================================
