@@ -1265,7 +1265,12 @@ func (s *Service) buildRequestBody(message string, history []HistoryItem, langua
 }
 
 func (s *Service) resultFromValue(v map[string]any) ChatResult {
-	res := ChatResult{Reply: ExtractTextFromValue(v)}
+	// SanitizeReply, not the raw extraction: this is the single point where a
+	// provider response becomes the text a customer reads (chatWithModel and every
+	// ChatStream fallback land here), and a reply that reaches a chat bubble with
+	// invisible characters still inside it is a reply nobody can copy, search or
+	// wrap. See khmer.go for what is canonicalised and why.
+	res := ChatResult{Reply: SanitizeReply(ExtractTextFromValue(v))}
 	res.PromptTokens, res.OutputTokens, res.CachedTokens = usageFromValue(v)
 	return res
 }
@@ -1361,7 +1366,11 @@ func (s *Service) ChatStream(ctx context.Context, message string, history []Hist
 		}
 		if text := ExtractTextFromValue(chunk); text != "" {
 			full.WriteString(text)
-			onToken(text)
+			// The streamed tokens are what the customer watches arrive, so they get
+			// the character-level rules immediately; the layout rules wait for the
+			// assembled reply below, because a chunk boundary can fall in the middle
+			// of the whitespace between two words.
+			onToken(SanitizeReplyChunk(text))
 		}
 		if p, c, cached := usageFromValue(chunk); p+c+cached > 0 {
 			res.PromptTokens, res.OutputTokens, res.CachedTokens = p, c, cached
@@ -1371,6 +1380,7 @@ func (s *Service) ChatStream(ctx context.Context, message string, history []Hist
 	if res.Reply == "" {
 		return s.chatWithModel(ctx, message, history, language, "")
 	}
+	res.Reply = SanitizeReply(res.Reply)
 	return res, nil
 }
 
@@ -1561,7 +1571,7 @@ func (s *Service) chatMock(message, language string) ChatResult {
 	case "zh":
 		reply = "(mock) 感谢你的提问「" + preview + "」—— 配置 GEMINI_API_KEY 后启用真实 AI。"
 	}
-	return ChatResult{Reply: reply, PromptTokens: len(message) / 4, UsedMock: true}
+	return ChatResult{Reply: SanitizeReply(reply), PromptTokens: len(message) / 4, UsedMock: true}
 }
 
 // GenerateFast runs an auxiliary prompt on the fast model with a timeout.
