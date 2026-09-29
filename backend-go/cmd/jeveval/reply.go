@@ -173,6 +173,15 @@ func runReply(mode evalOptions) {
 		fmt.Fprintln(os.Stderr, "reply:", err)
 		os.Exit(2)
 	}
+	// Refuse to measure a tenant that has no indexed knowledge. This harness was
+	// run for a whole round with -user 1 (a platform account) while the KB belongs
+	// to another tenant: every case then measured "what does it answer with no
+	// knowledge", the facts came back missing, and the conclusion drawn from it
+	// was wrong. A tool that can silently measure the wrong world must refuse to.
+	if err := requireIndexedKnowledge(ctx, pool, mode.userID); err != nil {
+		fmt.Fprintln(os.Stderr, "reply:", err)
+		os.Exit(2)
+	}
 	// Warm the embedding connection the way the server does at boot, and FAIL
 	// LOUDLY if it cannot be warmed: a cold connection drops the dense retrieval
 	// leg (see gemini.WarmEmbeddings), so every case would be scored against a
@@ -229,6 +238,27 @@ func servingRAGService(ctx context.Context, pool *pgxpool.Pool) (*rag.Service, e
 		return nil, fmt.Errorf("the serving model is not configured (mock mode)")
 	}
 	return svc, nil
+}
+
+// requireIndexedKnowledge fails when the tenant has no ready documents.
+func requireIndexedKnowledge(ctx context.Context, pool *pgxpool.Pool, userID int32) error {
+	var docs, tenants int
+	if err := pool.QueryRow(ctx,
+		"SELECT count(*) FILTER (WHERE index_status = 'ready') FROM knowledge_documents WHERE uploaded_by = $1",
+		userID).Scan(&docs); err != nil {
+		return fmt.Errorf("could not count the tenant's knowledge: %w", err)
+	}
+	if docs > 0 {
+		return nil
+	}
+	if err := pool.QueryRow(ctx,
+		"SELECT count(DISTINCT uploaded_by) FROM knowledge_documents WHERE index_status = 'ready'").Scan(&tenants); err != nil {
+		tenants = -1 // only used for the hint below
+	}
+	return fmt.Errorf("user %d has no indexed knowledge (ready docs = 0): the run would measure the "+
+		"no-knowledge path and every fact check would fail for the wrong reason. "+
+		"Pick the tenant that owns the KB (-user); %d tenant(s) have ready documents",
+		userID, tenants)
 }
 
 func runOneReplyCase(ctx context.Context, svc *rag.Service, c replyCase, mode evalOptions) caseResult {
