@@ -507,7 +507,13 @@ func printReplyReport(results []caseResult, file replyEvalFile, mode evalOptions
 			fmt.Printf("       format: %s\n", f)
 		}
 		if r.noKB {
-			fmt.Printf("       no KB match (RETRIEVAL, not generation — check with rageval before blaming the prompt)\n")
+			verdict := ""
+			if requiresGrounding(r.c.Category) {
+				verdict = " — this category needs grounding, so the case FAILS"
+			} else {
+				verdict = " — expected for this category (procedural/trap), not a failure"
+			}
+			fmt.Printf("       no KB match (RETRIEVAL, not generation — check with rageval before blaming the prompt)%s\n", verdict)
 		}
 		if r.judged && r.verdict.Reason != "" {
 			fmt.Printf("       judge: %s\n", r.verdict.Reason)
@@ -552,13 +558,32 @@ func replyFailures(results []caseResult, mode evalOptions) int {
 }
 
 func (r caseResult) ok(mode evalOptions) bool {
-	if r.noKB {
+	if r.noKB && requiresGrounding(r.c.Category) {
 		return false
 	}
 	if len(r.missing) > 0 || len(r.leaks) > 0 || len(r.format) > 0 {
 		return false
 	}
 	if mode.judge && r.judged && r.verdict.ScoreTotal > 0 && float64(r.verdict.ScoreTotal) < mode.gate {
+		return false
+	}
+	return true
+}
+
+// requiresGrounding — which categories are only meaningful when the knowledge base
+// answered. A miss there means the run measured the wrong world and the case must
+// fail loudly rather than be scored on an ungrounded reply.
+//
+// handoff is deliberately absent, and finding that out cost a wrong conclusion:
+// "connect me to a human" is a procedural request with no KB answer, so a miss is
+// NORMAL — and the first version of this rule failed such a case even though the
+// reply was the exact required Khmer handoff sentence, which made temperature 0.3
+// look like it broke instruction-following when it had done nothing of the sort.
+// trap is absent for the same reason: there the fact checks are the judge, and the
+// correct answer to a nonexistent grade is "not recorded".
+func requiresGrounding(category string) bool {
+	switch category {
+	case "handoff", "trap":
 		return false
 	}
 	return true
