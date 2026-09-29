@@ -71,7 +71,14 @@ const embeddingWidth = 768
 // Neither is served anywhere on the platform, so the gate was red on a healthy
 // box and, worse, stayed green if the model production actually ran on
 // disappeared from the region.
-const defaultRequiredModels = "gemini-3.8-flash,gemini-3.5-flash-lite"
+//
+// Corrected again on 2026-09-29: it still required `gemini-3.5-flash-lite` after
+// the fast model moved to `gemini-3.8-flash` (2026-09-28) — i.e. the gate was
+// checking a model this deployment no longer calls while the one it does call
+// twice (main and fast are the same name now) was only half-covered. A required
+// list that names the wrong models is the same class of bug as one that names a
+// retired alias: it fails for the wrong reason, or passes for one.
+const defaultRequiredModels = "gemini-3.8-flash"
 
 // serviceAccount is the subset of the downloaded JSON key this probe needs.
 type serviceAccount struct {

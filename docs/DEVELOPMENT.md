@@ -380,8 +380,7 @@ psql "$DATABASE_URL" -c "SELECT version FROM schema_migrations ORDER BY version 
   3 字符以上的 ILIKE 模式有效），过短的 run 回退整段；`Search` 的 gate 由 `hasCJK` 改为
   `hasLexicalScript`（CJK 或高棉文）。
 - `Search` 增加 Debug 级分腿计数日志（dense / lexical / trigram）。
-- 离线评估统一走 `cmd/rageval` CLI：设 `DATABASE_URL`（+`RAG_EVAL_USER`）与
-  `-eval` JSON（`{"queries":[{"query":"...","expect":[doc_id,...]}]}`）运行，输出每条腿的 recall@5/@10 与 MRR@10。
+- 离线评估统一走 `cmd/rageval` CLI：设 `DATABASE_URL` 与 `-eval` JSON（`{"queries":[{"query":"...","expect":[doc_id,...]}]}`）运行，**租户用 `-user` 指定**（默认 1，但必须给知识库真正的 owner，否则检索全空、整轮变成"没资料时它会怎么答"—— 见 §十三），输出每条腿的 recall@5/@10 与 MRR@10。
   （2026-09-21 安全审计后移除了等价的 `TestRetrievalEval` 测试入口——它读取任意环境变量路径，被判定为路径遍历入口；CLI 是唯一的评估入口。）
 
 已知边界：**存量文档**的 chunk 内容不会自动重新归一化，ZWSP/数字变体场景只能部分受益；
@@ -967,7 +966,7 @@ URL 三处读同一个值，不会再出现「界面显示 global、实际发往
 - 两层打分，职责不重叠：**确定性检查**定通过/失败（必须出现的事实、不得出现的引用标记/
   隐形字符/高棉数字、以及"整段没几个高棉字母"＝用错语言）；**judge**（快模型）打
   语言/敬语/自然度/格式四轴 0-3 分，只当趋势看，rubric 就写在评测集里以便审计。
-- ⚠️ `-user` 必须给**知识库真正的 owner**（生产是 `uploaded_by=7`）：默认的 1 属于别的租户，
+- ⚠️ `-user` 必须给**知识库真正的 owner**（当前 KB 在**测试租户** `uploaded_by=7`，见 `kb/SPEC.md`）：默认的 1 属于别的租户，
   KB 检索会全空，于是整轮变成"没有资料时它会怎么答"——第一次跑就是这么被骗的。
   同理，任何 `no KB match` 都先算检索问题（去跑 `rageval`），别急着怪提示词。
 

@@ -5,6 +5,11 @@
 > ⚠️ **数据说明**：本文所有数字来自 2026-09-24 的一次生产压测与库内实测，
 > 不是估算。但**账户档位（Tier）本身未经官方页面确认**——它是从"失效点 RPM ×
 > 单轮成本"反推出来的（见 §3），吻合度很高，仍建议到 AI Studio 页面核对一次。
+>
+> ⚠️ **范围说明（2026-09-29 核对）**：本文写的墙是 **AI Studio（studio 传输）**的；
+> 生产自 2026-09-26 起已迁到 **Vertex**（`GEMINI_PROVIDER=vertex`，区域 `global`），
+> 那里 `GEMINI_SPEND_LIMIT_USD` 的含义变成"**我们自己的预算**"而非 Google 的墙（§13.1）。
+> studio 现为**回滚通路**，所以本篇仍然有效：闸门、启动自检与重试语义两条路共用。
 
 ---
 
@@ -350,7 +355,7 @@ psql "$DATABASE_URL" -c "select model_name, count(*) from chat_messages
 > 只记四条影响决策的实测结论：
 
 1. **`:predict` 不支持 task 条件化** —— 平台上的嵌入统一走 `:predict`，`taskType` 那套字段不被接受（3 个模型 × 5 种拼写，并做了双向对照），所以嵌入只有 `instances` + `parameters` 一种报文形状。
-2. **亚洲区没有 lite 档** —— `gemini-2.5-flash-lite` / `gemini-3.5-flash-lite` 在亚洲各区**全部 404**。于是不再分主/辅档位：**全线 `gemini-3.5-flash`**（任何 `-latest` 别名平台都不认，浮动别名还会随上游漂移）。⚠️ **订正**：本行曾写「3.6 / 3.7 / 3.8 在平台上都不存在」，那是**错误结论** —— 真实情况是**区域作用域**：`gemini-3.8-flash` 在 Vertex 上存在，但只有 `global` / `us` / `eu` 返回 200，每个单区域（含生产的 `asia-southeast1`）都是 404。实测矩阵见 `deploy-khmer-ai-cs/references/dev-guide.md` §11.6 与 `docs/DEVELOPMENT.md` 第十二节。
+2. **亚洲区没有 lite 档** —— `gemini-2.5-flash-lite` / `gemini-3.5-flash-lite` 在亚洲各区**全部 404**。当时的结论是不再分主/辅档位，**全线 `gemini-3.5-flash`**（任何 `-latest` 别名平台都不认，浮动别名还会随上游漂移）。⚠️ **订正（2026-09-29 核对）**：本行曾写「3.6 / 3.7 / 3.8 在平台上都不存在」，那是**错误结论** —— 真实情况是**区域作用域**：`gemini-3.8-flash` 在 Vertex 上存在，但只有 `global` / `us` / `eu` 返回 200，每个单区域（含当时的产区 `asia-southeast1`）都是 404；生产因此搬到 `global`，**主模型与快模型现在都是 `gemini-3.8-flash`**（快模型 2026-09-28 换，实测比 3.5-flash 快约 1.5×）。实测矩阵见 `deploy-khmer-ai-cs/references/dev-guide.md` §11.6 与 `docs/DEVELOPMENT.md` 第十二节。
 3. **预览 TTS 在所有测试区域不可用** → `TTS_ENABLED` **保持关闭**（本就是默认值，平台没有可指向的 TTS 模型）。
 4. **嵌入 `:predict` 返回 768 维，但必须显式发 `outputDimensionality`** —— 不发就是模型默认的 3072，而 `knowledge_chunks` 是 `vector(768)`。代码按 768 发，并对非 768 的响应直接报错（宁可失败，也不写入错维向量）。
 
@@ -370,7 +375,7 @@ psql "$DATABASE_URL" -c "select model_name, count(*) from chat_messages
 
 ### 13.1 同一个变量，两种含义
 
-| | studio（AI Studio，当前生产） | vertex（Gemini Enterprise Agent Platform） |
+| | studio（AI Studio；**2026-09-26 前的生产**，现为回滚通路） | vertex（Gemini Enterprise Agent Platform，**现生产**） |
 |---|---|---|
 | `GEMINI_SPEND_LIMIT_USD` 的含义 | **Google 的墙**在本地的一面镜子：Tier 1 $10 / Tier 2 $50 / Tier 3 $200（每 10 分钟） | **我们自己定的预算**，上游没有任何东西与它对应 |
 | 变量未设时的默认值 | **10**（实测的 Tier 1 墙，§三） | **0 = 不设上限**（闸门与告警都不启用） |

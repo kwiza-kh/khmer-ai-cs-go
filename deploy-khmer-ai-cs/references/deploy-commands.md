@@ -74,7 +74,7 @@ shasum -a 256 /tmp/khmer-deploy/server-go /tmp/khmer-deploy/migrate-go /tmp/khme
 cat /tmp/khmer-deploy/SHA256SUMS
 ```
 
-> 本机没装 Go 时: `brew install go` (需 ≥1.26, 见 go.mod)。线上现行二进制为 go1.26.5 构建。
+> 本机没装 Go 时: `brew install go` (需 ≥1.26, 见 go.mod)。线上现行二进制由构建机的 go 构建（2026-09-29 核对: go1.27.1），所以这里写的是“≥ go.mod 声明的版本”，不是一个固定号。
 > 二进制名固定 `server-go` / `migrate-go` (与 systemd ExecStart 一致)。想压缩可加 `-ldflags='-s -w'`。
 
 ## 2. 本地构建前端（Next 16 standalone）
@@ -327,15 +327,16 @@ nginx 站点 (§8) + 自签证书 (复用 `/etc/nginx/ssl/wms.*` 或 openssl 新
 | `gemini-flash-lite-latest` (别名) | 404 | **200** —— "平台不认别名"也是单区域的错结论 |
 | `gemini-2.5-flash-preview-tts` | 404 | 400 (形状不合, 非缺席) |
 
-⇒ **生产现行 = `global` + 主模型 `gemini-3.8-flash` + 快模型 `gemini-3.5-flash-lite`** (2026-09-26 19:11 起)。
-这两个名字在 `asia-southeast1` 都是 404, 所以**区域现在是硬依赖**: 把 `GEMINI_VERTEX_REGION` 改回单区域 = 主模型与快模型同时挂。
+⇒ **生产现行 = `global` + 主模型 `gemini-3.8-flash` + 快模型 `gemini-3.8-flash`** (区域 2026-09-26 19:11 起, 快模型 2026-09-28 起与主模型同名; 实测它比 3.5-flash 快约 1.5×)。
+`gemini-3.8-flash` 在 `asia-southeast1` 是 404, 所以**区域现在是硬依赖**: 把服务区域改回单区域 = 主链路与快链路同时挂。
 反过来说, 换区域前必须按 dev-guide §11.6 用**新 probe** 重测 —— 连在用模型都要重测 (`gemini-3.5-flash` 在 `us-central1` / `europe-west4` 也是 404)。
 若把主模型与快模型配成同一个名字, "降级到快模型"的路径会被 `fast != model` 守卫跳过 —— 这是设计如此, **不是故障**。
 
 **按区域看目录 (2026-09-25 起)**: 后台「模型」页的区域下拉走
-`GET /api/v1/admin/models/{id}/available?region=<region>` (省略 `region` = 服务端配置的区域), 区域候选走
-`GET /api/v1/admin/models/vertex-regions`。它**只影响列表, 不影响服务路径** (在用的模型/区域仍看 `.env-go` 的
-`GEMINI_VERTEX_REGION` + DB `model_configs.model_name`)。
+`GET /api/v1/admin/models/{id}/available?region=<region>` (省略 `region` = 服务端**现行**服务区域:
+DB `model_configs.vertex_region` 优先, 空时才是 `.env-go` 的 `GEMINI_VERTEX_REGION`), 区域候选走
+`GET /api/v1/admin/models/vertex-regions`。下拉**只影响列表**; **切服务区域是旁边第二个动作**
+(2026-09-29 起: 写 DB `vertex_region` → 热重建 transport, 不重启不改 env, 写入前用在用模型探一次新区域)。
 - 列表走 `{host}/v1beta1/publishers/google/models?pageSize=100`: **`/v1/` 形式 404, 只有 `/v1beta1/` 有**; `global` 的 host 是 `aiplatform.googleapis.com` (没有 `global-` 前缀)。
 - 列表**不是可调用性判据**: `asia-southeast1` 只列 9 条且不含 `gemini-3.5-flash`, 而它在该区**可调 (200)** —— 就是生产在用模型。所以接口 `available` 默认 `true`, 唯一权威是「测试」按钮。
 - 列表不完整时 (区域 404 / 报错 / 空) 接口仍 **200** + 带上配置中的在用模型, 原因在响应头 `X-Model-List-Warning` 里。
@@ -372,7 +373,7 @@ cd /root/khmer-deploy
 echo "EXIT=$?"          # 门禁看这个数字, 不是看输出好不好看
 ```
 
-默认值就是生产现行: `-region global` + `-require gemini-3.8-flash,gemini-3.5-flash-lite`。
+默认值就是生产现行: `-region global` + `-require gemini-3.8-flash` (2026-09-29 前默认还带一个 `gemini-3.5-flash-lite`, 那是快模型换名前的旧值 —— 门禁必须点名**生产实际在调**的模型, 否则它会为一个已退役的名字报警或放过真的缺席)。
 `-require` 列出的模型**一定会被探测**, 就算 `-models` 换了候选表也删不掉它们 —— 能用参数把要验的项目删掉的门禁不是门禁。
 
 > ⚠️ **2026-09-27 之前的 vertexprobe 对 `global` 必然假报警**。它自己拼 `{region}-aiplatform.googleapis.com`,
@@ -388,8 +389,7 @@ vertexprobe — project=<project-id> region=global
   service account: <name>@<project-id>.iam.gserviceaccount.com
 
 ── results ──────────────────────────────────────────────
-✓ chat: gemini-3.8-flash                        OK  [required]
-✓ chat: gemini-3.5-flash-lite                   OK  [required]
+✓ chat: gemini-3.8-flash                        OK  [required]   ← 主模型与快模型现在同名, 去重后只列一次
 ✓ embedding :predict: gemini-embedding-001      dim=768 (want 768)  [required]
 ✓ oauth token minting                           bearer token acquired
 ✓ chat: gemini-2.5-flash / -lite / …           OK                       ← 只是"这个区还有什么"
@@ -403,7 +403,6 @@ All required checks passed. Review the non-fatal rows for TTS/caching coverage.
 对照 (`-region asia-southeast1`, 生产模型缺席 —— 这才是门禁**应该**红的样子):
 ```
 ✗ chat: gemini-3.8-flash                         HTTP 404 NOT_FOUND …  [required]
-✗ chat: gemini-3.5-flash-lite                    HTTP 404 NOT_FOUND …  [required]
 ✓ embedding :predict: gemini-embedding-001       dim=768 (want 768)  [required]
 …
 2 required check(s) failed — do not start the migration yet.   (EXIT=1)

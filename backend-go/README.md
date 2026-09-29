@@ -4,7 +4,7 @@ Rust 后端的 Go 重写，目标是：编译秒级、部署简单、行为 1:1 
 
 ## 状态
 
-- **阶段 1 ✅ 已完成**：配置/校验、Postgres 连接池、迁移运行器（嵌入全部 36 个 SQL）、
+- **阶段 1 ✅ 已完成**：配置/校验、Postgres 连接池、迁移运行器（嵌入全部迁移，截至 2026-09-29 为 65 个 SQL；本目录 `../migrations/` 只是供 psql 手查的镜像，真正生效的是 `internal/migrations/migrations/`，两边由测试逐字节比对）、
   JWT(HS256)+bcrypt(cost 12)+TOTP、HTTP 中间件链（request-id / CORS / 日志 / 认证 /
   admin 守卫 / Redis 限流）、auth 端点（登录锁定/2FA/注册开关/改密/偏好设置）、
   health/ready、优雅停机。

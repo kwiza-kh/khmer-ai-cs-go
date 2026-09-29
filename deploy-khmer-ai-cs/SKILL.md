@@ -33,7 +33,7 @@ description: 将「Khmer AI 客服系统 (khmer-ai-cs-go, Go 后端 + Next.js �
 | 服务器 | <部署服务器IP> (Debian 13 trixie, x86_64) — **与 WMS 系统同机共存, 勿动 wms.service** |
 | SSH | root + 密码 (从环境变量 `KHMER_SSH_PASSWORD` 读取, **勿把明文写进文件/仓库**; 密码值放密码管理器) |
 | 域名 | **cs**.<域名> (Cloudflare A 记录 → <部署服务器IP>, 橙色云朵代理) |
-| 后端 | Go (go.mod 声明 go 1.26; 线上二进制 go1.26.5) `server-go` → :8081, 二进制内 `/health` `/ready`; **服务器上没装 Go, 二进制在构建机交叉编译后上传** |
+| 后端 | Go (go.mod 声明 go 1.26; 构建机 go 越新越好 —— 2026-09-29 核对的线上二进制由 go1.27.1 构建) `server-go` → :8081, 二进制内 `/health` `/ready`; **服务器上没装 Go, 二进制在构建机交叉编译后上传** |
 | 前端 | Next.js 16 standalone (`node server.js`) → 127.0.0.1:3001; `API_BASE` 在**构建时**烘焙 (见下) |
 | 数据库 | 系统级 Postgres 17 (apt, 非 Docker), 扩展 **pgvector 0.8.0 + pg_trgm**, 迁移表 `schema_migrations` (见 `internal/migrations/migrations/` 当前文件数) |
 | 缓存 | 系统级 Redis (apt, requirepass), 会话/缓存/Gemini 结果缓存 |
@@ -137,16 +137,19 @@ RestartSec=3
 
 ## Vertex 区域与在用模型（生产已切完：`vertex` + `global`）
 
-**现行状态（2026-09-26 起）**: `.env-go` 有 `GEMINI_PROVIDER=vertex`、区域 = `global`，
-**主模型 = `gemini-3.8-flash`**（DB `model_configs.is_default` 行）、**快模型 = `gemini-3.5-flash-lite`**（`GEMINI_FAST_MODEL`）、
+**现行状态（2026-09-26 迁 Vertex；下面三个值 2026-09-29 核对）**: `.env-go` 有 `GEMINI_PROVIDER=vertex`、区域 = `global`，
+**主模型 = `gemini-3.8-flash`**（DB `model_configs.is_default` 行）、**快模型 = `gemini-3.8-flash`**（`GEMINI_FAST_MODEL`，2026-09-28 起；它比 3.5-flash 快约 1.5×）、
 嵌入 = `gemini-embedding-001` @ 768 维；`GEMINI_API_BASE` 已清空（不再走 CF AI Gateway 中继）。
+**采样温度 = 1.0**（`model_configs.temperature`，2026-09-29 接通）：该值现在随每次对话请求发出，管理页改它即时生效；
+越界（[0,2] 之外）会被写入接口拒绝（否则会让这个配置的每一次回复都 400）；启动日志会打印实际值，
+`"temperature":"platform default"` 表示不发送、用平台默认。四档实测（unset/1.0/0.7/0.3 × 3 轮 × 24 例）无可测量差别，故取厂商推荐值 1.0 —— 细节见 docs/DEVELOPMENT.md §十三。
 下面的“两步切换”仍是手册 —— 只不过现在要切的不是“要不要上平台”，而是**换模型名/换区域**。
 
 | 变量 | 值 / 要点 |
 |---|---|
 | `GEMINI_PROVIDER` | 现行 = `vertex`；`vertex` = 平台端点 + OAuth2 服务账号。**拼错的值只会当 studio**（不会悄悄把生产改道），所以改完必须核对启动日志与 `token_usage.model` 两个信号 |
 | `GEMINI_VERTEX_PROJECT` | GCP 项目 id。SA key 自带 `project_id` 时可省（缺了才报错） |
-| `GEMINI_VERTEX_REGION` | **现行 = `global`**，而且是**硬依赖**：`gemini-3.8-flash` 与 `gemini-3.5-flash-lite` 在 `asia-southeast1` 都 404，**改回单区域 = 主链路与快链路同时挂**。代码里的默认 `asia-southeast1` 只是未显式配置时的兜底 |
+| `GEMINI_VERTEX_REGION` | **现行 = `global`**，而且是**硬依赖**：`gemini-3.8-flash`（主与快模型自 2026-09-28 起同名）在 `asia-southeast1` 是 404，**改回单区域 = 主链路与快链路同时挂**。代码里的默认 `asia-southeast1` 只是未显式配置时的兜底；控制台可改服务区域（写入 DB），但改之前必须确认在用模型在新区域可调 |
 | `GEMINI_VERTEX_SA_FILE` | `/opt/khmer-ai-cs/vertex-sa.json` |
 | `GEMINI_VERTEX_API_BASE` | 一般**留空**（区域已决定端点）; 仅中继/测试时才覆盖, 末尾不带 `/` |
 
@@ -155,8 +158,8 @@ RestartSec=3
 - 切到 vertex 后 `GEMINI_API_BASE` **可以留空**: 平台端点在区域内, 当初为绕 Google 地域封锁才加的 **Cloudflare AI Gateway 中继不再需要** —— 摘掉这一跳正是迁 Vertex 的收益之一（回滚到 studio 时再填回来）。
   - ⚠️ **时序**: 必须等**彻底切到 vertex（且不再需要回滚/对照）之后**再清。中继是这台机器到 AI Studio 的**唯一通路**, 提前清 = 把**回滚路径**和 `embedcmp` 路径 A 一起废掉; 而 vertex 路径**根本不读这个变量**, 所以清早了当天毫无症状, 等你真需要它时才发现没有降落伞（deploy-commands §10.5）。
 - `GEMINI_PROVIDER=vertex` 而 project/SA 缺失时 **启动即退出**（`main.go` 的启动校验）, 不再是每轮请求才 500; 校验只读本地密钥文件, 不联网。
-- 模型名在配置上**锁定具名版本**（现行 `gemini-3.8-flash`）。“不要用 `-latest`”的理由**不是平台不认** —— 2026-09-27 实测 `gemini-flash-lite-latest` 在 `global` 返 200；真实理由是它随上游漂移、发布不可复现。“平台没有 lite 档”同样已被推翻：`gemini-3.5-flash-lite` 在 `global` 是 200（且就是生产在用的快模型）。**但“能不能调”按区域量，区域错 = 每次 404。**
-- ⚠️ 新模型名是**区域作用域**的, 不是"不存在": 实测 (2026-09-25, 生产 SA; 2026-09-27 复测) `gemini-3.8-flash` 在 `global` / `us` / `eu` 返回 200, 在**每一个单区域（含 `asia-southeast1`——就是 2026-09-26 之前的产区）返回 404**; `gemini-3.5-flash` 在 `us-central1` / `europe-west4` 也是 404。后台「模型」页有**区域下拉**可按区查看目录（只改列表, 不改服务路径）—— 机制、接口与完整实测矩阵见 references/dev-guide.md §11.6。
+- 模型名在配置上**锁定具名版本**（现行 `gemini-3.8-flash`，主与快模型同一个名字）。“不要用 `-latest`”的理由**不是平台不认** —— 2026-09-27 实测 `gemini-flash-lite-latest` 在 `global` 返 200；真实理由是它随上游漂移、发布不可复现。“平台没有 lite 档”同样已被推翻：`gemini-3.5-flash-lite` 在 `global` 是 200（但已不是生产在用值，快模型 2026-09-28 换成了 `gemini-3.8-flash`）。**但“能不能调”按区域量，区域错 = 每次 404。**
+- ⚠️ 新模型名是**区域作用域**的, 不是"不存在": 实测 (2026-09-25, 生产 SA; 2026-09-27 复测) `gemini-3.8-flash` 在 `global` / `us` / `eu` 返回 200, 在**每一个单区域（含 `asia-southeast1`——就是 2026-09-26 之前的产区）返回 404**; `gemini-3.5-flash` 在 `us-central1` / `europe-west4` 也是 404。后台「模型」页有**区域下拉**可按区查看目录；**切服务区域是旁边的第二个动作**（2026-09-29 起：写 DB `model_configs.vertex_region`，不重启不改 env，写入前用在用模型探一次新区域，`NOT_FOUND` 就拒绝）—— 机制、接口与完整实测矩阵见 references/dev-guide.md §11.6。
 
 ### 切流顺序（两步, 可分离）
 
@@ -168,7 +171,7 @@ RestartSec=3
   -project gen-lang-client-0354228918 -region global -timeout 45s
 echo "EXIT=${PIPESTATUS[0]}"   # 退出码才是结论；不要拿管道尾部的状态当退出码
 # 期望: "All required checks passed." + 退出码 0
-# 必需项 = OAuth 令牌签发 / `gemini-3.8-flash` + `gemini-3.5-flash-lite` 可用 / 嵌入返 768 维
+# 必需项 = OAuth 令牌签发 / `gemini-3.8-flash`（主与快模型同名，默认只需验它一个）可用 / 嵌入返 768 维
 # 新版默认已对齐生产 (region=global, -require 就是那两个名字); 想看其它模型用 `-models`，它删不掉 `-require`
 ```
 
@@ -221,7 +224,7 @@ journalctl 里周期性 `/api/v1/realtime/inbox 401 WARN` = 未带 token 的 WS 
 | 模型列表 200 但为空 | gemini.go ListModels 曾按 `data` 字段解析, Google 实际返回 `models` | 已修复 (2026-09-04); 若回归先查此解析 |
 | 模型列表 404 `no longer available to new users` | 测试用了退役模型名 | 用 DB `model_configs.model_name` 里配的现役模型 (当前 `gemini-3.8-flash`)。⚠️ “`-latest` 平台不认”与“没有 lite 档”都是**单区域结论**：2026-09-27 实测两者在 `global` 都返 200 —— 但配置仍然只准用具名版本（漂移与可比性）。"新名字不存在"也是错的: `gemini-3.8-flash` **存在**，只是在 `global`/`us`/`eu` 可调、在每个单区域 404 (`gemini-3.6/3.7` 未重新实测) —— 按区域查后台「模型」页的区域下拉, 别再用"存不存在"下结论 (dev-guide §11.6) |
 | Vertex 切完**启动即退出** (`systemctl` = failed) | `GEMINI_PROVIDER=vertex` 但 project/SA 缺失、路径错或 `khmerai` 读不到 key → `main.go` 启动校验 `os.Exit(1)`（只读本地文件, 不联网） | 看 journal 的 `invalid Gemini provider configuration` 一行; **先回滚 provider 把服务拉起来**再修 (deploy-commands §10.4/§10.7) |
-| Vertex 业务请求 404 | 模型名与区域不匹配（名称是区域作用域的：`gemini-3.8-flash` / `gemini-3.5-flash-lite` **只在 `global`/`us`/`eu` 有**，单区域 404）, 或区域填错 | 生产 = `global` + `gemini-3.8-flash`；**改区域前先改回 DB 模型名**；探针 `-require`/`-caps` 先验证；按区域查后台「模型」页的区域下拉 (dev-guide §11.6) |
+| Vertex 业务请求 404 | 模型名与区域不匹配（名称是区域作用域的：`gemini-3.8-flash` **只在 `global`/`us`/`eu` 有**，单区域 404）, 或区域填错 | 生产 = `global` + `gemini-3.8-flash`（主/快同名）；**改区域前先确认在用模型在新区域可调**（控制台切换带探测守卫）；探针 `-require`/`-caps` 先验证；按区域查后台「模型」页的区域下拉 (dev-guide §11.6) |
 | 门禁 `-region global` 全红 | 手上的 `vertexprobe` 是 2026-09-27 之前的版（自己拼 `global-aiplatform...` 主机名）| `./vertexprobe -h \| grep -- -require` 无输出 = 旧版；本机 `CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o vertexprobe ./cmd/vertexprobe` 重编后上传（先备份旧的）|
 | 启动日志的 `model=` 与现状不符 | 那行只反映**启动那一刻**的 DB 值；后台保存走 `HotReload` 就地改运行时模型，不再打日志 | 以 `token_usage.model`（只在成功出话时写）或「测试」按钮为准；`model_configs.updated_at` **没有触发器**，不能当修改时间（dev-guide §11.1）|
 | Vertex 切完检索命中变少 | 相似度尺度整体下移 (mean top1 `0.730→0.713`), 而 `RAG_SIMILARITY_FLOOR` 是**绝对值**; 也可能知识库没重嵌入 (换 provider 不触发重嵌入) | `rageval` 对基线 → 按 deploy-commands §10.6 第 6 项用 sweep 复核 floor; 重嵌入见 §10.1 |
