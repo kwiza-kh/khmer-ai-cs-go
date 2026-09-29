@@ -1202,6 +1202,7 @@ func (s *Service) Ground(ctx context.Context, userID int32, sessionID *string, m
 	used := 0
 	for i, src := range sources {
 		room := groundSourceLimit(src.Content)
+		ex := 0
 		if budget > 0 {
 			if used >= budget {
 				break
@@ -1209,13 +1210,93 @@ func (s *Service) Ground(ctx context.Context, userID int32, sessionID *string, m
 			if room > budget-used {
 				room = budget - used
 			}
+			// One block's worth of overshoot, when the remaining budget can pay for
+			// it: a cut that lands after a whole Q&A block is worth ~200 runes more
+			// than one that lands inside its list (see groundingExcerpt).
+			if left := budget - used - room; left > 0 {
+				ex = min(groundExcerptSlack, left)
+			}
 		}
-		content := truncateRunes(src.Content, room)
+		content := groundingExcerpt(src.Content, room, ex)
 		used += len([]rune(content))
 		fmt.Fprintf(&b, "--- Source %d: %s (score %.2f) ---\n%s\n\n", i+1, src.Title, src.Score, content)
 	}
 	s.logRAGQuery(ctx, userID, sessionID, message, rewritten, len(sources), &topScore, true)
 	return GroundingContext{Sources: sources, ContextStr: b.String(), HasMatch: true}
+}
+
+// groundExcerptSlack — how far past its per-source allowance an excerpt may run
+// to finish what it was in the middle of. 400 runes covers one FAQ entry (a
+// question line plus its answer) or one short paragraph.
+const groundExcerptSlack = 400
+
+// groundingExcerpt returns at most `room` runes of a source, preferring to stop
+// at the end of a whole BLOCK (blank-line separated) and otherwise at the end of
+// a whole LINE, allowed up to `extra` runes of overshoot to do so.
+//
+// Truncating mid-structure is how a correct chunk produced a wrong answer. In the
+// production FAQ the product-line answer ("មាន 5 បន្ទាត់៖ EPS-P…") spans runes 695–915 of a
+// 951-rune chunk, and its fifth item, EPS-R, begins at 876 — past the 800-rune
+// allowance. The model received a claim of five lines and four lines, with no
+// sign that anything was missing, and answered "5 types" (measured 2026-09-29).
+//
+// Note what this document is NOT: its Q&A entries are separated by a SINGLE
+// newline — blank lines appear only before section headings — so a rule that only
+// knows blank lines finds nothing in a 1000-rune window and falls back to the
+// last sentence end, which is the question mark in "…ប៉ុន្មានប្រភេទ?": the model then gets a
+// question with no answer, which measures worse than the bug being fixed. Hence
+// the order: overshoot to a block boundary, then to any line boundary, and only
+// then retreat — and a retreat is marked, so an incomplete excerpt can never read
+// as a complete one.
+func groundingExcerpt(content string, room, extra int) string {
+	runes := []rune(content)
+	if room <= 0 || len(runes) <= room {
+		return content
+	}
+	limit := min(room+extra, len(runes))
+	if cut, ok := firstBoundary(runes, room, limit, true); ok {
+		return string(runes[:cut])
+	}
+	if cut, ok := firstBoundary(runes, room, limit, false); ok {
+		return string(runes[:cut])
+	}
+	if cut, ok := lastLineBoundary(runes, room); ok {
+		return string(runes[:cut]) + truncationMark
+	}
+	return string(runes[:room]) + truncationMark
+}
+
+// truncationMark tells the model the excerpt stops short of the source. It is
+// deliberately terse and source-agnostic: the prompt forbids mentioning sources,
+// and this is not a source marker — it is the truth about what was withheld, and
+// it goes at the END, where the text stops (the first version put it first and
+// read as "the beginning is missing").
+const truncationMark = "\n[… excerpt ends here; more of this reference was not shown]"
+
+// firstBoundary — the first cut position in runes[from:to] that ends a whole
+// unit. With blank=true the unit is a blank-line-separated block; otherwise any
+// line. Positions are returned AFTER the newline that ends the unit.
+func firstBoundary(runes []rune, from, to int, blank bool) (int, bool) {
+	for i := from + 1; i <= to && i < len(runes); i++ {
+		if runes[i-1] != '\n' {
+			continue
+		}
+		if blank && (i < 2 || runes[i-2] != '\n') {
+			continue
+		}
+		return i, true
+	}
+	return 0, false
+}
+
+// lastLineBoundary — the end of the last whole line that fits in `room`.
+func lastLineBoundary(runes []rune, room int) (int, bool) {
+	for i := room - 1; i > 0; i-- {
+		if runes[i] == '\n' {
+			return i + 1, true
+		}
+	}
+	return 0, false
 }
 
 // groundSourceLimit — how much of each grounding source reaches the prompt.

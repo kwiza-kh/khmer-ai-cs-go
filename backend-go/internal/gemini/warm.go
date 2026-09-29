@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"strconv"
@@ -55,6 +56,42 @@ func EmbedKeepWarmInterval() time.Duration {
 //
 // Safe to call once at startup; returns immediately. A no-op when the service
 // is unconfigured (mock mode makes no network call, so there is nothing to
+// WarmEmbeddings blocks until one un-cached embedding call has succeeded, or
+// until the wait budget is spent.
+//
+// StartEmbedKeepWarm is the right thing for the SERVER: it warms in the
+// background and never delays boot. A tool that MEASURES retrieval needs the
+// opposite guarantee. Without a warm connection its dense leg silently degrades
+// to lexical-only (see the file comment) and the numbers it prints describe a
+// world production is not in — measured 2026-09-29: the same four queries scored
+// dense recall@5 0/4 on a cold connection and 3/4 (recall@10 4/4, MRR 0.778) on
+// a warm one. A measurement taken in the cold state is worse than no
+// measurement, so this returns the error for the caller to surface.
+//
+// Each attempt uses a distinct text, because the query cache (5 minutes, by
+// text) would otherwise answer a retry without touching the network and report
+// a cold connection as warm. The per-call budget is NOT raised: if the
+// production budget cannot complete one warm call, that is the finding.
+func (s *Service) WarmEmbeddings(ctx context.Context, budget time.Duration, tries int) error {
+	if s == nil || !s.IsConfigured() {
+		return nil // mock mode: nothing to warm and nothing to measure
+	}
+	deadline := time.Now().Add(budget)
+	var last error
+	for i := 0; i < tries; i++ {
+		_, err := s.GenerateQueryEmbedding(ctx, fmt.Sprintf("keepwarm probe %d", i))
+		if err == nil {
+			return nil
+		}
+		last = err
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(time.Second)
+	}
+	return fmt.Errorf("no warm embedding after %d attempt(s): %w", tries, last)
+}
+
 // keep warm) or the interval is non-positive.
 func (s *Service) StartEmbedKeepWarm(ctx context.Context, interval time.Duration) {
 	if s == nil || !s.IsConfigured() || interval <= 0 {

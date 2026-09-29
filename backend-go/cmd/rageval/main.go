@@ -15,6 +15,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -86,6 +87,16 @@ func main() {
 	if svc.Gemini.IsConfigured() == false {
 		fmt.Fprintln(os.Stderr, "rageval: Gemini not configured (DB model_configs or GEMINI_API_KEY)")
 		os.Exit(2)
+	}
+	// The dense leg is the thing under measurement, and on the multi-region
+	// endpoint it does not work cold: measured 2026-09-29, the same four queries
+	// scored dense recall@5 0/4 on a cold connection (every call timing out
+	// against the 5s GEMINI_EMBED_BUDGET_MS) and 3/4 — recall@10 4/4, MRR 0.778 —
+	// once warm. Without this the tool reports a retrieval failure that is really
+	// a cold-start timeout, and the first version of it did exactly that.
+	if err := svc.Gemini.WarmEmbeddings(ctx, 45*time.Second, 6); err != nil {
+		fmt.Fprintln(os.Stderr, "rageval: DENSE RETRIEVAL IS COLD —", err)
+		fmt.Fprintln(os.Stderr, "rageval: reporting lexical-only numbers; they do not describe production")
 	}
 
 	report, err := svc.EvalRetrieval(ctx, int32(*userID), doc.Queries, configs, int64(*limit))
