@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -439,8 +440,8 @@ func TestReloadGeminiFromDBVertexAppliesEditsWithoutAKey(t *testing.T) {
 	}
 
 	original := defaultModelConfigFromDB
-	defaultModelConfigFromDB = func(ctx context.Context, db *pgxpool.Pool) (string, string, string, int, string, bool) {
-		return "", "gemini-3.5-flash", "", 512, "", true
+	defaultModelConfigFromDB = func(ctx context.Context, db *pgxpool.Pool) (string, string, string, int, string, *float64, bool) {
+		return "", "gemini-3.5-flash", "", 512, "", nil, true
 	}
 	t.Cleanup(func() { defaultModelConfigFromDB = original })
 
@@ -471,8 +472,8 @@ func TestReloadGeminiFromDBStudioIsUnchanged(t *testing.T) {
 	t.Cleanup(func() { defaultModelConfigFromDB = original })
 
 	// (a) empty stored key → nothing is pushed.
-	defaultModelConfigFromDB = func(ctx context.Context, db *pgxpool.Pool) (string, string, string, int, string, bool) {
-		return "", "gemini-3.5-flash", "", 512, "", true
+	defaultModelConfigFromDB = func(ctx context.Context, db *pgxpool.Pool) (string, string, string, int, string, *float64, bool) {
+		return "", "gemini-3.5-flash", "", 512, "", nil, true
 	}
 	app.reloadGeminiFromDB(context.Background())
 	if got := serving.ModelName(); got != "gemini-2.0-flash" {
@@ -484,8 +485,8 @@ func TestReloadGeminiFromDBStudioIsUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defaultModelConfigFromDB = func(ctx context.Context, db *pgxpool.Pool) (string, string, string, int, string, bool) {
-		return sealed, "gemini-3.5-flash", "", 512, "", true
+	defaultModelConfigFromDB = func(ctx context.Context, db *pgxpool.Pool) (string, string, string, int, string, *float64, bool) {
+		return sealed, "gemini-3.5-flash", "", 512, "", nil, true
 	}
 	app.reloadGeminiFromDB(context.Background())
 	if got := serving.ModelName(); got != "gemini-3.5-flash" {
@@ -748,5 +749,45 @@ func TestVertexRegionsRouteIsNotAnId(t *testing.T) {
 	mux.ServeHTTP(httptest.NewRecorder(), req)
 	if served != "available" {
 		t.Fatalf("{id} route broken: served=%q", served)
+	}
+}
+
+// TestReloadGeminiFromDBAppliesTheStoredTemperature — model_configs.temperature was
+// written by the console and read by nothing until 2026-09-29: editing it changed no
+// reply, while the console displayed it as if it did. This pins the reload pushes it,
+// and that a NULL column CLEARS a previously applied value instead of leaving the old
+// number in force until the next restart.
+func TestReloadGeminiFromDBAppliesTheStoredTemperature(t *testing.T) {
+	platform := newModelStub(t, func(r *http.Request) (int, string) {
+		return http.StatusOK, `{"candidates":[{"content":{"parts":[{"text":"ok"}]}}]}`
+	})
+	vertexEnv(t, platform)
+
+	serving := gemini.New("", "gemini-3.8-flash", 128)
+	if serving.Temperature() != nil {
+		t.Fatal("a service built from a NULL column must send no temperature")
+	}
+	app := &App{Gemini: serving, Logger: slog.Default()}
+
+	original := defaultModelConfigFromDB
+	t.Cleanup(func() { defaultModelConfigFromDB = original })
+
+	third := 0.3
+	defaultModelConfigFromDB = func(ctx context.Context, db *pgxpool.Pool) (string, string, string, int, string, *float64, bool) {
+		return "", "gemini-3.8-flash", "", 128, "", &third, true
+	}
+	app.reloadGeminiFromDB(context.Background())
+	if got := serving.Temperature(); got == nil || *got != 0.3 {
+		t.Fatalf("temperature after reload = %v, want 0.3", got)
+	}
+
+	// The console erases the field: the reply path must go back to the platform
+	// default, not keep sampling with whatever was last stored.
+	defaultModelConfigFromDB = func(ctx context.Context, db *pgxpool.Pool) (string, string, string, int, string, *float64, bool) {
+		return "", "gemini-3.8-flash", "", 128, "", nil, true
+	}
+	app.reloadGeminiFromDB(context.Background())
+	if got := serving.Temperature(); got != nil {
+		t.Fatalf("a NULL column must clear the temperature, still %v", *got)
 	}
 }

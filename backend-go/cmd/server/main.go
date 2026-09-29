@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -102,8 +103,16 @@ func main() {
 	// Gemini service — prefer the DB default model config (admin Models page is
 	// the source of truth once a key is saved), fall back to env.
 	var gem *gemini.Service
-	if apiKey, modelName, systemPrompt, maxTokens, region, ok := gemini.LoadDefaultConfig(ctx, pool); ok {
+	if apiKey, modelName, systemPrompt, maxTokens, region, temperature, ok := gemini.LoadDefaultConfig(ctx, pool); ok {
 		gem = gemini.FromPartsFull(sealer.DecryptOrKeep(apiKey), modelName, systemPrompt, maxTokens)
+		// Sampling temperature, from the same row the console edits. A NULL column
+		// stays NULL: the request then carries no temperature at all and the
+		// platform default applies (1.0 — what Google recommends for Gemini 3, and
+		// what this deployment has always sent in effect). This column was displayed
+		// by the admin page and read by nothing until 2026-09-29; applying it here is
+		// what makes the console's value real, without changing the bytes on the
+		// wire for a deployment that never set it.
+		gem.SetTemperature(temperature)
 		// The Vertex location the console last switched to, applied before anything
 		// can serve. This is what makes a switch survive a restart: without it the
 		// process would quietly go back to GEMINI_VERTEX_REGION on every deploy
@@ -124,6 +133,9 @@ func main() {
 				"model", gem.ModelName(),
 				// Empty on the studio transport, which has no locations at all.
 				"region", gem.Region(),
+				// "platform default" when the column is NULL, which is a real setting
+				// (see SetTemperature) and not a missing one.
+				"temperature", temperatureLabel(gem.Temperature()),
 				// Which credential is actually in use. Under vertex the DB key
 				// is dead data and the service-account file authenticates, so a
 				// log line naming only the model sends whoever is debugging a
@@ -334,4 +346,16 @@ func main() {
 		os.Exit(1)
 	}
 	logger.Info("server stopped cleanly")
+}
+
+// temperatureLabel renders the serving temperature for the boot log: the number
+// when requests carry one, "platform default" when the column is NULL and the
+// request therefore omits it. The distinction is the finding — until 2026-09-29
+// this deployment always ran on the platform default while the console displayed
+// 0.7, and a log line that printed "0.7" for both states would hide it again.
+func temperatureLabel(t *float64) string {
+	if t == nil {
+		return "platform default"
+	}
+	return strconv.FormatFloat(*t, 'f', -1, 64)
 }

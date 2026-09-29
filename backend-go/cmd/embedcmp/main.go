@@ -269,7 +269,7 @@ func openReadOnlyPool(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 // The row's model/system prompt/max_tokens are ignored: embedding_model is a
 // constant in this codebase (gemini.EmbeddingModel), and this tool never chats.
 func resolveStudioKey(ctx context.Context, pool *pgxpool.Pool) (key, source string, err error) {
-	if stored, _, _, _, _, ok := gemini.LoadDefaultConfig(ctx, pool); ok {
+	if stored, _, _, _, _, _, ok := gemini.LoadDefaultConfig(ctx, pool); ok {
 		// A failure to open a sealed value yields the input, matching the
 		// server's behaviour (the sealer passes unrecognised values through).
 		//

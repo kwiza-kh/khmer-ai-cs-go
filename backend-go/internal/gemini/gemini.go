@@ -115,6 +115,15 @@ type Service struct {
 	modelName    string
 	systemPrompt string
 	maxTokens    int
+	// temperature is sent as generationConfig.temperature when non-nil, and left
+	// out of the request when nil.
+	//
+	// The distinction is the whole point of the pointer: "not set" and "0.0" are
+	// different instructions (the first means "use the platform's default", the
+	// second means "greedy"), and this field sat unwired for a year while the
+	// console displayed a value nobody sent. Leaving it nil keeps today's bytes on
+	// the wire for any deployment that has not switched.
+	temperature *float64
 
 	// provider/providerErr are resolved once in New from the process environment
 	// and a config file. The provider is NOT immutable: SetVertexRegion re-aims
@@ -219,13 +228,31 @@ type servingConfig struct {
 	modelName    string
 	systemPrompt string
 	maxTokens    int
+	temperature  *float64
 	client       *http.Client
 }
 
 func (s *Service) snapshot() servingConfig {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return servingConfig{apiKey: s.apiKey, modelName: s.modelName, systemPrompt: s.systemPrompt, maxTokens: s.maxTokens, client: s.client}
+	return servingConfig{apiKey: s.apiKey, modelName: s.modelName, systemPrompt: s.systemPrompt,
+		maxTokens: s.maxTokens, temperature: s.temperature, client: s.client}
+}
+
+// SetTemperature sets the sampling temperature sent with chat requests. nil means
+// "do not send one", which is not the same as 0: the platform's own default
+// applies then (documented as 1.0, and the value Google recommends for Gemini 3).
+func (s *Service) SetTemperature(t *float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.temperature = t
+}
+
+// Temperature reports what chat requests currently send, or nil for "nothing".
+func (s *Service) Temperature() *float64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.temperature
 }
 
 func (s *Service) SetModelName(name string) {
@@ -1178,8 +1205,17 @@ func (s *Service) systemInstruction(language string) string {
 // model's internal reasoning tokens, which are billed at the OUTPUT rate
 // (usageFromValue folds them into the completion count) and dominate the tail
 // of reply latency. Unset keeps the model's own default.
-func generationConfig(maxTokens int) map[string]any {
+//
+// temperature is sent only when non-nil, for the same reason plus one more: the
+// platform default (1.0) is what a Gemini 3 deployment SHOULD use — Google
+// recommends keeping it, warning that lower values can cause looping or degraded
+// performance — so a deployment that never touched the knob must not suddenly
+// start sending a value because this code learned how to.
+func generationConfig(maxTokens int, temperature *float64) map[string]any {
 	cfg := map[string]any{"maxOutputTokens": maxTokens}
+	if temperature != nil {
+		cfg["temperature"] = *temperature
+	}
 	if b := thinkingBudget(); b >= 0 {
 		cfg["thinkingConfig"] = map[string]any{"thinkingBudget": b}
 	}
@@ -1250,9 +1286,10 @@ func (s *Service) buildRequestBody(message string, history []HistoryItem, langua
 		"role":  "user",
 		"parts": []map[string]any{{"text": message}},
 	})
+	snap := s.snapshot()
 	body := map[string]any{
 		"contents":         contents,
-		"generationConfig": generationConfig(s.snapshot().maxTokens),
+		"generationConfig": generationConfig(snap.maxTokens, snap.temperature),
 	}
 	if cachedContent != "" {
 		body["cachedContent"] = cachedContent
@@ -2218,7 +2255,7 @@ func ExtractTextFromValue(v map[string]any) string {
 }
 
 // LoadDefaultConfig reads the default model config row from the DB:
-// (api_key, model_name, system_prompt, max_tokens, vertex_region).
+// (api_key, model_name, system_prompt, max_tokens, vertex_region, temperature).
 //
 // The first return value is the STUDIO credential (see CredentialSourceOf), and
 // callers must treat it that way: under vertex it is irrelevant to serving and
@@ -2231,18 +2268,24 @@ func ExtractTextFromValue(v map[string]any) string {
 // deployment never switched. Callers that SERVE must apply it (SetVertexRegion):
 // without that, a restart quietly sends traffic back to the region in `.env-go`
 // while the console still displays the switched one.
-func LoadDefaultConfig(ctx context.Context, pool *pgxpool.Pool) (string, string, string, int, string, bool) {
+//
+// temperature is nil when the column is NULL, which means "send no temperature"
+// (the platform default applies). Callers that serve should apply it
+// (SetTemperature) — until 2026-09-29 this column was displayed by the admin page
+// and read by nothing, so the console's value had no effect on any reply.
+func LoadDefaultConfig(ctx context.Context, pool *pgxpool.Pool) (string, string, string, int, string, *float64, bool) {
 	var apiKey, modelName, systemPrompt, region string
 	var maxTokens int
+	var temperature *float64
 	err := pool.QueryRow(ctx,
 		"SELECT api_key, model_name, COALESCE(system_prompt, ''), COALESCE(max_tokens, 2048), "+
-			"COALESCE(vertex_region, '') "+
+			"COALESCE(vertex_region, ''), temperature "+
 			"FROM model_configs WHERE is_default = true ORDER BY config_id LIMIT 1",
-	).Scan(&apiKey, &modelName, &systemPrompt, &maxTokens, &region)
+	).Scan(&apiKey, &modelName, &systemPrompt, &maxTokens, &region, &temperature)
 	if err != nil {
-		return "", "", "", 0, "", false
+		return "", "", "", 0, "", nil, false
 	}
-	return apiKey, modelName, systemPrompt, maxTokens, NormalizeRegion(region), true
+	return apiKey, modelName, systemPrompt, maxTokens, NormalizeRegion(region), temperature, true
 }
 
 func digArray(v map[string]any, keys ...string) []float64 {

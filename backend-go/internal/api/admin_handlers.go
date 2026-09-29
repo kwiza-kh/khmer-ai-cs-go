@@ -215,15 +215,15 @@ var studioAPIKeyFromDB = func(ctx context.Context, db *pgxpool.Pool, configID in
 // never switched. Both the boot path and the hot-reload need it: without it a
 // restart would quietly move serving back to the region in `.env-go` while the
 // console still showed the switched one.
-var defaultModelConfigFromDB = func(ctx context.Context, db *pgxpool.Pool) (apiKey, modelName, systemPrompt string, maxTokens int, region string, ok bool) {
+var defaultModelConfigFromDB = func(ctx context.Context, db *pgxpool.Pool) (apiKey, modelName, systemPrompt string, maxTokens int, region string, temperature *float64, ok bool) {
 	err := db.QueryRow(ctx,
 		"SELECT api_key, model_name, COALESCE(system_prompt,''), COALESCE(max_tokens,2048), "+
-			"COALESCE(vertex_region,'') FROM model_configs WHERE is_default = true ORDER BY config_id LIMIT 1").
-		Scan(&apiKey, &modelName, &systemPrompt, &maxTokens, &region)
+			"COALESCE(vertex_region,''), temperature FROM model_configs WHERE is_default = true ORDER BY config_id LIMIT 1").
+		Scan(&apiKey, &modelName, &systemPrompt, &maxTokens, &region, &temperature)
 	if err != nil {
-		return "", "", "", 0, "", false
+		return "", "", "", 0, "", nil, false
 	}
-	return apiKey, modelName, systemPrompt, maxTokens, gemini.NormalizeRegion(region), true
+	return apiKey, modelName, systemPrompt, maxTokens, gemini.NormalizeRegion(region), temperature, true
 }
 
 // The model-config routes below were written when there was only AI Studio, so
@@ -331,6 +331,16 @@ func (a *App) updateModelConfig(w http.ResponseWriter, r *http.Request, configID
 	if req.APIKey != nil && *req.APIKey != "" && !gemini.CredentialSourceOf().IsAPIKey() {
 		return nil, ErrBadRequest("Vertex 模式下凭据来自服务器上的服务账号文件（GEMINI_VERTEX_SA_FILE），" +
 			"API Key 不是聊天凭据，此接口不接受写入")
+	}
+	// Temperature is now sent with every chat request, so a value outside the
+	// platform's range stops being a cosmetic typo and becomes a 400 on EVERY
+	// reply of this config. Reject it before the first write, like the key above.
+	if req.Temperature != nil {
+		if *req.Temperature < 0 || *req.Temperature > 2 {
+			return nil, ErrBadRequest(fmt.Sprintf(
+				"temperature %.2f 超出平台范围 [0, 2]：该值会随每次对话请求发给模型，越界会让这个配置的每一次回复都失败。本次未写入任何改动。",
+				*req.Temperature))
+		}
 	}
 	// Two writes below can take customer chat down, and both are guarded the same
 	// way: only a NOT_FOUND from a real call vetoes. Quota, permission and network
@@ -442,7 +452,7 @@ func (a *App) updateModelConfig(w http.ResponseWriter, r *http.Request, configID
 // reloadGeminiFromDB rebuilds the serving Gemini service from the default DB
 // model config, so admin edits apply without a process restart.
 func (a *App) reloadGeminiFromDB(ctx context.Context) {
-	apiKey, modelName, systemPrompt, maxTokens, region, ok := defaultModelConfigFromDB(ctx, a.DB)
+	apiKey, modelName, systemPrompt, maxTokens, region, temperature, ok := defaultModelConfigFromDB(ctx, a.DB)
 	if !ok {
 		return
 	}
@@ -473,6 +483,11 @@ func (a *App) reloadGeminiFromDB(ctx context.Context) {
 	if err := a.Gemini.SetVertexRegion(region); err != nil {
 		a.Logger.Warn("could not apply the stored vertex region", "region", region, "error", err.Error())
 	}
+
+	// Sampling temperature. nil (a NULL column) is a real setting — "send none,
+	// use the platform default" — so it is applied as-is rather than defaulted;
+	// before 2026-09-29 this column was written by the console and read by nothing.
+	a.Gemini.SetTemperature(temperature)
 }
 
 // testModelConfig — run a test prompt against one model config.

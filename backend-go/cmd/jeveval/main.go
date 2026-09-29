@@ -61,6 +61,10 @@ func main() {
 	replyUser := flag.Int("user", 1, "-mode reply: tenant user id for retrieval")
 	verbose := flag.Bool("v", false, "-mode reply: print each reply")
 	dump := flag.Bool("dump", false, "-mode reply: print the grounding context as the model received it")
+	// Negative means "keep the deployment's own temperature". Temperatures are >= 0
+	// by definition, so no separate bool is needed and the flag reads as the arm it
+	// selects: -temperature 0.7.
+	replyTemperature := flag.Float64("temperature", -1, "-mode reply: override the sampling temperature for this run only")
 	flag.Parse()
 	switch *mode {
 	case "reply":
@@ -72,6 +76,8 @@ func main() {
 			judge:    *replyJudge,
 			verbose:  *verbose,
 			dump:     *dump,
+
+			temperature: *replyTemperature,
 		})
 		return
 	case "agree":

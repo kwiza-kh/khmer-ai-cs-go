@@ -596,3 +596,63 @@ func TestListModelsInVertexModeWithoutConfiguration(t *testing.T) {
 		t.Fatalf("err = %v, want the configuration error rather than a studio request", err)
 	}
 }
+
+// TestChatSendsTemperatureOnlyWhenSet — the field the admin console displayed for
+// a year while nothing read it. Unset must stay unset: "no temperature" is a real
+// setting (the platform default of 1.0, which Google recommends for Gemini 3), and
+// a deployment that never touched the knob must not start sending a number merely
+// because this code learned how.
+func TestChatSendsTemperatureOnlyWhenSet(t *testing.T) {
+	s, platform, _ := vertexService(t, func(r *http.Request, body []byte) (int, string) {
+		return generateOK("gemini-3.5-flash")
+	})
+	if s.Temperature() != nil {
+		t.Fatalf("a fresh service must carry no temperature, got %v", *s.Temperature())
+	}
+	if _, err := s.Chat(context.Background(), "hi", nil, "en"); err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	if _, present := generationConfigOf(t, platform.last(t).Body)["temperature"]; present {
+		t.Error("an unset temperature reached the wire")
+	}
+
+	third := 0.3
+	s.SetTemperature(&third)
+	if _, err := s.Chat(context.Background(), "hi again", nil, "en"); err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	if got := generationConfigOf(t, platform.last(t).Body)["temperature"]; got != 0.3 {
+		t.Errorf("temperature on the wire = %v, want 0.3", got)
+	}
+
+	// 0 is a value, not "unset" — greedy sampling is a legitimate setting.
+	zero := 0.0
+	s.SetTemperature(&zero)
+	if _, err := s.Chat(context.Background(), "third", nil, "en"); err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	if got, present := generationConfigOf(t, platform.last(t).Body)["temperature"]; !present || got != 0.0 {
+		t.Errorf("0.0 must be sent as a value, got %v (present=%v)", got, present)
+	}
+
+	// nil switches it off again: that is what a NULL column means, and it must be
+	// able to undo a previously applied value.
+	s.SetTemperature(nil)
+	if _, err := s.Chat(context.Background(), "fourth", nil, "en"); err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	if _, present := generationConfigOf(t, platform.last(t).Body)["temperature"]; present {
+		t.Error("clearing the temperature left it on the wire")
+	}
+}
+
+func generationConfigOf(t *testing.T, raw []byte) map[string]any {
+	t.Helper()
+	var body struct {
+		GenerationConfig map[string]any `json:"generationConfig"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("decode request body: %v", err)
+	}
+	return body.GenerationConfig
+}

@@ -71,7 +71,7 @@ func main() {
 	must(err)
 	defer pool.Close()
 	svc := &rag.Service{DB: pool, Logger: slog.Default()}
-	if apiKey, model, prompt, maxTokens, region, ok := gemini.LoadDefaultConfig(ctx, pool); ok {
+	if apiKey, model, prompt, maxTokens, region, temperature, ok := gemini.LoadDefaultConfig(ctx, pool); ok {
 		// model_configs.api_key is sealed at rest; open it before use.
 		svc.Gemini = gemini.FromPartsFull(decryptModelKey(apiKey), model, prompt, maxTokens)
 		// The same location production serves from, or this measures an endpoint
@@ -81,6 +81,10 @@ func main() {
 		if err := svc.Gemini.SetVertexRegion(region); err != nil {
 			slog.Warn("ignoring the stored Vertex region", "region", region, "error", err.Error())
 		}
+		// And the same sampling temperature, so a retrieval A/B here measures what
+		// production actually samples with. NULL stays NULL (no temperature on the
+		// wire), which is what LoadDefaultConfig returns for an unset column.
+		svc.Gemini.SetTemperature(temperature)
 	} else {
 		svc.Gemini = gemini.New(os.Getenv("GEMINI_API_KEY"), os.Getenv("GEMINI_MODEL"), 0)
 	}

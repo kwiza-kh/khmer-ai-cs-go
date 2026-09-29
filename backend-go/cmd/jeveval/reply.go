@@ -35,6 +35,7 @@ import (
 	"log/slog"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -130,6 +131,18 @@ type evalOptions struct {
 	// the only way to tell "the model ignored a fact" from "the fact never made it
 	// into the prompt" — a distinction this harness got wrong once already.
 	dump bool
+	// temperature overrides the deployment's sampling temperature for this run
+	// only; negative means "keep whatever the deployment sends".
+	temperature float64
+}
+
+// temperatureLabel renders the arm a run measured: the number, or the platform's
+// own default when the deployment sends no temperature at all (which is not 0).
+func temperatureLabel(t *float64) string {
+	if t == nil {
+		return "platform default (unset)"
+	}
+	return strconv.FormatFloat(*t, 'f', -1, 64)
 }
 
 func runReply(mode evalOptions) {
@@ -182,6 +195,14 @@ func runReply(mode evalOptions) {
 		fmt.Fprintln(os.Stderr, "reply:", err)
 		os.Exit(2)
 	}
+	// -temperature overrides the deployment's own value for this run only: the
+	// point is to compare arms (1.0 vs 0.7 vs 0.3) WITHOUT changing what production
+	// sends, and without a second binary. It is applied after the DB value so an
+	// operator can reproduce "what if we switched".
+	if mode.temperature >= 0 {
+		t := mode.temperature
+		svc.Gemini.SetTemperature(&t)
+	}
 	// Warm the embedding connection the way the server does at boot, and FAIL
 	// LOUDLY if it cannot be warmed: a cold connection drops the dense retrieval
 	// leg (see gemini.WarmEmbeddings), so every case would be scored against a
@@ -210,7 +231,7 @@ func runReply(mode evalOptions) {
 		os.Exit(2)
 	}
 
-	printReplyReport(results, file, mode, cold)
+	printReplyReport(results, file, mode, cold, temperatureLabel(svc.Gemini.Temperature()))
 	if failed := replyFailures(results, mode); failed > 0 {
 		os.Exit(1)
 	}
@@ -222,13 +243,17 @@ func runReply(mode evalOptions) {
 // last switched to.
 func servingRAGService(ctx context.Context, pool *pgxpool.Pool) (*rag.Service, error) {
 	svc := &rag.Service{DB: pool, Logger: logToStderr()}
-	if apiKey, modelName, systemPrompt, maxTokens, region, ok := gemini.LoadDefaultConfig(ctx, pool); ok {
+	if apiKey, modelName, systemPrompt, maxTokens, region, temperature, ok := gemini.LoadDefaultConfig(ctx, pool); ok {
 		svc.Gemini = gemini.FromPartsFull(decryptModelKey(apiKey), modelName, systemPrompt, maxTokens)
 		if err := svc.Gemini.SetVertexRegion(region); err != nil {
 			// Loud, but not fatal: the eval then measures the environment's
 			// region, which is what a misconfigured deployment would serve from.
 			fmt.Fprintln(os.Stderr, "reply: ignoring stored vertex region:", err)
 		}
+		// Same sampling temperature as the deployment, so the arm that is supposed
+		// to represent "what production sends today" really is. -temperature below
+		// overrides it for the other arms of a comparison.
+		svc.Gemini.SetTemperature(temperature)
 	} else if key := strings.TrimSpace(os.Getenv("GEMINI_API_KEY")); key != "" {
 		svc.Gemini = gemini.New(key, strings.TrimSpace(os.Getenv("GEMINI_MODEL")), 2048)
 	} else {
@@ -458,7 +483,7 @@ func judgeReply(ctx context.Context, svc *rag.Service, c replyCase, reply string
 	return v
 }
 
-func printReplyReport(results []caseResult, file replyEvalFile, mode evalOptions, cold string) {
+func printReplyReport(results []caseResult, file replyEvalFile, mode evalOptions, cold, temperature string) {
 	passed, judged, scoreSum := 0, 0, 0
 	for _, r := range results {
 		status := "ok  "
@@ -501,8 +526,8 @@ func printReplyReport(results []caseResult, file replyEvalFile, mode evalOptions
 	if judged > 0 {
 		avg = float64(scoreSum) / float64(judged)
 	}
-	fmt.Printf("\n%d/%d cases pass; judge average %.2f/12 (gate %.2f/12)\n",
-		passed, len(results), avg, mode.gate)
+	fmt.Printf("\n%d/%d cases pass; judge average %.2f/12 (gate %.2f/12)  temperature=%s\n",
+		passed, len(results), avg, mode.gate, temperature)
 	if cold != "" {
 		fmt.Printf("\n⚠ DENSE RETRIEVAL WAS COLD (%s) — grounding was lexical-only; "+
 			"these numbers do not describe production.\n", cold)
