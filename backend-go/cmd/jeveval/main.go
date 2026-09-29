@@ -49,10 +49,31 @@ type judged struct {
 func main() {
 	csvPath := flag.String("csv", "", "path to the exported turns CSV")
 	workers := flag.Int("workers", 8, "parallel Jev calls")
-	mode := flag.String("mode", "threshold", "threshold | agree | rerank | live | khmer | speed")
+	mode := flag.String("mode", "threshold", "threshold | agree | rerank | live | khmer | speed | reply")
 	gate := flag.String("gate", "stack", "decision policy to scan: stack | noul | jev")
+	// -mode reply only. min-score is not called -gate because -gate already names
+	// the Jev decision policy above, and two meanings on one flag is how a
+	// calibrated threshold gets silently reused as a quality bar.
+	replyEval := flag.String("eval", "", "-mode reply: path to the reply eval JSON")
+	replyMinScore := flag.Float64("min-score", 8.0, "-mode reply: minimum judge total out of 12")
+	replyCategory := flag.String("category", "", "-mode reply: only run cases in this category")
+	replyJudge := flag.Bool("judge", true, "-mode reply: run the rubric judge (needs GEMINI_MODEL fast model)")
+	replyUser := flag.Int("user", 1, "-mode reply: tenant user id for retrieval")
+	verbose := flag.Bool("v", false, "-mode reply: print each reply")
+	dump := flag.Bool("dump", false, "-mode reply: print the grounding context as the model received it")
 	flag.Parse()
 	switch *mode {
+	case "reply":
+		runReply(evalOptions{
+			evalPath: *replyEval,
+			category: *replyCategory,
+			userID:   int32(*replyUser),
+			gate:     *replyMinScore,
+			judge:    *replyJudge,
+			verbose:  *verbose,
+			dump:     *dump,
+		})
+		return
 	case "agree":
 		runAgree(*csvPath, *workers)
 		return
