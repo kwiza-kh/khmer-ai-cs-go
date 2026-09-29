@@ -108,4 +108,12 @@ func TestGroundingExcerptKeepsAListWhole(t *testing.T) {
 	if got := groundingExcerpt(answer, 800, 0); got != answer {
 		t.Errorf("a short source was rewritten: %q", got)
 	}
+
+	// room <= 0 means "nothing fits", never "no limit".
+	if got := groundingExcerpt("anything at all", 0, 0); got != "" {
+		t.Errorf("room=0 must yield an empty excerpt, got %q", got)
+	}
+	if got := truncateRunes("abcdef", 0); got != "" {
+		t.Errorf("truncateRunes(n<=0) must be empty (and must not panic), got %q", got)
+	}
 }

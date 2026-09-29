@@ -1202,7 +1202,11 @@ func (s *Service) Ground(ctx context.Context, userID int32, sessionID *string, m
 	used := 0
 	for i, src := range sources {
 		room := groundSourceLimit(src.Content)
-		ex := 0
+		// With a total budget in force, overshoot is limited to what is left of it;
+		// with the budget disabled (0 = no cap) there is nothing to spend, so the
+		// slack is free — otherwise disabling the budget would make excerpts
+		// SHORTER than the capped path, which is backwards.
+		ex := groundExcerptSlack
 		if budget > 0 {
 			if used >= budget {
 				break
@@ -1213,6 +1217,7 @@ func (s *Service) Ground(ctx context.Context, userID int32, sessionID *string, m
 			// One block's worth of overshoot, when the remaining budget can pay for
 			// it: a cut that lands after a whole Q&A block is worth ~200 runes more
 			// than one that lands inside its list (see groundingExcerpt).
+			ex = 0
 			if left := budget - used - room; left > 0 {
 				ex = min(groundExcerptSlack, left)
 			}
@@ -1249,8 +1254,15 @@ const groundExcerptSlack = 400
 // then retreat — and a retreat is marked, so an incomplete excerpt can never read
 // as a complete one.
 func groundingExcerpt(content string, room, extra int) string {
+	if room <= 0 {
+		// "at most room runes" must never degrade into "no limit". The caller
+		// computes room from the remaining budget, so a future caller passing 0 is
+		// a plausible mistake, and returning the whole source there would blow the
+		// prompt budget silently — the opposite of what 0 asks for.
+		return ""
+	}
 	runes := []rune(content)
-	if room <= 0 || len(runes) <= room {
+	if len(runes) <= room {
 		return content
 	}
 	limit := min(room+extra, len(runes))
@@ -1709,6 +1721,11 @@ func (s *Service) RetryDocument(ctx context.Context, userID int32, docID int32) 
 }
 
 func truncateRunes(s string, n int) string {
+	if n <= 0 {
+		// Guarded rather than left to the slice expression: `runes[:n-1]` is a
+		// negative index (panic) and would take down the turn that hit it.
+		return ""
+	}
 	runes := []rune(s)
 	if len(runes) <= n {
 		return s
