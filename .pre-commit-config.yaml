@@ -1,0 +1,50 @@
+# Hooks that keep the rules in AGENTS.md from being forgotten rather than
+# discovered in production.
+#
+# Install once per clone:
+#     python -m pip install pre-commit && pre-commit install
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        # Markdown keeps its double-space line breaks.
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=2048"]
+      - id: check-yaml
+        args: ["--allow-multiple-documents"]
+      - id: mixed-line-ending
+        # The working tree is checked out CRLF on Windows (core.autocrlf=true);
+        # git normalises on commit, so do not rewrite it here.
+        args: ["--fix=no"]
+
+  - repo: local
+    hooks:
+      # gofmt -l is useless on a CRLF checkout (it flags every file), which is
+      # why the checker normalises endings first.
+      - id: gofmt
+        name: gofmt (backend, CRLF-aware)
+        language: system
+        entry: bash -c 'cd backend-go && go run ./tools/gofmtcheck ./internal ./cmd'
+        files: ^backend-go/.*\.go$
+        pass_filenames: false
+
+      - id: go-vet
+        name: go vet (backend)
+        language: system
+        entry: bash -c 'cd backend-go && go vet ./...'
+        files: ^backend-go/.*\.go$
+        pass_filenames: false
+
+      # internal/migrations asserts that the two migration directories match and
+      # that every file carries a numeric prefix — the ladder that stopped a
+      # half-applied schema twice.
+      - id: migration-mirror
+        name: migration mirror is in step
+        language: system
+        entry: bash -c 'cd backend-go && go test ./internal/migrations/'
+        files: ^backend-go/(internal/)?migrations/.*\.sql$
+        pass_filenames: false
