@@ -1266,9 +1266,26 @@ func (s *Service) postWithProviderRetry(ctx context.Context, prov provider, targ
 // The turn runs under callBudget, so a hung upstream cannot hold the caller for
 // the whole retry worst case.
 func (s *Service) Chat(ctx context.Context, message string, history []HistoryItem, language string) (ChatResult, error) {
+	return s.ChatAs(ctx, message, history, language, "")
+}
+
+// ChatAs is Chat under a caller-supplied system prompt; an empty systemPrompt is
+// exactly Chat.
+//
+// A persona (migration 067) is bound per session or per conversation, so it
+// cannot live on the Service: one Service serves every tenant, and moving the
+// configured prompt around the call would race two concurrent turns and leak one
+// tenant's persona into the other's reply. The override travels with the turn.
+//
+// The explicit context cache is skipped for an override. A cachedContents
+// resource is registered against the BASE prompt (contextcache.go:
+// prefix := s.systemInstruction(language)) and is sent in place of
+// systemInstruction, so carrying it into a persona turn would answer as the
+// tenant prompt with nothing anywhere reporting an error.
+func (s *Service) ChatAs(ctx context.Context, message string, history []HistoryItem, language, systemPrompt string) (ChatResult, error) {
 	ctx, cancel := withCallBudget(ctx)
 	defer cancel()
-	res, err := s.chatWithModel(ctx, message, history, language, "")
+	res, err := s.chatWithModel(ctx, message, history, language, "", systemPrompt)
 	return res, budgetExceeded(err)
 }
 
@@ -1285,7 +1302,7 @@ func (s *Service) Chat(ctx context.Context, message string, history []HistoryIte
 // persisted the template reply and delivered it to real customers, with no
 // alert anywhere. The result is still populated so a caller may choose to
 // degrade deliberately, but the error makes that an explicit decision.
-func (s *Service) chatWithModel(ctx context.Context, message string, history []HistoryItem, language, model string) (ChatResult, error) {
+func (s *Service) chatWithModel(ctx context.Context, message string, history []HistoryItem, language, model, systemPrompt string) (ChatResult, error) {
 	if !s.IsConfigured() {
 		return s.chatMock(message, language), nil
 	}
@@ -1299,7 +1316,7 @@ func (s *Service) chatWithModel(ctx context.Context, message string, history []H
 	}
 	var lastErr error
 	for i, prov := range candidates {
-		res, status, err := s.chatWithProvider(ctx, prov, message, history, language, model, i == 0)
+		res, status, err := s.chatWithProvider(ctx, prov, message, history, language, model, i == 0, systemPrompt)
 		if err == nil {
 			return res, nil
 		}
@@ -1319,16 +1336,26 @@ func (s *Service) chatWithModel(ctx context.Context, message string, history []H
 // useCache is false for a fallback transport: a cachedContents resource name is a
 // property of the transport that registered it (a vertex resource path means
 // nothing to studio), so sending it to the other one is a guaranteed 400.
-func (s *Service) chatWithProvider(ctx context.Context, prov provider, message string, history []HistoryItem, language, model string, useCache bool) (ChatResult, int, error) {
+//
+// systemPrompt, when non-empty, is a per-turn persona prompt; see ChatAs for why
+// it also disables the context cache.
+func (s *Service) chatWithProvider(ctx context.Context, prov provider, message string, history []HistoryItem, language, model string, useCache bool, systemPrompt string) (ChatResult, int, error) {
 	cfg := s.snapshot()
 	if model == "" {
 		model = cfg.modelName
 	}
 	cacheName := ""
-	if useCache {
+	if useCache && systemPrompt == "" {
 		cacheName = s.contextCacheFor(ctx, language)
 	}
 	body := s.buildRequestBody(message, history, language, cacheName)
+	if systemPrompt != "" {
+		// buildRequestBody keeps its signature because eight tests call it
+		// directly; the override lands on the shape it just built.
+		body["systemInstruction"] = map[string]any{
+			"parts": []map[string]any{{"text": s.systemInstructionFor(language, systemPrompt)}},
+		}
+	}
 	status, text, err := s.postWithProviderRetry(ctx, prov, prov.generateURL(model), body)
 	if err == nil && cacheName != "" && contextCacheStale(status, text) {
 		// The registered cache expired or was deleted server-side (its own TTL,
@@ -1426,6 +1453,16 @@ func (s *Service) systemInstruction(language string) string {
 		system = DefaultSystemPrompt
 	}
 	return system + "\n\n[Language Preference] " + LanguageLabel(language)
+}
+
+// systemInstructionFor is systemInstruction with a per-turn persona override. An
+// empty override is the configured prompt, so a turn with no persona is
+// byte-identical to what this Service sent before personas existed.
+func (s *Service) systemInstructionFor(language, systemPrompt string) string {
+	if systemPrompt == "" {
+		return s.systemInstruction(language)
+	}
+	return systemPrompt + "\n\n[Language Preference] " + LanguageLabel(language)
 }
 
 // generationConfig builds the config block for one chat request.
@@ -1601,33 +1638,33 @@ func (s *Service) chatStream(ctx context.Context, message string, history []Hist
 	// failure — the non-streaming path returns the error.
 	prov, perr := s.activeProvider()
 	if perr != nil {
-		return s.chatWithModel(ctx, message, history, language, "")
+		return s.chatWithModel(ctx, message, history, language, "", "")
 	}
 	body := s.buildRequestBody(message, history, language, s.contextCacheFor(ctx, language))
 	payload, err := json.Marshal(body)
 	if err != nil {
-		return s.chatWithModel(ctx, message, history, language, "")
+		return s.chatWithModel(ctx, message, history, language, "", "")
 	}
 	// Read the serving config through the mutex: an admin saving a new model
 	// config calls Reload, which rewrites modelName/client under the lock.
 	cfg := s.snapshot()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, prov.streamURL(cfg.modelName), bytes.NewReader(payload))
 	if err != nil {
-		return s.chatWithModel(ctx, message, history, language, "")
+		return s.chatWithModel(ctx, message, history, language, "", "")
 	}
 	req.Header.Set("Content-Type", "application/json")
 	// Credential selection is shared with postWithRetry (see provider.authorize).
 	if err := prov.authorize(ctx, req, cfg.apiKey); err != nil {
-		return s.chatWithModel(ctx, message, history, language, "")
+		return s.chatWithModel(ctx, message, history, language, "", "")
 	}
 	resp, err := cfg.client.Do(req)
 	if err != nil {
-		return s.chatWithModel(ctx, message, history, language, "")
+		return s.chatWithModel(ctx, message, history, language, "", "")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-		return s.chatWithModel(ctx, message, history, language, "")
+		return s.chatWithModel(ctx, message, history, language, "", "")
 	}
 
 	var full strings.Builder
@@ -1675,11 +1712,11 @@ func (s *Service) chatStream(ctx context.Context, message string, history []Hist
 			res.Reply = SanitizeReply(full.String())
 			return res, fmt.Errorf("gemini stream interrupted after %d chars: %w", full.Len(), serr)
 		}
-		return s.chatWithModel(ctx, message, history, language, "")
+		return s.chatWithModel(ctx, message, history, language, "", "")
 	}
 	res.Reply = full.String()
 	if res.Reply == "" {
-		return s.chatWithModel(ctx, message, history, language, "")
+		return s.chatWithModel(ctx, message, history, language, "", "")
 	}
 	res.Reply = SanitizeReply(res.Reply)
 	return res, nil

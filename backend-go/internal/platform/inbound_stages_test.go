@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"khmer-ai-cs-go/internal/gemini"
 )
 
 // The inbound pipeline is now a stage list. These tests pin the driver's
@@ -125,6 +127,7 @@ func TestInboundStageListIsStable(t *testing.T) {
 		"resolve-profile",
 		"prepare-media",
 		"ensure-session",
+		"resolve-persona",
 		"reopen-finished-session",
 		"release-handoff",
 		"escalation-gate",
@@ -179,5 +182,32 @@ func TestInboundStagesHaveTheDriverContract(t *testing.T) {
 	noop := []inboundStage{{Name: "noop", Run: func(context.Context, *inboundTurn) (bool, error) { return true, nil }}}
 	if err := runInboundStages(context.Background(), noop, &inboundTurn{}); err != nil {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// TestPersonaHistoryAlternatesFromUser — 067_personas.sql stores begin_dialogs as
+// a plain []string with no roles, so the positional reading IS the contract, and
+// starting on 'user' is what keeps RepairHistoryShape from dropping the whole
+// block it is prepended to.
+func TestPersonaHistoryAlternatesFromUser(t *testing.T) {
+	got := personaHistory([]string{"a", "b", "c"})
+	want := []gemini.HistoryItem{
+		{Role: "user", Content: "a"},
+		{Role: "model", Content: "b"},
+		{Role: "user", Content: "c"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("len = %d, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+	// The dialogs lead the history and must survive the shape repair that runs
+	// over the assembled history.
+	assembled := append(personaHistory([]string{"a", "b"}), gemini.HistoryItem{Role: "user", Content: "q"})
+	if n := len(gemini.RepairHistoryShape(assembled)); n != 3 {
+		t.Errorf("after repair %d turns survive, want 3", n)
 	}
 }

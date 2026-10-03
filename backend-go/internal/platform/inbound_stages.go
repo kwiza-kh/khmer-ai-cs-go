@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"khmer-ai-cs-go/internal/gemini"
+	"khmer-ai-cs-go/internal/persona"
 	"khmer-ai-cs-go/internal/rag"
 	"khmer-ai-cs-go/internal/usage"
 )
@@ -54,6 +55,12 @@ type inboundTurn struct {
 	UserMessageID int64
 	SessionIsNew  bool
 	SessionStatus string
+
+	// --- set by resolve-persona ---
+	// Persona, when non-nil, replaces the per-tenant system prompt for this
+	// turn. Nil is the normal case (no binding) and every stage below must
+	// behave as it did before personas existed.
+	Persona *persona.Persona
 
 	// --- set by prepare-grounding / route-inbound ---
 	ReplyLang  string
@@ -92,6 +99,7 @@ func (p *Pipeline) inboundStages() []inboundStage {
 		{Name: "resolve-profile", Run: p.stageResolveProfile},
 		{Name: "prepare-media", Run: p.stagePrepareMedia},
 		{Name: "ensure-session", Run: p.stageEnsureSession},
+		{Name: "resolve-persona", Run: p.stageResolvePersona},
 		{Name: "reopen-finished-session", Run: p.stageReopenFinishedSession},
 		{Name: "release-handoff", Run: p.stageReleaseHandoff},
 		{Name: "escalation-gate", Run: p.stageEscalationGate},
@@ -178,6 +186,56 @@ func (p *Pipeline) stageEnsureSession(ctx context.Context, t *inboundTurn) (bool
 	}
 	t.SessionID, t.UserMessageID, t.SessionIsNew, t.SessionStatus = sessionID, userMessageID, isNew, sessionStatus
 	return true, nil
+}
+
+// resolve-persona — a session- or conversation-bound persona (migration 067)
+// replaces the tenant's system prompt for this turn.
+//
+// It runs right after ensure-session because the session id is what the session
+// scope binds to, and it must run before cache-lookup: the reply cache is keyed
+// on tenant+question+language with no persona dimension, so an answer cached
+// under the tenant prompt must not be served on a persona turn, and a persona's
+// answer must not be stored for the tenant prompt to serve later.
+//
+// No binding is the normal case, and a failed lookup is not worth aborting a
+// customer's turn over: both leave the turn on the per-tenant prompt, which is
+// exactly what every deployment ran before this stage existed.
+func (p *Pipeline) stageResolvePersona(ctx context.Context, t *inboundTurn) (bool, error) {
+	// conversationID is "": this platform has no conversation entity above
+	// sessions — 001_init.sql gives one sessions row per customer thread — so the
+	// session scope is the narrowest binding that can exist today.
+	// persona.Resolve walks session → conversation → global, so the conversation
+	// scope starts matching the day a conversation id exists, with no change here.
+	per, ok, err := persona.NewStore(p.DB).ForTurn(ctx, t.Config.UserID, t.SessionID, "")
+	if err != nil {
+		p.Logger.Warn("persona lookup failed; answering with the tenant system prompt",
+			"session_id", t.SessionID, "error", err.Error())
+		return true, nil
+	}
+	if ok {
+		t.Persona = &per
+	}
+	return true, nil
+}
+
+// personaHistory turns a persona's begin_dialogs into the turns that lead the
+// history.
+//
+// 067_personas.sql stores them as a plain JSON array of strings with no roles
+// (the shape AstrBot's begin_dialogs has), so the only reading available is
+// positional: the customer's opening line first, then the persona's, alternating.
+// Starting on 'user' is what keeps the block from being dropped wholesale —
+// RepairHistoryShape (gemini.go) discards every leading non-user turn.
+func personaHistory(dialogs []string) []gemini.HistoryItem {
+	out := make([]gemini.HistoryItem, 0, len(dialogs))
+	for i, d := range dialogs {
+		role := "user"
+		if i%2 == 1 {
+			role = "model"
+		}
+		out = append(out, gemini.HistoryItem{Role: role, Content: d})
+	}
+	return out
 }
 
 // reopen-finished-session — a customer replying on a resolved/closed session
@@ -326,7 +384,8 @@ func (p *Pipeline) stageNotifyOwner(ctx context.Context, t *inboundTurn) (bool, 
 // stored for this tenant, so both the retrieval wait and generation are skipped.
 // Small talk skips the cache: conversational replies depend on history.
 func (p *Pipeline) stageCacheLookup(ctx context.Context, t *inboundTurn) (bool, error) {
-	if t.SkipGround || !p.Cache.Enabled() {
+	// A persona turn skips the cache entirely — see resolve-persona.
+	if t.SkipGround || !p.Cache.Enabled() || t.Persona != nil {
 		return true, nil
 	}
 	if cached, hit := p.Cache.Lookup(ctx, t.Config.UserID, t.Content, t.ReplyLang); hit {
@@ -379,7 +438,12 @@ func (p *Pipeline) stageGenerate(ctx context.Context, t *inboundTurn) (bool, err
 	if t.GroundCtx.HasMatch {
 		message = rag.AugmentMessage(t.Content, &t.GroundCtx)
 	}
-	result, err := p.Gemini.Chat(ctx, message, t.History, t.ReplyLang)
+	history, systemPrompt := t.History, ""
+	if t.Persona != nil {
+		history = append(personaHistory(t.Persona.BeginDialogs), t.History...)
+		systemPrompt = t.Persona.SystemPrompt
+	}
+	result, err := p.Gemini.ChatAs(ctx, message, history, t.ReplyLang, systemPrompt)
 	if err != nil {
 		if IsQuotaExhausted(err) {
 			// An exhausted quota or a drained balance is not a transient failure:
@@ -443,7 +507,7 @@ func (p *Pipeline) stageGuardReply(ctx context.Context, t *inboundTurn) (bool, e
 	//
 	// guarded is read NOW: the store runs in a background lane, and capturing the
 	// field would let the after-hours preamble below leak into the cached answer.
-	if !t.SkipGround && !t.Result.UsedMock && p.Cache.Enabled() {
+	if !t.SkipGround && !t.Result.UsedMock && p.Cache.Enabled() && t.Persona == nil {
 		guarded := t.Reply
 		userID, content, lang, model := t.Config.UserID, t.Content, t.ReplyLang, p.Gemini.ModelName()
 		SpawnClassifier(func() {

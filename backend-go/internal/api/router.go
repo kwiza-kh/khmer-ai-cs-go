@@ -86,6 +86,21 @@ func (a *App) Router() http.Handler {
 	authed.Handle("PUT /api/v1/settings/telegram-notify", a.handle(a.putTelegramNotify))
 	authed.Handle("POST /api/v1/settings/telegram-notify/test", a.handle(a.postTelegramNotifyTest))
 	authed.Handle("POST /api/v1/settings/telegram-notify/link", a.handle(a.postTelegramNotifyLink))
+	// Personas — named instruction sets that replace the tenant's system prompt
+	// for a turn. internal/persona resolves session → conversation → global and
+	// the inbound pipeline applies the result in its resolve-persona stage. These
+	// are adminOnly, not platformAdminOnly: a persona changes what this merchant's
+	// AI says to this merchant's customers, so the merchant owns it.
+	//
+	// Bindings are addressed by (scope, target) and never by binding_id —
+	// 067_personas.sql makes that pair unique per tenant, so a rebind is one PUT
+	// and the console never has to carry an id back.
+	authed.Handle("GET /api/v1/personas", a.adminOnly(a.handle(a.listPersonas)))
+	authed.Handle("POST /api/v1/personas", a.adminOnly(a.handle(a.createPersona)))
+	authed.Handle("PUT /api/v1/personas/{id}", a.adminOnly(a.handle(a.updatePersona)))
+	authed.Handle("DELETE /api/v1/personas/{id}", a.adminOnly(a.handle(a.deletePersona)))
+	authed.Handle("PUT /api/v1/persona-bindings", a.adminOnly(a.handle(a.putPersonaBinding)))
+	authed.Handle("DELETE /api/v1/persona-bindings", a.adminOnly(a.handle(a.deletePersonaBinding)))
 	// Agent copilot: one-shot translation (Khmer ↔ 中文 ↔ English).
 	authed.Handle("POST /api/v1/translate", a.handle(a.translateText))
 	authed.Handle("POST /api/v1/translate/batch", a.handle(a.translateBatch))

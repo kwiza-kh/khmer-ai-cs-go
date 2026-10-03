@@ -1911,3 +1911,76 @@ export async function uploadAvatar(file: File) {
   }
   return data as UserProfile;
 }
+
+/**
+ * Personas — named instruction sets that replace the tenant's system prompt for
+ * a turn. A binding points a persona at a scope ("session", "conversation" or
+ * "global"); the backend resolves the most specific one that matches.
+ */
+export interface PersonaBinding {
+  scope: string;
+  target: string;
+}
+
+export interface PersonaItem {
+  persona_id: string;
+  name: string;
+  system_prompt: string;
+  begin_dialogs: string[];
+  /** Empty means "no tools", but the API also has a null = "all tools" state. */
+  tools: string[];
+  error_reply: string;
+  bindings: PersonaBinding[];
+}
+
+export interface PersonasResponse {
+  personas: PersonaItem[];
+  /** Binding precedences, most specific first. */
+  scopes: string[];
+}
+
+/**
+ * The write payload deliberately omits `tools`. It is three-valued on the wire
+ * (absent = every tool, [] = none) and the server returns null as [], so echoing
+ * a persona back would silently turn "every tool" into "no tool". Nothing reads
+ * the field yet — the Gemini client has no tool layer — so the console leaves it
+ * alone rather than pretending to edit it.
+ */
+export interface PersonaInput {
+  name: string;
+  system_prompt: string;
+  begin_dialogs?: string[];
+  error_reply?: string;
+}
+
+export function listPersonas() {
+  return apiFetch<PersonasResponse>("/personas");
+}
+
+export function createPersona(input: PersonaInput) {
+  return apiFetch<{ persona: PersonaItem }>("/personas", {
+    method: "POST", body: JSON.stringify(input),
+  });
+}
+
+export function updatePersona(personaId: string, input: PersonaInput) {
+  return apiFetch<{ persona: PersonaItem }>(`/personas/${encodeURIComponent(personaId)}`, {
+    method: "PUT", body: JSON.stringify(input),
+  });
+}
+
+export function deletePersona(personaId: string) {
+  return apiFetch<{ message: string }>(`/personas/${encodeURIComponent(personaId)}`, { method: "DELETE" });
+}
+
+/** Bindings are addressed by (scope, target) — a rebind replaces the previous persona. */
+export function putPersonaBinding(input: { persona_id: string; scope: string; target: string }) {
+  return apiFetch<{ persona_id: string; scope: string; target: string }>("/persona-bindings", {
+    method: "PUT", body: JSON.stringify(input),
+  });
+}
+
+export function deletePersonaBinding(scope: string, target: string) {
+  const query = new URLSearchParams({ scope, target });
+  return apiFetch<{ scope: string; target: string }>(`/persona-bindings?${query}`, { method: "DELETE" });
+}

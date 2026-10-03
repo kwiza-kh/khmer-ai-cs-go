@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import useSWR from "swr";
-import { listUsers, updateUserRole, getTokenStats, listModelConfigs, listAvailableModels, listVertexRegions, testModelConfig, updateModelConfig, getDefaultSystemPrompt, listPromptVersions, restorePromptVersion, type AvailableModel, type ModelItem, type PaginatedResponse, type UserItem, type UsersStats } from "@/lib/api";
+import { listUsers, updateUserRole, getTokenStats, listModelConfigs, listAvailableModels, listVertexRegions, testModelConfig, updateModelConfig, getDefaultSystemPrompt, listPromptVersions, restorePromptVersion, listPersonas, createPersona, updatePersona, deletePersona, putPersonaBinding, deletePersonaBinding, type AvailableModel, type ModelItem, type PaginatedResponse, type PersonaBinding, type PersonaItem, type PersonasResponse, type UserItem, type UsersStats } from "@/lib/api";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -16,14 +16,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { AlertTriangle, BarChart3, Clock, Cpu, KeyRound, MessageSquare, RefreshCw, Send, SlidersHorizontal, Sparkles, TrendingUp, Users, Zap, Download, ShieldCheck, Search, UserCheck, UserPlus, Coins, Lock, History, RotateCcw, type LucideIcon } from "lucide-react";
+import { AlertTriangle, BarChart3, Bot, Clock, Cpu, KeyRound, MessageSquare, Pencil, Plus, RefreshCw, Send, SlidersHorizontal, Sparkles, Trash2, TrendingUp, Users, X, Zap, Download, ShieldCheck, Search, UserCheck, UserPlus, Lock, History, RotateCcw, type LucideIcon } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
 import { fmtDate, fmtInt, fmtMoney } from "@/lib/format";
 import { EmptyState } from "@/components/empty-state";
+import { confirmDelete } from "@/lib/confirm-delete";
 import { PageHeader } from "@/components/page-header";
 import { AnalyticsPanel } from "@/components/admin/analytics-panel";
 import { FeedbackTab } from "@/components/admin/feedback-tab";
@@ -78,6 +80,281 @@ function RefreshAction({ onClick, refreshing }: { onClick: () => void; refreshin
 function PageLoadingState() {
   const { t } = useI18n();
   return <div className="py-10 text-center text-sm text-muted-foreground">{t("settings.loading")}</div>;
+}
+
+/**
+ * Personas — the console side of internal/persona.
+ *
+ * A persona replaces the tenant's system prompt for the turns it is bound to,
+ * and a binding chooses those turns (session beats conversation beats global).
+ * The page edits both together because apart they do nothing: an unbound persona
+ * never runs, and a binding with no persona has nothing to say.
+ */
+export function PersonasAdminPage() {
+  const { t } = useI18n();
+  const { data, isLoading, mutate } = useSWR<PersonasResponse>("admin-personas", listPersonas);
+  const personas = data?.personas ?? [];
+  // The server ships its own precedence list so the editor cannot offer a scope
+  // the resolver would never match.
+  const scopes = data?.scopes ?? ["session", "conversation", "global"];
+
+  const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState<PersonaItem | null>(null);
+  const [form, setForm] = useState({ name: "", systemPrompt: "", beginDialogs: "", errorReply: "" });
+  const [saving, setSaving] = useState(false);
+
+  const openCreate = () => {
+    setEditing(null);
+    setForm({ name: "", systemPrompt: "", beginDialogs: "", errorReply: "" });
+    setOpen(true);
+  };
+
+  const openEdit = (persona: PersonaItem) => {
+    setEditing(persona);
+    setForm({
+      name: persona.name,
+      systemPrompt: persona.system_prompt,
+      // One opener per line. A textarea is the only editor that survives a paste
+      // of real conversational prose.
+      beginDialogs: persona.begin_dialogs.join("\n"),
+      errorReply: persona.error_reply,
+    });
+    setOpen(true);
+  };
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const input = {
+        name: form.name,
+        system_prompt: form.systemPrompt,
+        begin_dialogs: form.beginDialogs.split("\n").map((line) => line.trim()).filter(Boolean),
+        error_reply: form.errorReply,
+      };
+      if (editing) await updatePersona(editing.persona_id, input);
+      else await createPersona(input);
+      await mutate();
+      setOpen(false);
+      toast.success(t("personas.saved"));
+    } catch (error) {
+      toast.error((error as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <AdminPageFrame
+      icon={Bot}
+      title={t("personas.title")}
+      description={t("personas.subtitle")}
+      actions={
+        <div className="flex items-center gap-2">
+          <RefreshAction onClick={() => void mutate()} refreshing={isLoading} />
+          <Button size="sm" className="h-7 gap-1.5 text-xs" onClick={openCreate}>
+            <Plus className="size-3" />{t("personas.new")}
+          </Button>
+        </div>
+      }
+    >
+      {isLoading ? <PageLoadingState /> : personas.length === 0 ? (
+        <EmptyState icon={Bot} title={t("personas.empty")} description={t("personas.emptyHint")} />
+      ) : (
+        <div className="space-y-3">
+          {personas.map((persona) => (
+            <PersonaCard
+              key={persona.persona_id}
+              persona={persona}
+              scopes={scopes}
+              onEdit={() => openEdit(persona)}
+              onChanged={() => void mutate()}
+            />
+          ))}
+        </div>
+      )}
+
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="max-h-[85vh] overflow-auto sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{editing ? t("personas.edit") : t("personas.new")}</DialogTitle>
+            <DialogDescription>{t("personas.formHint")}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium">{t("personas.name")}</label>
+              <Input
+                value={form.name}
+                onChange={(event) => setForm({ ...form, name: event.target.value })}
+                placeholder={t("personas.namePlaceholder")}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium">{t("personas.systemPrompt")}</label>
+              <Textarea
+                rows={7}
+                value={form.systemPrompt}
+                onChange={(event) => setForm({ ...form, systemPrompt: event.target.value })}
+                placeholder={t("personas.systemPromptPlaceholder")}
+              />
+              <p className="text-[11px] text-muted-foreground">{t("personas.systemPromptHint")}</p>
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium">{t("personas.beginDialogs")}</label>
+              <Textarea
+                rows={4}
+                value={form.beginDialogs}
+                onChange={(event) => setForm({ ...form, beginDialogs: event.target.value })}
+                placeholder={t("personas.beginDialogsPlaceholder")}
+              />
+              <p className="text-[11px] text-muted-foreground">{t("personas.beginDialogsHint")}</p>
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium">{t("personas.errorReply")}</label>
+              <Input
+                value={form.errorReply}
+                onChange={(event) => setForm({ ...form, errorReply: event.target.value })}
+                placeholder={t("personas.errorReplyPlaceholder")}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" size="sm" onClick={() => setOpen(false)}>{t("common.cancel")}</Button>
+            <Button
+              size="sm"
+              disabled={saving || !form.name.trim() || !form.systemPrompt.trim()}
+              onClick={() => void save()}
+            >
+              {saving ? t("common.saving") : t("common.save")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </AdminPageFrame>
+  );
+}
+
+function PersonaCard({
+  persona,
+  scopes,
+  onEdit,
+  onChanged,
+}: {
+  persona: PersonaItem;
+  scopes: string[];
+  onEdit: () => void;
+  onChanged: () => void;
+}) {
+  const { t, tf } = useI18n();
+  const [scope, setScope] = useState(scopes[0] ?? "session");
+  const [target, setTarget] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const bind = async () => {
+    // A global binding has no target — the server normalises it away — so the
+    // field is hidden for it rather than filled in and silently discarded.
+    const value = scope === "global" ? "" : target.trim();
+    if (scope !== "global" && !value) return;
+    setBusy(true);
+    try {
+      await putPersonaBinding({ persona_id: persona.persona_id, scope, target: value });
+      setTarget("");
+      onChanged();
+      toast.success(t("personas.bound"));
+    } catch (error) {
+      toast.error((error as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const unbind = (binding: PersonaBinding) =>
+    void confirmDelete(
+      tf("personas.unbindConfirm", { scope: binding.scope, target: binding.target || t("personas.scope.global") }),
+      () => deletePersonaBinding(binding.scope, binding.target),
+      onChanged,
+    );
+
+  const remove = () =>
+    void confirmDelete(
+      tf("personas.deleteConfirm", { name: persona.name }),
+      () => deletePersona(persona.persona_id),
+      onChanged,
+    );
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div className="min-w-0 space-y-1.5">
+            <CardTitle className="text-sm">{persona.name}</CardTitle>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <Badge variant="secondary" className="font-mono text-[10px]">{persona.persona_id}</Badge>
+              {persona.bindings.length === 0 ? (
+                <span className="text-[11px] text-muted-foreground">{t("personas.unbound")}</span>
+              ) : (
+                persona.bindings.map((binding) => (
+                  <Badge
+                    key={`${binding.scope}:${binding.target}`}
+                    variant="outline"
+                    className="gap-1 text-[10px]"
+                  >
+                    {binding.scope}{binding.target ? `:${binding.target}` : ""}
+                    <button
+                      type="button"
+                      onClick={() => unbind(binding)}
+                      aria-label={t("personas.unbind")}
+                      className="text-muted-foreground hover:text-destructive"
+                    >
+                      <X className="size-3" />
+                    </button>
+                  </Badge>
+                ))
+              )}
+            </div>
+          </div>
+          <div className="flex items-center gap-1">
+            <Button variant="ghost" size="sm" className="h-7 gap-1.5 text-xs" onClick={onEdit}>
+              <Pencil className="size-3" />{t("common.edit")}
+            </Button>
+            <Button variant="ghost" size="sm" className="h-7 gap-1.5 text-xs text-destructive" onClick={remove}>
+              <Trash2 className="size-3" />{t("common.delete")}
+            </Button>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <p className="whitespace-pre-wrap text-xs text-muted-foreground line-clamp-3">{persona.system_prompt}</p>
+        <div className="flex flex-wrap items-center gap-2">
+          <Select value={scope} onValueChange={(value) => setScope(value || scopes[0] || "session")}>
+            <SelectTrigger className="h-7 w-44 text-xs"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {scopes.map((option) => (
+                <SelectItem key={option} value={option} className="text-xs">
+                  {t(`personas.scope.${option}`)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {scope !== "global" && (
+            <Input
+              value={target}
+              onChange={(event) => setTarget(event.target.value)}
+              placeholder={t("personas.targetPlaceholder")}
+              className="h-7 w-64 text-xs"
+            />
+          )}
+          <Button
+            size="sm"
+            className="h-7 gap-1.5 text-xs"
+            disabled={busy || (scope !== "global" && !target.trim())}
+            onClick={() => void bind()}
+          >
+            <Plus className="size-3" />{t("personas.bind")}
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
 }
 
 export function DashboardPage() {

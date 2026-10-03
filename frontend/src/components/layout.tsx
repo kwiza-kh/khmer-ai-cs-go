@@ -12,7 +12,7 @@ import { cn } from "@/lib/utils";
 import {
   BookOpen, Globe, Users, Settings, LogOut, Menu, Search,
   Gauge, HelpCircle, Inbox, UserCheck, ShieldCheck, Coins, Cpu, FlaskConical,
-  MessageCircle, ChevronRight, type LucideIcon,
+  MessageCircle, ChevronRight, Bot, type LucideIcon,
 } from "lucide-react";
 import { useState } from "react";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -169,11 +169,17 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   // Expose a global refresh (the handoff-requests page calls this after
   // takeover/resolve/create so the badge updates without waiting for the WS).
   React.useEffect(() => {
-    (window as unknown as { __refreshHandoffBadge?: () => void }).__refreshHandoffBadge = () => { void mutateHandoffPending(); };
-    return () => { delete (window as unknown as { __refreshHandoffBadge?: () => void }).__refreshHandoffBadge; };
+    // SAFETY: `window` carries no declaration for this global, so the cast is the
+    // only way to name it. The invariant is the optional marker itself — a caller
+    // that loads before this effect runs sees `undefined` and does nothing.
+    const badgeGlobal = window as unknown as { __refreshHandoffBadge?: () => void };
+    badgeGlobal.__refreshHandoffBadge = () => { void mutateHandoffPending(); };
+    return () => { delete badgeGlobal.__refreshHandoffBadge; };
   }, [mutateHandoffPending]);
   useInboxRealtime(token, React.useCallback((event) => {
     if (event.type === "inbox.notification") {
+      // SAFETY: the same undeclared global; the optional call turns "the
+      // notification bell is not mounted" into a no-op instead of a TypeError.
       (window as unknown as { __refreshNotifs?: () => void }).__refreshNotifs?.();
     }
     if (event.type === "inbox.session") void mutateHandoffPending();
@@ -267,6 +273,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                   <NavItem href="/admin/users" icon={Users} label={t("nav.users")} active={isActive("/admin/users")} onNavigate={close} />
                   <NavItem href="/admin/models" icon={Cpu} label={t("nav.models")} active={isActive("/admin/models")} onNavigate={close} />
                   <NavItem href="/admin/tokens" icon={Coins} label={t("nav.tokens")} active={isActive("/admin/tokens")} onNavigate={close} />
+                  <NavItem href="/admin/personas" icon={Bot} label={t("nav.personas")} active={isActive("/admin/personas")} onNavigate={close} />
                 </NavSection>
               )}
               {isPlatformAdmin && (
