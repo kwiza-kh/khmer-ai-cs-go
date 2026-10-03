@@ -1,8 +1,15 @@
-// Package platform — reply-window policy (port of platform_policy.go).
-// Telegram/LINE/Zalo always open; WhatsApp templates exempt; the rest must
-// reply within 24h of the customer's last inbound message. Messenger /
-// Instagram human replies may continue for 7 days via the Meta HUMAN_AGENT
-// message tag; automatic (model) replies stay locked behind the 24h window.
+// Package platform — reply-window policy.
+//
+// The rules used to live in this comment plus a platform switch: Telegram, LINE
+// and Zalo were always open, a WhatsApp template was exempt, everything else had
+// to reply within 24h of the customer's last inbound message, and
+// Messenger/Instagram human replies could continue for 7 days via the Meta
+// HUMAN_AGENT message tag.
+//
+// Those rules are now data. capabilities.go declares Windowless, ReplyWindow,
+// HumanExtension and TemplateExempt per channel and this file only evaluates
+// them, so a channel with a different window is a table row rather than an edit
+// here.
 package platform
 
 import (
@@ -30,16 +37,27 @@ type PolicyError struct{ Msg string }
 func (e *PolicyError) Error() string { return e.Msg }
 
 // EnsureReplyWindow returns the reply deadline when a reply is allowed —
-// extended=true marks the 24h window as closed but the 7-day human-agent
+// extended=true marks the window as closed but the provider's human-agent
 // extension in effect (the caller must send with HumanAgentTag) — or a
 // *PolicyError when no reply is possible anymore.
 func EnsureReplyWindow(ctx context.Context, db *pgxpool.Pool, platform string, configID int32, sessionID string, isTemplate, isHuman bool, now time.Time) (time.Time, bool, error) {
-	if platform == "telegram" || platform == "line" || platform == "zalo" || (platform == "whatsapp" && isTemplate) {
+	caps := CapabilitiesFor(platform)
+
+	// Windowless channels — and template sends on a template-exempt channel —
+	// never consult the customer context. Keeping this short-circuit ahead of the
+	// query preserves the previous behaviour exactly: Telegram/LINE/Zalo
+	// deliveries do not touch platform_user_sessions at all.
+	if caps.Windowless || (caps.TemplateExempt && isTemplate) {
 		return now.Add(CustomerCareWindowHours * time.Hour), false, nil
 	}
-	if platform != "whatsapp" && platform != "meta" && platform != "instagram" {
+	// Everything else must declare a window. This is where the old switch's
+	// "unsupported platform reply policy" error came from, and it still covers
+	// both an unknown platform and a known channel that declares no window (the
+	// website widget, which is served over its own SSE path).
+	if !caps.Known || caps.ReplyWindow <= 0 {
 		return time.Time{}, false, fmt.Errorf("unsupported platform reply policy")
 	}
+
 	var lastInbound *time.Time
 	var raw *time.Time
 	err := db.QueryRow(ctx,
@@ -59,25 +77,40 @@ func EnsureReplyWindow(ctx context.Context, db *pgxpool.Pool, platform string, c
 		return time.Time{}, false, fmt.Errorf("look up reply window: %w", err)
 	}
 	if lastInbound == nil {
-		if platform == "whatsapp" {
-			return time.Time{}, false, &PolicyError{"WhatsApp customer context was not found; an approved template is required"}
+		if caps.TemplateExempt {
+			return time.Time{}, false, &PolicyError{caps.DisplayName + " customer context was not found; an approved template is required"}
 		}
 		return time.Time{}, false, &PolicyError{"Customer messaging context was not found"}
 	}
-	expires := lastInbound.Add(CustomerCareWindowHours * time.Hour)
+	return decideInWindow(caps, lastInbound, isHuman, now)
+}
+
+// decideInWindow is the pure half of the policy: capabilities plus the customer's
+// last inbound time decide whether a reply is allowed. It is separated from the
+// database lookup so the window rules can be tested without a pool
+// (see policy_test.go).
+func decideInWindow(caps Capabilities, lastInbound *time.Time, isHuman bool, now time.Time) (time.Time, bool, error) {
+	expires := lastInbound.Add(caps.ReplyWindow)
 	if now.Before(expires) {
 		return expires, false, nil
 	}
-	humanDeadline := lastInbound.Add(HumanAgentWindowDays * 24 * time.Hour)
-	if platform == "meta" || platform == "instagram" {
-		if now.Before(humanDeadline) {
-			if isHuman {
-				return humanDeadline, true, nil
-			}
-			return time.Time{}, false, &PolicyError{fmt.Sprintf("The %s 24-hour reply window has expired; automatic replies are not allowed. A human agent may still reply within %d days via the %s tag.", platform, HumanAgentWindowDays, HumanAgentTag)}
-		}
-		return time.Time{}, false, &PolicyError{fmt.Sprintf("The %s reply window and its %d-day human-agent extension have expired. Wait for a customer message before replying.", platform, HumanAgentWindowDays)}
+	if caps.HumanExtension <= 0 {
+		// Hard stop — WhatsApp without an approved template.
+		return time.Time{}, false, &PolicyError{fmt.Sprintf(
+			"The %s %d-hour reply window has expired. Send an approved template instead.",
+			caps.DisplayName, int(caps.ReplyWindow/time.Hour))}
 	}
-	// WhatsApp (non-template): hard 24h stop.
-	return time.Time{}, false, &PolicyError{"The WhatsApp 24-hour reply window has expired. Send an approved template instead."}
+	days := int(caps.HumanExtension / (24 * time.Hour))
+	humanDeadline := lastInbound.Add(caps.HumanExtension)
+	if now.Before(humanDeadline) {
+		if isHuman {
+			return humanDeadline, true, nil
+		}
+		return time.Time{}, false, &PolicyError{fmt.Sprintf(
+			"The %s %d-hour reply window has expired; automatic replies are not allowed. A human agent may still reply within %d days via the %s tag.",
+			caps.DisplayName, int(caps.ReplyWindow/time.Hour), days, HumanAgentTag)}
+	}
+	return time.Time{}, false, &PolicyError{fmt.Sprintf(
+		"The %s reply window and its %d-day human-agent extension have expired. Wait for a customer message before replying.",
+		caps.DisplayName, days)}
 }

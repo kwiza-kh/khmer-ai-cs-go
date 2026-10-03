@@ -156,9 +156,11 @@ func (a *App) upsertPlatformConfig(w http.ResponseWriter, r *http.Request) (any,
 	if req.Platform == "" {
 		return nil, ErrBadRequest("platform is required")
 	}
-	switch req.Platform {
-	case "whatsapp", "meta", "instagram", "telegram", "line", "zalo":
-	default:
+	// Which platform strings exist is declared in the capability table, not in a
+	// list copied here (it used to be a switch that had to be edited for every
+	// new channel). "web" is a real channel but it is not connectable through
+	// this endpoint, so it is excluded explicitly.
+	if !platform.CapabilitiesFor(req.Platform).Known || req.Platform == "web" {
 		return nil, ErrBadRequest("invalid platform")
 	}
 

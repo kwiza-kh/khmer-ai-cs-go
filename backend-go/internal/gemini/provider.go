@@ -150,7 +150,16 @@ func (r vertexResource) location() string {
 // platform — while every dashboard still reports a healthy service. Studio
 // reads none of these variables and cannot fail.
 func providerFromEnv() (provider, error) {
-	if providerKindFromEnv() != providerVertex {
+	return providerForKind(providerKindFromEnv())
+}
+
+// providerForKind builds one named transport.
+//
+// providerFromEnv picks the kind from GEMINI_PROVIDER; the failover path builds
+// the OTHER kind explicitly, which is why the two are separate: a fallback must
+// be able to name vertex while GEMINI_PROVIDER still says studio.
+func providerForKind(kind providerKind) (provider, error) {
+	if kind != providerVertex {
 		return provider{kind: providerStudio}, nil
 	}
 	saPath := strings.TrimSpace(os.Getenv("GEMINI_VERTEX_SA_FILE"))
@@ -179,6 +188,21 @@ func providerFromEnv() (provider, error) {
 		vertex: vertexResource{base: VertexPlatformBase(region), project: project, region: region},
 		tokens: tokens,
 	}, nil
+}
+
+// providerFallbackKind reads GEMINI_PROVIDER_FALLBACK: the transport to try when
+// the primary one fails at the transport level. Unset, empty or unrecognised
+// means "no fallback", which keeps every existing deployment on the single
+// transport it has today.
+func providerFallbackKind() providerKind {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("GEMINI_PROVIDER_FALLBACK"))) {
+	case string(providerStudio):
+		return providerStudio
+	case string(providerVertex):
+		return providerVertex
+	default:
+		return ""
+	}
 }
 
 // withRegion aims an existing provider at another location.

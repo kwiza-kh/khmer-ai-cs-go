@@ -3,11 +3,14 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"khmer-ai-cs-go/internal/platform"
 	"khmer-ai-cs-go/internal/realtime"
+	"khmer-ai-cs-go/internal/scheduler"
 )
 
 // StartBackgroundTasks launches the periodic jobs that keep the platform
@@ -45,6 +48,44 @@ func (a *App) StartBackgroundTasks(ctx context.Context) {
 	// Telegram call per merchant every 12s, and for a platform-bot merchant it
 	// polled a bot that has a webhook registered, which Telegram rejects.
 	go a.loop(ctx, 15*time.Minute, a.sendDueDigests)
+
+	// DB-backed scheduled jobs (migration 066): the jobs an operator or a tenant
+	// created, as opposed to the fixed loops above. That is what makes a cadence
+	// changeable — or a per-tenant job possible at all — without a deploy.
+	//
+	// The loops above deliberately keep running unchanged. Moving platform
+	// maintenance into the table would make campaign dispatch and the SLA scan
+	// depend on a row existing, and a missing row would stop them silently.
+	a.Scheduler = scheduler.NewManager(scheduler.NewPostgresStore(a.DB), scheduleLocation())
+	for jobType, fn := range map[string]func(context.Context){
+		"campaign_dispatch": a.dispatchDueCampaigns,
+		"platform_health":   a.checkPlatformHealth,
+		"retention":         a.pruneStaleSupportRelays,
+		"billing_reset":     a.resetBillingCycles,
+		"sla_scan":          a.scanSLABreaches,
+		"digest":            a.sendDueDigests,
+	} {
+		fn := fn
+		a.Scheduler.Register(jobType, func(ctx context.Context, _ scheduler.Job) error {
+			// These handlers report failure by logging and by what they write;
+			// none of them returns an error, so a run is recorded as ok.
+			fn(ctx)
+			return nil
+		})
+	}
+	go a.loop(ctx, time.Minute, func(ctx context.Context) { a.Scheduler.RunDue(ctx) })
+}
+
+// scheduleLocation is the wall clock a daily job means. A digest is "08:00 where
+// the merchant is", so the deployment names the zone with SCHEDULER_TZ; an unset
+// or unloadable value falls back to UTC rather than failing to boot.
+func scheduleLocation() *time.Location {
+	if name := strings.TrimSpace(os.Getenv("SCHEDULER_TZ")); name != "" {
+		if loc, err := time.LoadLocation(name); err == nil {
+			return loc
+		}
+	}
+	return time.UTC
 }
 
 // checkPlatformHealth pages the operator when a dependency is down, and clears

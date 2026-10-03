@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -81,6 +83,62 @@ func envMillisOr(name string, fallback time.Duration) time.Duration {
 	return time.Duration(ms) * time.Millisecond
 }
 
+// Transport shape of one generation call. postWithRetry runs up to
+// postMaxAttempts attempts, each bounded by the shared client's
+// postAttemptTimeout, with a linear backoff between them.
+const (
+	postMaxAttempts    = 3
+	postAttemptTimeout = 60 * time.Second
+	postBackoffStep    = 400 * time.Millisecond
+)
+
+// retryWorstCase is the longest one postWithRetry call can take when every
+// attempt hangs until its own timeout: attempts x per-attempt timeout plus the
+// backoff between them. The customer-facing budget is derived from it, so the
+// two numbers cannot drift apart.
+func retryWorstCase() time.Duration {
+	var backoff time.Duration
+	for attempt := 1; attempt < postMaxAttempts; attempt++ {
+		backoff += postBackoffStep * time.Duration(attempt)
+	}
+	return postMaxAttempts*postAttemptTimeout + backoff
+}
+
+// callBudget bounds ONE customer-facing generation call *including its retries*.
+//
+// Before this the only ceiling was per attempt (the shared HTTP client's 60s), so
+// a hanging upstream could hold a pipeline worker for the whole worst case —
+// attempts x 60s + backoff — while the customer waited and the outbox row stayed
+// unclaimed. AstrBot has the mirror-image problem (no wall-clock timeout anywhere
+// on the call path, astrbot/core/agent/runners/tool_loop_agent_runner.py:466);
+// the lesson taken from it is that the budget has to cover the retries, not just
+// one attempt.
+//
+// Read per call (like embedBudget) so tests and .env edits take effect without
+// rebuilding a package-level value.
+func callBudget() time.Duration {
+	return envMillisOr("GEMINI_CALL_BUDGET_MS", retryWorstCase())
+}
+
+// withCallBudget applies callBudget to ctx. A caller deadline that is already
+// sooner is never extended: the tighter of the two wins.
+func withCallBudget(ctx context.Context) (context.Context, context.CancelFunc) {
+	budget := callBudget()
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) <= budget {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, budget)
+}
+
+// budgetExceeded labels a timeout so an operator can tell a hung upstream from a
+// network fault, and names the knob that controls it.
+func budgetExceeded(err error) error {
+	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	return fmt.Errorf("gemini call exceeded its %s budget (GEMINI_CALL_BUDGET_MS): %w", callBudget(), err)
+}
+
 // apiBase — Gemini REST endpoint. Override with GEMINI_API_BASE to route
 // through a relay in a Google-supported region when the server's egress IP
 // is geo-blocked ("User location is not supported for the API use").
@@ -139,6 +197,17 @@ type Service struct {
 	// transport, which has no locations at all.
 	region string
 
+	// fallback is the second transport named by GEMINI_PROVIDER_FALLBACK,
+	// resolved once in New. It is resolved here and not per call because minting
+	// a vertex token source reads the service-account file, and that must not
+	// happen on the reply path. hasFallback is false when the variable is unset,
+	// names the primary's own kind, or cannot be built at all.
+	fallback    provider
+	hasFallback bool
+	// failovers counts transport switches since start (observability: an operator
+	// can see that the deployment is running on its second transport).
+	failovers atomic.Int64
+
 	mu         sync.Mutex
 	embedCache map[string]embedCacheEntry
 }
@@ -161,13 +230,27 @@ func New(apiKey, model string, maxTokens int) *Service {
 		region:       NormalizeRegion(prov.vertex.region),
 		embedCache:   make(map[string]embedCacheEntry),
 	}
+	// Resolve the failover transport once, here, for the reason the field
+	// documents: building a vertex provider reads the service-account file.
+	if kind := providerFallbackKind(); kind != "" && kind != prov.kind {
+		switch kind {
+		case providerStudio:
+			// Usability depends on the API key, which the caller may swap later
+			// via HotReload, so that check happens per call in providerCandidates.
+			s.fallback, s.hasFallback = provider{kind: providerStudio}, true
+		case providerVertex:
+			if fb, ferr := providerForKind(providerVertex); ferr == nil {
+				s.fallback, s.hasFallback = fb, true
+			}
+		}
+	}
 	// An empty key means mock mode on the studio path — unchanged. Vertex
 	// authenticates with a service account, so an empty key is a valid
 	// configuration there and the service is live; and a vertex deployment whose
 	// configuration is BROKEN still counts as configured, so every turn fails
 	// with that error instead of quietly serving template replies to customers.
 	if apiKey != "" || prov.ready() || provErr != nil {
-		s.client = &http.Client{Timeout: 60 * time.Second}
+		s.client = &http.Client{Timeout: postAttemptTimeout}
 	}
 	return s
 }
@@ -184,6 +267,67 @@ func (s *Service) activeProvider() (provider, error) {
 		return provider{}, s.providerErr
 	}
 	return s.provider, nil
+}
+
+// providerCandidates returns the ordered transports to try for one call: the
+// deployment's own transport first, then GEMINI_PROVIDER_FALLBACK when it was
+// configured AND is usable in this process.
+//
+// A deployment that sets nothing gets exactly one candidate, so this cannot
+// change behaviour by itself. A broken primary configuration still returns nil
+// (the caller re-reads the error and fails loudly) — a half-declared vertex
+// migration must never be papered over by a fallback.
+//
+// The ordered list is the failover half of AstrBot's provider handling
+// (tool_loop_agent_runner.py:541-613). The WHEN half is failoverEligible below.
+func (s *Service) providerCandidates() []provider {
+	s.mu.Lock()
+	prov, broken := s.provider, s.providerErr
+	fb, hasFB, apiKey := s.fallback, s.hasFallback, s.apiKey
+	s.mu.Unlock()
+
+	if broken != nil {
+		return nil
+	}
+	out := []provider{prov}
+	if !hasFB || fb.kind == prov.kind {
+		return out
+	}
+	if fb.kind == providerStudio && strings.TrimSpace(apiKey) == "" {
+		// Studio authenticates with the API key; without one every attempt on
+		// this candidate would be a 401.
+		return out
+	}
+	return append(out, fb)
+}
+
+// FailoverCount reports how many times a call moved to the second transport.
+func (s *Service) FailoverCount() int64 { return s.failovers.Load() }
+
+// failoverEligible decides whether trying another transport is worthwhile.
+//
+// Eligible: a transport-level error (nothing answered at all), 5xx, and the
+// statuses that are a property of THIS transport's credential or region —
+// 401/403 (credential refused) and 404 (the model does not exist in this
+// transport's region; measured: gemini-3.8-flash answers 404 in
+// asia-southeast1 and 200 in global, docs/GEMINI-RATE-LIMIT.md).
+//
+// Not eligible: 429. It is a spend/rate refusal that outlives any switch — the
+// same reasoning postWithRetry already uses to fail fast on it — and a second
+// transport would only double the doomed requests. Nor are ordinary 4xx: they
+// describe the request, which the next transport would send unchanged.
+func failoverEligible(status int, err error) bool {
+	if err != nil && status == 0 {
+		return true
+	}
+	switch {
+	case status >= http.StatusInternalServerError:
+		return true
+	case status == http.StatusUnauthorized, status == http.StatusForbidden, status == http.StatusNotFound:
+		return true
+	default:
+		return false
+	}
 }
 
 // FromPartsFull builds a service from explicit settings (startup DB config /
@@ -283,7 +427,7 @@ func (s *Service) HotReload(apiKey, modelName, systemPrompt string, maxTokens in
 	if apiKey != "" {
 		s.apiKey = apiKey
 		if s.client == nil {
-			s.client = &http.Client{Timeout: 60 * time.Second}
+			s.client = &http.Client{Timeout: postAttemptTimeout}
 		}
 	}
 	if modelName != "" {
@@ -1054,10 +1198,6 @@ func (s *Service) generateURLFor(model string) string {
 // caller's own graceful degradation. The status and body are returned
 // unchanged so the caller can tell a spend stop from a network fault.
 func (s *Service) postWithRetry(ctx context.Context, target string, body any) (int, string, error) {
-	payload, err := json.Marshal(body)
-	if err != nil {
-		return 0, "", fmt.Errorf("marshal request: %w", err)
-	}
 	prov, err := s.activeProvider()
 	if err != nil {
 		// A broken transport is not a transport blip: retrying inside this turn
@@ -1065,16 +1205,28 @@ func (s *Service) postWithRetry(ctx context.Context, target string, body any) (i
 		// serialised, so a burst of turns would just queue behind it.
 		return 0, "", err
 	}
+	return s.postWithProviderRetry(ctx, prov, target, body)
+}
+
+// postWithProviderRetry is the INNER layer of a two-layer retry: up to
+// postMaxAttempts attempts against one transport, with the backoff between them.
+// The outer layer (chatWithModel) moves to the next candidate once this layer has
+// given up and the failure is failoverEligible.
+func (s *Service) postWithProviderRetry(ctx context.Context, prov provider, target string, body any) (int, string, error) {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return 0, "", fmt.Errorf("marshal request: %w", err)
+	}
 	lastErr := ""
 	// Snapshot once: Reload swaps client under the mutex when an admin saves a
 	// new model config, so reading s.client per attempt would race.
 	client := s.snapshot().client
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := 0; attempt < postMaxAttempts; attempt++ {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
 				return 0, "", ctx.Err()
-			case <-time.After(time.Duration(400*attempt) * time.Millisecond):
+			case <-time.After(postBackoffStep * time.Duration(attempt)):
 			}
 		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(payload))
@@ -1110,8 +1262,14 @@ func (s *Service) postWithRetry(ctx context.Context, target string, body any) (i
 }
 
 // Chat — non-streaming turn against the main model (mock fallback parity).
+//
+// The turn runs under callBudget, so a hung upstream cannot hold the caller for
+// the whole retry worst case.
 func (s *Service) Chat(ctx context.Context, message string, history []HistoryItem, language string) (ChatResult, error) {
-	return s.chatWithModel(ctx, message, history, language, "")
+	ctx, cancel := withCallBudget(ctx)
+	defer cancel()
+	res, err := s.chatWithModel(ctx, message, history, language, "")
+	return res, budgetExceeded(err)
 }
 
 // chatWithModel runs one turn. Two distinct outcomes produce a mock reply, and
@@ -1131,20 +1289,54 @@ func (s *Service) chatWithModel(ctx context.Context, message string, history []H
 	if !s.IsConfigured() {
 		return s.chatMock(message, language), nil
 	}
+	candidates := s.providerCandidates()
+	if len(candidates) == 0 {
+		// Only reachable when the configured transport is broken: re-read the
+		// error so the caller keeps seeing the configuration fault itself rather
+		// than a generic failure.
+		_, err := s.activeProvider()
+		return s.chatMock(message, language), err
+	}
+	var lastErr error
+	for i, prov := range candidates {
+		res, status, err := s.chatWithProvider(ctx, prov, message, history, language, model, i == 0)
+		if err == nil {
+			return res, nil
+		}
+		lastErr = err
+		if i == len(candidates)-1 || !failoverEligible(status, err) {
+			break
+		}
+		// Moving to the next transport. The customer has seen nothing yet: the
+		// mock reply is only returned after every candidate has failed.
+		s.failovers.Add(1)
+	}
+	return s.chatMock(message, language), lastErr
+}
+
+// chatWithProvider runs one turn against one transport.
+//
+// useCache is false for a fallback transport: a cachedContents resource name is a
+// property of the transport that registered it (a vertex resource path means
+// nothing to studio), so sending it to the other one is a guaranteed 400.
+func (s *Service) chatWithProvider(ctx context.Context, prov provider, message string, history []HistoryItem, language, model string, useCache bool) (ChatResult, int, error) {
 	cfg := s.snapshot()
 	if model == "" {
 		model = cfg.modelName
 	}
-	cacheName := s.contextCacheFor(ctx, language)
+	cacheName := ""
+	if useCache {
+		cacheName = s.contextCacheFor(ctx, language)
+	}
 	body := s.buildRequestBody(message, history, language, cacheName)
-	status, text, err := s.postWithRetry(ctx, s.generateURLFor(model), body)
+	status, text, err := s.postWithProviderRetry(ctx, prov, prov.generateURL(model), body)
 	if err == nil && cacheName != "" && contextCacheStale(status, text) {
 		// The registered cache expired or was deleted server-side (its own TTL,
 		// a cleanup, or another instance replacing it). Forget it and answer
 		// uncached rather than failing the turn over an optimisation.
 		s.forgetContextCache(language)
 		body = s.buildRequestBody(message, history, language, "")
-		status, text, err = s.postWithRetry(ctx, s.generateURLFor(model), body)
+		status, text, err = s.postWithProviderRetry(ctx, prov, prov.generateURL(model), body)
 	}
 	fast := s.fastModelName()
 	if err == nil && (status >= http.StatusInternalServerError || status == http.StatusTooManyRequests) &&
@@ -1153,19 +1345,19 @@ func (s *Service) chatWithModel(ctx context.Context, message string, history []H
 		// another model. fastModelName() falls back to the serving model when
 		// GEMINI_FAST_MODEL is unset, so the previous guard re-sent the
 		// identical request to the model that had just refused it.
-		status, text, err = s.postWithRetry(ctx, s.generateURLFor(fast), body)
+		status, text, err = s.postWithProviderRetry(ctx, prov, prov.generateURL(fast), body)
 	}
 	if err != nil {
-		return s.chatMock(message, language), fmt.Errorf("gemini request failed: %w", err)
+		return ChatResult{}, status, fmt.Errorf("gemini request failed: %w", err)
 	}
 	if status != http.StatusOK {
-		return s.chatMock(message, language), fmt.Errorf("gemini returned HTTP %d: %s", status, truncateRunes(text, 300))
+		return ChatResult{}, status, fmt.Errorf("gemini returned HTTP %d: %s", status, truncateRunes(text, 300))
 	}
 	var v map[string]any
 	if err := json.Unmarshal([]byte(text), &v); err != nil {
-		return s.chatMock(message, language), fmt.Errorf("gemini returned unparsable JSON: %w", err)
+		return ChatResult{}, status, fmt.Errorf("gemini returned unparsable JSON: %w", err)
 	}
-	return s.resultFromValue(v), nil
+	return s.resultFromValue(v), status, nil
 }
 
 // historyRuneBudget bounds the prompt side of a turn at roughly 8k tokens
@@ -1186,6 +1378,43 @@ func TrimHistoryBudget(items []HistoryItem) []HistoryItem {
 	}
 	return items
 }
+
+// RepairHistoryShape enforces the invariants a history must satisfy before it
+// becomes a Gemini `contents` array.
+//
+// TrimHistoryBudget drops from the front, so it can leave the window starting on
+// a model turn — a multi-turn request is expected to open with the user's turn —
+// and it can leave turns whose text is blank, which become an empty part. Both
+// come back as a 400 that fails the customer's turn, so the shape is restored
+// here rather than discovered in production.
+//
+// This is the part of AstrBot's message-shape repair that applies here
+// (astrbot/core/agent/context/truncator.py: never truncate system messages, never
+// leave an orphaned tool_call/tool_result). There is no function calling in this
+// codebase — grep for functionDeclarations/toolCall returns nothing — so the
+// orphan case does not exist; "the shape the provider accepts must survive a
+// trim" is what does.
+//
+// Consecutive same-role turns are deliberately NOT merged. An "agent" turn is
+// sent as user-role with a marker (see buildRequestBody) so the model can tell a
+// staff reply from its own; merging a customer turn with the agent turn that
+// answered it would erase exactly that distinction.
+func RepairHistoryShape(items []HistoryItem) []HistoryItem {
+	out := make([]HistoryItem, 0, len(items))
+	for _, h := range items {
+		if strings.TrimSpace(h.Content) == "" {
+			continue
+		}
+		out = append(out, h)
+	}
+	for len(out) > 0 && !isUserRole(out[0].Role) {
+		out = out[1:]
+	}
+	return out
+}
+
+// isUserRole reports whether a stored role is sent to Gemini as the user role.
+func isUserRole(role string) bool { return role == "user" || role == "agent" }
 
 // systemInstruction — the stable prompt prefix for one language. The uncached
 // request body and the explicit context cache are both built from this single
@@ -1261,6 +1490,10 @@ func embedBudget() time.Duration {
 // instruction — the API rejects a request that carries both, so the
 // instruction is omitted in that case.
 func (s *Service) buildRequestBody(message string, history []HistoryItem, language, cachedContent string) map[string]any {
+	// Single choke point for the request shape: whatever a caller assembled (and
+	// whatever TrimHistoryBudget left behind) is repaired here, so no path can
+	// send a leading model turn or an empty part.
+	history = RepairHistoryShape(history)
 	contents := make([]map[string]any, 0, len(history)+1)
 	for _, h := range history {
 		role := h.Role
@@ -1343,7 +1576,20 @@ func usageFromValue(v map[string]any) (int, int, int) {
 // ChatStream runs a turn with token-level streaming: onToken is invoked for
 // every text delta as it arrives. On any transport/API failure it degrades to
 // the non-streaming path (the reply is still delivered, just not incrementally).
+//
+// It shares Chat's per-call budget: an upstream that accepts the connection and
+// then goes silent is exactly the case a streaming client never notices on its
+// own.
 func (s *Service) ChatStream(ctx context.Context, message string, history []HistoryItem, language string, onToken func(string)) (ChatResult, error) {
+	ctx, cancel := withCallBudget(ctx)
+	defer cancel()
+	res, err := s.chatStream(ctx, message, history, language, onToken)
+	return res, budgetExceeded(err)
+}
+
+// chatStream is the budget-free body. ChatStream owns the budget so there is
+// exactly one place that applies it.
+func (s *Service) chatStream(ctx context.Context, message string, history []HistoryItem, language string, onToken func(string)) (ChatResult, error) {
 	if !s.IsConfigured() {
 		res := s.chatMock(message, language)
 		onToken(res.Reply)
@@ -1386,6 +1632,7 @@ func (s *Service) ChatStream(ctx context.Context, message string, history []Hist
 
 	var full strings.Builder
 	res := ChatResult{}
+	emitted := false
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	for scanner.Scan() {
@@ -1403,6 +1650,7 @@ func (s *Service) ChatStream(ctx context.Context, message string, history []Hist
 		}
 		if text := ExtractTextFromValue(chunk); text != "" {
 			full.WriteString(text)
+			emitted = true
 			// The streamed tokens are what the customer watches arrive, so they get
 			// the character-level rules immediately; the layout rules wait for the
 			// assembled reply below, because a chunk boundary can fall in the middle
@@ -1412,6 +1660,22 @@ func (s *Service) ChatStream(ctx context.Context, message string, history []Hist
 		if p, c, cached := usageFromValue(chunk); p+c+cached > 0 {
 			res.PromptTokens, res.OutputTokens, res.CachedTokens = p, c, cached
 		}
+	}
+	// A stream that dies mid-answer used to be indistinguishable from a complete
+	// one — scanner.Err() was never consulted, so a truncated reply was delivered
+	// and every caller believed the turn had succeeded.
+	if serr := scanner.Err(); serr != nil {
+		if emitted {
+			// Some of the answer already reached the customer. Restarting the turn
+			// on another transport or model would put a second, contradictory
+			// answer on top of the first, which is exactly what AstrBot's failover
+			// avoids by switching only while no streaming output exists
+			// (tool_loop_agent_runner.py:599-609). Return the partial reply with
+			// the error so the caller decides.
+			res.Reply = SanitizeReply(full.String())
+			return res, fmt.Errorf("gemini stream interrupted after %d chars: %w", full.Len(), serr)
+		}
+		return s.chatWithModel(ctx, message, history, language, "")
 	}
 	res.Reply = full.String()
 	if res.Reply == "" {

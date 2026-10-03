@@ -171,6 +171,12 @@ type Pipeline struct {
 	// Cache is the semantic reply cache (nil = disabled: every turn takes the
 	// full retrieval+generation path).
 	Cache *replycache.Service
+	// T2I renders long replies to an image (see t2i.go). nil = build the HTTP
+	// renderer from the environment; tests inject a fake.
+	T2I T2IRenderer
+	// mediaUploader overrides Media for rendered images. Present so text-to-image
+	// can be tested without a bucket.
+	mediaUploader MediaUploader
 
 	notify         chan struct{}
 	notifyOutbound chan struct{}
@@ -417,348 +423,13 @@ func deref(s *string) string {
 }
 
 // processInboundEvent runs one customer message end-to-end.
+//
+// The steps live in inbound_stages.go: one stage per decision, per-turn state in
+// an inboundTurn, and a short-circuit that is an explicit `next=false` instead of
+// a bare return buried between a database write and an LLM call.
 func (p *Pipeline) processInboundEvent(ctx context.Context, ev *InboundEvent) error {
-	cfg, err := p.loadConfig(ctx, ev.ConfigID)
-	if err != nil {
-		return err
-	}
-	content := ev.Content
-
-	// Resolve display name + avatar (best-effort, never blocks).
-	avatar := ""
-	if ev.UserDisplayName == "" && (cfg.Platform == "meta" || cfg.Platform == "instagram") {
-		name, av := p.fetchMessengerProfile(ctx, cfg, ev.PlatformUserID)
-		ev.UserDisplayName = name
-		avatar = av
-	} else if ev.UserDisplayName == "" && cfg.Platform == "line" {
-		if name, pic, err := NewLineClient(cfg.AccessToken).GetProfile(ctx, ev.PlatformUserID); err == nil {
-			ev.UserDisplayName = name
-			avatar = pic
-		}
-	} else if ev.UserDisplayName == "" && cfg.Platform == "zalo" {
-		if name, pic, perr := NewZaloClient(cfg.AccessToken).GetProfile(ctx, ev.PlatformUserID); perr == nil {
-			ev.UserDisplayName = name
-			avatar = pic
-		}
-	} else if cfg.Platform == "telegram" {
-		if name, photoID, perr := NewTelegramClient(cfg.BotToken).GetProfile(ctx, ev.PlatformUserID); perr == nil {
-			if ev.UserDisplayName == "" {
-				ev.UserDisplayName = name
-			}
-			if photoID != "" && p.customerAvatar(ctx, cfg, ev.PlatformUserID) == "" {
-				avatar = p.storeTelegramAvatar(ctx, cfg, ev.PlatformUserID, photoID)
-			}
-		}
-	}
-
-	// Prepare media: voice → transcribe, images → describe (vision), store files.
-	mediaURL := ""
-	var platformMedia map[string]any
-	if ev.Media != nil {
-		content, mediaURL, platformMedia = p.prepareMedia(ctx, ev, cfg, content)
-	}
-
-	// Ensure session (create/resume) and persist the user message.
-	sessionID, userMessageID, isNew, sessionStatus, err := p.ensureSession(ctx, ev, cfg, content, avatar, mediaURL, platformMedia)
-	if err != nil {
-		return err
-	}
-
-	// Customer replied on a resolved/closed session → reopen (always get a reply).
-	if isNew && (sessionStatus == "resolved" || sessionStatus == "closed") {
-		_, _ = p.DB.Exec(ctx, "UPDATE sessions SET status='active', resolved_at=NULL, closed_at=NULL WHERE session_id=$1", sessionID)
-		sessionStatus = "active"
-		p.Logger.Info("customer replied on a finished session; reopened", "session_id", sessionID)
-	}
-
-	// Handoff release: the customer cancels ("不需要人工") or every open
-	// request is already resolved → hand the session back to the AI.
-	if sessionStatus == "handoff" && p.maybeReleaseHandoff(ctx, cfg, sessionID, content) {
-		sessionStatus = "active"
-	}
-
-	// Escalation gate: non-active sessions get the canned ack (once per
-	// escalation), not an AI reply.
-	if sessionStatus != "active" {
-		p.ackHandoffOnce(ctx, ev, cfg, sessionID)
-		return nil
-	}
-
-	// Auto-handoff trigger 1 — the customer explicitly asked for a human. The
-	// AI stays silent; the conversation lands in the handoff queue. The 🔔
-	// handoff ping (notifyUser) covers this action — the 💬 message ping is
-	// deliberately skipped below to avoid a double notification.
-	if matched, ok := humanRequestKeyword(content); ok {
-		p.Logger.Info("auto handoff: customer requested a human", "session_id", sessionID, "keyword", matched)
-		p.escalateToHuman(ctx, ev, cfg, sessionID, "customer_request",
-			"Customer asked for a human agent (matched: "+matched+")", "")
-		return nil
-	}
-
-	// Billing counts every received customer message regardless of routing
-	// outcome — junk silence is a service decision, not a free-usage one.
-	tgUserID := cfg.UserID
-	tgPlatform := ev.Platform
-	tgName := ev.UserDisplayName
-	tgContent := content
-	tgSession := sessionID
-	SpawnCritical(func() {
-		p.bumpMessagesUsed(ctx, tgUserID)
-	})
-
-	// AI reply (grounded in the knowledge base). Everything the grounded path
-	// needs is prepared first so that retrieval can run concurrently with
-	// Jev's routing call below.
-	ownerLang := p.ownerLanguage(ctx, cfg.UserID)
-	replyLang := ownerLang
-	if replyLang == "" {
-		if det := gemini.DetectLanguage(content); det != "" {
-			replyLang = det
-		} else {
-			replyLang = "km"
-		}
-	}
-
-	history := p.loadHistory(ctx, sessionID, userMessageID)
-
-	// Retrieval is the slowest pre-generation step (embedding + search +
-	// rerank, ~2.5s) and it does not depend on the routing decision — only on
-	// whether we keep its result. Running it concurrently with routing stops
-	// Jev's latency from being purely additive to every grounded turn.
-	groundCh := make(chan rag.GroundingContext, 1)
-	go func() {
-		res := rag.GroundingContext{}
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					p.Logger.Warn("background retrieval panic recovered", "panic", r)
-				}
-			}()
-			res = p.RAG.Ground(ctx, cfg.UserID, &sessionID, content, replyLang, history, 0)
-		}()
-		groundCh <- res // exactly one send, so the channel never leaks
-	}()
-
-	// Pre-routing: one Jev batch decides whether this turn needs a human,
-	// needs no retrieval at all, is junk that deserves silence, or takes the
-	// full grounded path — plus how urgent it is (drives handoff priority).
-	// An unknown route (Jev off/slow/unsure) keeps today's behaviour untouched.
-	skipGround := false
-	inboundUrgency := UrgencyUnknown
-	if r, ok := p.RouteInbound(ctx, content); ok {
-		escalate, skip, silent := routeDecision(r.Route, r.Prob)
-		if escalate {
-			p.Logger.Info("auto handoff: jev routed the message to a human",
-				"session_id", sessionID, "p", r.Prob, "urgency", r.Urgency)
-			p.escalateToHuman(ctx, ev, cfg, sessionID, "customer_request",
-				"Jev routed the message as a human request (p="+strconv.FormatFloat(r.Prob, 'f', 2, 64)+")", r.Urgency)
-			return nil
-		}
-		if silent {
-			// Junk: spam/ads/gibberish. No reply, no generation, no delivery —
-			// and because the owner ping and the typing indicator now live
-			// below this decision, junk silence is complete: no ping with no
-			// reply behind it, no typing that promises an answer. The customer
-			// message itself stays in the inbox for the owner. The speculative
-			// retrieval above is abandoned; the buffered channel lets that
-			// worker finish without blocking.
-			p.Logger.Info("junk dropped: jev routed the message as no-reply",
-				"session_id", sessionID, "p", r.Prob)
-			return nil
-		}
-		skipGround = skip
-		inboundUrgency = r.Urgency
-	}
-
-	// Telegram notify: ping the owner's bot about a new customer message
-	// (background, throttled per session — must not slow the worker). Only
-	// reached for turns the AI still owns: keyword/Jev escalations above
-	// already sent the single 🔔 handoff notification, and junk silence must
-	// not ping at all.
-	SpawnCritical(func() {
-		p.NotifyNewCustomerMessage(ctx, tgUserID, tgSession, tgPlatform, tgName, tgContent)
-	})
-
-	// Typing indicator while the AI is composing (best-effort, per platform).
-	// After routing: junk never shows a typing promise it will not keep, and
-	// real turns lose nothing — retrieval above already ran in parallel with
-	// the routing call.
-	p.sendTyping(ctx, cfg, ev.PlatformUserID)
-
-	// Semantic reply cache: on a hit the answer was already generated,
-	// guarded and stored for this tenant — deliver it directly and skip both
-	// the retrieval wait and generation. The lookup (one embedding + one
-	// indexed search) runs while the speculative retrieval above is still
-	// executing, so a miss adds no wall time and a hit answers in a fraction
-	// of a second. Small talk skips the cache: conversational replies depend
-	// on history.
-	reply := ""
-	fromCache := false
-	if !skipGround && p.Cache.Enabled() {
-		if cached, hit := p.Cache.Lookup(ctx, cfg.UserID, content, replyLang); hit {
-			reply = cached
-			fromCache = true
-			p.Logger.Info("reply cache hit", "session_id", sessionID)
-		}
-	}
-
-	var groundCtx rag.GroundingContext
-	var result gemini.ChatResult
-	canned := false
-	if !fromCache {
-		if skipGround {
-			// Small talk: Jev was confident the message carries no request, so
-			// answer from the fixed template and skip generation entirely. The
-			// speculative retrieval is dropped either way — the buffered channel
-			// lets that worker finish without blocking. Paying for one unused
-			// retrieval on chit-chat is cheaper than making every real question
-			// wait for the routing call.
-			if smallTalkCanned() {
-				reply = SmallTalkReply(replyLang)
-				canned = true
-			}
-		} else {
-			select {
-			case groundCtx = <-groundCh:
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		}
-		if !canned {
-			// Spend gate: shed before Google's wall instead of after it. The
-			// rolling ceiling is the number Google itself enforces ($10 per 10
-			// minutes on Tier 1); crossing it comes back as a 429 the customer
-			// experiences as an error. Handing the turn to a human is the same
-			// outcome delivered gracefully — and unlike the 429 path it happens
-			// before the retrieval and generation are paid for.
-			if spent, limit, over := usage.Budget(ctx, p.DB, p.Redis); over {
-				p.AlertSpendGate(ctx, spent, limit)
-				p.escalateToHuman(ctx, ev, cfg, sessionID, "ai_decision",
-					"Gemini 消费速率接近上限，AI 主动让路给人工", inboundUrgency)
-				return nil
-			}
-			message := content
-			if groundCtx.HasMatch {
-				message = rag.AugmentMessage(content, &groundCtx)
-			}
-			var err error
-			result, err = p.Gemini.Chat(ctx, message, history, replyLang)
-			if err != nil {
-				if IsQuotaExhausted(err) {
-					// An exhausted quota or a drained balance is not a transient
-					// failure: the rolling window outlives every retry the inbound
-					// queue would attempt (5 attempts spread over 5s-15min), so the
-					// event would end up 'failed' with the customer unanswered and
-					// nobody the wiser. Page the operator, hand the conversation to
-					// a human and let the event complete.
-					p.AlertQuotaExhausted(ctx, err)
-					p.escalateToHuman(ctx, ev, cfg, sessionID, "ai_decision",
-						"Gemini 配额/余额耗尽，AI 无法生成回复", inboundUrgency)
-					return nil
-				}
-				return fmt.Errorf("AI 响应失败: %w", err)
-			}
-			usage.Record(ctx, p.DB, cfg.UserID, &sessionID, p.Gemini.ModelName(), result.PromptTokens, result.OutputTokens, result.CachedTokens)
-			reply = result.Reply
-			if !result.UsedMock {
-				reply = gemini.StripSourceMarkers(reply)
-			}
-		}
-	}
-
-	// Semantic guard (bounded at 1.5s): catches paraphrased source leaks,
-	// handoff promises, and unconfirmed commitments the regex nets miss,
-	// plus the citation check against the grounding passages. Delivery is
-	// not yet enqueued, so this path can still edit the reply.
-	// Cache hits skip the guard: the cached answer was guarded before it was
-	// stored, and re-judging every replay would erase the latency win. Canned
-	// small talk is our own fixed text, so there is nothing to audit either.
-	claimsHandoff := false
-	if !fromCache && !canned {
-		srcTexts := make([]string, 0, len(groundCtx.Sources))
-		for _, src := range groundCtx.Sources {
-			srcTexts = append(srcTexts, src.Content)
-		}
-		if g, ok := p.GuardReply(ctx, reply, srcTexts); ok {
-			if g.LeaksSources {
-				reply = StripCitationLines(reply)
-			}
-			claimsHandoff = g.PromisesHandoff
-			if g.UnsafeClaim {
-				p.alertQuality(ctx, cfg.UserID, sessionID, "AI 回复包含待确认承诺",
-					"Jev 标记该回复做出了需店员确认的承诺（价格/交期/库存等），请在收件箱检查该会话。")
-			}
-			if !g.SupportedBySources {
-				p.alertQuality(ctx, cfg.UserID, sessionID, "AI 回复脱离知识库作答",
-					"Jev 标记该回复的事实性断言没有命中知识库原文（可能是幻觉），请核对后回复客户。")
-			}
-		}
-		// Store the guarded answer for future identical asks — after the
-		// guard (the cache must never serve what the guard would have edited)
-		// and before the after-hours preamble (which is per-delivery, not
-		// part of the answer). Mock replies are never cached. Droppable lane:
-		// losing a store only costs the next identical ask a cache miss.
-		if !skipGround && !result.UsedMock && p.Cache.Enabled() {
-			SpawnClassifier(func() {
-				p.Cache.Store(ctx, cfg.UserID, content, replyLang, reply, p.Gemini.ModelName())
-			})
-		}
-	}
-
-	// After-hours preamble.
-	if !p.isOpenNow(ctx, cfg.UserID, cfg.Platform) {
-		reply = "យើងកំពុងបិទសេវាកម្មនៅពេលនេះ។ ភ្នាក់ងារនឹងឆ្លើយតបនៅពេលម៉ោងធ្វើការ។\n\n" + reply
-	}
-
-	// Persist model reply + enqueue delivery (👍/👎 buttons ride on Telegram).
-	// A cache hit is a real answer with zero token cost: model_name says so.
-	tokensUsed := result.PromptTokens + result.OutputTokens
-	modelName := p.Gemini.ModelName()
-	if fromCache {
-		tokensUsed, modelName = 0, "reply-cache"
-	}
-	if canned {
-		tokensUsed, modelName = 0, "smalltalk-template"
-	}
-	var modelMessageID int64
-	err = p.DB.QueryRow(ctx,
-		"INSERT INTO chat_messages (session_id, role, message_type, content, tokens_used, model_name, used_mock, sources_json, created_at) "+
-			"VALUES ($1,'model','text',$2,$3,$4,$5,$6,$7) RETURNING message_id",
-		sessionID, reply, tokensUsed, modelName, result.UsedMock,
-		sourcesJSON(groundCtx), time.Now()).
-		Scan(&modelMessageID)
-	if err != nil {
-		return fmt.Errorf("persist model reply: %w", err)
-	}
-	_, _ = p.DB.Exec(ctx, "UPDATE sessions SET model_message_count = model_message_count + 1, first_response_at = COALESCE(first_response_at, $1) WHERE session_id = $2", time.Now(), sessionID)
-	p.publishMessage(ctx, cfg.UserID, sessionID, modelMessageID, "model")
-	feedbackPayload := map[string]any{"feedback": true}
-	if err := p.enqueueDelivery(ctx, ev, cfg, sessionID, modelMessageID, reply, feedbackPayload); err != nil {
-		return err
-	}
-
-	// Voice reply (opt-in): when the customer sent a voice note and TTS is
-	// active, deliver the same answer as playable audio too.
-	if mediaKind, _ := platformMedia["kind"].(string); p.Cfg.TTSActive() && (mediaKind == "voice" || mediaKind == "audio") {
-		p.enqueueVoiceReply(ctx, ev, cfg, sessionID, reply)
-	}
-
-	// Auto-handoff triggers 2+3 — classify the turn in the background (never
-	// blocks the customer) and escalate on negative sentiment / no-answer.
-	// The reply announced a handoff to the customer ("已为您转接人工…") —
-	// make it true: create the request now. No canned ack (ev=nil) since the
-	// reply itself already told the customer.
-	if ReplyClaimsHandoff(reply) || claimsHandoff {
-		p.escalateToHuman(ctx, nil, cfg, sessionID, "ai_decision",
-			"AI reply announced a handoff to the customer", inboundUrgency)
-		return nil
-	}
-	// A cached answer WAS grounded in the tenant's knowledge base when it was
-	// first generated — reporting hasMatch=false on hits would feed the
-	// "no knowledge base" handoff trigger a lie and mislabel analytics.
-	grounded := fromCache || groundCtx.HasMatch
-	p.classifyTurnAsync(cfg.UserID, sessionID, content, reply, grounded)
-	return nil
+	t := &inboundTurn{Event: ev, Content: ev.Content, Urgency: UrgencyUnknown}
+	return runInboundStages(ctx, p.inboundStages(), t)
 }
 
 // publishMessage fans out an inbox.message realtime event (best-effort).
@@ -944,19 +615,12 @@ func (p *Pipeline) prepareMedia(ctx context.Context, ev *InboundEvent, cfg *conf
 	var data []byte
 	var mime string
 	var err error
-	switch cfg.Platform {
-	case "telegram":
-		data, mime, err = NewTelegramClient(cfg.BotToken).DownloadFile(ctx, providerID)
-	case "line":
-		data, mime, err = NewLineClient(cfg.AccessToken).DownloadContent(ctx, providerID)
-	default: // meta / instagram / whatsapp
-		if cfg.Platform == "whatsapp" && providerID != "" {
-			data, mime, err = NewMetaClient(cfg.AccessToken, cfg.PageID, cfg.InstagramBusiness, p.Cfg.Meta.GraphAPIVersion).DownloadMedia(ctx, providerID)
-		} else if sourceURL != "" {
-			data, mime, err = downloadBytes(ctx, sourceURL)
-		} else {
-			return content, "", nil
-		}
+	if ch, cerr := NewChannel(p, cfg); cerr == nil {
+		data, mime, err = ch.DownloadMedia(ctx, providerID, sourceURL, declaredMime)
+	} else if sourceURL != "" {
+		// Unknown channel: the only fetch we can still attempt is the URL the
+		// provider handed us.
+		data, mime, err = downloadBytes(ctx, sourceURL)
 	}
 	if err != nil || len(data) == 0 {
 		p.Logger.Warn("media download failed", "error", fmt.Sprint(err))
@@ -1738,15 +1402,13 @@ func (p *Pipeline) sendTyping(ctx context.Context, cfg *configCred, recipientID 
 	if recipientID == "" {
 		return
 	}
-	switch cfg.Platform {
-	case "telegram":
-		_ = NewTelegramClient(cfg.BotToken).SendChatAction(ctx, recipientID, "typing")
-	case "line":
-		_ = NewLineClient(cfg.AccessToken).SendTypingIndicator(ctx, recipientID)
-	case "meta", "instagram":
-		_ = NewMetaClient(cfg.AccessToken, cfg.PageID, cfg.InstagramBusiness, p.Cfg.Meta.GraphAPIVersion).
-			SendSenderAction(ctx, cfg.Platform, recipientID, "typing_on")
+	// Whether a channel has a typing indicator, and how to raise it, is the
+	// channel's business — the orchestrator only decides that it wants one.
+	ch, err := NewChannel(p, cfg)
+	if err != nil {
+		return
 	}
+	_ = ch.Typing(ctx, recipientID)
 }
 
 // enqueueVoiceReply synthesizes the model reply as audio and queues it as a
@@ -1859,6 +1521,12 @@ func sourcesJSON(groundCtx rag.GroundingContext) any {
 func (p *Pipeline) enqueueDelivery(ctx context.Context, ev *InboundEvent, cfg *configCred, sessionID string, chatMessageID int64, content string, payload map[string]any) error {
 	now := time.Now()
 	content = plainTextForChat(content)
+	// A long plain-text reply can go out as a single image instead of several
+	// chunks: the layout survives the flattening and, on a channel that counts
+	// messages rather than characters (WeChat customer service), it costs one
+	// message instead of five. Any failure leaves the text untouched — an image
+	// is an optimisation, never a reason to drop an answer.
+	content, payload = p.maybeRenderReply(ctx, cfg, content, payload)
 	var payloadJSON []byte
 	if payload != nil {
 		payloadJSON, _ = json.Marshal(payload)
@@ -2146,130 +1814,39 @@ func (p *Pipeline) deliverToProvider(ctx context.Context, d *outboundDelivery, i
 		}
 	}
 
-	switch d.Platform {
-	case "telegram":
-		client := NewTelegramClient(cfg.BotToken)
-		if kind == "media" && mediaType == "audio" && mediaURL != "" {
-			id, err := client.SendAudio(ctx, d.RecipientID, mediaURL, d.Content)
-			if err != nil {
-				return "", err
-			}
-			return TelegramProviderMessageID(d.RecipientID, id), nil
-		}
-		// AI replies get 👍/👎 inline buttons (customer-side CSAT collection).
-		hasFeedbackButtons := false
-		if fb, _ := d.Payload["feedback"].(bool); fb && len(buttons) == 0 && d.LastMessageID > 0 {
-			buttons = [][2]string{
-				{"👍", fmt.Sprintf("fb:%d:1", d.LastMessageID)},
-				{"👎", fmt.Sprintf("fb:%d:-1", d.LastMessageID)},
-			}
-			hasFeedbackButtons = true
-		}
-		chunks := SplitPlatformText(d.Content, PlatformTextLimit("telegram"))
-		lastID := ""
-		for _, chunk := range chunks {
-			id, err := client.SendMessage(ctx, d.RecipientID, chunk, buttons)
-			if err != nil {
-				return "", err
-			}
-			if id != "" {
-				lastID = TelegramProviderMessageID(d.RecipientID, id)
-			}
-			// Buttons ride on the first chunk only.
-			buttons = nil
-		}
-		if hasFeedbackButtons {
-			p.demotePreviousFeedbackKeyboard(ctx, client, d)
-		}
-		return lastID, nil
-	case "line":
-		if kind != "text" {
-			return "", fmt.Errorf("LINE currently supports text messages only")
-		}
-		client := NewLineClient(cfg.AccessToken)
-		chunks := SplitPlatformText(d.Content, PlatformTextLimit("line"))
-		last := ""
-		for _, chunk := range chunks {
-			id, err := client.PushText(ctx, d.RecipientID, chunk)
-			if err != nil {
-				return "", err
-			}
-			last = id
-		}
-		return last, nil
-	case "zalo":
-		client := NewZaloClient(cfg.AccessToken)
-		if kind == "media" && mediaType == "image" && mediaURL != "" {
-			return client.SendImage(ctx, d.RecipientID, mediaURL)
-		}
-		chunks := SplitPlatformText(d.Content, PlatformTextLimit("zalo"))
-		last := ""
-		for _, chunk := range chunks {
-			id, err := client.SendText(ctx, d.RecipientID, chunk)
-			if err != nil {
-				return "", err
-			}
-			if id != "" {
-				last = id
-			}
-		}
-		return last, nil
-	default: // meta / instagram / whatsapp
-		client := NewMetaClient(cfg.AccessToken, cfg.PageID, cfg.InstagramBusiness, p.Cfg.Meta.GraphAPIVersion)
-		req := &SendRequest{Platform: d.Platform, RecipientID: d.RecipientID, Kind: kind, MediaURL: mediaURL, MediaType: mediaType, Buttons: buttons, Tag: humanTag}
-		if d.Payload != nil {
-			req.TemplateName, _ = d.Payload["template_name"].(string)
-			req.TemplateLanguage, _ = d.Payload["template_language"].(string)
-			if params, ok := d.Payload["template_body_params"].([]any); ok {
-				for _, p := range params {
-					if s, ok := p.(string); ok {
-						req.TemplateBodyParams = append(req.TemplateBodyParams, s)
-					}
+	ch, err := NewChannel(p, cfg)
+	if err != nil {
+		return "", err
+	}
+	msg := ChannelMessage{
+		Delivery:    d,
+		RecipientID: d.RecipientID,
+		Kind:        kind,
+		Content:     d.Content,
+		MediaURL:    mediaURL,
+		MediaType:   mediaType,
+		Buttons:     buttons,
+		Tag:         humanTag,
+	}
+	if d.Payload != nil {
+		msg.TemplateName, _ = d.Payload["template_name"].(string)
+		msg.TemplateLanguage, _ = d.Payload["template_language"].(string)
+		if params, ok := d.Payload["template_body_params"].([]any); ok {
+			for _, param := range params {
+				if s, ok := param.(string); ok {
+					msg.TemplateBodyParams = append(msg.TemplateBodyParams, s)
 				}
 			}
 		}
-		if kind == "text" || kind == "buttons" {
-			req.Text = d.Content
-		} else if kind == "media" && mediaType != "audio" {
-			// caption handled in body builder
-		}
-		chunks := SplitPlatformText(d.Content, PlatformTextLimit(d.Platform))
-		last := ""
-		if kind != "text" || len(chunks) == 0 {
-			id, err := client.SendMessage(ctx, req)
-			if err != nil {
-				return "", err
-			}
-			return id, nil
-		}
-		for _, chunk := range chunks {
-			req.Text = chunk
-			id, err := client.SendMessage(ctx, req)
-			if err != nil {
-				return "", err
-			}
-			if id != "" {
-				last = id
-			}
-		}
-		return last, nil
 	}
+	return ch.Send(ctx, msg)
 }
 
 // PlatformTextLimit — per-platform outbound message length cap.
 func PlatformTextLimit(platform string) int {
-	switch platform {
-	case "telegram":
-		return 4096
-	case "line":
-		return 5000
-	case "whatsapp":
-		return 1024
-	case "instagram":
-		return 1000
-	default:
-		return 2000
-	}
+	// The number lives in the capability table (capabilities.go). Channels whose
+	// cap counts bytes must split through SplitChannelText, not this value.
+	return CapabilitiesFor(platform).TextLimit
 }
 
 // SplitPlatformText splits on rune boundaries, preferring a space near the cap.

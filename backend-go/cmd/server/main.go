@@ -298,15 +298,11 @@ func main() {
 		Logger:        logger,
 	}
 	whMux := http.NewServeMux()
-	whMux.HandleFunc("/api/v1/webhook/meta", webhooks.MetaWebhook)
-	// Meta Data Deletion Request Callback — mandatory under Platform Terms
-	// §3(d)(i). Unauthenticated like every other webhook here: the
-	// signed_request is the authentication.
-	whMux.HandleFunc("/api/v1/webhook/meta/data-deletion", webhooks.MetaDataDeletion)
-	whMux.HandleFunc("/api/v1/webhook/whatsapp", webhooks.WhatsAppWebhook)
-	whMux.HandleFunc("/api/v1/webhook/telegram", webhooks.TelegramWebhook)
-	whMux.HandleFunc("/api/v1/webhook/line", webhooks.LineWebhook)
-	whMux.HandleFunc("/api/v1/webhook/zalo", webhooks.ZaloWebhook)
+	// Every tenant provider callback, plus the unified /api/v1/webhook/{platform}
+	// dispatcher. The table lives in the platform package (webhook_routes.go) so a
+	// new channel no longer has to edit this file — and so there is one place that
+	// answers "which platforms can reach us".
+	platform.RegisterWebhookRoutes(whMux, webhooks)
 	// Operator bot — merchant account-linking, the admin console and the
 	// merchant support inbox. Authenticated by Telegram's secret_token header,
 	// not by the tenant signature scheme the routes above use.

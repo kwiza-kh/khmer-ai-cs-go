@@ -36,11 +36,16 @@ func unwrapURLErr(err error) error {
 	return err
 }
 
+// Provider base URLs are variables rather than constants so tests can point the
+// clients at an httptest server. Nothing writes them after init in production.
+var (
+	metaGraphBase = "https://graph.facebook.com"
+	telegramBase  = "https://api.telegram.org"
+	lineBase      = "https://api.line.me"
+	zaloBase      = "https://openapi.zalo.me"
+)
+
 const (
-	metaGraphBase  = "https://graph.facebook.com"
-	telegramBase   = "https://api.telegram.org"
-	lineBase       = "https://api.line.me"
-	zaloBase       = "https://openapi.zalo.me"
 	httpTimeout    = 15 * time.Second
 	maxDownloadCap = 25 * 1024 * 1024
 )
@@ -203,12 +208,18 @@ func (m *MetaClient) DownloadMedia(ctx context.Context, mediaID string) ([]byte,
 	if mediaURL == "" {
 		return nil, "", fmt.Errorf("media url missing")
 	}
-	data, dlMime, err := downloadBytes(ctx, mediaURL)
+	data, dlMime, err := downloadMediaBytes(ctx, mediaURL)
 	if mime == "" {
 		mime = dlMime
 	}
 	return data, mime, err
 }
+
+// downloadMediaBytes is the indirection clients and channels use to fetch a
+// provider-supplied media URL. Production points at the SSRF-guarded
+// downloadBytes below; tests swap in a plain fetcher so a loopback httptest
+// server can stand in for the provider's CDN.
+var downloadMediaBytes = downloadBytes
 
 // downloadBytes fetches a provider- or webhook-supplied media URL. The URL is
 // attacker-influenced (a signed webhook payload names it), so it goes through
@@ -510,7 +521,7 @@ func (t *TelegramClient) DownloadFile(ctx context.Context, fileID string) ([]byt
 		return nil, "", fmt.Errorf("telegram file path missing")
 	}
 	u := telegramBase + "/file/bot" + t.BotToken + "/" + filePath
-	return downloadBytes(ctx, u)
+	return downloadMediaBytes(ctx, u)
 }
 
 // SendChatAction shows the transient "bot is typing…" status (no message id).

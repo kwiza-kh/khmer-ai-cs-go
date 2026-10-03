@@ -19,6 +19,7 @@ import (
 	"khmer-ai-cs-go/internal/realtime"
 	"khmer-ai-cs-go/internal/redisstore"
 	"khmer-ai-cs-go/internal/replycache"
+	"khmer-ai-cs-go/internal/scheduler"
 	"khmer-ai-cs-go/internal/security"
 	"khmer-ai-cs-go/internal/storager2"
 )
@@ -51,6 +52,11 @@ type App struct {
 
 	// WebhookHandler serves the platform webhook endpoints (mounted by main).
 	WebhookHandler http.Handler
+
+	// Scheduler runs DB-backed jobs (migration 066): the jobs an operator or a
+	// tenant created, as opposed to the fixed loops in tasks.go. May be nil in
+	// tests — a nil manager is a no-op.
+	Scheduler *scheduler.Manager
 }
 
 // notifyUser inserts an in-app notification and nudges the realtime hub
