@@ -123,6 +123,29 @@ func TestHumanRequestKeywordMatches(t *testing.T) {
 	}
 }
 
+// A question mislabelled small_talk must not lose its no_knowledge_base handoff.
+//
+// The exception below exists because chit-chat legitimately has no KB answer; the
+// bug was that a QUESTION labelled small_talk inherited it. "你是谁" was labelled
+// small_talk on 2026-10-04 — if the KB had also missed it, the customer would have
+// got an ungrounded guess instead of a human, with nothing logged anywhere.
+func TestTurnTriggerSmallTalkExceptionOnlyCoversRealPleasantries(t *testing.T) {
+	// Confidence must be under 0.35 for the no_knowledge_base rule to be in play at
+	// all: the exception only ever mattered on low-confidence labels.
+	smallTalk := gemini.TurnVerdict{Intent: "small_talk", Sentiment: "neutral", Confidence: 0.2}
+	// A real pleasantry with no KB match: no handoff, as before.
+	if trig, _ := TurnTrigger(smallTalk, false, true, "谢谢"); trig != "" {
+		t.Fatalf("a pleasantry must not open a handoff: %q", trig)
+	}
+	// The same label on a question must not excuse the miss.
+	for _, question := range []string{"你是谁", "你们有什么产品", "តើអ្នកជាអ្នកណា?", "who are you"} {
+		trig, _ := TurnTrigger(smallTalk, false, true, question)
+		if trig != "no_knowledge_base" {
+			t.Errorf("question %q mislabelled small_talk must still hand off, got %q", question, trig)
+		}
+	}
+}
+
 func TestTurnTrigger(t *testing.T) {
 	hard := []struct {
 		intent   string
@@ -136,29 +159,29 @@ func TestTurnTrigger(t *testing.T) {
 	}
 	for _, c := range hard {
 		v := gemini.TurnVerdict{Intent: c.intent, Sentiment: "neutral", Confidence: 0.9}
-		trig, reason := TurnTrigger(v, true, true)
+		trig, reason := TurnTrigger(v, true, true, "谢谢")
 		if trig != c.wantTrig {
 			t.Errorf("intent %q: trigger = %q (%s), want %q", c.intent, trig, reason, c.wantTrig)
 		}
 	}
 	// Negative sentiment wins as negative_feedback.
-	if trig, _ := TurnTrigger(gemini.TurnVerdict{Intent: "price", Sentiment: "negative", Confidence: 0.9}, true, true); trig != "negative_feedback" {
+	if trig, _ := TurnTrigger(gemini.TurnVerdict{Intent: "price", Sentiment: "negative", Confidence: 0.9}, true, true, "太贵了"); trig != "negative_feedback" {
 		t.Errorf("negative sentiment: trigger = %q", trig)
 	}
 	// Plain answered question: no escalation.
-	if trig, _ := TurnTrigger(gemini.TurnVerdict{Intent: "price", Sentiment: "neutral", Confidence: 0.9}, true, true); trig != "" {
+	if trig, _ := TurnTrigger(gemini.TurnVerdict{Intent: "price", Sentiment: "neutral", Confidence: 0.9}, true, true, "多少钱"); trig != "" {
 		t.Errorf("answered price question must not escalate, got %q", trig)
 	}
 	// No-KB miss with low confidence escalates when docs exist.
-	if trig, _ := TurnTrigger(gemini.TurnVerdict{Intent: "other", Sentiment: "neutral", Confidence: 0.2}, false, true); trig != "no_knowledge_base" {
+	if trig, _ := TurnTrigger(gemini.TurnVerdict{Intent: "other", Sentiment: "neutral", Confidence: 0.2}, false, true, "你们有这个型号吗"); trig != "no_knowledge_base" {
 		t.Errorf("no-KB miss: trigger = %q", trig)
 	}
 	// Same miss without docs: silence.
-	if trig, _ := TurnTrigger(gemini.TurnVerdict{Intent: "other", Sentiment: "neutral", Confidence: 0.2}, false, false); trig != "" {
+	if trig, _ := TurnTrigger(gemini.TurnVerdict{Intent: "other", Sentiment: "neutral", Confidence: 0.2}, false, false, "你们有这个型号吗"); trig != "" {
 		t.Errorf("no-KB miss without docs must stay silent, got %q", trig)
 	}
 	// Classifier-recommended escalation.
-	if trig, _ := TurnTrigger(gemini.TurnVerdict{Intent: "order_status", Sentiment: "neutral", Confidence: 0.8, Escalate: true}, true, true); trig != "ai_decision" {
+	if trig, _ := TurnTrigger(gemini.TurnVerdict{Intent: "order_status", Sentiment: "neutral", Confidence: 0.8, Escalate: true}, true, true, "我的订单到哪了"); trig != "ai_decision" {
 		t.Errorf("classifier escalate: trigger = %q", trig)
 	}
 }

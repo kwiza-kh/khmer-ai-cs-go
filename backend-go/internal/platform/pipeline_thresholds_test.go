@@ -19,19 +19,19 @@ func TestSoloBarIsIndependentOfTheVerdictKnob(t *testing.T) {
 	const noul = 0.80
 
 	// Default solo bar is 0.90: 0.80 must not clear it.
-	if trig, reason := TurnTriggerFor(v, noul, true, true); trig != "" {
+	if trig, reason := TurnTriggerFor(v, noul, true, true, "我要退款"); trig != "" {
 		t.Fatalf("noul 0.80 must stay below the default solo bar 0.90, got %q (%s)", trig, reason)
 	}
 
 	// Moving the *verdict* knob must not move the solo bar at all.
 	t.Setenv("JEV_TURN_ESCALATE_MIN", "0.10")
-	if trig, reason := TurnTriggerFor(v, noul, true, true); trig != "" {
+	if trig, reason := TurnTriggerFor(v, noul, true, true, "我要退款"); trig != "" {
 		t.Fatalf("JEV_TURN_ESCALATE_MIN must not affect the solo bar, got %q (%s)", trig, reason)
 	}
 
 	// The solo knob itself still works, and reports the ai_decision trigger.
 	t.Setenv("JEV_RULE_SOLO_MIN", "0.50")
-	trig, reason := TurnTriggerFor(v, noul, true, true)
+	trig, reason := TurnTriggerFor(v, noul, true, true, "我要退款")
 	if trig != "ai_decision" {
 		t.Fatalf("noul 0.80 must clear a 0.50 solo bar, got %q (%s)", trig, reason)
 	}
@@ -43,19 +43,19 @@ func TestRuleConfirmKnobIsIndependentOfSoloBar(t *testing.T) {
 
 	// A refund intent at 0.75 clears the default confirm bar (0.70) and yields
 	// negative_feedback, which is checked before the solo valve.
-	if trig, _ := TurnTriggerFor(v, 0.75, true, true); trig != "negative_feedback" {
+	if trig, _ := TurnTriggerFor(v, 0.75, true, true, "我要退款"); trig != "negative_feedback" {
 		t.Fatalf("refund at 0.75 must confirm at the default 0.70 bar, got %q", trig)
 	}
 
 	// Raise only the solo bar far above: the confirm path must still fire.
 	t.Setenv("JEV_RULE_SOLO_MIN", "0.99")
-	if trig, _ := TurnTriggerFor(v, 0.75, true, true); trig != "negative_feedback" {
+	if trig, _ := TurnTriggerFor(v, 0.75, true, true, "我要退款"); trig != "negative_feedback" {
 		t.Fatalf("raising the solo bar must not disable the confirm path, got %q", trig)
 	}
 
 	// Raising the confirm bar above the noul does suppress it.
 	t.Setenv("JEV_RULE_CONFIRM_MIN", "0.90")
-	if trig, _ := TurnTriggerFor(v, 0.75, true, true); trig != "" {
+	if trig, _ := TurnTriggerFor(v, 0.75, true, true, "我要退款"); trig != "" {
 		t.Fatalf("0.75 must not clear a 0.90 confirm bar, got %q", trig)
 	}
 }

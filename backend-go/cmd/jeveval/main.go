@@ -251,7 +251,7 @@ func verdictAt(j judged, th float64) bool {
 		Confidence: j.confidence,
 		Escalate:   j.raw >= th,
 	}
-	trigger, _ := platform.TurnTrigger(v, j.t.hasMatch, true)
+	trigger, _ := platform.TurnTrigger(v, j.t.hasMatch, true, j.t.customerMsg)
 	return v.Escalate || trigger != ""
 }
 
@@ -332,8 +332,8 @@ func runAgree(csvPath string, workers int) {
 				t := turns[i]
 				jv, _, _, jok := pipe.JudgeTurnJev(ctx, t.customerMsg, t.reply, t.hasMatch)
 				gv, gok := gem.JudgeTurn(ctx, t.customerMsg, t.reply, t.hasMatch)
-				jDec := jok && (jv.Escalate || turnTrigger(jv, t.hasMatch))
-				gDec := gok && (gv.Escalate || turnTrigger(gv, t.hasMatch))
+				jDec := jok && (jv.Escalate || turnTrigger(jv, t.hasMatch, t.customerMsg))
+				gDec := gok && (gv.Escalate || turnTrigger(gv, t.hasMatch, t.customerMsg))
 				out[i] = pair{t: t, jv: jv, gv: gv, jok: jok, gok: gok, jDecide: jDec, gDecide: gDec}
 			}
 		}()
@@ -394,8 +394,8 @@ func runAgree(csvPath string, workers int) {
 	}
 }
 
-func turnTrigger(v gemini.TurnVerdict, hasMatch bool) bool {
-	tr, _ := platform.TurnTrigger(v, hasMatch, true)
+func turnTrigger(v gemini.TurnVerdict, hasMatch bool, customerMsg string) bool {
+	tr, _ := platform.TurnTrigger(v, hasMatch, true, customerMsg)
 	return tr != ""
 }
 

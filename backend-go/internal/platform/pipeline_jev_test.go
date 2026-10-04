@@ -128,23 +128,23 @@ func TestJudgeTurnFallsBackWhenDisabled(t *testing.T) {
 
 func TestTurnTriggerForConfirmsRulesWithNoul(t *testing.T) {
 	v := gemini.TurnVerdict{Intent: "refund", Sentiment: "neutral", Confidence: 0.9}
-	if tr, _ := TurnTriggerFor(v, 0.8, true, true); tr != "negative_feedback" {
+	if tr, _ := TurnTriggerFor(v, 0.8, true, true, "我要退款"); tr != "negative_feedback" {
 		t.Fatalf("confirmed rule intent must escalate: %q", tr)
 	}
-	if tr, _ := TurnTriggerFor(v, 0.3, true, true); tr != "" {
+	if tr, _ := TurnTriggerFor(v, 0.3, true, true, "我要退款"); tr != "" {
 		t.Fatalf("unconfirmed rule intent must not escalate: %q", tr)
 	}
 	// The live false positive: a price question with a hot solo noul below the bar.
 	price := gemini.TurnVerdict{Intent: "price", Sentiment: "neutral", Confidence: 0.95}
-	if tr, _ := TurnTriggerFor(price, 0.6, true, true); tr != "" {
+	if tr, _ := TurnTriggerFor(price, 0.6, true, true, "多少钱"); tr != "" {
 		t.Fatalf("price question at 0.6 must stay with the AI: %q", tr)
 	}
-	if tr, _ := TurnTriggerFor(price, 0.95, true, true); tr != "ai_decision" {
+	if tr, _ := TurnTriggerFor(price, 0.95, true, true, "多少钱"); tr != "ai_decision" {
 		t.Fatalf("solo noul above the 0.90 bar must escalate: %q", tr)
 	}
 	// No-KB rule stays unconditional.
 	nokb := gemini.TurnVerdict{Intent: "question", Sentiment: "neutral", Confidence: 0.2}
-	if tr, _ := TurnTriggerFor(nokb, 0.1, false, true); tr != "no_knowledge_base" {
+	if tr, _ := TurnTriggerFor(nokb, 0.1, false, true, "你们有这个型号吗"); tr != "no_knowledge_base" {
 		t.Fatalf("ungrounded low-confidence answer must escalate: %q", tr)
 	}
 }

@@ -70,8 +70,8 @@ func runSpeed(_ int) {
 		gv, gok := gem.JudgeTurn(ctx, c.msg, c.reply, c.hasMatch)
 		gl := time.Since(t1)
 
-		jDec := jok && (jv.Escalate || turnTrigger(jv, c.hasMatch))
-		gDec := gok && (gv.Escalate || turnTrigger(gv, c.hasMatch))
+		jDec := jok && (jv.Escalate || turnTrigger(jv, c.hasMatch, c.msg))
+		gDec := gok && (gv.Escalate || turnTrigger(gv, c.hasMatch, c.msg))
 		rows = append(rows, row{
 			name: c.name, jevLat: jl, gemLat: gl, jok: jok, gok: gok,
 			agreesDec: jDec == gDec, agreesInt: jv.Intent == gv.Intent,

@@ -341,7 +341,7 @@ func (p *Pipeline) stageRouteInbound(ctx context.Context, t *inboundTurn) (bool,
 	if !ok {
 		return true, nil
 	}
-	escalate, skip, silent := routeDecision(r.Route, r.Prob)
+	escalate, skip, silent := routeDecision(r.Route, r.Prob, t.Content)
 	if escalate {
 		p.Logger.Info("auto handoff: jev routed the message to a human",
 			"session_id", t.SessionID, "p", r.Prob, "urgency", r.Urgency)
@@ -359,6 +359,14 @@ func (p *Pipeline) stageRouteInbound(ctx context.Context, t *inboundTurn) (bool,
 		p.Logger.Info("junk dropped: jev routed the message as no-reply",
 			"session_id", t.SessionID, "p", r.Prob)
 		return false, nil
+	}
+	if skip && LooksLikeQuestion(t.Content) {
+		// See the veto in routeDecision: the router called this pleasantries, the
+		// message is a question, so take the grounded path and say why in the log —
+		// this is a router misclassification the operator should be able to count.
+		p.Logger.Info("chit-chat shortcut refused: the message is a question",
+			"session_id", t.SessionID, "p", r.Prob)
+		skip = false
 	}
 	t.SkipGround = skip
 	t.Urgency = r.Urgency

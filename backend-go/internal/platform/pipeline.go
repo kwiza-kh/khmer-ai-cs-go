@@ -1077,11 +1077,22 @@ func (p *Pipeline) HasReadyDocs(ctx context.Context, userID int32) bool {
 	return p.hasReadyDocs(ctx, userID)
 }
 
+// isChitChat — whether the model's "small_talk" label may be trusted to excuse a
+// knowledge-base miss.
+//
+// Same rule as the routing veto (see routeDecision): a question is not chit-chat.
+// The label is what suppresses the no_knowledge_base handoff, so a question
+// mislabelled small_talk would otherwise reach the customer as an ungrounded guess
+// instead of a human — "你是谁" was labelled small_talk on 2026-10-04.
+func isChitChat(intent, content string) bool {
+	return intent == "small_talk" && !LooksLikeQuestion(content)
+}
+
 // TurnTrigger — the shared escalation decision for one classified turn. This
 // is the single source of truth for the platform pipeline AND the web-chat
 // path (they previously drifted). Returns the handoff trigger + reason, or ""
 // when no human is needed.
-func TurnTrigger(v gemini.TurnVerdict, hasMatch, hasDocs bool) (string, string) {
+func TurnTrigger(v gemini.TurnVerdict, hasMatch, hasDocs bool, content string) (string, string) {
 	// Intents a human must own outright, regardless of tone.
 	switch v.Intent {
 	case "complaint", "refund", "legal":
@@ -1094,7 +1105,7 @@ func TurnTrigger(v gemini.TurnVerdict, hasMatch, hasDocs bool) (string, string) 
 		return "negative_feedback", "Customer sentiment turned negative (" + v.Intent + ")"
 	case v.Escalate:
 		return "ai_decision", "AI classifier recommends human review (" + v.Intent + ")"
-	case !hasMatch && v.Confidence < 0.35 && hasDocs && v.Intent != "small_talk":
+	case !hasMatch && v.Confidence < 0.35 && hasDocs && !isChitChat(v.Intent, content):
 		return "no_knowledge_base", "Answer not grounded in the knowledge base (intent: " + v.Intent + ")"
 	}
 	return "", ""
@@ -1107,7 +1118,7 @@ func TurnTrigger(v gemini.TurnVerdict, hasMatch, hasDocs bool) (string, string) 
 // they require the model's own escalate probability to corroborate them, and
 // the solo-noul valve sits at a high bar. The no-knowledge-base rule stays
 // unconditional: it rests on retrieval facts, not labels.
-func TurnTriggerFor(v gemini.TurnVerdict, rawNoul float64, hasMatch, hasDocs bool) (string, string) {
+func TurnTriggerFor(v gemini.TurnVerdict, rawNoul float64, hasMatch, hasDocs bool, content string) (string, string) {
 	confirm := config.EnvFloat("JEV_RULE_CONFIRM_MIN", 0.70)
 	// JEV_RULE_SOLO_MIN is deliberately NOT JEV_TURN_ESCALATE_MIN. The two bars
 	// mean different things and have always carried different defaults (0.90
@@ -1127,7 +1138,7 @@ func TurnTriggerFor(v gemini.TurnVerdict, rawNoul float64, hasMatch, hasDocs boo
 	case rawNoul >= solo:
 		return "ai_decision", "Jev escalate probability above the solo bar (" +
 			strconv.FormatFloat(rawNoul, 'f', 2, 64) + ", intent: " + v.Intent + ")"
-	case !hasMatch && v.Confidence < 0.35 && hasDocs && v.Intent != "small_talk":
+	case !hasMatch && v.Confidence < 0.35 && hasDocs && !isChitChat(v.Intent, content):
 		return "no_knowledge_base", "Answer not grounded in the knowledge base (intent: " + v.Intent + ")"
 	}
 	return "", ""
@@ -1186,9 +1197,9 @@ func (p *Pipeline) classifyTurn(userID int32, sessionID, customerMsg, reply stri
 		}
 		var trigger, reason string
 		if fromJev {
-			trigger, reason = TurnTriggerFor(verdict, raw, hasMatch, p.hasReadyDocs(ctx, userID))
+			trigger, reason = TurnTriggerFor(verdict, raw, hasMatch, p.hasReadyDocs(ctx, userID), customerMsg)
 		} else {
-			trigger, reason = TurnTrigger(verdict, hasMatch, p.hasReadyDocs(ctx, userID))
+			trigger, reason = TurnTrigger(verdict, hasMatch, p.hasReadyDocs(ctx, userID), customerMsg)
 		}
 		if trigger != "" {
 			p.escalateToHuman(ctx, nil, &configCred{UserID: userID}, sessionID, trigger, reason, "")

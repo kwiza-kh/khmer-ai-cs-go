@@ -151,7 +151,7 @@ func judgeLiveCase(ctx context.Context, pipe *platform.Pipeline, c liveCase) (bo
 		if !ok {
 			return false, "jev call failed", ""
 		}
-		tr, reason := platform.TurnTriggerFor(v, raw, c.hasMatch, true)
+		tr, reason := platform.TurnTriggerFor(v, raw, c.hasMatch, true, c.msg)
 		escalate := tr != ""
 		var issues []string
 		if c.expectEscalate != nil && escalate != *c.expectEscalate {
@@ -201,7 +201,7 @@ func judgeLiveCase(ctx context.Context, pipe *platform.Pipeline, c liveCase) (bo
 		if !ok {
 			return false, "jev call failed", ""
 		}
-		escalate, skipGround, silent := platform.RouteDecision(r.Route, r.Prob)
+		escalate, skipGround, silent := platform.RouteDecision(r.Route, r.Prob, c.msg)
 		detail := fmt.Sprintf("route=%s p=%.2f urgency=%s", r.Route, r.Prob, r.Urgency)
 		pass := r.Route == c.expectRoute
 		if escalate || skipGround || silent {

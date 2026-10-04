@@ -477,7 +477,7 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 	inboundUrgency := platform.UrgencyUnknown
 	if a.Pipe != nil {
 		if r, ok := a.Pipe.RouteInbound(ctx, req.Message); ok {
-			escalate, skip, silent := platform.RouteDecision(r.Route, r.Prob)
+			escalate, skip, silent := platform.RouteDecision(r.Route, r.Prob, req.Message)
 			if escalate {
 				webEscalate("customer_request", "Jev routed the message as a human request (p="+strconv.FormatFloat(r.Prob, 'f', 2, 64)+")", r.Urgency)
 				return
@@ -782,9 +782,9 @@ func (a *App) classifyWebTurnAsync(userID int32, sessionID, message, reply strin
 		}
 		var trigger, reason string
 		if fromJev {
-			trigger, reason = platform.TurnTriggerFor(verdict, raw, hasMatch, a.Pipe.HasReadyDocs(ctx, userID))
+			trigger, reason = platform.TurnTriggerFor(verdict, raw, hasMatch, a.Pipe.HasReadyDocs(ctx, userID), message)
 		} else {
-			trigger, reason = platform.TurnTrigger(verdict, hasMatch, a.Pipe.HasReadyDocs(ctx, userID))
+			trigger, reason = platform.TurnTrigger(verdict, hasMatch, a.Pipe.HasReadyDocs(ctx, userID), message)
 		}
 		if trigger == "" {
 			return

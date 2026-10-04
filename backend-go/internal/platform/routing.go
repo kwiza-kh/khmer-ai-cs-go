@@ -2,6 +2,7 @@ package platform
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"khmer-ai-cs-go/internal/config"
@@ -74,7 +75,7 @@ func (p *Pipeline) RouteInbound(ctx context.Context, msg string) (InboundRoute, 
 				"What does `customer_message` need from this store's customer service?",
 				map[string]string{
 					RouteKBQuestion:  "A product or service question answerable from the store knowledge base",
-					RouteSmallTalk:   "Greeting, thanks, or chit-chat with no request in it",
+					RouteSmallTalk:   "Greeting, thanks, or pure pleasantries with NO question in it — a message that asks for something (the company itself, a product, a price, delivery, or the assistant) is a product question, not chit-chat",
 					RouteHandoff:     "Asks to talk to a human agent, or rejects the AI assistant",
 					RouteTransaction: "Order, booking, payment, or delivery arrangement that needs store action",
 					RouteJunk:        "Spam, advertisement, gibberish, or a solicitation that is not a customer request and deserves no reply",
@@ -128,25 +129,125 @@ func urgencyFromScore(resp *typesafe.Response) string {
 //	escalate    — hand the conversation to a human, AI stays silent
 //	skipGround — answer without touching the knowledge base (chit-chat)
 //	silent     — junk: no reply at all on platform channels
-func routeDecision(route string, prob float64) (escalate, skipGround, silent bool) {
+func routeDecision(route string, prob float64, content string) (escalate, skipGround, silent bool) {
 	if route == RouteHandoff && prob >= config.EnvFloat("JEV_ROUTE_HANDOFF_MIN", 0.80) {
 		return true, false, false
 	}
 	if route == RouteSmallTalk && prob >= config.EnvFloat("JEV_ROUTE_CHITCHAT_MIN", 0.80) {
-		return false, true, false
+		// A question is never chit-chat.
+		//
+		// skipGround means "the router is confident this carries no request, so
+		// answer from the fixed template without retrieval". Measured 2026-10-04:
+		// "你是谁" was routed small_talk, the shortcut fired, and the customer got
+		// "谢谢您的消息！有任何问题随时告诉我。" with tokens_used=0 and
+		// model_name=smalltalk-template — a real question (answerable from the
+		// company-profile document) answered by a line whose whole premise is that
+		// there is no question. The router is a model and will be wrong sometimes;
+		// the shortcut now has to survive one veto.
+		//
+		// The junk route below is deliberately NOT given the same treatment: spam and
+		// ads do contain question marks, so "looks like a question" is not evidence
+		// against silence, and wrongly silencing a customer is the worse failure.
+		if !LooksLikeQuestion(content) {
+			return false, true, false
+		}
 	}
 	// 0.90 default, not 0.85: the documented Jev accuracy on Khmer is lower
 	// than on English (jeveval -mode khmer), and a wrongly-silenced Khmer
 	// customer is a worse outcome than one wasted generation. Raise the bar
 	// until there is Khmer-route accuracy data justifying a lower one.
 	if route == RouteJunk && prob >= config.EnvFloat("JEV_ROUTE_JUNK_MIN", 0.90) {
+		// A question is never silenced either — and this veto matters more than the
+		// chit-chat one, because silence is the router's only irreversible action:
+		// no reply, no generation, no delivery. The customer sees a bot that ignored
+		// them, and the threshold above is the only thing standing in the way.
+		//
+		// Evidence (2026-10-04, SQL over chat_messages): two real Telegram questions —
+		// "你是什么模型" and "你好 你有哪些产品" (2026-09-26) — are the only customer
+		// messages in the database with no reply of any kind, and silence is the one
+		// path that produces that. The cost of the veto is a generation for spam that
+		// happens to contain a question mark; the code above already states the
+		// trade-off it wants ("a wrongly-silenced customer is a worse outcome than one
+		// wasted generation").
+		if LooksLikeQuestion(content) {
+			return false, false, false
+		}
 		return false, false, true
 	}
 	return false, false, false
 }
 
 // RouteDecision is routeDecision for callers outside the platform package
-// (the web widget applies the same switches on its own reply path).
-func RouteDecision(route string, prob float64) (escalate, skipGround, silent bool) {
-	return routeDecision(route, prob)
+// (the web widget applies the same switches on its own reply path). content is the
+// customer's message — the chit-chat veto needs it, and skipping it would mean the
+// widget kept answering questions with the pleasantries template.
+func RouteDecision(route string, prob float64, content string) (escalate, skipGround, silent bool) {
+	return routeDecision(route, prob, content)
+}
+
+// questionSubstrings — markers that say "this message asks something". Khmer and
+// Chinese do not put spaces between words, so those are substring tests: "ណា" also
+// matches "ណាស់" and "几" also matches "几乎", and that is the intended direction.
+var questionSubstrings = []string{
+	"?", "？",
+	// Khmer
+	"អ្វី", "ណា", "ប៉ុន្មាន", "ដែរ", "ទេ", "ឬ",
+	// Chinese
+	"谁", "什么", "什麼", "哪", "多少", "几", "怎", "如何", "为什么", "為什麼",
+	"吗", "嗎", "呢", "是不是", "有没有", "有沒有", "能不能", "请问", "請問",
+}
+
+// questionWords — English interrogatives, unambiguous wherever they appear.
+var questionWords = []string{"who", "whose", "whom", "what", "which", "when", "where", "why", "how"}
+
+// questionOpeners — auxiliaries that only signal a question as the FIRST word
+// ("Can you…", "Do you…"), which keeps "this is great" out of the veto.
+var questionOpeners = []string{
+	"can", "could", "do", "does", "did", "is", "are", "was", "were",
+	"will", "would", "should", "have", "has", "any", "may",
+}
+
+func containsAny(hay string, needles []string) bool {
+	for _, n := range needles {
+		if strings.Contains(hay, n) {
+			return true
+		}
+	}
+	return false
+}
+
+// LooksLikeQuestion reports whether a customer message asks something.
+//
+// Deliberately over-inclusive, because it is only ever used as a VETO on the
+// chit-chat shortcut: a false positive costs one paid generation where the template
+// was free, while a false negative is a real question answered with "thanks for
+// your message" (the 2026-10-04 "你是谁" case this exists to prevent).
+func LooksLikeQuestion(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return false
+	}
+	lowered := strings.ToLower(trimmed)
+	if containsAny(lowered, questionSubstrings) {
+		return true
+	}
+	fields := strings.Fields(lowered)
+	if len(fields) == 0 {
+		return false
+	}
+	first := strings.Trim(fields[0], `.,!;:"'()[]{}`)
+	for _, opener := range questionOpeners {
+		if first == opener {
+			return true
+		}
+	}
+	for _, f := range fields {
+		word := strings.Trim(f, `.,!;:"'()[]{}`)
+		for _, qw := range questionWords {
+			if word == qw {
+				return true
+			}
+		}
+	}
+	return false
 }
