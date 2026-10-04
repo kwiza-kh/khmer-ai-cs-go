@@ -188,13 +188,6 @@ func (p *Pipeline) NotifyNewCustomerMessage(ctx context.Context, userID int32, s
 	p.SendTelegramNotify(ctx, userID, text)
 }
 
-// bumpMessagesUsed — advance the tenant billing counter so the usage dashboards
-// reflect reality (enforcement is a deliberate product decision, kept off).
-func (p *Pipeline) bumpMessagesUsed(ctx context.Context, userID int32) {
-	_, _ = p.DB.Exec(ctx,
-		"UPDATE tenant_billing SET messages_used = messages_used + 1, updated_at = NOW() WHERE user_id = $1", userID)
-}
-
 // NotifyHandoffRequest — Telegram ping for one handoff request, with inline
 // buttons so the owner can take over or resolve right from the phone.
 //

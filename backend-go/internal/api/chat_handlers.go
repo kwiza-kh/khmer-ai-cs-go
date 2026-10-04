@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -211,6 +212,15 @@ func (a *App) chatPlain(w http.ResponseWriter, r *http.Request) (any, error) {
 	language := replyLanguage(req.Message, a.savedLanguage(r.Context(), user.UserID), hint)
 	req.Language = &language
 
+	// The console's own tester consumes a message from the tenant's quota, exactly
+	// like a customer message does — the counter is what the plans are sold on.
+	if err := usage.ConsumeMessageQuota(r.Context(), a.DB, user.UserID); err != nil {
+		if errors.Is(err, usage.ErrMessageQuotaExhausted) {
+			return nil, &ApiError{http.StatusPaymentRequired, "月度消息配额已用尽，请升级套餐"}
+		}
+		return nil, ErrInternal("配额校验失败")
+	}
+
 	sessionID, _, err := a.resolveChatSession(r.Context(), user.UserID, &req)
 	if err != nil {
 		return nil, err
@@ -339,6 +349,16 @@ func (a *App) chatStream(w http.ResponseWriter, r *http.Request) {
 	}
 	language := replyLanguage(req.Message, a.savedLanguage(r.Context(), user.UserID), hint)
 	req.Language = &language
+
+	// Same gate as chatPlain: see the comment there.
+	if err := usage.ConsumeMessageQuota(r.Context(), a.DB, user.UserID); err != nil {
+		if errors.Is(err, usage.ErrMessageQuotaExhausted) {
+			WriteJSON(w, http.StatusPaymentRequired, map[string]string{"error": "月度消息配额已用尽，请升级套餐"})
+			return
+		}
+		WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "配额校验失败"})
+		return
+	}
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {

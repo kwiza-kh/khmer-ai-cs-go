@@ -11,16 +11,19 @@ import (
 
 	"khmer-ai-cs-go/internal/gemini"
 	"khmer-ai-cs-go/internal/rag"
+	"khmer-ai-cs-go/internal/usage"
 )
 
 // ============================================
 // F9 — document quota (upload guard)
 // ============================================
 
+// Plan names come from internal/usage: the message gate in the pipeline and this
+// document gate must agree on what "enterprise" means.
 const (
-	planFree       = "free"
-	planPro        = "pro"
-	planEnterprise = "enterprise"
+	planFree       = usage.PlanFree
+	planPro        = usage.PlanPro
+	planEnterprise = usage.PlanEnterprise
 )
 
 // consumeDocQuota moved to consume_doc_quota.go during the security-audit

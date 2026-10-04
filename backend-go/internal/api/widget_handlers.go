@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -450,6 +451,23 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 		sendEvent("token", map[string]string{"text": ack})
 		sendEvent("done", map[string]any{"reply": ack, "tokens_used": 0, "cached_tokens": 0, "used_mock": false, "escalated": true})
 	}
+	// Quota gate before anything is retrieved or generated: an exhausted tenant
+	// stops costing money at this line, and the visitor gets a human path instead
+	// of silence. webEscalate creates the request, acks the customer in their
+	// language and pings the owner — the same path a customer-requested handoff
+	// takes, so the console shows one kind of pending request.
+	if err := usage.ConsumeMessageQuota(ctx, a.DB, t.ownerID); err != nil {
+		if errors.Is(err, usage.ErrMessageQuotaExhausted) {
+			webEscalate("ai_decision", "Tenant message quota exhausted; upgrade the plan to keep answering", "")
+			return
+		}
+		// A billing failure must not look like a customer problem: log it and fail
+		// the request so the visitor can retry, rather than answering for free.
+		a.Logger.Error("message quota check failed", "session_id", sid, "user_id", t.ownerID, "error", err.Error())
+		WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "服务暂时不可用，请稍后再试"})
+		return
+	}
+
 	if keyword, matched := platform.HumanRequestKeyword(req.Message); matched {
 		webEscalate("customer_request", "Customer asked for a human agent (matched: "+keyword+")", "")
 		return

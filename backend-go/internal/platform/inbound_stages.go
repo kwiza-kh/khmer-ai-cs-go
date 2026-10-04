@@ -26,6 +26,7 @@ package platform
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
@@ -72,9 +73,15 @@ type inboundTurn struct {
 	Urgency string
 
 	// --- set by cache-lookup / generate / guard-reply / after-hours ---
-	Reply         string
-	FromCache     bool
-	Canned        bool
+	Reply     string
+	FromCache bool
+	Canned    bool
+	// CannedLabel is the model_name recorded for a canned reply (empty means
+	// "smalltalk-template"), so the console can tell a quota notice from small talk.
+	CannedLabel string
+	// HandoffReason overrides the generic escalation reason when a stage knows
+	// why the turn is being handed over (the quota gate does).
+	HandoffReason string
 	Result        gemini.ChatResult
 	GroundCtx     rag.GroundingContext
 	ClaimsHandoff bool
@@ -285,14 +292,50 @@ func (p *Pipeline) stageKeywordHandoff(ctx context.Context, t *inboundTurn) (boo
 	return false, nil
 }
 
-// bill-message — billing counts every received customer message regardless of
-// routing outcome: junk silence is a service decision, not a free-usage one.
+// bill-message — consume one message from the tenant's monthly quota. This is
+// the enforcement point that was missing: the counter used to advance
+// asynchronously and let every turn through, which left the plans in applyPlan
+// unenforceable.
+//
+// It runs before retrieval and generation, so an exhausted tenant stops costing
+// money the moment the cap is hit; and it counts every received customer message
+// regardless of routing outcome, because junk silence is a service decision, not
+// a free-usage one.
+//
+// Exhaustion answers with the handoff acknowledgement instead of a model reply:
+// the customer keeps a human path, and the owner gets the handoff request that
+// says the plan is what stopped the answers. A billing failure returns the error
+// so the event is retried rather than answered for free.
 func (p *Pipeline) stageBillMessage(ctx context.Context, t *inboundTurn) (bool, error) {
 	userID := t.Config.UserID
-	SpawnCritical(func() {
-		p.bumpMessagesUsed(ctx, userID)
-	})
+	if err := usage.ConsumeMessageQuota(ctx, p.DB, userID); err != nil {
+		if !errors.Is(err, usage.ErrMessageQuotaExhausted) {
+			return false, err
+		}
+		t.ReplyLang = p.turnReplyLang(ctx, userID, t.Content)
+		t.Reply = HandoffAcknowledgement(t.ReplyLang)
+		t.Canned = true
+		t.CannedLabel = "quota-notice"
+		t.ClaimsHandoff = true
+		t.HandoffReason = "Tenant message quota exhausted; customer handed to a human instead of answered"
+		p.Logger.Warn("tenant message quota exhausted; handing off instead of answering",
+			"user_id", userID, "session_id", t.SessionID)
+	}
 	return true, nil
+}
+
+// turnReplyLang resolves the language a customer-facing reply must use: the
+// merchant's saved preference, else the script of the customer's own message,
+// else Khmer. Shared by prepare-grounding and the quota notice so both speak to
+// the customer in the same language.
+func (p *Pipeline) turnReplyLang(ctx context.Context, userID int32, content string) string {
+	if lang := p.ownerLanguage(ctx, userID); lang != "" {
+		return lang
+	}
+	if det := gemini.DetectLanguage(content); det != "" {
+		return det
+	}
+	return "km"
 }
 
 // prepare-grounding — reply language, history, and the speculative retrieval.
@@ -302,14 +345,7 @@ func (p *Pipeline) stageBillMessage(ctx context.Context, t *inboundTurn) (bool, 
 // its result. Starting it here lets it run concurrently with Jev's routing call
 // instead of being purely additive to every grounded turn.
 func (p *Pipeline) stagePrepareGrounding(ctx context.Context, t *inboundTurn) (bool, error) {
-	replyLang := p.ownerLanguage(ctx, t.Config.UserID)
-	if replyLang == "" {
-		if det := gemini.DetectLanguage(t.Content); det != "" {
-			replyLang = det
-		} else {
-			replyLang = "km"
-		}
-	}
+	replyLang := p.turnReplyLang(ctx, t.Config.UserID, t.Content)
 	t.ReplyLang = replyLang
 	t.History = p.loadHistory(ctx, t.SessionID, t.UserMessageID)
 
@@ -394,8 +430,10 @@ func (p *Pipeline) stageNotifyOwner(ctx context.Context, t *inboundTurn) (bool, 
 // stored for this tenant, so both the retrieval wait and generation are skipped.
 // Small talk skips the cache: conversational replies depend on history.
 func (p *Pipeline) stageCacheLookup(ctx context.Context, t *inboundTurn) (bool, error) {
-	// A persona turn skips the cache entirely — see resolve-persona.
-	if t.SkipGround || !p.Cache.Enabled() || t.Persona != nil {
+	// A persona turn skips the cache entirely — see resolve-persona. A canned
+	// turn is already answered (small talk, junk silence, the quota notice), so a
+	// cache hit must not overwrite it.
+	if t.SkipGround || t.Canned || !p.Cache.Enabled() || t.Persona != nil {
 		return true, nil
 	}
 	if cached, hit := p.Cache.Lookup(ctx, t.Config.UserID, t.Content, t.ReplyLang); hit {
@@ -546,6 +584,9 @@ func (p *Pipeline) stagePersistAndDeliver(ctx context.Context, t *inboundTurn) (
 	}
 	if t.Canned {
 		tokensUsed, modelName = 0, "smalltalk-template"
+		if t.CannedLabel != "" {
+			modelName = t.CannedLabel
+		}
 	}
 	var modelMessageID int64
 	err := p.DB.QueryRow(ctx,
@@ -579,8 +620,11 @@ func (p *Pipeline) stagePostDelivery(ctx context.Context, t *inboundTurn) (bool,
 	// ("已为您转接人工…") — make it true: create the request now. No canned ack
 	// (ev=nil) since the reply itself already told the customer.
 	if ReplyClaimsHandoff(t.Reply) || t.ClaimsHandoff {
-		p.escalateToHuman(ctx, nil, t.Config, t.SessionID, "ai_decision",
-			"AI reply announced a handoff to the customer", t.Urgency)
+		reason := "AI reply announced a handoff to the customer"
+		if t.HandoffReason != "" {
+			reason = t.HandoffReason
+		}
+		p.escalateToHuman(ctx, nil, t.Config, t.SessionID, "ai_decision", reason, t.Urgency)
 		return false, nil
 	}
 	// A cached answer WAS grounded in the tenant's knowledge base when it was
