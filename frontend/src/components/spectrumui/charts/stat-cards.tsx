@@ -3,18 +3,13 @@
 import * as React from 'react';
 import { cn } from '@/lib/utils';
 import {
-  type ChartStatus,
-  ChartState,
   DOWN,
   EASE,
   Keyframes,
   RollingNumber,
-  TRACK,
   UP,
   formatCount,
   monotonePath,
-  mulberry32,
-  seriesVarsClassName,
   useHoverIndexKeys,
   usePrefersReducedMotion,
   useTweenNumber,
@@ -31,64 +26,6 @@ export type StatCardData = {
   deltaLabel?: string;
   caption?: string;
 };
-
-function walk(seed: number, n: number, start: number, drift: number, vol: number): number[] {
-  const rand = mulberry32(seed);
-  const out: number[] = [];
-  let value = start;
-  for (let i = 0; i < n; i += 1) {
-    value = Math.max(0.0001, value * (1 + drift + (rand() - 0.5) * vol));
-    out.push(value);
-  }
-  return out;
-}
-
-export const STAT_CARDS: StatCardData[] = [
-  {
-    label: 'Revenue',
-    series: walk(11, 30, 48_200, 0.008, 0.05),
-    format: (v) => `$${formatCount(v, 1)}`,
-    deltaLabel: 'vs 30 days ago',
-  },
-  {
-    label: 'Active users',
-    series: walk(23, 30, 12_400, 0.005, 0.04),
-    format: (v) => formatCount(v, 1),
-    deltaLabel: 'vs 30 days ago',
-  },
-  {
-    label: 'Conversion',
-    series: walk(37, 30, 3.42, 0.003, 0.03),
-    format: (v) => `${v.toFixed(2)}%`,
-    deltaLabel: 'vs 30 days ago',
-  },
-  {
-    label: 'Churn',
-    series: walk(41, 30, 2.61, -0.007, 0.04),
-    format: (v) => `${v.toFixed(2)}%`,
-    goodWhen: 'down',
-    deltaLabel: 'vs 30 days ago',
-  },
-];
-
-export const BUDGET_CARDS: StatCardData[] = [
-  {
-    label: 'Spent this week',
-    series: [46.4, 71.8, 58.2, 88.6, 63.4, 94.2, 64.6],
-    value: 487.2,
-    previous: 553.64,
-    format: (v) => `$${v.toFixed(2)}`,
-    goodWhen: 'down',
-    deltaLabel: 'from last week',
-  },
-  {
-    label: 'Remaining weekly budget',
-    value: 118.8,
-    progress: 0.22,
-    format: (v) => `$${v.toFixed(2)}`,
-    caption: '22% of weekly budget',
-  },
-];
 
 function StatCard({
   card,
@@ -212,13 +149,13 @@ function StatCard({
           <div
             aria-hidden
             className="relative h-1.5 w-full overflow-hidden rounded-full"
-            style={{ background: TRACK }}
+            style={{ background: 'var(--color-muted)' }}
           >
             <span
               className="absolute inset-y-0 left-0 rounded-full"
               style={{
                 width: `${Math.max(0, Math.min(1, progress)) * 100}%`,
-                background: 'var(--spectrum-series-2)',
+                background: 'var(--color-info)',
                 transformOrigin: 'left center',
                 animation: reduce
                   ? undefined
@@ -311,57 +248,31 @@ function StatCard({
   );
 }
 
-const COLUMN_CLASS: Record<number, string> = {
-  1: 'grid-cols-1',
-  2: 'grid-cols-1 sm:grid-cols-2',
-  3: 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3',
-  4: 'grid-cols-1 sm:grid-cols-2 xl:grid-cols-4',
-};
-
 export interface StatCardsProps {
   className?: string;
-  cards?: StatCardData[];
-  columns?: 1 | 2 | 3 | 4;
-  status?: ChartStatus;
-  onRetry?: () => void;
+  cards: StatCardData[];
 }
 
-export function StatCards({
-  className,
-  cards = STAT_CARDS,
-  columns = 2,
-  status = 'ready',
-  onRetry,
-}: StatCardsProps) {
+/**
+ * A row of metric tiles with sparklines.
+ *
+ * `cards` is required and the grid is fixed at 4 columns: the previous
+ * `columns`/`status`/`onRetry` props were never set by any caller, and the
+ * loading/empty/error machinery they drove lived in chart-engine.tsx and was
+ * unreachable at runtime. The one caller (analytics-panel) already decides
+ * whether there is anything to render.
+ */
+export function StatCards({ className, cards }: StatCardsProps) {
   const reduce = usePrefersReducedMotion();
 
   return (
-    <div className={cn('w-full', seriesVarsClassName, className)}>
+    <div className={cn('w-full', className)}>
       <Keyframes />
-      <ChartState
-        status={status}
-        height={168}
-        variant="cards"
-        empty={{
-          title: 'No metrics yet',
-          description: 'Connect a data source and these tiles will start tracking themselves.',
-        }}
-        onRetry={onRetry}
-      >
-        <div className={cn('grid gap-3', COLUMN_CLASS[columns] ?? COLUMN_CLASS[2])}>
-          {cards.map((card, index) => (
-            <StatCard key={card.label} card={card} index={index} reduce={reduce} />
-          ))}
-        </div>
-      </ChartState>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        {cards.map((card, index) => (
+          <StatCard key={card.label} card={card} index={index} reduce={reduce} />
+        ))}
+      </div>
     </div>
   );
-}
-
-export function DefaultStatCards(props: StatCardsProps) {
-  return <StatCards {...props} />;
-}
-
-export function BudgetStatCards(props: StatCardsProps) {
-  return <StatCards cards={BUDGET_CARDS} columns={2} {...props} />;
 }

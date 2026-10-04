@@ -100,7 +100,7 @@ export function AnalyticsPanel({ days = 30 }: { days?: number }) {
           <p className="px-0.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/70">
             {tf("an.trend", { days })}
           </p>
-          <StatCards cards={trendCards} columns={4} />
+          <StatCards cards={trendCards} />
         </div>
       )}
 
