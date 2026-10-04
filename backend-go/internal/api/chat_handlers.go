@@ -201,12 +201,14 @@ func (a *App) chatPlain(w http.ResponseWriter, r *http.Request) (any, error) {
 	if strings.TrimSpace(req.Message) == "" {
 		return nil, ErrBadRequest("请求格式错误")
 	}
-	language := "km"
-	if req.Language != nil && *req.Language != "" {
-		language = *req.Language
-	} else if saved := a.savedLanguage(r.Context(), user.UserID); saved != "" {
-		language = saved
+	// The request's language is a hint (the console sends its own default), not
+	// the customer's: see replyLanguage. The merchant's saved preference still
+	// outranks it, and the script of the message outranks the hint.
+	hint := ""
+	if req.Language != nil {
+		hint = *req.Language
 	}
+	language := replyLanguage(req.Message, a.savedLanguage(r.Context(), user.UserID), hint)
 	req.Language = &language
 
 	sessionID, _, err := a.resolveChatSession(r.Context(), user.UserID, &req)
@@ -330,12 +332,12 @@ func (a *App) chatStream(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "请求格式错误"})
 		return
 	}
-	language := "km"
-	if req.Language != nil && *req.Language != "" {
-		language = *req.Language
-	} else if saved := a.savedLanguage(r.Context(), user.UserID); saved != "" {
-		language = saved
+	// Same hint-not-choice rule as chatPlain: see replyLanguage.
+	hint := ""
+	if req.Language != nil {
+		hint = *req.Language
 	}
+	language := replyLanguage(req.Message, a.savedLanguage(r.Context(), user.UserID), hint)
 	req.Language = &language
 
 	flusher, ok := w.(http.Flusher)

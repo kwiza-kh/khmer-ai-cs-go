@@ -181,12 +181,19 @@ func (a *App) widgetEmbedSrc() string {
 // Mounted outside the auth + origin allowlist; CORS is opened in a.cors().
 // ============================================
 
-// resolveWidget validates ?token= / body token / X-Widget-Token header.
+// resolveWidget validates ?token= / X-Widget-Token header. POST handlers that
+// carry the token in their JSON body decode first and call resolveWidgetToken.
 func (a *App) resolveWidget(r *http.Request) (*widgetTokenRow, *ApiError) {
 	token := r.URL.Query().Get("token")
 	if token == "" {
 		token = r.Header.Get("X-Widget-Token")
 	}
+	return a.resolveWidgetToken(r, token)
+}
+
+// resolveWidgetToken validates an explicitly supplied token (query, header, or
+// JSON body depending on the caller).
+func (a *App) resolveWidgetToken(r *http.Request, token string) (*widgetTokenRow, *ApiError) {
 	if token == "" || len(token) > 64 {
 		return nil, ErrUnauthorized("无效的小组件令牌")
 	}
@@ -301,14 +308,14 @@ func (a *App) widgetMessages(w http.ResponseWriter, r *http.Request) (any, error
 // so agents see the conversation in the inbox and can answer (the visitor
 // polls /widget/messages while the panel is open).
 func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
-	t, apiErr := a.resolveWidget(r)
-	if apiErr != nil {
-		WriteJSON(w, apiErr.Status, map[string]string{"error": apiErr.Message})
-		return
-	}
 	var req widgetMessageRequest
 	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req) != nil || strings.TrimSpace(req.Message) == "" {
 		WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "消息不能为空"})
+		return
+	}
+	t, apiErr := a.resolveWidgetToken(r, req.Token)
+	if apiErr != nil {
+		WriteJSON(w, apiErr.Status, map[string]string{"error": apiErr.Message})
 		return
 	}
 	// Per-token visitor rate limit. Keyed on the resolved client address only —
@@ -335,11 +342,12 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusTooManyRequests, map[string]string{"error": "今日咨询量已达上限，请明日再来或直接致电我们"})
 		return
 	}
-	language := req.Language
-	if language != "km" && language != "en" && language != "zh" {
-		language = "km"
-	}
 	ctx := r.Context()
+	// The widget's `language` is the interface it was embedded with (?lang=zh on
+	// a Chinese site), not the customer's language — see replyLanguage. It used
+	// to be taken as the reply language, so a Chinese visitor was answered in
+	// Khmer end to end: retrieval, small-talk template and prompt alike.
+	language := replyLanguage(req.Message, a.savedLanguage(ctx, t.ownerID), req.Language)
 
 	// Validate / bind the session to this token's tenant (create on demand).
 	var owner int32
@@ -697,16 +705,17 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 
 // widgetFeedback — POST /api/v1/widget/feedback {token, message_id, rating}.
 func (a *App) widgetFeedback(w http.ResponseWriter, r *http.Request) (any, error) {
-	t, apiErr := a.resolveWidget(r)
-	if apiErr != nil {
-		return nil, apiErr
-	}
 	var req struct {
-		MessageID int32 `json:"message_id"`
-		Rating    int   `json:"rating"`
+		Token     string `json:"token"`
+		MessageID int32  `json:"message_id"`
+		Rating    int    `json:"rating"`
 	}
 	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req) != nil {
 		return nil, ErrBadRequest("请求格式错误")
+	}
+	t, apiErr := a.resolveWidgetToken(r, req.Token)
+	if apiErr != nil {
+		return nil, apiErr
 	}
 	if req.Rating != 1 && req.Rating != -1 {
 		return nil, ErrBadRequest("rating 必须是 -1 或 1")
