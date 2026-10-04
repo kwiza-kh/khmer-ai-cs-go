@@ -9,6 +9,8 @@ import "context"
 type metaChannel struct {
 	p   *Pipeline
 	cfg *configCred
+
+	noTeardown
 }
 
 func (c *metaChannel) Caps() Capabilities { return CapabilitiesFor(c.cfg.Platform) }
@@ -89,6 +91,7 @@ func (c *metaChannel) Profile(ctx context.Context, userID string) (string, strin
 	if c.cfg.Platform == "whatsapp" {
 		return "", "", nil
 	}
-	name, avatar := c.p.fetchMessengerProfile(ctx, c.cfg, userID)
+	client := NewMetaClient(c.cfg.AccessToken, c.cfg.PageID, c.cfg.InstagramBusiness, c.p.Cfg.Meta.GraphAPIVersion)
+	name, avatar := client.FetchProfile(ctx, c.cfg.Platform, userID)
 	return name, avatar, nil
 }

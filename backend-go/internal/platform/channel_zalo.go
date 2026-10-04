@@ -6,6 +6,8 @@ import "context"
 type zaloChannel struct {
 	p   *Pipeline
 	cfg *configCred
+
+	noTeardown
 }
 
 func (c *zaloChannel) Caps() Capabilities { return CapabilitiesFor("zalo") }

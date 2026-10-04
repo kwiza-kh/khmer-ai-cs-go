@@ -59,6 +59,30 @@ type Channel interface {
 	// Profile returns (display name, avatar URL). Best effort: an error means
 	// "keep whatever we already stored", not "fail the message".
 	Profile(ctx context.Context, userID string) (string, string, error)
+
+	// Disconnect tears down the provider-side half of this config so that
+	// deactivating it — or reconnecting the same account under another tenant —
+	// does not leave the provider pointing at this deployment. It returns the
+	// sentence the operator console should record ("" when there was nothing to
+	// remove) plus any provider error.
+	//
+	// The caller disables the row whatever this returns: a provider that refuses to
+	// co-operate must not leave a merchant unable to switch a channel off.
+	Disconnect(ctx context.Context) (string, error)
+}
+
+// ChannelFor builds the Channel for one config from already-decrypted credentials.
+// The API layer cannot name configCred, so this is the seam it drives the lifecycle
+// through (today: Disconnect). The platform→implementation mapping stays in
+// NewChannel — this only fills the struct.
+func ChannelFor(p *Pipeline, plat string, creds ChannelCredentials) (Channel, error) {
+	return NewChannel(p, &configCred{
+		Platform:          plat,
+		AccessToken:       creds.AccessToken,
+		PageID:            creds.PageID,
+		InstagramBusiness: creds.InstagramBusinessID,
+		BotToken:          creds.BotToken,
+	})
 }
 
 // NewChannel builds the Channel for a config row. This is the only place that
@@ -80,3 +104,9 @@ func NewChannel(p *Pipeline, cfg *configCred) (Channel, error) {
 		return nil, fmt.Errorf("channel: unsupported platform %q", cfg.Platform)
 	}
 }
+
+// The three channels with nothing provider-side to tear down say so once, here,
+// rather than making the caller guess from the platform name.
+type noTeardown struct{}
+
+func (noTeardown) Disconnect(context.Context) (string, error) { return "", nil }

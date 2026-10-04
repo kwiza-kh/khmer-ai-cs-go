@@ -536,29 +536,6 @@ func (p *Pipeline) loadHistory(ctx context.Context, sessionID string, excludeMes
 	return gemini.TrimHistoryBudget(rev)
 }
 
-// fetchMessengerProfile returns (name, avatarURL) via the Graph API.
-func (p *Pipeline) fetchMessengerProfile(ctx context.Context, cfg *configCred, platformUserID string) (string, string) {
-	client := NewMetaClient(cfg.AccessToken, cfg.PageID, cfg.InstagramBusiness, p.Cfg.Meta.GraphAPIVersion)
-	fields := "name"
-	if cfg.Platform == "instagram" {
-		fields = "name,username,profile_pic"
-	} else {
-		fields = "first_name,last_name,profile_pic"
-	}
-	v, err := client.get(ctx, "/"+platformUserID, map[string][]string{"fields": {fields}})
-	if err != nil {
-		return "", ""
-	}
-	name, _ := v["name"].(string)
-	if name == "" {
-		first, _ := v["first_name"].(string)
-		last, _ := v["last_name"].(string)
-		name = strings.TrimSpace(first + " " + last)
-	}
-	pic, _ := v["profile_pic"].(string)
-	return name, pic
-}
-
 // customerAvatar returns the stored avatar URL for a customer ("" = none).
 func (p *Pipeline) customerAvatar(ctx context.Context, cfg *configCred, platformUserID string) string {
 	var avatar string

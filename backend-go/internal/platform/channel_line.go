@@ -9,6 +9,8 @@ import (
 type lineChannel struct {
 	p   *Pipeline
 	cfg *configCred
+
+	noTeardown
 }
 
 func (c *lineChannel) Caps() Capabilities { return CapabilitiesFor("line") }

@@ -20,10 +20,12 @@ import (
 // decrypting the credentials, recording connection_health, persisting the routing
 // identity, and choosing a status code from the stage below.
 
-// VerifyCredentials is the decrypted credential bundle for one platform config.
-// Absent credentials are the empty string — the sealer answers "" for an empty
-// input rather than erroring.
-type VerifyCredentials struct {
+// ChannelCredentials is the decrypted credential bundle for one platform config,
+// shared by the two provider-side lifecycle calls: the connection self-check
+// (VerifyConnection) and the teardown (ChannelFor → Channel.Disconnect). Absent
+// credentials are the empty string — the sealer answers "" for an empty input
+// rather than erroring.
+type ChannelCredentials struct {
 	AccessToken               string
 	BotToken                  string
 	WebhookSecret             string
@@ -87,7 +89,7 @@ type VerifyError struct {
 func (e *VerifyError) Error() string { return e.Msg }
 
 // verifier is what a self-check needs from one channel implementation.
-type verifier func(ctx context.Context, plat string, creds VerifyCredentials, p VerifyParams) (VerifyOutcome, error)
+type verifier func(ctx context.Context, plat string, creds ChannelCredentials, p VerifyParams) (VerifyOutcome, error)
 
 // verifyHandler returns the verifier for a platform, or nil for a name this build
 // serves no outbound channel for. This is the only place that maps a platform name
@@ -111,7 +113,7 @@ func verifyHandler(plat string) verifier {
 //
 // Any error that is not a *VerifyError is a provider-side failure and should be
 // recorded against the config as such.
-func VerifyConnection(ctx context.Context, plat string, creds VerifyCredentials, p VerifyParams) (VerifyOutcome, error) {
+func VerifyConnection(ctx context.Context, plat string, creds ChannelCredentials, p VerifyParams) (VerifyOutcome, error) {
 	verify := verifyHandler(plat)
 	if verify == nil {
 		return VerifyOutcome{}, &VerifyError{
@@ -122,7 +124,7 @@ func VerifyConnection(ctx context.Context, plat string, creds VerifyCredentials,
 	return verify(ctx, plat, creds, p)
 }
 
-func verifyTelegram(ctx context.Context, _ string, creds VerifyCredentials, p VerifyParams) (VerifyOutcome, error) {
+func verifyTelegram(ctx context.Context, _ string, creds ChannelCredentials, p VerifyParams) (VerifyOutcome, error) {
 	client := NewTelegramClient(creds.BotToken)
 	botID, username, firstName, err := client.GetMe(ctx)
 	if err != nil {
@@ -161,7 +163,7 @@ func verifyTelegram(ctx context.Context, _ string, creds VerifyCredentials, p Ve
 // verifyMetaFamily — one Graph API call for meta, instagram and whatsapp, which
 // differ only in the sentence the console shows. plat is passed through so the
 // Graph call is made for the platform the config actually names.
-func verifyMetaFamily(ctx context.Context, plat string, creds VerifyCredentials, p VerifyParams) (VerifyOutcome, error) {
+func verifyMetaFamily(ctx context.Context, plat string, creds ChannelCredentials, p VerifyParams) (VerifyOutcome, error) {
 	detail := "Connection verified via Meta Graph API"
 	if plat == "whatsapp" {
 		detail = "Connection verified via WhatsApp Cloud API"
@@ -174,7 +176,7 @@ func verifyMetaFamily(ctx context.Context, plat string, creds VerifyCredentials,
 	return VerifyOutcome{AccountName: name, Detail: detail}, nil
 }
 
-func verifyLine(ctx context.Context, _ string, creds VerifyCredentials, p VerifyParams) (VerifyOutcome, error) {
+func verifyLine(ctx context.Context, _ string, creds ChannelCredentials, p VerifyParams) (VerifyOutcome, error) {
 	client := NewLineClient(creds.AccessToken)
 	name, _, botUserID, err := client.GetBotInfo(ctx)
 	if err != nil {
@@ -211,7 +213,7 @@ func verifyLine(ctx context.Context, _ string, creds VerifyCredentials, p Verify
 	}, nil
 }
 
-func verifyZalo(ctx context.Context, _ string, creds VerifyCredentials, _ VerifyParams) (VerifyOutcome, error) {
+func verifyZalo(ctx context.Context, _ string, creds ChannelCredentials, _ VerifyParams) (VerifyOutcome, error) {
 	client := NewZaloClient(creds.AccessToken)
 	name, oaID, err := client.VerifyOA(ctx)
 	if err != nil {

@@ -38,7 +38,7 @@ func TestVerifyConnectionRejectsAPlatformWithNoChannel(t *testing.T) {
 	// "web" is known to the capability table, so a Known()-only check lets it
 	// through: the rejection has to come from here, as a typed error the handler
 	// can answer 400 for.
-	_, err := VerifyConnection(context.Background(), "web", VerifyCredentials{}, VerifyParams{})
+	_, err := VerifyConnection(context.Background(), "web", ChannelCredentials{}, VerifyParams{})
 	var ve *VerifyError
 	if !errors.As(err, &ve) {
 		t.Fatalf("web: got %v (%T), want a *VerifyError", err, err)
@@ -66,7 +66,7 @@ func TestVerifyErrorStagesAreDistinctFromProviderFailures(t *testing.T) {
 	// provider: with no usable public webhook URL the check cannot be attempted,
 	// and the credential must not be recorded as the reason.
 	noURL := func(string) (string, error) { return "", errors.New("PUBLIC_API_URL must be set") }
-	_, err := VerifyConnection(context.Background(), "telegram", VerifyCredentials{}, VerifyParams{WebhookURL: noURL})
+	_, err := VerifyConnection(context.Background(), "telegram", ChannelCredentials{}, VerifyParams{WebhookURL: noURL})
 	if err == nil {
 		t.Fatal("a missing PUBLIC_API_URL must fail the check")
 	}

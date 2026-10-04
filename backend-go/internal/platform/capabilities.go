@@ -18,7 +18,12 @@
 // name. Architecture only: AstrBot is AGPL-3.0, no code was copied.
 package platform
 
-import "time"
+import (
+	"strings"
+	"time"
+
+	"khmer-ai-cs-go/internal/security"
+)
 
 // TextLimitUnit tells the splitter whether a channel's cap counts runes or
 // bytes. WeChat/WeCom cap customer-service text at 2048 **bytes**, where a CJK
@@ -55,6 +60,11 @@ type CredentialField struct {
 	Label    string `json:"label"`
 	Required bool   `json:"required"`
 	Secret   bool   `json:"secret"`
+	// MissingMessage is the operator-facing text when a Required field is absent.
+	// It lives on the field because the console already translates these exact
+	// strings (frontend/src/lib/api-errors.ts) — a generated sentence would come out
+	// untranslated on a Khmer or English console.
+	MissingMessage string `json:"-"`
 }
 
 // Capabilities is the declarative description of one channel.
@@ -83,6 +93,12 @@ type Capabilities struct {
 
 	SupportsTyping  bool
 	SupportsButtons bool
+	// AvatarNeedsRehost marks channels whose profile avatar is not a URL a browser
+	// can load (Telegram hands out a file id that embeds the bot token), so the
+	// picture must be downloaded and re-hosted before it is stored — and the profile
+	// must be fetched on every inbound message rather than only when the display
+	// name is missing, because the rehosted URL can expire.
+	AvatarNeedsRehost bool
 	// FeedbackButtons marks channels that can render the thumbs-up/down CSAT pair.
 	FeedbackButtons bool
 
@@ -113,6 +129,81 @@ type Capabilities struct {
 	Known bool
 
 	Credentials []CredentialField
+
+	// Identity is how a saved config is identified and deduped for this channel.
+	//
+	// It is data because that is precisely what differs per channel, and the handler
+	// used to hard-code it: the cross-tenant conflict check compared page_id for
+	// EVERY platform except Instagram, so LINE/Zalo/WhatsApp configs — whose page_id
+	// is empty, since those channels never use one — compared '' = '' against each
+	// other and the second merchant to connect one was told "该平台账号已连接到其他
+	// 客户". Channels whose real identity is only learned at verify time (LINE's bot
+	// userId, Zalo's OA id) leave this empty on purpose: migration 051's partial
+	// unique index uq_platform_configs_channel_identity enforces that half at the
+	// database, where the value actually exists.
+	Identity IdentityRule
+}
+
+// IdentityRule says which platform_configs column identifies one account, which
+// submitted credential fills it, and whether it has to be unique across tenants.
+type IdentityRule struct {
+	// Column is the platform_configs column holding the provider-side account id,
+	// e.g. "page_id". Empty = this channel has no save-time identity.
+	Column string
+	// Source is the submitted value that lands in Column. Empty means the request
+	// field with the same name as Column (meta: page_id, instagram:
+	// instagram_business_id, whatsapp: whatsapp_business_account_id).
+	Source string
+	// Hashed stores Sha256Hex(Source) instead of Source: bot tokens are never kept
+	// in the clear, so Telegram's identity column is bot_token_hash.
+	Hashed bool
+	// Unique rejects a save when another tenant already has an ACTIVE config whose
+	// Column holds this value.
+	Unique bool
+	// ConflictMessage is what the operator sees when Unique fails. Telegram's names
+	// the product; the shared one is the existing generic sentence.
+	ConflictMessage string
+}
+
+// Value returns the value this rule stores in Column for one save, and whether the
+// rule applies at all.
+func (r IdentityRule) Value(get func(string) string) (string, bool) {
+	if r.Column == "" {
+		return "", false
+	}
+	src := r.Source
+	if src == "" {
+		src = r.Column
+	}
+	v := strings.TrimSpace(get(src))
+	if v == "" {
+		return "", false
+	}
+	if r.Hashed {
+		v = security.Sha256Hex(v)
+	}
+	return v, true
+}
+
+// MissingRequiredCredential returns the operator-facing message for the first
+// required credential that is absent, or "" when the set is complete.
+//
+// This is the server-side half of the same declared list that draws the connect
+// form; keeping both on the table is what stops them from drifting. They already
+// had: whatsapp_business_account_id was Required here and never checked in the
+// handler, so a WhatsApp config could be saved with it blank and only fail later,
+// at send time.
+func (c Capabilities) MissingRequiredCredential(values map[string]string) string {
+	for _, f := range c.Credentials {
+		if !f.Required || strings.TrimSpace(values[f.Key]) != "" {
+			continue
+		}
+		if f.MissingMessage != "" {
+			return f.MissingMessage
+		}
+		return "该平台需要配置 " + f.Key
+	}
+	return ""
 }
 
 // Caps is the short name used by channel implementations.
@@ -123,20 +214,28 @@ type Caps = Capabilities
 // no other file needs a new `case`.
 var capabilitiesTable = map[string]Capabilities{
 	"telegram": {
-		Platform:         "telegram",
-		DisplayName:      "Telegram",
-		TextLimit:        4096,
-		TextLimitUnit:    UnitRunes,
-		Media:            MediaText | MediaAudio,
-		FlattensMarkdown: true,
-		SupportsTyping:   true,
-		SupportsButtons:  true,
-		FeedbackButtons:  true,
-		Windowless:       true,
-		ProactiveSend:    true,
-		Known:            true,
+		Platform:          "telegram",
+		DisplayName:       "Telegram",
+		TextLimit:         4096,
+		TextLimitUnit:     UnitRunes,
+		Media:             MediaText | MediaAudio,
+		FlattensMarkdown:  true,
+		SupportsTyping:    true,
+		AvatarNeedsRehost: true,
+		SupportsButtons:   true,
+		FeedbackButtons:   true,
+		Windowless:        true,
+		ProactiveSend:     true,
+		Known:             true,
 		Credentials: []CredentialField{
-			{Key: "bot_token", Label: "Bot token", Required: true, Secret: true},
+			{Key: "bot_token", Label: "Bot token", Required: true, Secret: true,
+				MissingMessage: "Telegram 必须设置 bot_token"},
+			{Key: "webhook_secret", Label: "Webhook signing secret", Required: true, Secret: true,
+				MissingMessage: "启用平台 Webhook 时必须设置签名密钥"},
+		},
+		Identity: IdentityRule{
+			Column: "bot_token_hash", Source: "bot_token", Hashed: true, Unique: true,
+			ConflictMessage: "This Telegram bot is already connected to another customer",
 		},
 	},
 	"line": {
@@ -151,7 +250,10 @@ var capabilitiesTable = map[string]Capabilities{
 		ProactiveSend:    true,
 		Known:            true,
 		Credentials: []CredentialField{
-			{Key: "access_token", Label: "Channel access token", Required: true, Secret: true},
+			{Key: "access_token", Label: "Channel access token", Required: true, Secret: true,
+				MissingMessage: "该平台需要配置 access_token"},
+			{Key: "webhook_secret", Label: "Webhook signing secret", Required: true, Secret: true,
+				MissingMessage: "启用平台 Webhook 时必须设置签名密钥"},
 		},
 	},
 	"zalo": {
@@ -165,7 +267,10 @@ var capabilitiesTable = map[string]Capabilities{
 		ProactiveSend:    true,
 		Known:            true,
 		Credentials: []CredentialField{
-			{Key: "access_token", Label: "OA access token", Required: true, Secret: true},
+			{Key: "access_token", Label: "OA access token", Required: true, Secret: true,
+				MissingMessage: "该平台需要配置 access_token"},
+			{Key: "webhook_secret", Label: "Webhook signing secret", Required: true, Secret: true,
+				MissingMessage: "启用平台 Webhook 时必须设置签名密钥"},
 		},
 	},
 	"whatsapp": {
@@ -179,8 +284,16 @@ var capabilitiesTable = map[string]Capabilities{
 		TemplateExempt:   true,
 		Known:            true,
 		Credentials: []CredentialField{
-			{Key: "access_token", Label: "System user access token", Required: true, Secret: true},
-			{Key: "whatsapp_business_account_id", Label: "WhatsApp business account id", Required: true},
+			{Key: "access_token", Label: "System user access token", Required: true, Secret: true,
+				MissingMessage: "该平台需要配置 access_token"},
+			{Key: "whatsapp_business_account_id", Label: "WhatsApp business account id", Required: true,
+				MissingMessage: "该平台需要配置 whatsapp_business_account_id"},
+			{Key: "webhook_secret", Label: "Webhook signing secret", Required: true, Secret: true,
+				MissingMessage: "启用平台 Webhook 时必须设置签名密钥"},
+		},
+		Identity: IdentityRule{
+			Column: "whatsapp_business_account_id", Unique: true,
+			ConflictMessage: "该平台账号已连接到其他客户",
 		},
 	},
 	"meta": {
@@ -196,9 +309,14 @@ var capabilitiesTable = map[string]Capabilities{
 		HumanExtension:   HumanAgentWindowDays * 24 * time.Hour,
 		Known:            true,
 		Credentials: []CredentialField{
-			{Key: "access_token", Label: "Page access token", Required: true, Secret: true},
-			{Key: "page_id", Label: "Facebook page id", Required: true},
+			{Key: "access_token", Label: "Page access token", Required: true, Secret: true,
+				MissingMessage: "该平台需要配置 access_token"},
+			{Key: "page_id", Label: "Facebook page id", Required: true,
+				MissingMessage: "该平台需要配置平台集成 ID (page_id 或 instagram_business_id)"},
+			{Key: "webhook_secret", Label: "Webhook signing secret", Required: true, Secret: true,
+				MissingMessage: "启用平台 Webhook 时必须设置签名密钥"},
 		},
+		Identity: IdentityRule{Column: "page_id", Unique: true, ConflictMessage: "该平台账号已连接到其他客户"},
 	},
 	"instagram": {
 		Platform:         "instagram",
@@ -212,9 +330,14 @@ var capabilitiesTable = map[string]Capabilities{
 		HumanExtension:   HumanAgentWindowDays * 24 * time.Hour,
 		Known:            true,
 		Credentials: []CredentialField{
-			{Key: "access_token", Label: "Page access token", Required: true, Secret: true},
-			{Key: "instagram_business_id", Label: "Instagram business account id", Required: true},
+			{Key: "access_token", Label: "Page access token", Required: true, Secret: true,
+				MissingMessage: "该平台需要配置 access_token"},
+			{Key: "instagram_business_id", Label: "Instagram business account id", Required: true,
+				MissingMessage: "该平台需要配置平台集成 ID (page_id 或 instagram_business_id)"},
+			{Key: "webhook_secret", Label: "Webhook signing secret", Required: true, Secret: true,
+				MissingMessage: "启用平台 Webhook 时必须设置签名密钥"},
 		},
+		Identity: IdentityRule{Column: "instagram_business_id", Unique: true, ConflictMessage: "该平台账号已连接到其他客户"},
 	},
 	// The website widget is served over its own SSE path, not deliverToProvider;
 	// it is listed so /platforms and the capability tests see it, but it keeps

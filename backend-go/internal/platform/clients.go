@@ -99,6 +99,31 @@ func (m *MetaClient) accountID(platform string) string {
 	return m.PageID
 }
 
+// FetchProfile returns (name, avatarURL) for one Messenger or Instagram user.
+//
+// The Graph field list differs by object type — a Page's user has
+// first_name/last_name, an Instagram account has username — and that is the
+// provider's shape, so it stays here with the rest of the Graph API knowledge
+// instead of leaking a platform branch into the orchestrator.
+func (m *MetaClient) FetchProfile(ctx context.Context, platform, userID string) (string, string) {
+	fields := "first_name,last_name,profile_pic"
+	if platform == "instagram" {
+		fields = "name,username,profile_pic"
+	}
+	v, err := m.get(ctx, "/"+userID, map[string][]string{"fields": {fields}})
+	if err != nil {
+		return "", ""
+	}
+	name, _ := v["name"].(string)
+	if name == "" {
+		first, _ := v["first_name"].(string)
+		last, _ := v["last_name"].(string)
+		name = strings.TrimSpace(first + " " + last)
+	}
+	pic, _ := v["profile_pic"].(string)
+	return name, pic
+}
+
 func (m *MetaClient) get(ctx context.Context, path string, params url.Values) (map[string]any, error) {
 	u := m.base() + path
 	if len(params) > 0 {

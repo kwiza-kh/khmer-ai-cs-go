@@ -19,6 +19,27 @@ import (
 // Platform config CRUD + verify + health
 // ============================================
 
+// credentialValue reads one submitted credential by its capability-table key, so
+// an identity rule can be declared as data instead of switched on by platform here.
+// The keys are the CredentialField.Key strings from capabilities.go.
+func (r platformConfigRequest) credentialValue(key string) string {
+	switch key {
+	case "access_token":
+		return textutil.DerefString(r.AccessToken)
+	case "bot_token":
+		return textutil.DerefString(r.BotToken)
+	case "webhook_secret":
+		return textutil.DerefString(r.WebhookSecret)
+	case "page_id":
+		return textutil.DerefString(r.PageID)
+	case "instagram_business_id":
+		return textutil.DerefString(r.InstagramBusinessID)
+	case "whatsapp_business_account_id":
+		return textutil.DerefString(r.WhatsAppBusinessAccountID)
+	}
+	return ""
+}
+
 type platformConfigRequest struct {
 	ConfigID                  *int32  `json:"config_id"`
 	Platform                  string  `json:"platform"`
@@ -161,7 +182,8 @@ func (a *App) upsertPlatformConfig(w http.ResponseWriter, r *http.Request) (any,
 	// list copied here (it used to be a switch that had to be edited for every
 	// new channel). "web" is a real channel but it is not connectable through
 	// this endpoint, so it is excluded explicitly.
-	if !platform.CapabilitiesFor(req.Platform).Known || req.Platform == "web" {
+	caps := platform.CapabilitiesFor(req.Platform)
+	if !caps.Known || req.Platform == "web" {
 		return nil, ErrBadRequest("invalid platform")
 	}
 
@@ -177,21 +199,19 @@ func (a *App) upsertPlatformConfig(w http.ResponseWriter, r *http.Request) (any,
 			&c.WebhookSecret, &c.WebhookSecretHash, &c.IsActive, &c.CreatedAt, &c.UpdatedAt); err == nil {
 			existing = &c
 		}
-	} else {
-		identity := textutil.DerefString(req.PageID)
-		if req.Platform == "instagram" {
-			identity = textutil.DerefString(req.InstagramBusinessID)
-		}
-		if identity != "" {
-			row := a.DB.QueryRow(r.Context(),
-				"SELECT "+platformConfigCols+" FROM platform_configs WHERE user_id = $1 AND platform = $2::platform_type AND page_id = $3",
-				user.UserID, req.Platform, identity)
-			var c platformConfigRow
-			if err := row.Scan(&c.ConfigID, &c.UserID, &c.Platform, &c.AccessToken, &c.PageID,
-				&c.InstagramBusinessID, &c.WhatsAppBusinessAccountID, &c.BotToken, &c.BotTokenHash,
-				&c.WebhookSecret, &c.WebhookSecretHash, &c.IsActive, &c.CreatedAt, &c.UpdatedAt); err == nil {
-				existing = &c
-			}
+	} else if identity, ok := caps.Identity.Value(req.credentialValue); ok {
+		// Which column identifies this account — and whether the value must be
+		// hashed first — is declared on the channel (capabilities.go) rather than
+		// switched on here. The column name is a compile-time constant from that
+		// table, never request input.
+		row := a.DB.QueryRow(r.Context(),
+			"SELECT "+platformConfigCols+" FROM platform_configs WHERE user_id = $1 AND platform = $2::platform_type AND "+caps.Identity.Column+" = $3",
+			user.UserID, req.Platform, identity)
+		var c platformConfigRow
+		if err := row.Scan(&c.ConfigID, &c.UserID, &c.Platform, &c.AccessToken, &c.PageID,
+			&c.InstagramBusinessID, &c.WhatsAppBusinessAccountID, &c.BotToken, &c.BotTokenHash,
+			&c.WebhookSecret, &c.WebhookSecretHash, &c.IsActive, &c.CreatedAt, &c.UpdatedAt); err == nil {
+			existing = &c
 		}
 	}
 
@@ -226,48 +246,52 @@ func (a *App) upsertPlatformConfig(w http.ResponseWriter, r *http.Request) (any,
 		isActive = existing.IsActive
 	}
 
+	// One place turns the merged values into the capability table's keys, so the
+	// validation and the identity rule read the same numbers.
+	credentialValues := map[string]string{
+		"access_token":                 access,
+		"bot_token":                    bot,
+		"webhook_secret":               secret,
+		"page_id":                      pageID,
+		"instagram_business_id":        textutil.DerefString(igID),
+		"whatsapp_business_account_id": wabaID,
+	}
+
 	// Validation when activating.
 	if isActive {
 		if secret == "" {
 			return nil, ErrBadRequest("启用平台 Webhook 时必须设置签名密钥")
 		}
-		if req.Platform != "telegram" && req.Platform != "zalo" && pageID == "" && textutil.DerefString(igID) == "" {
-			return nil, ErrBadRequest("该平台需要配置平台集成 ID (page_id 或 instagram_business_id)")
+		// Required credentials come from the capability table — the same list the
+		// console draws the connect form from — instead of a ladder of
+		// `if platform == …` written here. The two copies had already drifted:
+		// whatsapp_business_account_id was Required in the table and never checked
+		// here, so a WhatsApp config could be saved with it blank and only fail
+		// later, at send time.
+		if msg := caps.MissingRequiredCredential(credentialValues); msg != "" {
+			return nil, ErrBadRequest(msg)
 		}
-		if req.Platform == "telegram" && bot == "" {
-			return nil, ErrBadRequest("Telegram 必须设置 bot_token")
-		}
-		if req.Platform != "telegram" && access == "" {
-			return nil, ErrBadRequest("该平台需要配置 access_token")
-		}
-		// Cross-tenant conflict. A failed lookup must fail the save, not
-		// silently pass (the dedupe depends on it).
-		var conflict int64
-		if req.Platform == "instagram" {
-			if err := a.DB.QueryRow(r.Context(),
-				"SELECT COUNT(*) FROM platform_configs WHERE platform='instagram' AND is_active=true AND user_id <> $1 AND instagram_business_id = $2",
-				user.UserID, textutil.DerefString(igID)).Scan(&conflict); err != nil {
-				return nil, ErrInternal("冲突检查失败")
-			}
-		} else {
-			if err := a.DB.QueryRow(r.Context(),
-				"SELECT COUNT(*) FROM platform_configs WHERE platform = $1::platform_type AND is_active=true AND user_id <> $2 AND page_id = $3",
-				req.Platform, user.UserID, pageID).Scan(&conflict); err != nil {
-				return nil, ErrInternal("冲突检查失败")
-			}
-		}
-		if conflict > 0 {
-			return nil, ErrConflict("该平台账号已连接到其他客户")
-		}
-		if req.Platform == "telegram" && bot != "" {
-			botHash := security.Sha256Hex(bot)
-			var c int64
-			if err := a.DB.QueryRow(r.Context(),
-				"SELECT COUNT(*) FROM platform_configs WHERE platform='telegram' AND is_active=true AND bot_token_hash = $1", botHash).Scan(&c); err != nil {
-				return nil, ErrInternal("冲突检查失败")
-			}
-			if c > 0 {
-				return nil, ErrConflict("This Telegram bot is already connected to another customer")
+		// Cross-tenant conflict, keyed on the column this channel declares as its
+		// identity. A failed lookup must fail the save, not silently pass (the dedupe
+		// depends on it).
+		//
+		// The previous version compared page_id for every platform except Instagram,
+		// so LINE/Zalo/WhatsApp — whose page_id is empty because those channels never
+		// use one — compared '' = '' and the second merchant to connect one was told
+		// "该平台账号已连接到其他客户". Channels whose identity is only learned at
+		// verify time declare no rule; migration 051's partial unique index covers
+		// that half at the database.
+		if caps.Identity.Unique {
+			if value, ok := caps.Identity.Value(func(key string) string { return credentialValues[key] }); ok {
+				var conflict int64
+				if err := a.DB.QueryRow(r.Context(),
+					"SELECT COUNT(*) FROM platform_configs WHERE platform = $1::platform_type AND is_active=true AND user_id <> $2 AND "+caps.Identity.Column+" = $3",
+					req.Platform, user.UserID, value).Scan(&conflict); err != nil {
+					return nil, ErrInternal("冲突检查失败")
+				}
+				if conflict > 0 {
+					return nil, ErrConflict(caps.Identity.ConflictMessage)
+				}
 			}
 		}
 	}
@@ -386,7 +410,7 @@ func (a *App) verifyPlatformConfig(w http.ResponseWriter, r *http.Request, confi
 	// The provider-specific half lives in internal/platform/verify.go: what it takes
 	// to bring a channel on the air is channel knowledge. What is left here is the
 	// API-layer work — decrypt, persist, record, and pick a status code.
-	out, err := platform.VerifyConnection(r.Context(), c.Platform, platform.VerifyCredentials{
+	out, err := platform.VerifyConnection(r.Context(), c.Platform, platform.ChannelCredentials{
 		AccessToken:               accessToken,
 		BotToken:                  botToken,
 		WebhookSecret:             webhookSecret,
@@ -459,10 +483,25 @@ func (a *App) deactivatePlatformConfig(w http.ResponseWriter, r *http.Request, c
 		&c.WebhookSecret, &c.WebhookSecretHash, &c.IsActive, &c.CreatedAt, &c.UpdatedAt); err != nil {
 		return nil, ErrNotFound("platform configuration was not found")
 	}
-	if c.Platform == "telegram" {
-		botToken, _ := a.Sealer.Decrypt(textutil.DerefString(c.BotToken))
-		client := platform.NewTelegramClient(botToken)
-		_ = client.DeleteWebhook(r.Context())
+	// Provider-side teardown belongs to the channel implementation, not to this
+	// layer: Telegram deletes its webhook, the rest have nothing to remove. The row
+	// is disabled either way — a provider that will not co-operate must not leave a
+	// merchant unable to switch a channel off.
+	accessToken, _ := a.Sealer.Decrypt(c.AccessToken)
+	botToken, _ := a.Sealer.Decrypt(textutil.DerefString(c.BotToken))
+	detail := "Disconnected locally"
+	if ch, chErr := platform.ChannelFor(a.Pipe, c.Platform, platform.ChannelCredentials{
+		AccessToken:         accessToken,
+		BotToken:            botToken,
+		PageID:              c.PageID,
+		InstagramBusinessID: textutil.DerefString(c.InstagramBusinessID),
+	}); chErr == nil {
+		if d, dErr := ch.Disconnect(r.Context()); dErr != nil {
+			a.Logger.Warn("provider teardown failed; disabling locally anyway",
+				"config_id", configID, "platform", c.Platform, "error", dErr.Error())
+		} else if d != "" {
+			detail = d
+		}
 	}
 	tag, err := a.DB.Exec(r.Context(), "UPDATE platform_configs SET is_active = false WHERE config_id = $1 AND user_id = $2", configID, user.UserID)
 	if err != nil {
@@ -470,10 +509,6 @@ func (a *App) deactivatePlatformConfig(w http.ResponseWriter, r *http.Request, c
 	}
 	if tag.RowsAffected() == 0 {
 		return nil, ErrNotFound("platform configuration was not found")
-	}
-	detail := "Disconnected locally"
-	if c.Platform == "telegram" {
-		detail = "Disconnected; Telegram webhook removed"
 	}
 	_ = a.recordHealth(r.Context(), configID, "unknown", "", detail)
 	return map[string]string{"message": "已停用"}, nil

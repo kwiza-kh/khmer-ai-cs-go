@@ -147,17 +147,19 @@ func (p *Pipeline) stageLoadConfig(ctx context.Context, t *inboundTurn) (bool, e
 
 // resolve-profile — display name + avatar, best effort, never blocks.
 //
-// Every channel except Telegram only needs the profile when we do not already
-// have a display name; Telegram is always asked because its avatar arrives as a
-// file id that has to be downloaded and re-hosted before a browser can render it.
+// Most channels only need the profile when we do not already have a display name.
+// A channel whose Capabilities say AvatarNeedsRehost is asked every time: its
+// avatar is not a URL a browser can load (Telegram hands out a file id), so it is
+// downloaded and re-hosted, and that rehosted URL can expire.
 func (p *Pipeline) stageResolveProfile(ctx context.Context, t *inboundTurn) (bool, error) {
 	ev, cfg := t.Event, t.Config
-	if ch, chErr := NewChannel(p, cfg); chErr == nil && (ev.UserDisplayName == "" || cfg.Platform == "telegram") {
+	rehostAvatar := CapabilitiesFor(cfg.Platform).AvatarNeedsRehost
+	if ch, chErr := NewChannel(p, cfg); chErr == nil && (ev.UserDisplayName == "" || rehostAvatar) {
 		if name, pic, perr := ch.Profile(ctx, ev.PlatformUserID); perr == nil {
 			if ev.UserDisplayName == "" {
 				ev.UserDisplayName = name
 			}
-			if cfg.Platform == "telegram" {
+			if rehostAvatar {
 				if pic != "" && p.customerAvatar(ctx, cfg, ev.PlatformUserID) == "" {
 					t.Avatar = p.storeTelegramAvatar(ctx, cfg, ev.PlatformUserID, pic)
 				}

@@ -13,6 +13,16 @@ type telegramChannel struct {
 	cfg *configCred
 }
 
+// Disconnect removes this deployment's webhook, so a later reconnect (possibly
+// under another tenant) does not leave Telegram posting to a config that no longer
+// owns the bot.
+func (c *telegramChannel) Disconnect(ctx context.Context) (string, error) {
+	if err := NewTelegramClient(c.cfg.BotToken).DeleteWebhook(ctx); err != nil {
+		return "Disconnected; Telegram webhook removal failed", err
+	}
+	return "Disconnected; Telegram webhook removed", nil
+}
+
 func (c *telegramChannel) Caps() Capabilities { return CapabilitiesFor("telegram") }
 
 func (c *telegramChannel) Send(ctx context.Context, msg ChannelMessage) (string, error) {
