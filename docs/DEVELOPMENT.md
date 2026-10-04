@@ -325,6 +325,8 @@ curl -X POST "https://api.telegram.org/bot${PLATFORM_TELEGRAM_BOT_TOKEN}/setWebh
 
 ## 六、已知缺口（未实现）
 
+> 本节是 2026-09-12 的原始记录，保留原样。**最新、最全的功能与缺口清单见「十一、功能清单与缺口（2026-10-04 核对）」。**
+
 | 项 | 说明 |
 |---|---|
 | 前端 13 个零消费者导出 | `streamChat` / `streamWidgetChat` / `chatVoice` / `sendMessage` / `listSessions` 等，是现成的 API 客户端层，非缺陷 |
@@ -1131,3 +1133,159 @@ FAQ 的 `ស9`（5 条产品线）在 chunk 2 里的偏移：枚举句起点 695
    教训：**失败的用例要读，不要数**——两次误判都是因为先数了数。
 
 原始数据在服务器 `/root/khmer-deploy/arms/`（12 份 `-v` 输出）与 `handoff-confirm/`（复跑）。
+
+---
+
+## 十一、功能清单与缺口（2026-10-04 核对）
+
+本节回答“现在能卖什么、还差什么”，每一条都能在代码、路由或迁移里找到落点。核对方式见本节末。
+
+### 结论
+
+产品功能面已经完整可用（多渠道接入、AI 对话、知识库、人工协同、多租户计费字段、平台管理都在）。
+缺口不在“功能缺”，而在三层：**① 收不到钱**（无支付/订阅/自助升降级）、**② 收了钱不能翻车**（无自动备份、无预发、无外部监控、合规文本缺口）、**③ 产品化细节**（分类编辑、后端文档搜索、单机可用性）。
+
+### 已实现
+
+#### 1. 渠道接入
+
+| 能力 | 说明 |
+|---|---|
+| 渠道 | Telegram（bot + OIDC 登录）、LINE、Zalo、Meta（Messenger/Instagram）、WhatsApp（含模板消息）、网站挂件（独立 iframe + `widget-embed.js`） |
+| 渠道差异收在数据里 | `internal/platform/capabilities.go` 驱动凭据校验、跳转租户身份去重、断开连接（`Channel` 接口）；api 层与编排层零平台名分支（cac4c68） |
+| 运维支撑 | OAuth 会话（`platform_oauth_sessions`）、连接健康（`platform_connection_health`）、投递回执（`platform_delivery_receipts`）、出站队列（`platform_outbox`） |
+
+#### 2. 对话与 AI
+
+| 能力 | 说明 |
+|---|---|
+| 入站管线 | 21 个命名阶段（load-config … post-delivery），顺序有测试钉住（`TestInboundStageListIsStable`） |
+| 消息路由 | Jev 决策中间层：small_talk / 垃圾 / 问句；问句不被 small_talk、垃圾、无 KB 短路，也不因 small_talk 被豁免转人工（c80bcc2） |
+| 回复生成 | ReplyGuard 质量告警、确定性出站清理、语义回复缓存、small talk 模板、人格 persona（最具体绑定优先，迁移 067） |
+| 语言 | **回复语言跟随客户实际所写**（组件/控制台此前拿界面语言当回复语言：中文提问被整条链路按柬语处理，e520838）；三语文案 km/en/zh |
+| 多模态 | 语音转写（Gemini ASR，mime 规范化；渠道语音留言会被计费）、翻译（单条/批量） |
+| 内容安全 | 两段 gate（screen-inbound / screen-reply），KeywordStrategy + ModelStrategy；**默认关闭**，开关见 `.env`（6 个键尚未写入 `.env.example`） |
+| 成本护栏 | 平台级滚动花费预算门（`usage.Budget`，Google 免费额度分档），按租户配额门见第 6 组 |
+
+#### 3. 知识库（RAG）
+
+| 能力 | 说明 |
+|---|---|
+| 摄入 | 文本 / 文件（txt/md/csv/docx/pdf）/ URL；分块 + embedding（AI Studio 或 Vertex 可切，region 可配） |
+| 检索 | 向量 + 词法双路（任一路失败保留另一路）、高棉语分词列（迁移 058）、rerank 门控（无密集结果时跳过，不空跑） |
+| 衍生能力 | AI 编译摘要（`origin=compiled`，可配来源，`compile_status`）、矛盾检测（`kb_contradictions`）、知识缺口 + 一键草稿（`knowledgeGapDraft`）、文档质量统计（引用/点赞） |
+| 试问 | 语义问答 `ragQuery`：答案 + 来源列表（控制台知识库页顶部搜索框） |
+| 控制台体验 | 按**分类**分组（原按文件扩展名，对脚本上传的 slug 标题会把全部文档归到一个“其他”组）、AI 编译文件折叠小节（默认收起）、`?q=` 本地过滤、`?doc=` 直达预览（e3e0579 / c98e2be） |
+
+#### 4. 人工协同
+
+| 能力 | 说明 |
+|---|---|
+| 转人工 | 三条自动来源：客户关键词、AI 回复声明（多语言句式匹配 `ReplyClaimsHandoff`）、Jev 决策；建请求 + 会话转 handoff + 通知店主 |
+| 队列 | `human_handoff_requests`（pending/assigned/resolved；每会话只允许一条开放，唯一部分索引），接管/指派/解决/关闭，SLA 策略与违约扫描 |
+| 协作 | 内部备注（`message_notes`）、话术库（`canned_responses`）、宏（`macros`）、客服团队（`agent_teams`）、会话指派（`session_assignments`） |
+
+#### 5. 收件箱（统一工作台）
+
+| 能力 | 说明 |
+|---|---|
+| 列表 | 服务端搜索（客户名/平台 ID/客服/标题/消息内容）、平台筛选、分页、归档、批量 |
+| 会话 | 文本/媒体/语音/附件、自动翻译与草稿翻译、回复（文本/媒体/按钮/WhatsApp 模板）、消息反馈 |
+| 未读 | 列表小圆点（`LS_LASTSEEN` 时间戳）＋ 记录内「新消息」分隔（`LS_LASTSEENMSG` 消息 id 快照）＋ 铃铛图标（93edb38） |
+| AI 辅助 | 客户 360（档案/备注/历史）、AI 分析面板（摘要、话术建议、知识引用）、copilot 建议 |
+| 全局搜索 | 顶栏同时搜**会话 + 知识库文档**，分区下拉；Enter 保留原来的 `/inbox?q=` 行为（c98e2be） |
+
+#### 6. 计费与配额
+
+| 能力 | 说明 |
+|---|---|
+| 数据模型 | `tenant_billing`：plan（free/pro/enterprise）、monthly_message_quota、monthly_doc_quota、messages_used、docs_used、cycle_start/end（30 天自动滚动） |
+| 文档配额 | `consumeDocQuota`：单条条件 UPDATE 的原子门禁，三个上传入口都走；enterprise 计量不限量 |
+| 消息配额 | `usage.ConsumeMessageQuota`（87534df）：渠道、网站组件、控制台 `/chat` 三入口都计入；超额时渠道/组件回转人工话术并建人工请求（`quota-notice` 标注），控制台返回 402 |
+| 对账 | `cmd/billingreconcile`：按租户账期重算计数（默认 dry-run，`-apply` 写入），并列出没有 billing 行的租户 |
+| 套餐变更 | 平台管理 `setTenantPlan` → `applyPlan` 一并写入配额（free 500/20、pro 5000/500、enterprise 不限） |
+| 租户视图 | `GET /billing` + 控制台计费卡（用量条、账期） |
+
+#### 7. 平台与安全
+
+| 能力 | 说明 |
+|---|---|
+| 权限 | RBAC（`roles` / `user_roles`）、平台管理员与租户管理员分层 |
+| 安全 | TOTP 2FA（`user_totp`）、SSO（Google / Telegram OIDC）、API keys、审计日志（`audit_logs`）、数据删除请求（`deletion_requests` + 隐私页/删除状态页） |
+| 集成 | Webhook 订阅与投递（`webhook_subscriptions` / `webhook_deliveries`）、定时任务（`scheduled_jobs`，迁移 066） |
+| 平台管理台 | 租户列表（用量/配额/套餐/会话数）、平台分析、花费预算视图、改套餐 |
+
+#### 8. 增长与运营
+
+| 能力 | 说明 |
+|---|---|
+| 营销 | 活动（`marketing_campaigns`）、FA 建议（`faq_suggestions`）、话术与人格管理 |
+| 通知 | 站内通知（`notifications`，阅读状态/未读数）+ Telegram 推送（`telegram_notify_settings`，按事件开关、消息节流） |
+| 质量 | 回复质量告警（ReplyGuard 落库）、引用/点赞统计、知识缺口沉淀 |
+
+#### 9. 运维与交付
+
+| 能力 | 说明 |
+|---|---|
+| 运行形态 | systemd 双服务（后端 :8081 / 前端 standalone :3001），nginx + Cloudflare，`/ready` 健康探针（含 db/redis） |
+| CI | `.github/workflows/ci.yml`：后端 build/vet/test + 前端构建；pre-commit（gofmt、go vet、迁移镜像、行尾、大文件） |
+| SQL 门禁 | `internal/sqlcheck`：把源码里每条 SQL 拿生产 schema PREPARE（只解析、回滚事务）；必须 `SQLCHECK_REQUIRED=1` 否则 skip |
+| 部署手册 | `deploy-khmer-ai-cs/SKILL.md`（step 0 版本戳核对、交叉编译、迁移、备份-换入、回滚），含`frontend-backup-*` / `server-go.bak-*` 回滚点 |
+| 备份 | **手动** dump（见缺口）；本次运维用 dump 恢复验证过可用性 |
+
+### 未实现 / 缺口
+
+#### P0 —— 不收钱就不可能盈利
+
+| 缺口 | 现状与影响 |
+|---|---|
+| 支付与订阅 | 全库无支付网关（ABA PayWay / KHQR / Wing / Bakong / Stripe 均无）、无账单/发票、无自助升降级、无定价页。能做的只有平台管理后台手改套餐 |
+| 试用与欠费生命周期 | 无 `trial_ends_at` / `suspended_at`，无到期降级/停服/催缴；注册与 SSO 均自动开通租户并给 free 配额 |
+| 按租户成本护栏 | 只有平台级滚动预算门；缺按租户日/月上限与异常突增告警（单租户跑飞会让全体 503） |
+
+#### P1 —— 收了钱不能翻车
+
+| 缺口 | 现状与影响 |
+|---|---|
+| 自动备份与恢复演练 | 服务器 `crontab` 为空；`/root/db-backups/` 里的 dump 是人工执行的；无定期恢复演练 |
+| 预发/灰度 | 无 staging，直接发生产（有回滚点，但无预发验证） |
+| 外部监控 | 无外部 uptime 探针；无延迟/错误率阈值告警（已有的是内部 Telegram 告警：预算、配额、渠道） |
+| 内容安全默认值 | `SAFETY_ENABLED=0`，且 6 个 `SAFETY_*` 开关未写入 `.env.example`；B2B 签约通常要求默认开 |
+| 合规文本 | 已有隐私政策 + 数据删除流程；**缺服务条款 / DPA** |
+| Khmer 文案 | 新增文案（含本次 4 个 i18n 键）需母语复核——这是目标市场的第一印象 |
+| 渠道可用性 | Meta 配置 4 自 2026-10-03 13:22 起 401，待重新授权 Page（运行时问题，非代码缺陷） |
+
+#### P2 —— 影响成交与续费的产品化
+
+| 缺口 | 现状与影响 |
+|---|---|
+| 知识库分类编辑 | 后端 `category` / `tags` 已支持，控制台无输入框 → 42 篇文档全在一个分类下，按分类分组只能显示一组 |
+| 文档内容搜索 | 后端 `GET /knowledge` 无 `q` 参数，现为前端本地过滤（几十篇够用；上千篇需后端搜索 + SQL 门禁） |
+| 去重 | 有矛盾检测，无重复/近似重复检测 |
+| 可用性 | 单机单实例（无温备/异地），且与 `wms.service` 同机 |
+| 评测闭环 | `rageval` 语料已随测试租户删除（当前跑不动）；reply-cache 误命中率未量测 |
+| 控制台语音提示 | `/chat/voice` 前端默认发 `language=km` 当 ASR 提示，应留空自动判定（与 `TranscribeAudio` 注释的警告相反） |
+| RLS 兜底 | 迁移 061 已建策略，但生产代码未设 `app.user_id` GUC → 策略 fail-open，属于未接线脚手架（见第十节） |
+| 交付卫生 | 前端构建若在含未提交文件的工作树上执行，产物会带未入库代码——本次用按路径 `git stash` 把他人 WIP 排除在构建之外 |
+| 单点 | 平台 Telegram bot token 泄漏影响所有商家 |
+
+### 2026-10-04 本次已上线（按提交）
+
+| 提交 | 内容 |
+|---|---|
+| `87534df` | 消息配额硬拦截（`usage.ConsumeMessageQuota` 原子门禁；渠道/组件/控制台三入口；超额转人工 + `quota-notice`；DB 故障让事件重试）+ `cmd/billingreconcile` 对账工具 + canned 回复不再被 reply_cache 覆盖 |
+| `e520838` | 回复语言跟随客户实际所写（界面语言降为兜底） |
+| `cac4c68` | 能力表接管凭据校验与跨租户去重（修掉 WhatsApp 必填项漏校验、LINE/Zalo 误判冲突） |
+| `c80bcc2` | 问句不再被 small_talk/junk 短路，也不再因 small_talk 被豁免转人工 |
+| `d49cd32` | 全库审计去重 + 实测缺陷修复（ASR mime 规范化、高棉语转接句式、rag rerank 门控等） |
+| `c98e2be` | 前端：顶栏搜索同时搜会话与知识库（+ `?q=` / `?doc=`） |
+| `e3e0579` | 前端：文档库按分类分组 + AI 编译文件折叠 |
+| `93edb38` / `4455b47` | 前端：新消息标记铃铛图标 / AI 头像与客户真实头像 |
+| 数据侧 | 计数器对账（docs 0→42、msgs 15→64）；生产库仅 admin 与一个租户；知识库 42 篇 / 602 分块 |
+
+### 怎么核对本清单
+
+1. 路由与能力：`grep -oE 'Handle[f]?\\("(GET|POST|PUT|DELETE) /api/v1/[a-z0-9/{}_-]+' internal/api/router.go` 按前缀归类；迁移看 `internal/migrations/migrations/`（当前 67 个）。
+2. SQL 类改动：`SQLCHECK_REQUIRED=1 DATABASE_URL=<隧道> go test -count=1 ./internal/sqlcheck/`（对生产 schema PREPARE，未设 DSN 会静默 skip）。
+3. 计费数字：`go run ./cmd/billingreconcile`（dry-run），`0 mismatch` 才算计数器与真实行数一致。
+4. 服务与版本：`curl -s http://127.0.0.1:8081/ready`、`cat /opt/khmer-ai-cs/frontend/.next/BUILD_ID`。
