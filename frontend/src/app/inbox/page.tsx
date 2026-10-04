@@ -30,11 +30,12 @@ import {
 	Image as ImageIcon, ListChecks, FileCode2, Plus, Trash2, Paperclip, MessageSquare, Volume2,
 	AlertTriangle, RefreshCw, ChevronDown, ChevronUp, PanelRight, ChevronRight, Phone, Mail, ChevronLeft, Pencil,
 	Archive, ArchiveRestore,
-	Languages, Check, AudioLines, Headset, Bot,
+	Languages, Check, AudioLines, Headset,
 } from "lucide-react";
 import { PLATFORM_ICONS, PLATFORM_BRAND_COLORS } from "@/components/platform-icons";
 import { Message, MessageAvatar, MessageContent, MessageFooter, MessageGroup, MessageHeader } from "@/components/ui/message";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { RelayChatLogo } from "@/components/relaychat-logo";
 import VoiceMessageBubble from "@/components/ui/voice-message-bubble";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -1499,12 +1500,17 @@ function ConversationDetail({
                       <Message align={isUser ? "end" : "start"}>
                         <MessageAvatar className="size-7 self-end">
                           <Avatar className="size-7">
+                            {/* The customer's own picture when the channel gave us one. The
+                                fallback carries the identity instead: the RelayChat mark for
+                                the AI, a headset for a human agent, and AvatarFallback already
+                                covers a picture that fails to load (no manual onError needed). */}
+                            {isUser && item.avatar_url ? <AvatarImage src={item.avatar_url} alt="" /> : null}
                             <AvatarFallback className={cn(
-                              role === "user" ? "bg-primary/10 text-primary"
+                              isUser ? "bg-primary/10 text-primary"
                                 : role === "agent" ? "bg-warning/15 text-foreground"
-                                : "bg-muted text-muted-foreground",
+                                : "bg-brand/10 text-brand",
                             )}>
-                              {role === "user" ? <UserCircle2 className="size-4" /> : role === "agent" ? <Headset className="size-3.5" /> : <Bot className="size-3.5" />}
+                              {isUser ? <UserCircle2 className="size-4" /> : role === "agent" ? <Headset className="size-3.5" /> : <RelayChatLogo className="size-3.5" />}
                             </AvatarFallback>
                           </Avatar>
                         </MessageAvatar>
@@ -2365,8 +2371,8 @@ function AiSidePanel({ item, lastUserMessageId, summaryData, summaryLoading, onR
     <aside className="hidden lg:flex w-80 shrink-0 flex-col border-l border-border bg-muted/20 min-h-0" aria-label="Session details">
       <div className="px-3.5 py-3 border-b border-border flex items-center justify-between gap-2 bg-card/60">
         <p className="flex items-center gap-2 text-[13px] font-semibold tracking-tight">
-          <span className="flex size-5 items-center justify-center rounded-md bg-primary/10">
-            <Sparkles className="size-3 text-primary" />
+          <span className="flex size-5 items-center justify-center rounded-md bg-brand/10">
+            <RelayChatLogo className="size-3.5 text-brand" />
           </span>
           {t("inbox.aiPanel")}
         </p>
@@ -2458,9 +2464,12 @@ function AiSidePanel({ item, lastUserMessageId, summaryData, summaryLoading, onR
           ) : (
             <div className="space-y-3">
               <div className="flex items-center gap-2.5 rounded-lg border border-border bg-background/70 p-2.5">
-                <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-primary/10 text-sm font-semibold text-primary">
-                  {(c360?.profile?.display_name || profile.display_name || "?").trim().charAt(0).toUpperCase()}
-                </span>
+                <Avatar className="size-9 shrink-0">
+                  {item.avatar_url ? <AvatarImage src={item.avatar_url} alt="" /> : null}
+                  <AvatarFallback className="bg-primary/10 text-sm font-semibold text-primary">
+                    {(c360?.profile?.display_name || profile.display_name || "?").trim().charAt(0).toUpperCase()}
+                  </AvatarFallback>
+                </Avatar>
                 <div className="min-w-0">
                   <p className="truncate text-sm font-semibold text-foreground">{c360?.profile?.display_name || profile.display_name}</p>
                   <p className="truncate text-[11px] text-muted-foreground">{PLATFORM_LABELS[profile.platform] || profile.platform} · {profile.platform_user_id}</p>

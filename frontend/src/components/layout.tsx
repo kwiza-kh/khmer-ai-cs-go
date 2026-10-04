@@ -8,6 +8,7 @@ import { motion } from "motion/react";
 import { useAuth } from "@/lib/auth-client";
 import { listHumanHandoffRequests } from "@/lib/api";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { RelayChatLogo } from "@/components/relaychat-logo";
 import { cn } from "@/lib/utils";
 import {
   BookOpen, Globe, Users, Settings, LogOut, Menu, Search,
@@ -114,20 +115,13 @@ const BREADCRUMBS: { match: string; section: string; page: string }[] = [
   { match: "/help", section: "nav.preferences", page: "nav.help" },
 ];
 
-/** Brand mark + wordmark. `gid` keeps the SVG gradient id unique when the mark renders twice (header + sidebar). */
-function Brand({ gid, iconOnly = false }: { gid: string; iconOnly?: boolean }) {
+/** Brand mark + wordmark. The mark renders twice (sidebar + mobile header); RelayChatLogo scopes its gradient id per instance. */
+function Brand({ iconOnly = false }: { iconOnly?: boolean }) {
   return (
     <Link href="/inbox" className="group flex items-center gap-2">
       <span className="relative flex size-7 shrink-0 items-center justify-center">
         <span aria-hidden className="absolute inset-0 rounded-lg bg-brand/30 blur-md opacity-60 transition-opacity group-hover:opacity-100" />
-        <svg viewBox="0 0 24 24" className="relative size-6 transition-transform duration-300 group-hover:scale-105 group-hover:rotate-3" fill="none" aria-hidden>
-          <path d="M12 2l2.4 7.6L22 12l-7.6 2.4L12 22l-2.4-7.6L2 12l7.6-2.4L12 2z" fill={`url(#${gid})`} />
-          <defs>
-            <linearGradient id={gid} x1="0" y1="0" x2="24" y2="24">
-              <stop offset="0" stopColor="#8b5cf6" /><stop offset="1" stopColor="#4f46e5" />
-            </linearGradient>
-          </defs>
-        </svg>
+        <RelayChatLogo gradient className="relative size-6 transition-transform duration-300 group-hover:scale-105 group-hover:rotate-3" />
       </span>
       {!iconOnly && <span className="text-[15px] font-semibold tracking-tight text-foreground">RelayChat</span>}
     </Link>
@@ -205,7 +199,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           </button>
           {/* Icon-only brand on small screens — the full brand lives in the sidebar. */}
           <div className="lg:hidden">
-            <Brand gid="qg-top" iconOnly />
+            <Brand iconOnly />
           </div>
           {/* Breadcrumb (desktop) — section › page, mirroring the reference. */}
           {crumb && (
@@ -252,7 +246,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           )}>
             {/* Brand zone — same height as the top bar for a continuous header line */}
             <div className="flex h-14 shrink-0 items-center border-b border-sidebar-border/60 px-4">
-              <Brand gid="qg-side" />
+              <Brand />
             </div>
             <nav className="flex-1 overflow-auto px-3 py-3">
               <NavSection label={t("nav.groupWorkspace")}>
