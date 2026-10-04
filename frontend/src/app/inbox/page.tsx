@@ -30,7 +30,7 @@ import {
 	Image as ImageIcon, ListChecks, FileCode2, Plus, Trash2, Paperclip, MessageSquare, Volume2,
 	AlertTriangle, RefreshCw, ChevronDown, ChevronUp, PanelRight, ChevronRight, Phone, Mail, ChevronLeft, Pencil,
 	Archive, ArchiveRestore,
-	Languages, Check, AudioLines, Headset,
+	Languages, Check, AudioLines, Headset, BellRing,
 } from "lucide-react";
 import { PLATFORM_ICONS, PLATFORM_BRAND_COLORS } from "@/components/platform-icons";
 import { Message, MessageAvatar, MessageContent, MessageFooter, MessageGroup, MessageHeader } from "@/components/ui/message";
@@ -1492,7 +1492,10 @@ function ConversationDetail({
                     {showUnread && (
                       <div className="flex items-center gap-2 self-stretch">
                         <span className="h-px flex-1 bg-primary/40" />
-                        <span className="text-[10px] font-medium text-primary">{t("inbox.newMessages")}</span>
+                        <span className="flex items-center gap-1 text-[10px] font-medium text-primary">
+                          <BellRing className="size-3" aria-hidden />
+                          {t("inbox.newMessages")}
+                        </span>
                         <span className="h-px flex-1 bg-primary/40" />
                       </div>
                     )}
