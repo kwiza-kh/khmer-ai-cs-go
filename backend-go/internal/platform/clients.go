@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"khmer-ai-cs-go/internal/rag"
+	"khmer-ai-cs-go/internal/textutil"
 )
 
 // unwrapURLErr drops the *url.Error wrapper, whose message embeds the full
@@ -353,7 +354,7 @@ func buildMetaMessageBodyInner(req *SendRequest) map[string]any {
 			"template": map[string]any{
 				"name": req.TemplateName,
 				"language": map[string]any{
-					"code": firstNonEmpty(req.TemplateLanguage, "en"),
+					"code": textutil.FirstNonEmpty(req.TemplateLanguage, "en"),
 				},
 				"components": []map[string]any{{
 					"type": "body", "parameters": params,
@@ -382,7 +383,7 @@ func buildWhatsAppBody(req *SendRequest) map[string]any {
 		base["type"] = "template"
 		base["template"] = map[string]any{
 			"name":     req.TemplateName,
-			"language": map[string]any{"code": firstNonEmpty(req.TemplateLanguage, "en")},
+			"language": map[string]any{"code": textutil.FirstNonEmpty(req.TemplateLanguage, "en")},
 			"components": []map[string]any{{
 				"type": "body", "parameters": params,
 			}},
@@ -411,7 +412,7 @@ func buildWhatsAppBody(req *SendRequest) map[string]any {
 			btns = append(btns, map[string]any{
 				"type": "reply",
 				"reply": map[string]any{
-					"id":    firstNonEmpty(b[1], string(title)),
+					"id":    textutil.FirstNonEmpty(b[1], string(title)),
 					"title": string(title),
 				},
 			})
@@ -438,15 +439,6 @@ func buildWhatsAppBody(req *SendRequest) map[string]any {
 func metaMessageTag(req *SendRequest) string {
 	if req.Tag != "" && (req.Platform == "meta" || req.Platform == "instagram") {
 		return req.Tag
-	}
-	return ""
-}
-
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
 	}
 	return ""
 }

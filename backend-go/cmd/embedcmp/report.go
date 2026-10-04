@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"khmer-ai-cs-go/internal/textutil"
 )
 
 // reportInput is everything the report needs, gathered by main. It is a plain
@@ -44,28 +46,6 @@ type reportInput struct {
 	Titles      map[int32]string
 	EmptyExpect []int
 	Unmatched   []int
-}
-
-// oneLine makes arbitrary text safe to print on one table row: control
-// characters (a query in the eval set may carry newlines) become spaces, and the
-// result is truncated to max runes — counted in RUNES, not bytes, so truncating
-// a Khmer query cannot split a code point and print mojibake.
-func oneLine(s string, max int) string {
-	cleaned := strings.Map(func(r rune) rune {
-		if r == '\n' || r == '\r' || r == '\t' || r < 0x20 {
-			return ' '
-		}
-		return r
-	}, s)
-	cleaned = strings.Join(strings.Fields(cleaned), " ")
-	runes := []rune(cleaned)
-	if max > 0 && len(runes) > max {
-		if max == 1 {
-			return "…"
-		}
-		return string(runes[:max-1]) + "…"
-	}
-	return cleaned
 }
 
 // writeReport prints the run header, the two summaries and the diff table.
@@ -165,7 +145,7 @@ func printDiffs(w io.Writer, in reportInput) {
 			fmt.Sprintf("%s → %s", rankLabel(d.Case.RankA), rankLabel(d.Case.RankB)),
 			fmt.Sprintf("%.3f → %.3f", reciprocalRank(d.Case.RankA), reciprocalRank(d.Case.RankB)),
 			fmt.Sprintf("%d→%d", d.Case.TopA, d.Case.TopB),
-			oneLine(d.Case.Query, 64))
+			textutil.OneLine(d.Case.Query, 64))
 	}
 	p("")
 
@@ -188,7 +168,7 @@ func printDiffs(w io.Writer, in reportInput) {
 		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 		p("  documents named above (top1 A→B):")
 		for _, id := range ids {
-			p("    %-6d %s", id, oneLine(in.Titles[id], 72))
+			p("    %-6d %s", id, textutil.OneLine(in.Titles[id], 72))
 		}
 		p("")
 	}

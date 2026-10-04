@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"khmer-ai-cs-go/internal/gemini"
+	"khmer-ai-cs-go/internal/textutil"
 )
 
 // translateTargets — languages the copilot can render a message into. Names
@@ -136,7 +137,7 @@ func (a *App) translateBatch(w http.ResponseWriter, r *http.Request) (any, error
 	// Resolve the target once (from the first non-empty text when unset).
 	target := req.Target
 	if _, ok := translateTargets[target]; !ok {
-		target = resolveTranslateTarget(firstNonEmptyText(req.Texts), "")
+		target = resolveTranslateTarget(textutil.FirstNonEmpty(req.Texts...), "")
 	}
 
 	out := make([]string, len(req.Texts))
@@ -247,13 +248,4 @@ func parseTranslationArray(reply string, want int) []string {
 		return lines
 	}
 	return nil
-}
-
-func firstNonEmptyText(items []string) string {
-	for _, s := range items {
-		if strings.TrimSpace(s) != "" {
-			return s
-		}
-	}
-	return ""
 }

@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"khmer-ai-cs-go/internal/textutil"
 	"khmer-ai-cs-go/internal/typesafe"
 )
 
@@ -88,7 +89,7 @@ func (h *jevHealth) JudgeFailed(err error) {
 	detail := "Jev 连续 " + strconv.Itoa(fails) + " 次调用失败，客户回合正在静默回落到快模型" +
 		"（实测 Jev 354ms vs 快模型 3234ms，且快模型过度升级）。"
 	if err != nil {
-		detail += "\n最后错误: " + truncateStr(err.Error(), 200)
+		detail += "\n最后错误: " + textutil.Ellipsize(err.Error(), 200)
 	}
 	h.alert("jev-down", "Jev 不可用", detail)
 }

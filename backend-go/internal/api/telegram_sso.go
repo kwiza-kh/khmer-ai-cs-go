@@ -23,6 +23,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"khmer-ai-cs-go/internal/textutil"
 )
 
 const (
@@ -355,7 +357,7 @@ func (a *App) findOrCreateTelegramUser(ctx context.Context, c *telegramClaims) (
 		err = a.DB.QueryRow(ctx,
 			"INSERT INTO users (username, email, display_name, avatar_url, phone, telegram_sub, role, is_active) "+
 				"VALUES ($1,NULL,$2,$3,$4,$5,'user',true) RETURNING user_id",
-			candidate, nullIfEmpty(c.Name), nullIfEmpty(c.Picture), nullIfEmpty(c.Phone), c.Sub).Scan(&userID)
+			candidate, textutil.NullIfEmpty(c.Name), textutil.NullIfEmpty(c.Picture), textutil.NullIfEmpty(c.Phone), c.Sub).Scan(&userID)
 		if err == nil {
 			return userID, candidate, "user", true, nil
 		}
@@ -379,12 +381,6 @@ func (a *App) updateTelegramProfile(ctx context.Context, userID int32, c *telegr
 
 // nullIfEmpty maps "" to SQL NULL so an absent optional claim does not store a
 // misleading empty string.
-func nullIfEmpty(s string) any {
-	if s == "" {
-		return nil
-	}
-	return s
-}
 
 // telegramRedirectError sends the browser back to the login page with a reason.
 func (a *App) telegramRedirectError(w http.ResponseWriter, r *http.Request, reason string) {

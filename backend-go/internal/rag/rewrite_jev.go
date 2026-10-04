@@ -6,7 +6,9 @@ import (
 	"strings"
 	"time"
 
+	"khmer-ai-cs-go/internal/config"
 	"khmer-ai-cs-go/internal/gemini"
+	"khmer-ai-cs-go/internal/textutil"
 	"khmer-ai-cs-go/internal/typesafe"
 )
 
@@ -16,7 +18,7 @@ import (
 // expiry the caller falls back to the legacy Gemini rewrite. The default sits
 // above the production server's measured 0.8-2.1s spread to api.typesafe.ai;
 // tunable so ops can re-measure from the host without a rebuild.
-var jevRewriteBudget = time.Duration(envI("JEV_REWRITE_BUDGET_MS", 3000)) * time.Millisecond
+var jevRewriteBudget = config.EnvMillis("JEV_REWRITE_BUDGET_MS", 3*time.Second)
 
 // rewriteQueryJev resolves follow-up phrasing into a searchable query without
 // free-text generation: code builds the candidates (raw message; previous
@@ -44,15 +46,15 @@ func (s *Service) rewriteQueryJev(ctx context.Context, message string, history [
 	if len(candidates) == 1 {
 		return nil, true
 	}
-	state := map[string]any{"customer_message": truncateRunes(message, 300), "candidates": candidates}
+	state := map[string]any{"customer_message": textutil.Ellipsize(message, 300), "candidates": candidates}
 	if prev := lastCustomerTurn(history); prev != "" {
-		state["previous_customer_message"] = truncateRunes(prev, 300)
+		state["previous_customer_message"] = textutil.Ellipsize(prev, 300)
 	}
 	criteria := make(map[string]string, len(candidates))
 	questions := map[string]typesafe.Question{}
 	for i, c := range candidates {
 		state[fmt.Sprintf("q%d", i)] = c
-		criteria[fmt.Sprintf("q%d", i)] = fmt.Sprintf("Candidate: %s", truncateRunes(c, 120))
+		criteria[fmt.Sprintf("q%d", i)] = fmt.Sprintf("Candidate: %s", textutil.Ellipsize(c, 120))
 	}
 	questions["pick"] = typesafe.Choice(
 		"Which candidate is the best search query for finding the answer to `customer_message` in this store's "+

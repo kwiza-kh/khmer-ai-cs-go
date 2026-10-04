@@ -12,6 +12,7 @@ import (
 
 	"khmer-ai-cs-go/internal/platform"
 	"khmer-ai-cs-go/internal/security"
+	"khmer-ai-cs-go/internal/textutil"
 )
 
 // ============================================
@@ -177,9 +178,9 @@ func (a *App) upsertPlatformConfig(w http.ResponseWriter, r *http.Request) (any,
 			existing = &c
 		}
 	} else {
-		identity := derefStr(req.PageID)
+		identity := textutil.DerefString(req.PageID)
 		if req.Platform == "instagram" {
-			identity = derefStr(req.InstagramBusinessID)
+			identity = textutil.DerefString(req.InstagramBusinessID)
 		}
 		if identity != "" {
 			row := a.DB.QueryRow(r.Context(),
@@ -198,13 +199,13 @@ func (a *App) upsertPlatformConfig(w http.ResponseWriter, r *http.Request) (any,
 	var decAccess, decBot, decSecret string
 	if existing != nil {
 		decAccess, _ = a.Sealer.Decrypt(existing.AccessToken)
-		decBot, _ = a.Sealer.Decrypt(derefStr(existing.BotToken))
-		decSecret, _ = a.Sealer.Decrypt(derefStr(existing.WebhookSecret))
+		decBot, _ = a.Sealer.Decrypt(textutil.DerefString(existing.BotToken))
+		decSecret, _ = a.Sealer.Decrypt(textutil.DerefString(existing.WebhookSecret))
 	}
 	access := orDefault(req.AccessToken, decAccess)
 	bot := orDefault(req.BotToken, decBot)
 	secret := orDefault(req.WebhookSecret, decSecret)
-	pageID := derefStr(req.PageID)
+	pageID := textutil.DerefString(req.PageID)
 	if pageID == "" && existing != nil {
 		pageID = existing.PageID
 	}
@@ -230,7 +231,7 @@ func (a *App) upsertPlatformConfig(w http.ResponseWriter, r *http.Request) (any,
 		if secret == "" {
 			return nil, ErrBadRequest("启用平台 Webhook 时必须设置签名密钥")
 		}
-		if req.Platform != "telegram" && req.Platform != "zalo" && pageID == "" && derefStr(igID) == "" {
+		if req.Platform != "telegram" && req.Platform != "zalo" && pageID == "" && textutil.DerefString(igID) == "" {
 			return nil, ErrBadRequest("该平台需要配置平台集成 ID (page_id 或 instagram_business_id)")
 		}
 		if req.Platform == "telegram" && bot == "" {
@@ -245,7 +246,7 @@ func (a *App) upsertPlatformConfig(w http.ResponseWriter, r *http.Request) (any,
 		if req.Platform == "instagram" {
 			if err := a.DB.QueryRow(r.Context(),
 				"SELECT COUNT(*) FROM platform_configs WHERE platform='instagram' AND is_active=true AND user_id <> $1 AND instagram_business_id = $2",
-				user.UserID, derefStr(igID)).Scan(&conflict); err != nil {
+				user.UserID, textutil.DerefString(igID)).Scan(&conflict); err != nil {
 				return nil, ErrInternal("冲突检查失败")
 			}
 		} else {
@@ -329,11 +330,6 @@ func (a *App) recordHealth(ctx context.Context, configID int32, status, accountN
 	return err
 }
 
-// telegramWebhookURL builds the provider webhook URL from PUBLIC_API_URL.
-func (a *App) telegramWebhookURL() (string, error) {
-	return a.providerWebhookURL("telegram")
-}
-
 // providerWebhookURL builds the public webhook endpoint for a platform.
 func (a *App) providerWebhookURL(platform string) (string, error) {
 	raw := strings.TrimRight(strings.TrimSpace(a.Cfg.Server.PublicAPIURL), "/")
@@ -383,94 +379,59 @@ func (a *App) verifyPlatformConfig(w http.ResponseWriter, r *http.Request, confi
 	if !c.IsActive {
 		return nil, ErrConflict("activate this platform before testing the connection")
 	}
-	botToken, _ := a.Sealer.Decrypt(derefStr(c.BotToken))
-	webhookSecret, _ := a.Sealer.Decrypt(derefStr(c.WebhookSecret))
+	botToken, _ := a.Sealer.Decrypt(textutil.DerefString(c.BotToken))
+	webhookSecret, _ := a.Sealer.Decrypt(textutil.DerefString(c.WebhookSecret))
+	accessToken, _ := a.Sealer.Decrypt(c.AccessToken)
 
-	switch c.Platform {
-	case "telegram":
-		client := platform.NewTelegramClient(botToken)
-		botID, username, firstName, err := client.GetMe(r.Context())
-		if err != nil {
+	// The provider-specific half lives in internal/platform/verify.go: what it takes
+	// to bring a channel on the air is channel knowledge. What is left here is the
+	// API-layer work — decrypt, persist, record, and pick a status code.
+	out, err := platform.VerifyConnection(r.Context(), c.Platform, platform.VerifyCredentials{
+		AccessToken:               accessToken,
+		BotToken:                  botToken,
+		WebhookSecret:             webhookSecret,
+		PageID:                    c.PageID,
+		InstagramBusinessID:       textutil.DerefString(c.InstagramBusinessID),
+		WhatsAppBusinessAccountID: textutil.DerefString(c.WhatsAppBusinessAccountID),
+	}, platform.VerifyParams{
+		GraphAPIVersion: a.Cfg.Meta.GraphAPIVersion,
+		WebhookURL:      a.providerWebhookURL,
+	})
+	if err != nil {
+		var ve *platform.VerifyError
+		switch {
+		case errors.As(err, &ve) && ve.Stage == platform.VerifyServerMisconfigured:
+			// Our own PUBLIC_API_URL is wrong. Not a provider problem, so it is
+			// not recorded as a connection failure.
+			return nil, ErrInternal(ve.Msg)
+		case errors.As(err, &ve) && ve.Stage == platform.VerifyWebhookRegistrationFailed:
+			// The credential verified but the webhook write did not land. The
+			// operator needs the provider's reason, and the config is not marked
+			// connected — but this is not a token to go and re-issue.
+			return nil, &ApiError{http.StatusBadGateway, ve.Msg}
+		case errors.As(err, &ve) && ve.Stage == platform.VerifyUnsupportedPlatform:
+			return nil, ErrBadRequest(ve.Msg)
+		default:
+			// The provider refused the credential. Record it first: the console
+			// counts status='error' rows to warn "渠道连接异常", and this is the
+			// only writer of that value.
 			return nil, a.connectionCheckFailed(r.Context(), configID, err)
 		}
-		if botID == 0 {
-			return nil, a.connectionCheckFailed(r.Context(), configID, errors.New("invalid bot token"))
-		}
-		webhookURL, err := a.telegramWebhookURL()
-		if err != nil {
-			return nil, ErrInternal(err.Error())
-		}
-		infoURL, _ := client.GetWebhookInfo(r.Context())
-		if infoURL != webhookURL {
-			if err := client.SetWebhook(r.Context(), webhookURL, webhookSecret); err != nil {
-				return nil, &ApiError{http.StatusBadGateway, "register Telegram webhook: " + err.Error()}
-			}
-		}
-		account := firstName
-		if username != "" {
-			account = "@" + username
-		}
-		_ = a.recordHealth(r.Context(), configID, "connected", account, "Webhook registered via Telegram Bot API")
-		return map[string]any{"config_id": configID, "health": map[string]any{"config_id": configID, "status": "connected", "account_name": account}, "bot_username": username, "bot_first_name": firstName}, nil
-	case "meta", "instagram":
-		access, _ := a.Sealer.Decrypt(c.AccessToken)
-		client := platform.NewMetaClient(access, c.PageID, derefStr(c.InstagramBusinessID), a.Cfg.Meta.GraphAPIVersion)
-		name, err := client.VerifyConnection(r.Context(), c.Platform)
-		if err != nil {
-			return nil, a.connectionCheckFailed(r.Context(), configID, err)
-		}
-		_ = a.recordHealth(r.Context(), configID, "connected", name, "Connection verified via Meta Graph API")
-		return map[string]any{"config_id": configID, "health": map[string]any{"config_id": configID, "status": "connected", "account_name": name}}, nil
-	case "whatsapp":
-		access, _ := a.Sealer.Decrypt(c.AccessToken)
-		client := platform.NewMetaClient(access, c.PageID, derefStr(c.InstagramBusinessID), a.Cfg.Meta.GraphAPIVersion)
-		name, err := client.VerifyConnection(r.Context(), "whatsapp")
-		if err != nil {
-			return nil, a.connectionCheckFailed(r.Context(), configID, err)
-		}
-		_ = a.recordHealth(r.Context(), configID, "connected", name, "Connection verified via WhatsApp Cloud API")
-		return map[string]any{"config_id": configID, "health": map[string]any{"config_id": configID, "status": "connected", "account_name": name}}, nil
-	case "line":
-		access, _ := a.Sealer.Decrypt(c.AccessToken)
-		client := platform.NewLineClient(access)
-		name, _, botUserID, err := client.GetBotInfo(r.Context())
-		if err != nil {
-			return nil, a.connectionCheckFailed(r.Context(), configID, err)
-		}
-		// Store the bot's userId: LINE stamps it on every webhook as
-		// "destination", and it is the only key that routes an inbound event
-		// to this tenant rather than to whichever LINE config came first.
-		_ = a.setChannelIdentity(r.Context(), configID, botUserID)
-		// Auto-register + self-test the webhook: the merchant never has to
-		// touch the LINE Developers console for webhook configuration.
-		detail := "Connection verified via LINE Messaging API"
-		if webhookURL, werr := a.providerWebhookURL("line"); werr == nil {
-			if rerr := client.SetWebhookEndpoint(r.Context(), webhookURL); rerr != nil {
-				detail = "Connection verified; webhook auto-registration failed: " + rerr.Error()
-			} else if ok, msg, terr := client.TestWebhookEndpoint(r.Context()); terr != nil {
-				detail = "Connection verified; webhook registered (self-test error: " + terr.Error() + ")"
-			} else if ok {
-				detail = "Connection verified; webhook registered and self-test passed via LINE API"
-			} else {
-				detail = "Connection verified; webhook registered (LINE self-test pending: " + msg + ")"
-			}
-		}
-		_ = a.recordHealth(r.Context(), configID, "connected", name, detail)
-		return map[string]any{"config_id": configID, "health": map[string]any{"config_id": configID, "status": "connected", "account_name": name}, "webhook_url": func() string { u, _ := a.providerWebhookURL("line"); return u }()}, nil
-	case "zalo":
-		access, _ := a.Sealer.Decrypt(c.AccessToken)
-		client := platform.NewZaloClient(access)
-		name, oaID, err := client.VerifyOA(r.Context())
-		if err != nil {
-			return nil, a.connectionCheckFailed(r.Context(), configID, err)
-		}
-		// oa_id is the routing identity carried on every Zalo webhook.
-		_ = a.setChannelIdentity(r.Context(), configID, oaID)
-		_ = a.recordHealth(r.Context(), configID, "connected", name, "Connection verified via Zalo OA API")
-		return map[string]any{"config_id": configID, "health": map[string]any{"config_id": configID, "status": "connected", "account_name": name}}, nil
-	default:
-		return nil, ErrBadRequest("unsupported platform: " + c.Platform)
 	}
+
+	// Best effort, like the health write: a failure here leaves inbound routing to
+	// the fallback path rather than failing a check that otherwise succeeded.
+	_ = a.setChannelIdentity(r.Context(), configID, out.RoutingIdentity)
+	_ = a.recordHealth(r.Context(), configID, "connected", out.AccountName, out.Detail)
+
+	body := map[string]any{
+		"config_id": configID,
+		"health":    map[string]any{"config_id": configID, "status": "connected", "account_name": out.AccountName},
+	}
+	for k, v := range out.Extra {
+		body[k] = v
+	}
+	return body, nil
 }
 
 // setChannelIdentity records the provider-side routing identity learned from
@@ -499,7 +460,7 @@ func (a *App) deactivatePlatformConfig(w http.ResponseWriter, r *http.Request, c
 		return nil, ErrNotFound("platform configuration was not found")
 	}
 	if c.Platform == "telegram" {
-		botToken, _ := a.Sealer.Decrypt(derefStr(c.BotToken))
+		botToken, _ := a.Sealer.Decrypt(textutil.DerefString(c.BotToken))
 		client := platform.NewTelegramClient(botToken)
 		_ = client.DeleteWebhook(r.Context())
 	}

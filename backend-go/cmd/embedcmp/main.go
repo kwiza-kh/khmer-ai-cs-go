@@ -78,6 +78,7 @@ import (
 
 	"khmer-ai-cs-go/internal/gemini"
 	"khmer-ai-cs-go/internal/security"
+	"khmer-ai-cs-go/internal/textutil"
 )
 
 // defaultSAFile is where the service-account key lives on the deployment host.
@@ -105,13 +106,13 @@ var (
 	flagProgress = flag.Int("progress", 100,
 		"print a Vertex corpus-embedding progress line about every N chunks, between 100-chunk batches (0 = silent)")
 	flagVertexProject = flag.String("vertex-project",
-		firstNonEmpty(os.Getenv("GEMINI_VERTEX_PROJECT"), ""),
+		textutil.FirstNonEmpty(os.Getenv("GEMINI_VERTEX_PROJECT"), ""),
 		"GCP project id (default: $GEMINI_VERTEX_PROJECT, else the service account's project_id)")
 	flagVertexRegion = flag.String("vertex-region",
-		firstNonEmpty(os.Getenv("GEMINI_VERTEX_REGION"), "asia-southeast1"),
+		textutil.FirstNonEmpty(os.Getenv("GEMINI_VERTEX_REGION"), "asia-southeast1"),
 		"Vertex region (default: $GEMINI_VERTEX_REGION, else asia-southeast1)")
 	flagVertexSA = flag.String("vertex-sa",
-		firstNonEmpty(os.Getenv("GEMINI_VERTEX_SA_FILE"), defaultSAFile),
+		textutil.FirstNonEmpty(os.Getenv("GEMINI_VERTEX_SA_FILE"), defaultSAFile),
 		"service-account JSON key (default: $GEMINI_VERTEX_SA_FILE, else "+defaultSAFile+")")
 )
 
@@ -571,7 +572,7 @@ func queryEmbedError(path string, i int, query string, err error) error {
 	return fmt.Errorf("case %d (%s): path %s query embedding failed: %w\n"+
 		"    hint: raise GEMINI_EMBED_BUDGET_MS (default 5000) if this is a timeout; do not ignore it, "+
 		"a missing query vector would be reported as a retrieval failure",
-		i, oneLine(query, 40), path, err)
+		i, textutil.OneLine(query, 40), path, err)
 }
 
 // titlesOf indexes the corpus titles for the diff table's legend.
@@ -644,13 +645,4 @@ func vertexLabel(project, region, sa string) string {
 		project = "(project_id from the service account)"
 	}
 	return fmt.Sprintf("project=%s region=%s sa=%s", project, region, sa)
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if strings.TrimSpace(v) != "" {
-			return v
-		}
-	}
-	return ""
 }

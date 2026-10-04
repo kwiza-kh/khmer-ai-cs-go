@@ -22,6 +22,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"khmer-ai-cs-go/internal/config"
+	"khmer-ai-cs-go/internal/textutil"
 )
 
 const (
@@ -49,7 +52,7 @@ const (
 // So: never leave a retired name, and never default to -latest. When the
 // platform retires 3.5-flash the fix is a new pinned default here, chosen from
 // a measured `ListModels` answer — not an alias.
-var FastModel = envOr("GEMINI_FAST_MODEL", "gemini-3.5-flash")
+var FastModel = config.EnvText("GEMINI_FAST_MODEL", "gemini-3.5-flash")
 
 // JudgeTurnBudget bounds the auxiliary call that audits one customer-service
 // turn. It is a real budget, not a nicety: on timeout JudgeTurn reports
@@ -64,24 +67,7 @@ var FastModel = envOr("GEMINI_FAST_MODEL", "gemini-3.5-flash")
 // Distinct from JEV_TURN_BUDGET_MS (the Jev-side budget, pipeline.go turnBudget,
 // default 4000): this one bounds only the fast-model fallback that runs when Jev
 // returns !ok. Do not merge the two knobs — they default to 4000 vs 10000.
-var JudgeTurnBudget = envMillisOr("GEMINI_JUDGE_BUDGET_MS", 10*time.Second)
-
-func envOr(name, fallback string) string {
-	if v := strings.TrimSpace(os.Getenv(name)); v != "" {
-		return v
-	}
-	return fallback
-}
-
-// envMillisOr reads a millisecond count. A non-numeric or non-positive value
-// falls back rather than disabling the budget.
-func envMillisOr(name string, fallback time.Duration) time.Duration {
-	ms, err := strconv.Atoi(strings.TrimSpace(os.Getenv(name)))
-	if err != nil || ms <= 0 {
-		return fallback
-	}
-	return time.Duration(ms) * time.Millisecond
-}
+var JudgeTurnBudget = config.EnvMillis("GEMINI_JUDGE_BUDGET_MS", 10*time.Second)
 
 // Transport shape of one generation call. postWithRetry runs up to
 // postMaxAttempts attempts, each bounded by the shared client's
@@ -96,6 +82,10 @@ const (
 // attempt hangs until its own timeout: attempts x per-attempt timeout plus the
 // backoff between them. The customer-facing budget is derived from it, so the
 // two numbers cannot drift apart.
+// retryWorstCase is the TRANSPORT-level worst case: every attempt burning its
+// full postAttemptTimeout plus the backoff between them. It is not the reply
+// path's budget — callBudget deliberately sits well under it — but it stays
+// asserted in the tests as the ceiling the budget has to beat.
 func retryWorstCase() time.Duration {
 	var backoff time.Duration
 	for attempt := 1; attempt < postMaxAttempts; attempt++ {
@@ -114,10 +104,21 @@ func retryWorstCase() time.Duration {
 // the lesson taken from it is that the budget has to cover the retries, not just
 // one attempt.
 //
-// Read per call (like embedBudget) so tests and .env edits take effect without
-// rebuilding a package-level value.
+// The default is ONE attempt's ceiling, not the retry worst case. It used to be
+// retryWorstCase() — i.e. the budget was set to the exact worst case it exists to
+// bound, which made it a no-op: three attempts could each spend their full 60s
+// (181.2s total) while the customer waited. Retries are for FAST transient
+// failures (the path to Google drops handshakes; a retry usually gets through),
+// and those leave almost all of the budget unspent, so they still happen: what
+// the budget now forbids is a second slow attempt after a slow first one.
+//
+// Measured 2026-10-04 over 98 attempts (31 reply cases + their retrieval and
+// judge calls): zero went past attempt 1, so no turn came near the old ceiling.
+// This is hardening against the pathological case, not a fix for an observed
+// tail — the observed tail is per-hop (see the budgets on embed/rerank) plus the
+// provider's own latency, and cutting the retry stack does not touch it.
 func callBudget() time.Duration {
-	return envMillisOr("GEMINI_CALL_BUDGET_MS", retryWorstCase())
+	return config.EnvMillis("GEMINI_CALL_BUDGET_MS", postAttemptTimeout)
 }
 
 // withCallBudget applies callBudget to ctx. A caller deadline that is already
@@ -128,6 +129,25 @@ func withCallBudget(ctx context.Context) (context.Context, context.CancelFunc) {
 		return ctx, func() {}
 	}
 	return context.WithTimeout(ctx, budget)
+}
+
+// embedBudgetExceeded is budgetExceeded for the query-embedding hop.
+//
+// The caller logs "vector knowledge search failed; retaining lexical results" with
+// whatever error it gets, and without this label a budget expiry is
+// indistinguishable from a cancellation — both are "context deadline exceeded" /
+// "context canceled" by the time they surface. That distinction IS the question
+// when deciding whether GEMINI_EMBED_BUDGET_MS is too tight for this host: a
+// deadline means the hop was too slow, a cancellation means the customer left.
+// Measured 2026-10-04: in one 31-case run 25 of 34 query embeddings hit the 5s
+// budget while a 45-case retrieval sweep on the same host saw 0 of 90 do so, so
+// the rate is burst-dependent and has to be counted in production, not inferred
+// from a harness run.
+func embedBudgetExceeded(err error) error {
+	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	return fmt.Errorf("query embedding exceeded its %s budget (GEMINI_EMBED_BUDGET_MS): %w", embedBudget(), err)
 }
 
 // budgetExceeded labels a timeout so an operator can tell a hung upstream from a
@@ -796,7 +816,7 @@ func publisherModelPage(ctx context.Context, client *http.Client, prov provider,
 		// difference between "the region is wrong" and "we are not allowed".
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, "", fmt.Errorf("HTTP %d: %s", resp.StatusCode,
-			truncateRunes(strings.TrimSpace(string(body)), 200))
+			textutil.Ellipsize(strings.TrimSpace(string(body)), 200))
 	}
 	var list publisherModelList
 	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
@@ -1256,7 +1276,7 @@ func (s *Service) postWithProviderRetry(ctx context.Context, prov provider, targ
 			// doc comment: a refusal is not worth retrying.
 			return resp.StatusCode, text, nil
 		}
-		lastErr = fmt.Sprintf("failed (%d): %s", resp.StatusCode, truncateRunes(text, 300))
+		lastErr = fmt.Sprintf("failed (%d): %s", resp.StatusCode, textutil.Ellipsize(text, 300))
 	}
 	return 0, "", fmt.Errorf("gemini: %s", lastErr)
 }
@@ -1378,7 +1398,7 @@ func (s *Service) chatWithProvider(ctx context.Context, prov provider, message s
 		return ChatResult{}, status, fmt.Errorf("gemini request failed: %w", err)
 	}
 	if status != http.StatusOK {
-		return ChatResult{}, status, fmt.Errorf("gemini returned HTTP %d: %s", status, truncateRunes(text, 300))
+		return ChatResult{}, status, fmt.Errorf("gemini returned HTTP %d: %s", status, textutil.Ellipsize(text, 300))
 	}
 	var v map[string]any
 	if err := json.Unmarshal([]byte(text), &v); err != nil {
@@ -1747,7 +1767,7 @@ func (s *Service) DescribeImage(ctx context.Context, data []byte, mimeType strin
 		return "", fmt.Errorf("describe image request: %w", err)
 	}
 	if status != http.StatusOK {
-		return "", fmt.Errorf("describe image failed (%d): %s", status, truncateRunes(text, 300))
+		return "", fmt.Errorf("describe image failed (%d): %s", status, textutil.Ellipsize(text, 300))
 	}
 	var v map[string]any
 	if json.Unmarshal([]byte(text), &v) != nil {
@@ -1785,7 +1805,7 @@ func (s *Service) ExtractDocumentText(ctx context.Context, data []byte, mimeType
 		return "", fmt.Errorf("document OCR request: %w", err)
 	}
 	if status != http.StatusOK {
-		return "", fmt.Errorf("document OCR failed (%d): %s", status, truncateRunes(text, 300))
+		return "", fmt.Errorf("document OCR failed (%d): %s", status, textutil.Ellipsize(text, 300))
 	}
 	var v map[string]any
 	if json.Unmarshal([]byte(text), &v) != nil {
@@ -1901,7 +1921,7 @@ func wavFromPCM(pcm []byte, sampleRate int) []byte {
 }
 
 func (s *Service) chatMock(message, language string) ChatResult {
-	preview := truncateRunes(message, 50)
+	preview := textutil.Ellipsize(message, 50)
 	reply := "(mock) អរគុណសម្រាប់សំណួររបស់អ្នកអំពី \"" + preview + "\" — set GEMINI_API_KEY to enable real AI."
 	switch language {
 	case "en":
@@ -1985,7 +2005,7 @@ func (s *Service) RewriteSearchQuery(ctx context.Context, message string, histor
 		start = 0
 	}
 	for _, h := range history[start:] {
-		fmt.Fprintf(&convo, "%s: %s\n", h.Role, truncateRunes(h.Content, 160))
+		fmt.Fprintf(&convo, "%s: %s\n", h.Role, textutil.Ellipsize(h.Content, 160))
 	}
 	prompt := "Rewrite the user's latest message as ONE standalone web-search query. " +
 		"Resolve pronouns and vague references (它/那个/this/it/that...) using the conversation below. " +
@@ -2028,8 +2048,8 @@ func (s *Service) JudgeTurn(ctx context.Context, customerMsg, reply string, hasM
 		"- The customer explicitly asks for a human.\n" +
 		"escalate=false only for well-answered product questions, greetings, and small talk.\n\n" +
 		"[KB grounded]=" + fmt.Sprintf("%t", hasMatch) + "\n" +
-		"Customer: " + truncateRunes(customerMsg, 600) + "\n" +
-		"Assistant: " + truncateRunes(reply, 600)
+		"Customer: " + textutil.Ellipsize(customerMsg, 600) + "\n" +
+		"Assistant: " + textutil.Ellipsize(reply, 600)
 
 	out, ok := s.GenerateFast(ctx, prompt, JudgeTurnBudget)
 	if !ok {
@@ -2074,7 +2094,7 @@ func (s *Service) RerankChunks(ctx context.Context, query string, chunks []strin
 	}
 	var body strings.Builder
 	for i, chunk := range chunks {
-		fmt.Fprintf(&body, "[%d] %s\n\n", i+1, truncateRunes(chunk, 400))
+		fmt.Fprintf(&body, "[%d] %s\n\n", i+1, textutil.Ellipsize(chunk, 400))
 	}
 	prompt := "Rate how relevant each numbered passage is to the query on a 0-10 integer " +
 		"scale (10 = answers it directly). Reply with ONLY a JSON array like " +
@@ -2141,7 +2161,7 @@ func (s *Service) embedBatch(ctx context.Context, texts []string) ([][]float32, 
 		return nil, fmt.Errorf("batchEmbedContents request: %w", err)
 	}
 	if status != http.StatusOK {
-		return nil, fmt.Errorf("batchEmbedContents failed (%d): %s", status, truncateRunes(respText, 300))
+		return nil, fmt.Errorf("batchEmbedContents failed (%d): %s", status, textutil.Ellipsize(respText, 300))
 	}
 	if prov.kind == providerVertex {
 		return parseVertexPredictBatch(respText, len(texts))
@@ -2180,7 +2200,7 @@ func (s *Service) GenerateQueryEmbedding(ctx context.Context, text string) ([]fl
 	defer cancel()
 	vec, err := s.embed(embedCtx, text, "RETRIEVAL_QUERY")
 	if err != nil {
-		return nil, err
+		return nil, embedBudgetExceeded(err)
 	}
 	s.mu.Lock()
 	if len(s.embedCache) > 200 {
@@ -2205,7 +2225,7 @@ func (s *Service) embed(ctx context.Context, text, taskType string) ([]float32, 
 		return nil, fmt.Errorf("embedContent request: %w", err)
 	}
 	if status != http.StatusOK {
-		return nil, fmt.Errorf("embedContent failed (%d): %s", status, truncateRunes(respText, 300))
+		return nil, fmt.Errorf("embedContent failed (%d): %s", status, textutil.Ellipsize(respText, 300))
 	}
 	var v map[string]any
 	if json.Unmarshal([]byte(respText), &v) != nil {
@@ -2278,6 +2298,12 @@ func (s *Service) transcribeOnce(ctx context.Context, audio []byte, mimeType, pr
 	if mimeType == "" {
 		mimeType = "audio/ogg"
 	}
+	// The endpoint rejects an unrecognised container name with a generic 400, and
+	// the caller only ever shows "语音转写失败" — so the label is canonicalised
+	// here, at the one place that talks to the vendor. See audio_mime.go for the
+	// measured aliases (application/ogg, the default type for .m4a) and the real
+	// customer voice note that was lost to this.
+	mimeType = CanonicalAudioMime(mimeType, audio)
 	body := map[string]any{
 		"contents": []map[string]any{{
 			"role": "user",
@@ -2293,7 +2319,7 @@ func (s *Service) transcribeOnce(ctx context.Context, audio []byte, mimeType, pr
 		return "", fmt.Errorf("transcribe request: %w", err)
 	}
 	if status != http.StatusOK {
-		return "", fmt.Errorf("transcribe failed (%d): %s", status, truncateRunes(text, 300))
+		return "", fmt.Errorf("transcribe failed (%d): %s", status, textutil.Ellipsize(text, 300))
 	}
 	var v map[string]any
 	if json.Unmarshal([]byte(text), &v) != nil {
@@ -2303,7 +2329,7 @@ func (s *Service) transcribeOnce(ctx context.Context, audio []byte, mimeType, pr
 	reportAuxUsage(ctx, s.fastModelName(), auxPrompt, auxCompletion, auxCached)
 	transcript := strings.TrimSpace(ExtractTextFromValue(v))
 	if isTranscriptionRefusal(transcript) {
-		return "", fmt.Errorf("transcribe: model could not decode audio (mime=%s): %s", mimeType, truncateRunes(transcript, 160))
+		return "", fmt.Errorf("transcribe: model could not decode audio (mime=%s): %s", mimeType, textutil.Ellipsize(transcript, 160))
 	}
 	return transcript, nil
 }
@@ -2641,12 +2667,4 @@ func parseScoreArray(text string, n int) []float32 {
 		return nil
 	}
 	return scores
-}
-
-func truncateRunes(s string, n int) string {
-	runes := []rune(s)
-	if len(runes) <= n {
-		return s
-	}
-	return string(runes[:n-1]) + "…"
 }

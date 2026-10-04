@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+
+	"khmer-ai-cs-go/internal/textutil"
 )
 
 // Vertex service-account authentication.
@@ -195,7 +197,7 @@ func (t *tokenSource) mint(ctx context.Context) (string, time.Time, error) {
 		// is a bearer credential for an hour, and this string ends up in error
 		// logs that outlive it.
 		return "", time.Time{}, fmt.Errorf("vertex: token endpoint %s returned HTTP %d: %s",
-			t.tokenURI, resp.StatusCode, truncateRunes(strings.TrimSpace(string(body)), 300))
+			t.tokenURI, resp.StatusCode, textutil.Ellipsize(strings.TrimSpace(string(body)), 300))
 	}
 	var out struct {
 		AccessToken string `json:"access_token"`

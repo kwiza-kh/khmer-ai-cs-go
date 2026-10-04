@@ -48,6 +48,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"khmer-ai-cs-go/internal/textutil"
 )
 
 // corpusChunk is one knowledge_chunks row joined to its document, plus the two
@@ -149,7 +150,7 @@ func assertSelectOnly(sql string) error {
 	// just because it starts with SELECT.
 	body := strings.TrimSuffix(trimmed, ";")
 	if strings.Contains(body, ";") {
-		return fmt.Errorf("refusing to run more than one statement: %s", oneLine(sql, 80))
+		return fmt.Errorf("refusing to run more than one statement: %s", textutil.OneLine(sql, 80))
 	}
 	fields := strings.Fields(body)
 	if len(fields) == 0 {
@@ -157,7 +158,7 @@ func assertSelectOnly(sql string) error {
 	}
 	if !strings.EqualFold(fields[0], "SELECT") {
 		return fmt.Errorf("refusing to run a %s statement — embedcmp is READ-ONLY and may only SELECT: %s",
-			strings.ToUpper(fields[0]), oneLine(sql, 80))
+			strings.ToUpper(fields[0]), textutil.OneLine(sql, 80))
 	}
 	return nil
 }

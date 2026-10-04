@@ -28,15 +28,27 @@ func TestRetryWorstCaseCoversEveryAttemptAndBackoff(t *testing.T) {
 }
 
 func TestCallBudgetDefaultAndOverride(t *testing.T) {
+	// The default must be STRICTLY tighter than the retry worst case. Until
+	// 2026-10-04 it was retryWorstCase() itself — a budget set to the exact worst
+	// case it exists to bound bounds nothing, and three attempts could each spend
+	// their full 60s (181.2s) while the customer waited. Retries survive because
+	// they are for fast transient failures, which leave the budget unspent.
+	if got := callBudget(); got != postAttemptTimeout {
+		t.Fatalf("default budget = %s, want one attempt (%s)", got, postAttemptTimeout)
+	}
+	if callBudget() >= retryWorstCase() {
+		t.Fatalf("default budget %s must be tighter than the retry worst case %s",
+			callBudget(), retryWorstCase())
+	}
 	cases := []struct {
 		env  string
 		want time.Duration
 	}{
-		{"", retryWorstCase()},
+		{"", postAttemptTimeout},
 		{"150", 150 * time.Millisecond},
-		{"0", retryWorstCase()},   // zero must not disable the budget
-		{"-5", retryWorstCase()},  // nor may a negative value
-		{"abc", retryWorstCase()}, // nor a malformed one
+		{"0", postAttemptTimeout},   // zero must not disable the budget
+		{"-5", postAttemptTimeout},  // nor may a negative value
+		{"abc", postAttemptTimeout}, // nor a malformed one
 	}
 	for _, tc := range cases {
 		t.Setenv("GEMINI_CALL_BUDGET_MS", tc.env)

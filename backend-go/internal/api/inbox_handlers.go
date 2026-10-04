@@ -10,6 +10,7 @@ import (
 
 	"khmer-ai-cs-go/internal/gemini"
 	"khmer-ai-cs-go/internal/realtime"
+	"khmer-ai-cs-go/internal/textutil"
 )
 
 // ============================================
@@ -141,7 +142,7 @@ func (a *App) listInbox(w http.ResponseWriter, r *http.Request) (any, error) {
 			tags = *tagsPtr
 		}
 		items = append(items, map[string]any{
-			"session_id": sid, "user_id": uid, "platform": derefStr(platform), "platform_user_id": derefStr(puid),
+			"session_id": sid, "user_id": uid, "platform": textutil.DerefString(platform), "platform_user_id": textutil.DerefString(puid),
 			"user_display_name":       displayName,
 			"avatar_url":              avatarURL,
 			"reply_window_expires_at": replyWindow,
@@ -159,9 +160,9 @@ func (a *App) listInbox(w http.ResponseWriter, r *http.Request) (any, error) {
 			"last_message":            lastMsg,
 			"last_message_at":         lastMsgAt,
 			"last_inbound_at":         replyWindow, // approximation: reply window derives from last inbound
-			"sentiment":               derefStr(sentiment),
+			"sentiment":               textutil.DerefString(sentiment),
 			"tags":                    tags,
-			"intent":                  derefStr(intent),
+			"intent":                  textutil.DerefString(intent),
 		})
 	}
 	// A short read must not pass for a complete page: `total` above was counted
@@ -465,7 +466,7 @@ func (a *App) sessionSummary(w http.ResponseWriter, r *http.Request, sessionID s
 		_ = a.DB.QueryRow(r.Context(),
 			"SELECT summary, summary_at, summary_language FROM sessions WHERE session_id = $1", sessionID).
 			Scan(&cached, &cachedAt, &cachedLang)
-		if cached != nil && *cached != "" && cachedAt != nil && derefStr(cachedLang) == language {
+		if cached != nil && *cached != "" && cachedAt != nil && textutil.DerefString(cachedLang) == language {
 			var newer int
 			_ = a.DB.QueryRow(r.Context(),
 				"SELECT COUNT(*) FROM chat_messages WHERE session_id = $1 AND created_at > $2", sessionID, *cachedAt).Scan(&newer)

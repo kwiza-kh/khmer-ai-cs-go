@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"khmer-ai-cs-go/internal/textutil"
 )
 
 // ensureSession finds or creates the session + platform mapping, persists the
@@ -21,7 +23,7 @@ func (p *Pipeline) ensureSession(ctx context.Context, ev *InboundEvent, cfg *con
 		ev.ConfigID, ev.PlatformUserID).Scan(&sessionID)
 	if err != nil {
 		sessionID = newUUID()
-		title := truncateRunes(content, 60)
+		title := textutil.TruncateRunes(content, 60)
 		tx, err := p.DB.Begin(ctx)
 		if err != nil {
 			return "", 0, false, "", err
@@ -81,7 +83,7 @@ func (p *Pipeline) ensureSession(ctx context.Context, ev *InboundEvent, cfg *con
 	// failed every platform inbound message on this path.
 	err = p.DB.QueryRow(ctx,
 		"INSERT INTO chat_messages (session_id, role, message_type, content, media_url, metadata, inbound_event_id, created_at) VALUES ($1,'user','text',$2,$3,$4,$5,$6) RETURNING message_id",
-		sessionID, content, nullIfEmpty(mediaURL), metadata, eventIDArg, time.Now()).Scan(&userMessageID)
+		sessionID, content, textutil.NullIfEmpty(mediaURL), metadata, eventIDArg, time.Now()).Scan(&userMessageID)
 	if err != nil {
 		return "", 0, false, "", fmt.Errorf("persist user message: %w", err)
 	}
@@ -109,19 +111,4 @@ func (p *Pipeline) upsertCustomerProfile(ctx context.Context, userID int32, plat
 			"avatar_url = CASE WHEN EXCLUDED.avatar_url <> '' THEN EXCLUDED.avatar_url ELSE customer_profiles.avatar_url END, "+
 			"last_seen_at = EXCLUDED.last_seen_at, updated_at = EXCLUDED.updated_at",
 		userID, platform, platformUserID, displayName, avatar, time.Now())
-}
-
-func truncateRunes(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	return string(r[:n])
-}
-
-func nullIfEmpty(s string) any {
-	if s == "" {
-		return nil
-	}
-	return s
 }

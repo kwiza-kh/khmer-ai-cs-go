@@ -476,13 +476,6 @@ func ExtractHTMLText(htmlBytes []byte) (string, string) {
 	return strings.TrimSpace(title.String()), strings.TrimSpace(out.String())
 }
 
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
 // imageExtensions — formats routed through the vision OCR path instead of the
 // native text extractors. Gemini accepts these MIME types directly; HEIC is
 // absent because the API does not accept it.

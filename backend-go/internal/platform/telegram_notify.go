@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"khmer-ai-cs-go/internal/config"
+	"khmer-ai-cs-go/internal/textutil"
 	"khmer-ai-cs-go/internal/typesafe"
 )
 
@@ -84,7 +86,7 @@ func (p *Pipeline) loadTelegramNotifyUncached(ctx context.Context, userID int32)
 	return &TelegramNotifyConfig{
 		BotToken:            token,
 		ChatID:              *chatID,
-		ChatTitle:           deref(chatTitle),
+		ChatTitle:           textutil.DerefString(chatTitle),
 		NotifyMessages:      notifyMessages,
 		NotifyHandoff:       notifyHandoff,
 		NotifyAnnouncements: notifyAnnouncements,
@@ -179,7 +181,7 @@ func (p *Pipeline) NotifyNewCustomerMessage(ctx context.Context, userID int32, s
 	if name == "" {
 		name = "customer"
 	}
-	text := "💬 [" + strings.ToUpper(platformName[:1]) + platformName[1:] + "] " + name + "\n" + truncateStr(content, 300)
+	text := "💬 [" + strings.ToUpper(platformName[:1]) + platformName[1:] + "] " + name + "\n" + textutil.Ellipsize(content, 300)
 	if link := p.sessionLink(sessionID); link != "" {
 		text += "\n🔗 " + link
 	}
@@ -342,7 +344,7 @@ func (p *Pipeline) WorthPinging(ctx context.Context, content string) bool {
 // same generous budget as the other Jev calls instead of the 1s it once had:
 // a hardcoded 1s timed out during routine upstream spikes (api.typesafe.ai
 // p50 ~2.3s) and fail-opened, pinging the owner for every "ok 👍".
-var notifyWorthBudget = envMillis("JEV_NOTIFY_BUDGET_MS", 2000)
+var notifyWorthBudget = config.EnvMillis("JEV_NOTIFY_BUDGET_MS", 2*time.Second)
 
 // worthPinging asks Jev whether a customer message deserves interrupting the
 // store owner. Fail-open on any doubt: no Jev, errors, incomplete answers,
@@ -355,7 +357,7 @@ func (p *Pipeline) worthPinging(ctx context.Context, content string) bool {
 	ctx, cancel := context.WithTimeout(ctx, notifyWorthBudget)
 	defer cancel()
 
-	resp, err := p.Jev.Judge(ctx, map[string]any{"customer_message": truncateStr(content, 300)},
+	resp, err := p.Jev.Judge(ctx, map[string]any{"customer_message": textutil.Ellipsize(content, 300)},
 		map[string]typesafe.Question{
 			"worth_pinging": typesafe.Noul(
 				"Does this customer message need the store owner's attention now — a real question, request, " +
@@ -368,5 +370,5 @@ func (p *Pipeline) worthPinging(ctx context.Context, content string) bool {
 	if !ok {
 		return true
 	}
-	return v >= envFloat("JEV_NOTIFY_WORTH_MIN", 0.30)
+	return v >= config.EnvFloat("JEV_NOTIFY_WORTH_MIN", 0.30)
 }

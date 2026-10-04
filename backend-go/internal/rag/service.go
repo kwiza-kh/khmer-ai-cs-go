@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,8 +18,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"khmer-ai-cs-go/internal/config"
 	"khmer-ai-cs-go/internal/gemini"
 	"khmer-ai-cs-go/internal/redisstore"
+	"khmer-ai-cs-go/internal/textutil"
 	"khmer-ai-cs-go/internal/typesafe"
 	"khmer-ai-cs-go/internal/usage"
 )
@@ -60,33 +61,13 @@ var cachedThresholds *thresholds
 func currentThresholds() *thresholds {
 	thresholdsOnce.Do(func() {
 		cachedThresholds = &thresholds{
-			floor:      envF64("RAG_SIMILARITY_FLOOR", 0.35),
-			ratio:      envF64("RAG_SIMILARITY_RATIO", 0.75),
-			rerankMin:  float32(envF64("RAG_RERANK_MIN", 3.0)),
-			rerankSkip: envF64("RAG_RERANK_SKIP", 0.70),
+			floor:      config.EnvFloat("RAG_SIMILARITY_FLOOR", 0.35),
+			ratio:      config.EnvFloat("RAG_SIMILARITY_RATIO", 0.75),
+			rerankMin:  float32(config.EnvFloat("RAG_RERANK_MIN", 3.0)),
+			rerankSkip: config.EnvFloat("RAG_RERANK_SKIP", 0.70),
 		}
 	})
 	return cachedThresholds
-}
-
-func envF64(name string, fallback float64) float64 {
-	if v := os.Getenv(name); v != "" {
-		if f, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil {
-			return f
-		}
-	}
-	return fallback
-}
-
-// envI — positive integer env override; unset, malformed or non-positive
-// values fall back to the default.
-func envI(name string, fallback int) int {
-	if v := os.Getenv(name); v != "" {
-		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n > 0 {
-			return n
-		}
-	}
-	return fallback
 }
 
 // SearchChunk is one candidate chunk from any retrieval path.
@@ -343,7 +324,7 @@ func (s *Service) indexDocument(ctx context.Context, docID int32, content string
 }
 
 func (s *Service) markDocumentFailed(ctx context.Context, docID int32, message string) {
-	msg := truncateRunes(message, 500)
+	msg := textutil.Ellipsize(message, 500)
 	if msg == "" {
 		msg = "indexing failed"
 	}
@@ -360,8 +341,8 @@ func (s *Service) markDocumentFailed(ctx context.Context, docID int32, message s
 // entirely: a 400-rune FAQ page never reaches the contradiction check, so an
 // operator who wants small pages compiled lowers RAG_COMPILE_MIN_RUNES.
 var (
-	compileMinRunes = envI("RAG_COMPILE_MIN_RUNES", compileMinDefault)
-	compileMaxRunes = envI("RAG_COMPILE_MAX_RUNES", compileMaxDefault)
+	compileMinRunes = config.EnvPositiveInt("RAG_COMPILE_MIN_RUNES", compileMinDefault)
+	compileMaxRunes = config.EnvPositiveInt("RAG_COMPILE_MAX_RUNES", compileMaxDefault)
 )
 
 const (
@@ -483,14 +464,14 @@ func (s *Service) compileDocument(ctx context.Context, docID, userID int32, titl
 	// children excluded). Kept as a slice so the Jev confirmation/sweep can
 	// address each excerpt individually.
 	var excerpts []kbExcerpt
-	if sources, err := s.Search(ctx, userID, title+" "+truncateRunes(content, 300), 6); err == nil {
+	if sources, err := s.Search(ctx, userID, title+" "+textutil.Ellipsize(content, 300), 6); err == nil {
 		for _, src := range sources {
 			// Skip the document itself and AI-compiled children (a source must
 			// not be flagged as contradicting its own previous summary).
 			if src.DocID == docID || strings.HasSuffix(src.Title, compiledTitleSuffix) {
 				continue
 			}
-			excerpts = append(excerpts, kbExcerpt{Title: src.Title, Content: truncateRunes(src.Content, 400)})
+			excerpts = append(excerpts, kbExcerpt{Title: src.Title, Content: textutil.Ellipsize(src.Content, 400)})
 		}
 	}
 	var excerptsBlob strings.Builder
@@ -499,8 +480,8 @@ func (s *Service) compileDocument(ctx context.Context, docID, userID int32, titl
 	}
 
 	prompt := "You maintain a customer-support knowledge base.\n\n" +
-		"NEW DOCUMENT (title: " + title + "):\n" + truncateRunes(content, 9000) + "\n\n" +
-		"EXISTING KB EXCERPTS:\n" + truncateRunes(excerptsBlob.String(), 4000) + "\n" +
+		"NEW DOCUMENT (title: " + title + "):\n" + textutil.Ellipsize(content, 9000) + "\n\n" +
+		"EXISTING KB EXCERPTS:\n" + textutil.Ellipsize(excerptsBlob.String(), 4000) + "\n" +
 		"TASK 1 — compile the NEW DOCUMENT into a concise support-ready page. Write field \"faq_markdown\" as Markdown:\n" +
 		"  line 1 exactly: \"# " + title + compiledTitleSuffix + "\"\n" +
 		"  then a summary of at most 300 characters,\n" +
@@ -640,7 +621,7 @@ func (s *Service) UploadDocument(ctx context.Context, userID int32, title, conte
 	}
 	// Non-blocking near-duplicate warning so the operator can dedupe instead
 	// of hosting contradictory copies.
-	if similar := s.findSimilarDocs(ctx, userID, title+" "+truncateRunes(content, 1000)); len(similar) > 0 {
+	if similar := s.findSimilarDocs(ctx, userID, title+" "+textutil.Ellipsize(content, 1000)); len(similar) > 0 {
 		doc["similar_docs"] = similar
 	}
 	return doc, nil
@@ -684,7 +665,7 @@ func (s *Service) findSimilarDocs(ctx context.Context, userID int32, sample stri
 func (s *Service) Search(ctx context.Context, userID int32, query string, topK int64) ([]Source, error) {
 	query = NormalizeText(query)
 	if topK <= 0 {
-		topK = int64(envI("RAG_TOP_K", int(DefaultTopK)))
+		topK = int64(config.EnvPositiveInt("RAG_TOP_K", int(DefaultTopK)))
 	}
 	candidateLimit := searchCandidateLimit(topK)
 	if int64(rerankWindow) > candidateLimit {
@@ -761,9 +742,19 @@ func (s *Service) Search(ctx context.Context, userID int32, query string, topK i
 	// LLM rerank unless the dense leader is already a clear match, or dense
 	// and lexical agree on the same leader with a solid score (agreement
 	// lowers the skip bar from 0.70 to 0.60).
-	leaderClear := topDense != nil && *topDense >= th.rerankSkip
-	signalsAgree := topAgrees && topDense != nil && *topDense >= 0.60
-	if !leaderClear && !signalsAgree {
+	//
+	// topDense == nil means the vector leg produced NOTHING — either the query
+	// embedding hop ran out of its budget or the search came back empty. That is
+	// the one case where rerank must not run: the candidates are lexical/trigram
+	// only, so the extra call has the least to work with, and it lands on exactly
+	// the turns that are already slowest. Measured 2026-10-04: the embed hop costs
+	// its full 5s budget when it times out, the rerank hop up to its full 8s
+	// (observed 7.81s and 8.01s), and previously a turn with a missing dense leg
+	// paid both before the model was even called. The rerank is an auxiliary
+	// precision pass (AGENTS.md: fail open on auxiliary paths) — skipping it here
+	// also keeps all sources instead of filtering the list down, which is the
+	// better answer on a degraded candidate set.
+	if shouldRerank(topDense, topAgrees, th.rerankSkip) {
 		fused = s.rerankCandidates(ctx, query, fused, topK)
 	}
 
@@ -781,6 +772,31 @@ func (s *Service) Search(ctx context.Context, userID int32, query string, topK i
 		out = append(out, Source{DocID: c.DocID, Title: c.Title, Content: c.Content, Score: c.Similarity})
 	}
 	return out, nil
+}
+
+// agreeSkipBar is the dense similarity at which dense and lexical agreeing on the
+// same leader counts as "clear enough" — a lower bar than RAG_RERANK_SKIP, because
+// two independent legs agreeing is itself evidence.
+const agreeSkipBar = 0.60
+
+// shouldRerank decides whether the auxiliary LLM rerank runs for one query.
+//
+// Pulled out of Search so the decision is one readable table instead of three
+// inline conditions, and so the topDense==nil row can be tested: that row is the
+// whole point — with no vector leg there is nothing for the rerank to improve,
+// and it used to run anyway, spending up to its full 8s budget on the turns whose
+// embedding hop had just burned its own.
+func shouldRerank(topDense *float64, topAgrees bool, rerankSkip float64) bool {
+	if topDense == nil {
+		return false
+	}
+	if *topDense >= rerankSkip {
+		return false // the dense leader is already a clear match
+	}
+	if topAgrees && *topDense >= agreeSkipBar {
+		return false // both legs point at the same leader, solidly
+	}
+	return true
 }
 
 // maxChunksPerDoc — cap on how many chunks of one document may enter the
@@ -915,7 +931,7 @@ var rerankRelevanceLevels = []string{
 // Gemini rerank, when one is configured) rather than waiting. The default sits
 // above the production server's measured 0.8-2.1s spread to api.typesafe.ai;
 // tunable so ops can re-measure from the host without a rebuild.
-var jevRerankBudget = time.Duration(envI("JEV_RERANK_BUDGET_MS", 3000)) * time.Millisecond
+var jevRerankBudget = config.EnvMillis("JEV_RERANK_BUDGET_MS", 3*time.Second)
 
 func (s *Service) rerankScoresJev(ctx context.Context, query string, texts []string) ([]float32, bool) {
 	if !s.Jev.Enabled() || len(texts) == 0 || len(texts) > 20 {
@@ -924,7 +940,7 @@ func (s *Service) rerankScoresJev(ctx context.Context, query string, texts []str
 	passages := make([]map[string]any, len(texts))
 	questions := make(map[string]typesafe.Question, len(texts))
 	for i, text := range texts {
-		passages[i] = map[string]any{"id": fmt.Sprintf("c%d", i), "text": truncateRunes(text, 400)}
+		passages[i] = map[string]any{"id": fmt.Sprintf("c%d", i), "text": textutil.Ellipsize(text, 400)}
 		questions[fmt.Sprintf("c%d", i)] = typesafe.Score(
 			"How relevant is passage `passages["+strconv.Itoa(i)+"].text` to `query`?",
 			rerankRelevanceLevels)
@@ -1198,7 +1214,7 @@ func (s *Service) Ground(ctx context.Context, userID int32, sessionID *string, m
 	// full per-source allowance while it lasts — so the best-ranked sources are
 	// never cut — and trims only the tail, which is cheaper than dropping a
 	// whole source (the model still sees that it exists).
-	budget := envI("RAG_CONTEXT_BUDGET_RUNES", 4800)
+	budget := config.EnvPositiveInt("RAG_CONTEXT_BUDGET_RUNES", 4800)
 	used := 0
 	for i, src := range sources {
 		room := groundSourceLimit(src.Content)
@@ -1316,8 +1332,8 @@ func lastLineBoundary(runes []rune, room int) (int, bool) {
 // model hallucinate the rest). Both limits are env-tunable so the source-count /
 // source-length tradeoff can be calibrated with rageval.
 func groundSourceLimit(content string) int {
-	plain := envI("RAG_SOURCE_LIMIT_RUNES", 800)
-	table := envI("RAG_TABLE_LIMIT_RUNES", 2000)
+	plain := config.EnvPositiveInt("RAG_SOURCE_LIMIT_RUNES", 800)
+	table := config.EnvPositiveInt("RAG_TABLE_LIMIT_RUNES", 2000)
 	for _, line := range strings.Split(content, "\n") {
 		if isTableRow(line) {
 			return table
@@ -1718,19 +1734,6 @@ func (s *Service) RetryDocument(ctx context.Context, userID int32, docID int32) 
 		return fmt.Errorf("document not found")
 	}
 	return nil
-}
-
-func truncateRunes(s string, n int) string {
-	if n <= 0 {
-		// Guarded rather than left to the slice expression: `runes[:n-1]` is a
-		// negative index (panic) and would take down the turn that hit it.
-		return ""
-	}
-	runes := []rune(s)
-	if len(runes) <= n {
-		return s
-	}
-	return string(runes[:n-1]) + "…"
 }
 
 // backfillSegmentedChunks — fills content_seg/content_tsv for chunks written

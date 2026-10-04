@@ -34,12 +34,14 @@ import (
 	"strings"
 	"time"
 
+	"khmer-ai-cs-go/internal/config"
+	"khmer-ai-cs-go/internal/textutil"
 	"khmer-ai-cs-go/internal/typesafe"
 )
 
 // safetyJudgeBudget bounds one model-safety judgment, so a slow judge cannot hold
 // a customer turn open.
-var safetyJudgeBudget = envMillis("SAFETY_JUDGE_BUDGET_MS", 3000)
+var safetyJudgeBudget = config.EnvMillis("SAFETY_JUDGE_BUDGET_MS", 3*time.Second)
 
 // Actions for a flagged INBOUND customer message.
 const (
@@ -243,7 +245,7 @@ func (p *Pipeline) jevSafetyJudge(ctx context.Context, text string) (bool, strin
 	if p.Jev == nil || !p.Jev.Enabled() {
 		return false, "", errors.New("safety: jev judge is not enabled")
 	}
-	state := map[string]any{"text": truncateStr(text, 800)}
+	state := map[string]any{"text": textutil.Ellipsize(text, 800)}
 	questions := map[string]typesafe.Question{
 		"unsafe": typesafe.Noul(
 			"Does `text` contain content that must not pass through a customer-service AI: threats, sexual " +
@@ -261,7 +263,7 @@ func (p *Pipeline) jevSafetyJudge(ctx context.Context, text string) (bool, strin
 	// A deliberately high bar: this verdict replaces a reply the model already
 	// wrote, so a false positive costs a customer their answer. The reply guard
 	// uses 0.70 for its advisory checks; moderation sits above that.
-	bar := envFloat("SAFETY_MODEL_MIN", 0.80)
+	bar := config.EnvFloat("SAFETY_MODEL_MIN", 0.80)
 	if unsafeScore < bar {
 		return false, "", nil
 	}

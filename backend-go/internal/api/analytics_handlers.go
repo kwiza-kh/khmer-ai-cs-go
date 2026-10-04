@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"khmer-ai-cs-go/internal/platform"
+	"khmer-ai-cs-go/internal/textutil"
 )
 
 // ============================================
@@ -336,7 +337,7 @@ func (a *App) feedbackList(w http.ResponseWriter, r *http.Request) (any, error) 
 		}
 		items = append(items, map[string]any{
 			"message_id": mid, "session_id": sid, "content": content,
-			"feedback_rating": int(ratingCol), "feedback_comment": derefStr(comment), "feedback_at": fbAt,
+			"feedback_rating": int(ratingCol), "feedback_comment": textutil.DerefString(comment), "feedback_at": fbAt,
 			"role": role, "message_type": mtype, "created_at": createdAt,
 		})
 	}
@@ -623,7 +624,7 @@ func (a *App) sessionWhatsAppTemplates(w http.ResponseWriter, r *http.Request, s
 	if derr != nil {
 		return nil, ErrInternal("凭据解密失败")
 	}
-	account := derefStr(waAccount)
+	account := textutil.DerefString(waAccount)
 	rows, apiErr := platform.NewMetaClient(token, account, "", a.Cfg.Meta.GraphAPIVersion).
 		ListWhatsAppTemplates(r.Context(), account)
 	if apiErr != nil {

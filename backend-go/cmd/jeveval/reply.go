@@ -532,8 +532,15 @@ func printReplyReport(results []caseResult, file replyEvalFile, mode evalOptions
 	if judged > 0 {
 		avg = float64(scoreSum) / float64(judged)
 	}
-	fmt.Printf("\n%d/%d cases pass; judge average %.2f/12 (gate %.2f/12)  temperature=%s\n",
-		passed, len(results), avg, mode.gate, temperature)
+	unjudged := ""
+	if mode.judge && judged < len(results) {
+		// Say it out loud: the average covers the judged subset only, and the rest
+		// are failures now — a reader must be able to tell "0 failures" from "1
+		// never judged".
+		unjudged = fmt.Sprintf("  ⚠ %d/%d UNJUDGED (counted as failures)", len(results)-judged, len(results))
+	}
+	fmt.Printf("\n%d/%d cases pass; judge average %.2f/12 (gate %.2f/12)  temperature=%s%s\n",
+		passed, len(results), avg, mode.gate, temperature, unjudged)
 	if cold != "" {
 		fmt.Printf("\n⚠ DENSE RETRIEVAL WAS COLD (%s) — grounding was lexical-only; "+
 			"these numbers do not describe production.\n", cold)
@@ -564,8 +571,22 @@ func (r caseResult) ok(mode evalOptions) bool {
 	if len(r.missing) > 0 || len(r.leaks) > 0 || len(r.format) > 0 {
 		return false
 	}
-	if mode.judge && r.judged && r.verdict.ScoreTotal > 0 && float64(r.verdict.ScoreTotal) < mode.gate {
-		return false
+	if mode.judge {
+		// -judge is a gate, so an UNSCORED case is a failure, not a pass.
+		//
+		// The judge is a model call with a 45s budget; when it expires, judgeReply
+		// returns ScoreTotal 0 / "judge unavailable". The old condition failed only a
+		// *low* score, so a run could print "24/24 cases pass; judge average
+		// 11.83/12" with one case never judged at all — the average silently divided
+		// by 23, and the one reply nobody looked at was the one reported as fine
+		// (2026-10-04). Same class of false green as sqlcheck skipping without
+		// SQLCHECK_REQUIRED: a gate that cannot fail is not a gate.
+		if r.verdict.ScoreTotal <= 0 {
+			return false
+		}
+		if float64(r.verdict.ScoreTotal) < mode.gate {
+			return false
+		}
 	}
 	return true
 }

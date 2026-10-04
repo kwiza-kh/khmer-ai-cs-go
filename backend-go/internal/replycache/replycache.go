@@ -27,6 +27,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"khmer-ai-cs-go/internal/config"
 	"khmer-ai-cs-go/internal/gemini"
 	"khmer-ai-cs-go/internal/rag"
 )
@@ -55,26 +56,10 @@ func (s *Service) Enabled() bool {
 	return s.DB != nil && (s.Embed != nil || (s.Gemini != nil && s.Gemini.IsConfigured()))
 }
 
-func minSimilarity() float64 { return envFloat("REPLY_CACHE_MIN_SIM", 0.92) }
-func ttlHours() int          { return envInt("REPLY_CACHE_TTL_HOURS", 72) }
-func maxPerUser() int        { return envInt("REPLY_CACHE_MAX_PER_USER", 500) }
-func minQueryRunes() int     { return envInt("REPLY_CACHE_MIN_RUNES", 12) }
-func envFloat(k string, f float64) float64 {
-	if v := os.Getenv(k); v != "" {
-		if n, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil {
-			return n
-		}
-	}
-	return f
-}
-func envInt(k string, f int) int {
-	if v := os.Getenv(k); v != "" {
-		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
-			return n
-		}
-	}
-	return f
-}
+func minSimilarity() float64 { return config.EnvFloat("REPLY_CACHE_MIN_SIM", 0.92) }
+func ttlHours() int          { return config.EnvInt("REPLY_CACHE_TTL_HOURS", 72) }
+func maxPerUser() int        { return config.EnvInt("REPLY_CACHE_MAX_PER_USER", 500) }
+func minQueryRunes() int     { return config.EnvInt("REPLY_CACHE_MIN_RUNES", 12) }
 
 func (s *Service) embed(ctx context.Context, text string) ([]float32, error) {
 	if s.Embed != nil {

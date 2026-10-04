@@ -45,21 +45,51 @@ func TestHandoffAcknowledgementLanguages(t *testing.T) {
 	}
 }
 
+// The handoff contract, pinned from both ends.
+//
+// The prompt requires an exact Khmer sentence for a committed transfer, and
+// ReplyClaimsHandoff is what decides whether an agent actually gets paged. On
+// 2026-10-04 the sentence's subject was rewritten from "ភ្នាក់ងារមនុស្ស" (a literal
+// "human agent", which the reply-quality judge twice called translated English)
+// to "បុគ្គលិករបស់យើង". That edit touches a path where a mismatch is SILENT: the
+// customer is told a human is coming, no agent is notified, and nothing errors.
+// So both ends are asserted against the one constant the prompt interpolates.
+func TestKhmerHandoffSentenceIsStillMatchedByTheDetector(t *testing.T) {
+	if !ReplyClaimsHandoff(gemini.KhmerHandoffSentence) {
+		t.Fatalf("the required Khmer handoff sentence is no longer detected as a claim: %q",
+			gemini.KhmerHandoffSentence)
+	}
+	full := HandoffAcknowledgement("km")
+	if !ReplyClaimsHandoff(full) {
+		t.Fatalf("the canned Khmer acknowledgement is no longer detected as a claim: %q", full)
+	}
+	// The prompt's few-shot example is the sentence too — a customer reading what
+	// the AI was taught to write must see the same string the matcher knows.
+	if !strings.Contains(gemini.DefaultSystemPrompt, gemini.KhmerHandoffSentence) {
+		t.Fatal("the system prompt no longer contains the sentence the matcher keys on")
+	}
+	// And the calque must not come back: it is what the judge flagged, and the
+	// canned copy is the one string a human would have to edit by hand.
+	if strings.Contains(full, "ភ្នាក់ងារមនុស្ស") {
+		t.Errorf("the handoff copy is back to the literal 'human agent' rendering: %q", full)
+	}
+}
+
+// A customer may ask for a person using the same plain word the bot now uses.
+func TestHumanRequestKeywordMatchesPlainKhmerStaffWords(t *testing.T) {
+	for _, msg := range []string{"សុំបុគ្គលិកបន្តិច", "ខ្ញុំចង់និយាយជាមួយបុគ្គលិក", "ភ្នាក់ងារមនុស្ស"} {
+		if _, ok := HumanRequestKeyword(msg); !ok {
+			t.Errorf("a request for a person must escalate: %q", msg)
+		}
+	}
+}
+
 func TestSafeFilename(t *testing.T) {
 	if got := safeFilename("a/b\\c\x00d.txt", "audio", 1); strings.ContainsAny(got, "/\\\x00") {
 		t.Fatalf("unsafe chars survived: %q", got)
 	}
 	if got := safeFilename("", "voice", 7); got != "voice-7.bin" {
 		t.Fatalf("empty filename must derive: %q", got)
-	}
-}
-
-func TestTruncate(t *testing.T) {
-	if got := truncate("abcdefgh", 5); got != "abcde" {
-		t.Fatalf("truncate = %q", got)
-	}
-	if got := truncate("abc", 5); got != "abc" {
-		t.Fatalf("short string must pass through")
 	}
 }
 

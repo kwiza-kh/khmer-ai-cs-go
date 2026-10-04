@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"khmer-ai-cs-go/internal/config"
 	"khmer-ai-cs-go/internal/typesafe"
 )
 
@@ -37,7 +38,7 @@ func (s *Service) confirmContradictions(ctx context.Context, newTitle string, it
 		}
 		return items
 	}
-	bar := envF64("JEV_CONTRADICTION_MIN", 0.60)
+	bar := config.EnvFloat("JEV_CONTRADICTION_MIN", 0.60)
 	kept := make([]compileContradiction, 0, len(items))
 	for i, it := range items {
 		if v, ok := resp.NoulValue(fmt.Sprintf("c%d", i)); ok && v < bar {
@@ -86,7 +87,7 @@ func (s *Service) sweepContradictions(ctx context.Context, newTitle string, exce
 		}
 		return nil
 	}
-	bar := envF64("JEV_CONTRADICTION_MIN", 0.60)
+	bar := config.EnvFloat("JEV_CONTRADICTION_MIN", 0.60)
 	var found []compileContradiction
 	for i, ex := range pending {
 		v, ok := resp.NoulValue(fmt.Sprintf("e%d", i))

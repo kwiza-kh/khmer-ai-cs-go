@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"os"
 	"strings"
+
+	"khmer-ai-cs-go/internal/config"
 )
 
 // Transport selection: AI Studio (today's production) or Vertex AI — the
@@ -244,7 +246,7 @@ func providerKindFromEnv() providerKind {
 
 // vertexRegion — GEMINI_VERTEX_REGION, defaulting to the measured target.
 func vertexRegion() string {
-	return envOr("GEMINI_VERTEX_REGION", vertexDefaultRegion)
+	return config.EnvText("GEMINI_VERTEX_REGION", vertexDefaultRegion)
 }
 
 // VertexHost is the AI Platform host that serves one location.

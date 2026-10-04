@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"khmer-ai-cs-go/internal/textutil"
 	"net/http"
 	"strings"
 	"time"
@@ -122,11 +123,11 @@ func (a *App) getProfile(w http.ResponseWriter, r *http.Request) (any, error) {
 	if err != nil {
 		return nil, ErrNotFound("用户不存在")
 	}
-	p.DisplayName = derefStr(displayName)
-	p.JobTitle = derefStr(jobTitle)
-	p.Phone = derefStr(phone)
-	p.Timezone = derefStr(timezone)
-	p.AvatarURL = derefStr(avatarURL)
+	p.DisplayName = textutil.DerefString(displayName)
+	p.JobTitle = textutil.DerefString(jobTitle)
+	p.Phone = textutil.DerefString(phone)
+	p.Timezone = textutil.DerefString(timezone)
+	p.AvatarURL = textutil.DerefString(avatarURL)
 	p.HasPassword = passwordHash != nil && *passwordHash != ""
 	p.HasGoogle = googleSub != nil && *googleSub != ""
 	p.HasTelegram = telegramSub != nil && *telegramSub != ""

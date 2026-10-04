@@ -1,6 +1,7 @@
 package rag
 
 import (
+	"khmer-ai-cs-go/internal/textutil"
 	"strings"
 	"testing"
 )
@@ -33,7 +34,7 @@ func TestChunkMarkdownSplitsLargeDocument(t *testing.T) {
 
 	normalized := NormalizeText(raw)
 	if !strings.Contains(normalized, "\n## ") {
-		t.Fatalf("normalisation destroyed the markdown structure:\n%q", truncateRunes(normalized, 200))
+		t.Fatalf("normalisation destroyed the markdown structure:\n%q", textutil.Ellipsize(normalized, 200))
 	}
 
 	chunks := ChunkMarkdown(normalized)

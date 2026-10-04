@@ -13,6 +13,7 @@ import (
 	"khmer-ai-cs-go/internal/platform"
 	"khmer-ai-cs-go/internal/rag"
 	"khmer-ai-cs-go/internal/realtime"
+	"khmer-ai-cs-go/internal/textutil"
 	"khmer-ai-cs-go/internal/usage"
 )
 
@@ -471,7 +472,7 @@ func (a *App) persistSystemReply(ctx context.Context, userID int32, sessionID, t
 func (a *App) customerLanguage(ctx context.Context, userID int32, sessionID string) string {
 	var lang *string
 	_ = a.DB.QueryRow(ctx, "SELECT language FROM sessions WHERE session_id = $1", sessionID).Scan(&lang)
-	if l := derefStr(lang); l != "" {
+	if l := textutil.DerefString(lang); l != "" {
 		return l
 	}
 	return a.savedLanguage(ctx, userID)
@@ -544,8 +545,8 @@ func (a *App) listSessions(w http.ResponseWriter, r *http.Request) (any, error) 
 			continue
 		}
 		sessions = append(sessions, map[string]any{
-			"session_id": sid, "user_id": uid, "platform": derefStr(platformVal), "platform_user_id": derefStr(puid),
-			"status": status, "language": language, "title": derefStr(title),
+			"session_id": sid, "user_id": uid, "platform": textutil.DerefString(platformVal), "platform_user_id": textutil.DerefString(puid),
+			"status": status, "language": language, "title": textutil.DerefString(title),
 			"user_message_count": umc, "model_message_count": mmc, "created_at": createdAt,
 		})
 	}
@@ -584,7 +585,7 @@ func (a *App) createSession(w http.ResponseWriter, r *http.Request) (any, error)
 		return nil, ErrInternal("创建失败")
 	}
 	return map[string]any{
-		"session_id": sid, "user_id": user.UserID, "platform": derefStr(ptrIfSet(platformVal)), "language": language,
+		"session_id": sid, "user_id": user.UserID, "platform": textutil.DerefString(ptrIfSet(platformVal)), "language": language,
 		"status": "active", "title": req.Title, "user_message_count": 0, "model_message_count": 0,
 	}, nil
 }
@@ -651,7 +652,7 @@ func (a *App) getSession(w http.ResponseWriter, r *http.Request, sessionID strin
 		return nil, ErrNotFound("会话不存在")
 	}
 	return map[string]any{
-		"session_id": sid, "status": status, "language": language, "title": derefStr(title),
+		"session_id": sid, "status": status, "language": language, "title": textutil.DerefString(title),
 		"user_message_count": umc, "model_message_count": mmc, "created_at": createdAt,
 	}, nil
 }
@@ -742,7 +743,7 @@ func (a *App) listSessionMessages(w http.ResponseWriter, r *http.Request, sessio
 		}
 		if feedbackRating != nil {
 			msg["feedback_rating"] = int(*feedbackRating)
-			msg["feedback_comment"] = derefStr(feedbackComment)
+			msg["feedback_comment"] = textutil.DerefString(feedbackComment)
 			msg["feedback_at"] = feedbackAt
 		}
 		if sourcesJSON != nil {
@@ -762,7 +763,7 @@ func (a *App) listSessionMessages(w http.ResponseWriter, r *http.Request, sessio
 			delivery["sent_at"] = sentAt
 			delivery["delivered_at"] = deliveredAt
 			delivery["read_at"] = readAt
-			delivery["last_error"] = derefStr(delError)
+			delivery["last_error"] = textutil.DerefString(delError)
 			if deliveryPayload != nil {
 				var payload any
 				if json.Unmarshal([]byte(*deliveryPayload), &payload) == nil && payload != nil {
@@ -820,11 +821,4 @@ func parseIntOr(s string, fallback int) int {
 		return n
 	}
 	return fallback
-}
-
-func derefStr(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
 }

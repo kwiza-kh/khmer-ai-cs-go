@@ -2,7 +2,10 @@ package platform
 
 import (
 	"context"
+	"time"
 
+	"khmer-ai-cs-go/internal/config"
+	"khmer-ai-cs-go/internal/textutil"
 	"khmer-ai-cs-go/internal/typesafe"
 )
 
@@ -52,7 +55,7 @@ type InboundRoute struct {
 // 2.5s only just covered the prod server's measured 0.8-2.1s spread to
 // api.typesafe.ai with no margin for its tail; raised, and tunable so ops can
 // re-measure from the host without a rebuild.
-var routeBudget = envMillis("JEV_ROUTE_BUDGET_MS", 4000)
+var routeBudget = config.EnvMillis("JEV_ROUTE_BUDGET_MS", 4*time.Second)
 
 // RouteInbound asks Jev what a message needs — route and urgency, judged in
 // one batch — before any retrieval or generation. ok=false when Jev is
@@ -65,7 +68,7 @@ func (p *Pipeline) RouteInbound(ctx context.Context, msg string) (InboundRoute, 
 	ctx, cancel := context.WithTimeout(ctx, routeBudget)
 	defer cancel()
 
-	resp, err := p.Jev.Judge(ctx, map[string]any{"customer_message": truncateStr(msg, 600)},
+	resp, err := p.Jev.Judge(ctx, map[string]any{"customer_message": textutil.Ellipsize(msg, 600)},
 		map[string]typesafe.Question{
 			"route": typesafe.Choice(
 				"What does `customer_message` need from this store's customer service?",
@@ -110,7 +113,7 @@ func urgencyFromScore(resp *typesafe.Response) string {
 		return UrgencyUnknown
 	}
 	switch {
-	case v >= envFloat("JEV_ROUTE_URGENT_MIN", 1.5):
+	case v >= config.EnvFloat("JEV_ROUTE_URGENT_MIN", 1.5):
 		return UrgencyUrgent
 	case v >= 0.5:
 		return UrgencyElevated
@@ -126,17 +129,17 @@ func urgencyFromScore(resp *typesafe.Response) string {
 //	skipGround — answer without touching the knowledge base (chit-chat)
 //	silent     — junk: no reply at all on platform channels
 func routeDecision(route string, prob float64) (escalate, skipGround, silent bool) {
-	if route == RouteHandoff && prob >= envFloat("JEV_ROUTE_HANDOFF_MIN", 0.80) {
+	if route == RouteHandoff && prob >= config.EnvFloat("JEV_ROUTE_HANDOFF_MIN", 0.80) {
 		return true, false, false
 	}
-	if route == RouteSmallTalk && prob >= envFloat("JEV_ROUTE_CHITCHAT_MIN", 0.80) {
+	if route == RouteSmallTalk && prob >= config.EnvFloat("JEV_ROUTE_CHITCHAT_MIN", 0.80) {
 		return false, true, false
 	}
 	// 0.90 default, not 0.85: the documented Jev accuracy on Khmer is lower
 	// than on English (jeveval -mode khmer), and a wrongly-silenced Khmer
 	// customer is a worse outcome than one wasted generation. Raise the bar
 	// until there is Khmer-route accuracy data justifying a lower one.
-	if route == RouteJunk && prob >= envFloat("JEV_ROUTE_JUNK_MIN", 0.90) {
+	if route == RouteJunk && prob >= config.EnvFloat("JEV_ROUTE_JUNK_MIN", 0.90) {
 		return false, false, true
 	}
 	return false, false, false

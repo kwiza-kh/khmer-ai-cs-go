@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"khmer-ai-cs-go/internal/textutil"
 )
 
 // Explicit context caching (the cachedContents API).
@@ -205,7 +207,7 @@ func (s *Service) registerContextCache(ctx context.Context, prefix string) (stri
 		return "", err
 	}
 	if status != 200 {
-		return "", fmt.Errorf("cachedContents returned HTTP %d: %s", status, truncateRunes(text, 200))
+		return "", fmt.Errorf("cachedContents returned HTTP %d: %s", status, textutil.Ellipsize(text, 200))
 	}
 	var v struct {
 		Name string `json:"name"`

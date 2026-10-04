@@ -4,6 +4,7 @@ package main
 // helpers. All pure: a temp file at most, never the network.
 
 import (
+	"khmer-ai-cs-go/internal/textutil"
 	"os"
 	"path/filepath"
 	"testing"
@@ -132,23 +133,23 @@ func TestOneLine(t *testing.T) {
 	// A query carrying a newline must not break the table's one-row-per-query
 	// layout. It stays ONE row with several columns, not a row with several
 	// columns and no name.
-	if got := oneLine("a\nb\tc", 64); got != "a b c" {
+	if got := textutil.OneLine("a\nb\tc", 64); got != "a b c" {
 		t.Errorf("oneLine = %q, want %q", got, "a b c")
 	}
 	// Truncation counts RUNES: a Khmer string cut at 4 must stay valid UTF-8 and
 	// keep its combining marks attached to their base characters.
 	khmer := "តើប្រាក់ខែ"
-	got := oneLine(khmer, 4)
+	got := textutil.OneLine(khmer, 4)
 	if len([]rune(got)) != 4 {
 		t.Errorf("oneLine truncation = %q (%d runes), want 4 runes", got, len([]rune(got)))
 	}
 	if got != string([]rune(khmer)[:3])+"…" {
 		t.Errorf("oneLine truncated to %q, want the first 3 runes plus an ellipsis", got)
 	}
-	if got := oneLine("short", 64); got != "short" {
+	if got := textutil.OneLine("short", 64); got != "short" {
 		t.Errorf("oneLine shortened a short string: %q", got)
 	}
-	if got := oneLine("", 64); got != "" {
+	if got := textutil.OneLine("", 64); got != "" {
 		t.Errorf("oneLine of empty = %q", got)
 	}
 }

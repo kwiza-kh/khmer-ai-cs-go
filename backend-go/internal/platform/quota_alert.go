@@ -3,6 +3,8 @@ package platform
 import (
 	"context"
 	"strconv"
+
+	"khmer-ai-cs-go/internal/textutil"
 )
 
 // Gemini quota and spend alerting.
@@ -22,7 +24,7 @@ func IsQuotaExhausted(err error) bool { return isQuotaExhausted(err) }
 func (p *Pipeline) AlertQuotaExhausted(ctx context.Context, err error) {
 	detail := "AI 回复已停止，回合已转人工。检查 Google AI Studio 的配额与预付款余额。"
 	if err != nil {
-		detail += "\n" + truncateRunes(err.Error(), 300)
+		detail += "\n" + textutil.TruncateRunes(err.Error(), 300)
 	}
 	p.PlatformAlert(ctx, "gemini-quota", "Gemini 配额/余额耗尽", detail)
 }

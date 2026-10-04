@@ -319,6 +319,105 @@
         "已为您转接"
       ],
       "notes": "转人工：那句承诺必须出现在**客户的语言**里，且必须命中 platform.handoffClaimPhrases（否则客户等一个永远没被通知的客服）。中文那句出现在高棉语回复里＝失败。"
+    },
+    {
+        "id": "lang-en-2",
+        "category": "contact",
+        "language": "en",
+        "question": "How do I get in touch with your company?",
+        "must_include": [
+            "+855 06663800|06663800"
+        ],
+        "must_not_contain": [
+            "Source 1",
+            "SVN-"
+        ],
+        "notes": "英文问、英文答；电话必须逐字（与 faq-s2 同一事实）"
+    },
+        {
+        "id": "lang-en-3",
+        "category": "delivery",
+        "language": "en",
+        "question": "How long does delivery take?",
+        "must_include": [
+            "2"
+        ],
+        "must_not_contain": [
+            "Source 1",
+            "SVN-"
+        ],
+        "notes": "英文交期 2 个工作日（同 faq-s25）"
+    },
+        {
+        "id": "lang-en-trap",
+        "category": "trap",
+        "language": "en",
+        "question": "What is the price of EPS-S at 40 kg/m3?",
+        "must_include": [],
+        "must_not_contain": [
+            "40 kg/m3 = $",
+            "40 kg/m³ = $",
+            "40kg/m3=$"
+        ],
+        "notes": "把高棉语的陷阱题镜像到英文。断言只锁安全性质：绝不编造 40 档价格。不要求点出 30 —— 同一题的高棉语版 (trap-grade-40) 会点出「最高 30」，英文版只说「没有记录」，两者都符合提示词的 “say so plainly, do not enumerate”，所以跨语言一致性该在提示词层解决，而不是写成英文用例的硬性断言 (2026-10-04 实测)"
+    },
+        {
+        "id": "lang-en-handoff",
+        "category": "handoff",
+        "language": "en",
+        "question": "Can I speak to a real human agent, please?",
+        "must_include": [
+            "Connecting you to a human agent"
+        ],
+        "must_not_contain": [
+            "已为您转接",
+            "ប្រគល់ការសន្ទនា"
+        ],
+        "notes": "英文转人工必须用英文那句承诺（并命中 platform.ReplyClaimsHandoff），不得混入中文/高棉语句子"
+    },
+        {
+        "id": "lang-zh-2",
+        "category": "ordering",
+        "language": "zh",
+        "question": "批量订购有折扣吗？折扣是怎么分档的？",
+        "must_include": [
+            "5",
+            "12"
+        ],
+        "must_not_contain": [
+            "Source 1",
+            "SVN-"
+        ],
+        "notes": "中文问、中文答；阶梯折扣两端点（同 faq-s20）"
+    },
+        {
+        "id": "lang-zh-3",
+        "category": "product",
+        "language": "zh",
+        "question": "你们有哪些密度等级？",
+        "must_include": [
+            "10",
+            "30"
+        ],
+        "must_not_contain": [
+            "Source 1",
+            "SVN-"
+        ],
+        "notes": "中文问密度区间两端点（同 faq-s7）"
+    },
+        {
+        "id": "lang-zh-handoff",
+        "category": "handoff",
+        "language": "zh",
+        "question": "能帮我转人工客服吗？",
+        "must_include": [
+            "已为您转接"
+        ],
+        "must_not_contain": [
+            "Connecting you to",
+            "ប្រគល់ការសន្ទនា"
+        ],
+        "notes": "中文转人工必须用中文那句承诺（并命中 ReplyClaimsHandoff），不得混入英/高棉语句子"
     }
   ]
 }

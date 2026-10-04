@@ -18,6 +18,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"khmer-ai-cs-go/internal/textutil"
 )
 
 // alertDedupTTL — a persistent condition (Redis down, quota exhausted) must not
@@ -332,5 +334,5 @@ func (p *Pipeline) alertOutboundFailures(ctx context.Context, platform, detail s
 	}
 	p.PlatformAlert(ctx, "outbound-failures-"+platform, "出站消息连续投递失败",
 		fmt.Sprintf("平台 %s 在 15 分钟内失败消息数已达 %d 条阈值，客户可能收不到回复。最近错误: %s",
-			platform, outboundAlertThreshold, truncateRunes(detail, 300)))
+			platform, outboundAlertThreshold, textutil.TruncateRunes(detail, 300)))
 }

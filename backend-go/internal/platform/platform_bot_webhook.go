@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"khmer-ai-cs-go/internal/textutil"
 )
 
 // ============================================
@@ -155,7 +157,7 @@ func (p *Pipeline) dispatchPlatformUpdate(ctx context.Context, upd *telegramUpda
 			p.SendPlatformMessage(ctx, chatID, merchantText(lang, "welcome"), nil)
 			return
 		}
-		userID, ok := p.RedeemLinkToken(ctx, arg, chatID, deref(&msg.Chat.Title))
+		userID, ok := p.RedeemLinkToken(ctx, arg, chatID, textutil.DerefString(&msg.Chat.Title))
 		if !ok {
 			p.SendPlatformMessage(ctx, chatID, merchantText(lang, "link_invalid"), nil)
 			return
@@ -250,7 +252,7 @@ func (p *Pipeline) dispatchPlatformUpdate(ctx context.Context, upd *telegramUpda
 	}
 	copyID, err := p.SendPlatformMessageID(ctx, adminChat,
 		fmt.Sprintf("💬 商家消息\n%s\n\n%s\n\n↩️ 直接回复本条消息即可回给该商家",
-			who, truncateRunes(text, 800)), nil)
+			who, textutil.TruncateRunes(text, 800)), nil)
 	if err == nil {
 		p.storeSupportRelay(ctx, adminChat, copyID, msg.Chat.ID, supportID)
 	}

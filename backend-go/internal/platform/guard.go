@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"khmer-ai-cs-go/internal/config"
+	"khmer-ai-cs-go/internal/textutil"
 	"khmer-ai-cs-go/internal/typesafe"
 )
 
@@ -30,7 +32,7 @@ type ReplyGuard struct {
 // api.typesafe.ai, so every slow-but-healthy call silently dropped the
 // semantic audit and left only the regex nets. Raised above that spread;
 // tunable so ops can re-measure from the host without a rebuild.
-var guardBudget = envMillis("JEV_GUARD_BUDGET_MS", 3000)
+var guardBudget = config.EnvMillis("JEV_GUARD_BUDGET_MS", 3*time.Second)
 
 // GuardReply asks Jev three yes/no checks about a reply plus, when knowledge
 // sources grounded it, whether every concrete claim is actually backed by
@@ -44,7 +46,7 @@ func (p *Pipeline) GuardReply(ctx context.Context, reply string, sources []strin
 	ctx, cancel := context.WithTimeout(ctx, guardBudget)
 	defer cancel()
 
-	state := map[string]any{"assistant_reply": truncateStr(reply, 800)}
+	state := map[string]any{"assistant_reply": textutil.Ellipsize(reply, 800)}
 	questions := map[string]typesafe.Question{
 		"promises_handoff": typesafe.Noul(
 			"Does `assistant_reply` tell or imply to the customer that a human agent will take over, " +
@@ -59,7 +61,7 @@ func (p *Pipeline) GuardReply(ctx context.Context, reply string, sources []strin
 	if len(sources) > 0 {
 		passages := make([]map[string]any, 0, len(sources))
 		for i, src := range sources {
-			passages = append(passages, map[string]any{"id": fmt.Sprintf("s%d", i), "text": truncateStr(src, 500)})
+			passages = append(passages, map[string]any{"id": fmt.Sprintf("s%d", i), "text": textutil.Ellipsize(src, 500)})
 		}
 		state["kb_passages"] = passages
 		questions["supported_by_sources"] = typesafe.Noul(
@@ -74,11 +76,11 @@ func (p *Pipeline) GuardReply(ctx context.Context, reply string, sources []strin
 		}
 		return ReplyGuard{}, false
 	}
-	bar := envFloat("JEV_GUARD_MIN", 0.70)
+	bar := config.EnvFloat("JEV_GUARD_MIN", 0.70)
 	// A false "promises handoff" verdict creates a bogus handoff request, so
 	// it sits behind a higher bar than the advisory checks (live false
 	// positive on a plain greeting at 0.70, 2026-09-21).
-	handoffBar := envFloat("JEV_GUARD_HANDOFF_MIN", 0.85)
+	handoffBar := config.EnvFloat("JEV_GUARD_HANDOFF_MIN", 0.85)
 	handoff, okH := resp.NoulValue("promises_handoff")
 	leaks, okL := resp.NoulValue("leaks_sources")
 	unsafe, okU := resp.NoulValue("unsafe_claim")

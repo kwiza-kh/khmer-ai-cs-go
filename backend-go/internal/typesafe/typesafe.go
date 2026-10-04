@@ -20,6 +20,8 @@ import (
 	"net/http"
 	"os"
 	"time"
+
+	"khmer-ai-cs-go/internal/textutil"
 )
 
 const (
@@ -250,14 +252,6 @@ func (c *Client) doJudge(ctx context.Context, body []byte) (*Response, bool, err
 	case http.StatusTooManyRequests, 529:
 		return nil, true, fmt.Errorf("typesafe: rate limited (%d)", httpResp.StatusCode)
 	default:
-		return nil, false, fmt.Errorf("typesafe: http %d: %s", httpResp.StatusCode, truncate(string(raw), 200))
+		return nil, false, fmt.Errorf("typesafe: http %d: %s", httpResp.StatusCode, textutil.Ellipsize(string(raw), 200))
 	}
-}
-
-func truncate(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	return string(r[:n]) + "…"
 }

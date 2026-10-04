@@ -12,6 +12,7 @@ import (
 
 	"khmer-ai-cs-go/internal/gemini"
 	"khmer-ai-cs-go/internal/rag"
+	"khmer-ai-cs-go/internal/textutil"
 )
 
 // ============================================
@@ -520,11 +521,11 @@ func (a *App) listHandoffs(w http.ResponseWriter, r *http.Request) (any, error) 
 		out = append(out, map[string]any{
 			"request_id": id, "session_id": sessionID, "status": status, "priority": priority,
 			"trigger": trigger, "reason": reason, "assigned_agent_id": assignedAgent,
-			"assigned_agent_name": derefStr(agentName), "created_at": createdAt,
-			"assigned_at": assignedAt, "resolved_at": resolvedAt, "resolution_note": derefStr(resolutionNote),
-			"platform": derefStr(platform), "platform_user_id": derefStr(puid),
-			"user_display_name": derefStr(displayName), "session_title": derefStr(sessionTitle),
-			"last_message": derefStr(lastMsg), "last_message_at": lastMsgAt,
+			"assigned_agent_name": textutil.DerefString(agentName), "created_at": createdAt,
+			"assigned_at": assignedAt, "resolved_at": resolvedAt, "resolution_note": textutil.DerefString(resolutionNote),
+			"platform": textutil.DerefString(platform), "platform_user_id": textutil.DerefString(puid),
+			"user_display_name": textutil.DerefString(displayName), "session_title": textutil.DerefString(sessionTitle),
+			"last_message": textutil.DerefString(lastMsg), "last_message_at": lastMsgAt,
 		})
 	}
 	// `total` is counted by its own query, so a short read here shows the page

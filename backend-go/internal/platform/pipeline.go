@@ -28,6 +28,7 @@ import (
 	"khmer-ai-cs-go/internal/replycache"
 	"khmer-ai-cs-go/internal/security"
 	"khmer-ai-cs-go/internal/storager2"
+	"khmer-ai-cs-go/internal/textutil"
 	"khmer-ai-cs-go/internal/typesafe"
 	"khmer-ai-cs-go/internal/usage"
 )
@@ -404,8 +405,8 @@ func (p *Pipeline) loadConfig(ctx context.Context, configID int32) (*configCred,
 	if err != nil {
 		return nil, fmt.Errorf("platform config not found")
 	}
-	cfg.PageID = deref(pageID)
-	cfg.InstagramBusiness = deref(igBusiness)
+	cfg.PageID = textutil.DerefString(pageID)
+	cfg.InstagramBusiness = textutil.DerefString(igBusiness)
 	if accessEnc != nil {
 		cfg.AccessToken, _ = p.Sealer.Decrypt(*accessEnc)
 	}
@@ -413,13 +414,6 @@ func (p *Pipeline) loadConfig(ctx context.Context, configID int32) (*configCred,
 		cfg.BotToken, _ = p.Sealer.Decrypt(*botEnc)
 	}
 	return &cfg, nil
-}
-
-func deref(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
 }
 
 // processInboundEvent runs one customer message end-to-end.
@@ -455,7 +449,7 @@ func (p *Pipeline) publishSession(ctx context.Context, userID int32, sessionID s
 func (p *Pipeline) ownerLanguage(ctx context.Context, userID int32) string {
 	var lang *string
 	_ = p.DB.QueryRow(ctx, "SELECT language FROM users WHERE user_id = $1", userID).Scan(&lang)
-	return deref(lang)
+	return textutil.DerefString(lang)
 }
 
 // isOpenNow — business-hours check (no configured rows → open). Times are
@@ -514,7 +508,7 @@ func (p *Pipeline) loadHistory(ctx context.Context, sessionID string, excludeMes
 		// silent amnesia made DB hiccups look like AI memory bugs.
 		p.Logger.Error("load history failed; AI will answer without context", "session_id", sessionID, "error", err.Error())
 		p.PlatformAlert(ctx, "history-load", "会话历史加载失败",
-			"AI 本轮将在无上下文状态下回复。session="+sessionID+" err="+truncateRunes(err.Error(), 200))
+			"AI 本轮将在无上下文状态下回复。session="+sessionID+" err="+textutil.TruncateRunes(err.Error(), 200))
 		return nil
 	}
 	defer rows.Close()
@@ -533,7 +527,7 @@ func (p *Pipeline) loadHistory(ctx context.Context, sessionID string, excludeMes
 	if err := rows.Err(); err != nil {
 		p.Logger.Error("load history failed; AI will answer without context", "session_id", sessionID, "error", err.Error())
 		p.PlatformAlert(ctx, "history-load", "会话历史加载失败",
-			"AI 本轮将在无上下文状态下回复。session="+sessionID+" err="+truncateRunes(err.Error(), 200))
+			"AI 本轮将在无上下文状态下回复。session="+sessionID+" err="+textutil.TruncateRunes(err.Error(), 200))
 		return nil
 	}
 	for i, j := 0, len(rev)-1; i < j; i, j = i+1, j-1 {
@@ -727,7 +721,7 @@ func handoffAcknowledgement(language string) string {
 	case "zh":
 		return "感谢您的消息。已为您转接人工客服，客服人员将尽快回复您。我已把这次对话转交人工处理。"
 	default:
-		return "សូមអរគុណសម្រាប់សាររបស់អ្នក។ ភ្នាក់ងារមនុស្សត្រូវបានជូនដំណឹង ហើយនឹងឆ្លើយតបក្នុងពេលឆាប់ៗនេះ។ ខ្ញុំនឹងប្រគល់ការសន្ទនានេះទៅឱ្យពួកគេ។"
+		return "សូមអរគុណសម្រាប់សាររបស់អ្នក។ " + gemini.KhmerHandoffSentence
 	}
 }
 
@@ -749,6 +743,7 @@ var humanRequestKeywords = []string{
 	"មនុស្សពិត", "និយាយជាមួយមនុស្ស", "ភ្នាក់ងារមនុស្ស", "ទាក់ទងមនុស្ស",
 	"សុំភ្នាក់ងារ", "និយាយជាមួយភ្នាក់ងារ", "ចង់និយាយជាមួយ", "បម្រើមនុស្ស",
 	"ភ្នាក់ងារជំនួយ", "មនុស្សបម្រើ", "សុំមនុស្ស",
+	"សុំបុគ្គលិក", "និយាយជាមួយបុគ្គលិក",
 	// Chinese
 	"人工", "真人", "转人工", "找客服", "人工客服", "转接客服", "我要客服",
 	"联系人工", "人工服务", "找个人", "接人工",
@@ -858,8 +853,11 @@ var handoffClaimPhrases = []string{
 	"connecting you", "i have transferred", "i've transferred", "transferring you",
 	"i'll connect you", "let me connect you", "handing you over", "i'll hand you over",
 	"i've escalated", "escalating this", "i have notified",
-	// Khmer (បាន/កំពុង = completed/ongoing handover)
+	// Khmer (បាន/កំពុង = completed/ongoing handover). The first phrase is the
+	// subject clause of gemini.KhmerHandoffSentence; the last is its second
+	// clause, which is what a full sentence actually matches on.
 	"បានប្រគល់ការសន្ទនា", "កំពុងប្រគល់ការសន្ទនា", "នឹងប្រគល់ការសន្ទនានេះទៅឱ្យ",
+	"បុគ្គលិករបស់យើងត្រូវបានជូនដំណឹង",
 }
 
 // ReplyClaimsHandoff reports whether an AI reply announced a handoff to the
@@ -963,7 +961,7 @@ func (p *Pipeline) createHandoffRequest(ctx context.Context, userID int32, sessi
 	}
 	_, _ = p.DB.Exec(ctx,
 		"UPDATE sessions SET status='handoff', escalated_at=COALESCE(escalated_at, NOW()) WHERE session_id=$1 AND status='active'", sessionID)
-	p.notifyUser(ctx, userID, "handoff", "New human-handoff request", trigger+": "+truncateStr(reason, 120), sessionID)
+	p.notifyUser(ctx, userID, "handoff", "New human-handoff request", trigger+": "+textutil.Ellipsize(reason, 120), sessionID)
 	p.publishSession(ctx, userID, sessionID)
 	return nil
 }
@@ -1110,13 +1108,13 @@ func TurnTrigger(v gemini.TurnVerdict, hasMatch, hasDocs bool) (string, string) 
 // the solo-noul valve sits at a high bar. The no-knowledge-base rule stays
 // unconditional: it rests on retrieval facts, not labels.
 func TurnTriggerFor(v gemini.TurnVerdict, rawNoul float64, hasMatch, hasDocs bool) (string, string) {
-	confirm := envFloat("JEV_RULE_CONFIRM_MIN", 0.70)
+	confirm := config.EnvFloat("JEV_RULE_CONFIRM_MIN", 0.70)
 	// JEV_RULE_SOLO_MIN is deliberately NOT JEV_TURN_ESCALATE_MIN. The two bars
 	// mean different things and have always carried different defaults (0.90
 	// here, 0.60 in judgeTurnJev) — yet both read the same variable. With no
 	// JEV_* set in production, which is the case, each site silently used its
 	// own default and tuning one would have moved the other.
-	solo := envFloat("JEV_RULE_SOLO_MIN", 0.90)
+	solo := config.EnvFloat("JEV_RULE_SOLO_MIN", 0.90)
 	ruleIntent := false
 	switch v.Intent {
 	case "complaint", "refund", "legal", "customization", "bulk_order":
@@ -1135,14 +1133,6 @@ func TurnTriggerFor(v gemini.TurnVerdict, rawNoul float64, hasMatch, hasDocs boo
 	return "", ""
 }
 
-func truncateStr(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	return string(r[:n]) + "…"
-}
-
 // notifyUser inserts a notification row and fans an inbox.notification event
 // out to the tenant's WebSocket connections (the bell polls too, so this is
 // an acceleration, not a guarantee). Handoff-type notifications also ping the
@@ -1155,7 +1145,7 @@ func (p *Pipeline) notifyUser(ctx context.Context, userID int32, kind, title, bo
 		Type: realtime.EventNotification, UserID: userID, SessionID: sessionID,
 	})
 	if kind == "handoff" {
-		text := title + " — " + truncateStr(body, 200)
+		text := title + " — " + textutil.Ellipsize(body, 200)
 		if link := p.sessionLink(sessionID); link != "" {
 			text += "\n🔗 " + link
 		}
@@ -1275,7 +1265,7 @@ var turnTopicValues = map[string]bool{
 // the fast-model fallback could run. guard/route each carry their own reply-path
 // budget; this call has none of its own, hence its own knob. The default sits
 // above the production server's measured 0.8-2.1s spread to api.typesafe.ai.
-var turnBudget = envMillis("JEV_TURN_BUDGET_MS", 4000)
+var turnBudget = config.EnvMillis("JEV_TURN_BUDGET_MS", 4*time.Second)
 
 // judgeTurnJev asks Jev the same four decisions JudgeTurn's prompt encodes,
 // as typed questions. Escalation is a Noul thresholded in code (calibrated on
@@ -1290,8 +1280,8 @@ func (p *Pipeline) judgeTurnJev(ctx context.Context, customerMsg, reply string, 
 	defer cancel()
 
 	state := map[string]any{
-		"customer_message": truncateStr(customerMsg, 600),
-		"assistant_reply":  truncateStr(reply, 600),
+		"customer_message": textutil.Ellipsize(customerMsg, 600),
+		"assistant_reply":  textutil.Ellipsize(reply, 600),
 		"kb_grounded":      hasMatch,
 	}
 	resp, err := p.Jev.Judge(ctx, state, map[string]typesafe.Question{
@@ -1365,7 +1355,7 @@ func (p *Pipeline) judgeTurnJev(ctx context.Context, customerMsg, reply string, 
 		Confidence: intentConf,
 		// The verdict's own escalate flag. A different bar from
 		// TurnTriggerFor's JEV_RULE_SOLO_MIN, hence a different knob.
-		Escalate: escalateP >= envFloat("JEV_TURN_ESCALATE_MIN", 0.60),
+		Escalate: escalateP >= config.EnvFloat("JEV_TURN_ESCALATE_MIN", 0.60),
 	}, topic, escalateP, true
 }
 
@@ -1373,28 +1363,6 @@ func (p *Pipeline) judgeTurnJev(ctx context.Context, customerMsg, reply string, 
 // escalate probability) for offline calibration tooling (cmd/jeveval).
 func (p *Pipeline) JudgeTurnJev(ctx context.Context, customerMsg, reply string, hasMatch bool) (gemini.TurnVerdict, string, float64, bool) {
 	return p.judgeTurnJev(ctx, customerMsg, reply, hasMatch)
-}
-
-// envFloat reads an optional float knob with a default.
-func envFloat(name string, fallback float64) float64 {
-	if v := os.Getenv(name); v != "" {
-		if f, err := strconv.ParseFloat(v, 64); err == nil {
-			return f
-		}
-	}
-	return fallback
-}
-
-// envMillis reads an optional millisecond knob with a default. Non-positive
-// or unparseable values keep the default: a zero budget would silently
-// disable the feature it bounds rather than tighten it.
-func envMillis(name string, fallbackMS int) time.Duration {
-	if v := os.Getenv(name); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			return time.Duration(n) * time.Millisecond
-		}
-	}
-	return time.Duration(fallbackMS) * time.Millisecond
 }
 
 // sendTyping shows the "typing…" hint while the AI composes (best effort).
@@ -1416,7 +1384,7 @@ func (p *Pipeline) sendTyping(ctx context.Context, cfg *configCred, recipientID 
 func (p *Pipeline) enqueueVoiceReply(ctx context.Context, ev *InboundEvent, cfg *configCred, sessionID, reply string) {
 	// Bill the TTS synthesis to the owning tenant (no HTTP request here).
 	ctx = usage.WithUser(ctx, cfg.UserID)
-	text := truncateStr(stripMarkdown(reply), 400)
+	text := textutil.Ellipsize(stripMarkdown(reply), 400)
 	if text == "" {
 		return
 	}
@@ -1656,7 +1624,7 @@ func (p *Pipeline) deliver(ctx context.Context, d *outboundDelivery) {
 		return
 	}
 	p.Logger.Warn("delivery failed", "delivery_id", d.DeliveryID, "error", err.Error())
-	msg := truncate(err.Error(), 1000)
+	msg := textutil.TruncateRunes(err.Error(), 1000)
 	if _, ok := err.(*PolicyError); ok || d.Attempts >= maxAttempts {
 		_, _ = p.DB.Exec(ctx, "UPDATE platform_outbox SET status='failed', next_attempt_at=$1, locked_at=NULL, last_error=$2, updated_at=NOW() WHERE delivery_id=$3", time.Now(), msg, d.DeliveryID)
 		p.alertOutboundFailures(ctx, d.Platform, msg)
@@ -1878,12 +1846,4 @@ func SplitPlatformText(text string, limit int) []string {
 		start = end
 	}
 	return out
-}
-
-func truncate(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	return string(r[:n])
 }

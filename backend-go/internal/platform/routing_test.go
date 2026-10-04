@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"khmer-ai-cs-go/internal/config"
 	"khmer-ai-cs-go/internal/typesafe"
 )
 
@@ -110,7 +111,7 @@ func TestRouteDecisionJunkGatesSilence(t *testing.T) {
 	}
 	// Silence is the worst failure mode of the router, so its bar must sit
 	// at or above every other route's default.
-	if envFloat("JEV_ROUTE_JUNK_MIN", 0.90) < envFloat("JEV_ROUTE_HANDOFF_MIN", 0.80) {
+	if config.EnvFloat("JEV_ROUTE_JUNK_MIN", 0.90) < config.EnvFloat("JEV_ROUTE_HANDOFF_MIN", 0.80) {
 		t.Fatal("junk bar lower than handoff bar — silencing is too eager")
 	}
 }

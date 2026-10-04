@@ -39,6 +39,16 @@ func (a *App) chatVoice(w http.ResponseWriter, r *http.Request) (any, error) {
 	}
 	transcript, err := a.Gemini.TranscribeAudio(r.Context(), data, normalizeMime(mime), language)
 	if err != nil {
+		// The vendor's reason (an unsupported container, a revoked credential) is the
+		// only thing that tells those two apart, and the customer-facing message
+		// cannot carry it. Without this line the whole class is invisible in
+		// production: on 2026-10-04 every failed voice upload logged exactly nothing,
+		// and the journal showed only the generic 500 the handler returned.
+		if a.Logger != nil {
+			a.Logger.Warn("voice transcription failed",
+				"error", err.Error(), "mime", normalizeMime(mime),
+				"language", language, "bytes", len(data))
+		}
 		return nil, ErrInternal("语音转写失败")
 	}
 	return map[string]any{"transcript": transcript, "language": language, "used_mock": !a.Gemini.IsConfigured()}, nil

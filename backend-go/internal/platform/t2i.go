@@ -31,6 +31,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"khmer-ai-cs-go/internal/textutil"
 )
 
 // T2IThresholdDefault is the minimum reply length that is worth an image,
@@ -172,7 +174,7 @@ func (r *HTTPRenderer) Render(ctx context.Context, text string) ([]byte, string,
 		return nil, "", fmt.Errorf("t2i: read render response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, "", fmt.Errorf("t2i: render endpoint returned HTTP %d: %s", resp.StatusCode, truncateRunes(string(body), 200))
+		return nil, "", fmt.Errorf("t2i: render endpoint returned HTTP %d: %s", resp.StatusCode, textutil.TruncateRunes(string(body), 200))
 	}
 	if len(body) == 0 {
 		return nil, "", errors.New("t2i: render endpoint returned no image")

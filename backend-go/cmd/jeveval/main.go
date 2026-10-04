@@ -24,6 +24,7 @@ import (
 	"khmer-ai-cs-go/internal/gemini"
 	"khmer-ai-cs-go/internal/platform"
 	"khmer-ai-cs-go/internal/rag"
+	"khmer-ai-cs-go/internal/textutil"
 	"khmer-ai-cs-go/internal/typesafe"
 )
 
@@ -377,7 +378,7 @@ func runAgree(csvPath string, workers int) {
 			if len(samples) < 12 {
 				samples = append(samples, fmt.Sprintf("  jev=%s/%s/esc=%t gem=%s/%s/esc=%t | %s",
 					p.jv.Intent, p.jv.Sentiment, p.jv.Escalate, p.gv.Intent, p.gv.Sentiment, p.gv.Escalate,
-					truncateRunesLocal(p.t.customerMsg, 60)))
+					textutil.Ellipsize(p.t.customerMsg, 60)))
 			}
 		}
 	}
@@ -396,14 +397,6 @@ func runAgree(csvPath string, workers int) {
 func turnTrigger(v gemini.TurnVerdict, hasMatch bool) bool {
 	tr, _ := platform.TurnTrigger(v, hasMatch, true)
 	return tr != ""
-}
-
-func truncateRunesLocal(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	return string(r[:n]) + "…"
 }
 
 // runRerank A/Bs retrieval with and without the Jev reranker on the live

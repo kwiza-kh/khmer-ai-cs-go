@@ -35,6 +35,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"khmer-ai-cs-go/internal/textutil"
 )
 
 // Stmt is one SQL statement recovered from the source.
@@ -58,15 +60,7 @@ type Finding struct {
 }
 
 func (f Finding) String() string {
-	return fmt.Sprintf("%s [%s] %s\n    %s", f.Stmt, f.Code, oneLine(f.Stmt.SQL), f.Message)
-}
-
-func oneLine(s string) string {
-	s = strings.Join(strings.Fields(s), " ")
-	if len(s) > 200 {
-		s = s[:200] + "…"
-	}
-	return s
+	return fmt.Sprintf("%s [%s] %s\n    %s", f.Stmt, f.Code, textutil.OneLine(f.Stmt.SQL, 200), f.Message)
 }
 
 // Report is the outcome of a verification run.

@@ -3,6 +3,9 @@ package rag
 import (
 	"strings"
 	"testing"
+
+	"khmer-ai-cs-go/internal/config"
+	"khmer-ai-cs-go/internal/textutil"
 )
 
 func TestDiversifyByDoc(t *testing.T) {
@@ -31,10 +34,10 @@ func TestDiversifyByDoc(t *testing.T) {
 
 func TestDefaultTopKEnvOverride(t *testing.T) {
 	t.Setenv("RAG_TOP_K", "7")
-	if got := envI("RAG_TOP_K", int(DefaultTopK)); got != 7 {
-		t.Fatalf("envI RAG_TOP_K = %d, want 7", got)
+	if got := config.EnvPositiveInt("RAG_TOP_K", int(DefaultTopK)); got != 7 {
+		t.Fatalf("EnvPositiveInt RAG_TOP_K = %d, want 7", got)
 	}
-	if got := envI("RAG_TOP_K_UNSET", int(DefaultTopK)); got != int(DefaultTopK) {
+	if got := config.EnvPositiveInt("RAG_TOP_K_UNSET", int(DefaultTopK)); got != int(DefaultTopK) {
 		t.Fatalf("fallback = %d, want %d", got, DefaultTopK)
 	}
 }
@@ -98,7 +101,7 @@ func TestGroundingExcerptKeepsAListWhole(t *testing.T) {
 	blob := strings.Repeat("ក", 400)
 	hard := groundingExcerpt(blob, 100, 0)
 	if !strings.HasSuffix(hard, truncationMark) {
-		t.Errorf("a hard cut must be marked: %q", truncateRunes(hard, 60))
+		t.Errorf("a hard cut must be marked: %q", textutil.Ellipsize(hard, 60))
 	}
 	if n := len([]rune(hard)); n > 100+len([]rune(truncationMark)) {
 		t.Errorf("marker blew the budget: %d runes", n)
@@ -113,7 +116,7 @@ func TestGroundingExcerptKeepsAListWhole(t *testing.T) {
 	if got := groundingExcerpt("anything at all", 0, 0); got != "" {
 		t.Errorf("room=0 must yield an empty excerpt, got %q", got)
 	}
-	if got := truncateRunes("abcdef", 0); got != "" {
-		t.Errorf("truncateRunes(n<=0) must be empty (and must not panic), got %q", got)
+	if got := textutil.Ellipsize("abcdef", 0); got != "" {
+		t.Errorf("Ellipsize(n<=0) must be empty (and must not panic), got %q", got)
 	}
 }

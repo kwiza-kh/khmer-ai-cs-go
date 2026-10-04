@@ -5,19 +5,18 @@ package db
 import (
 	"context"
 	"fmt"
-	"os"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"khmer-ai-cs-go/internal/config"
 )
 
 // Connect builds the pool from DATABASE_URL with the same sizing knobs as the
 // Rust backend (DATABASE_POOL_MAX/MIN), then pings to fail fast.
 func Connect(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
-	max := clamp(envInt("DATABASE_POOL_MAX", 30), 5, 200)
-	min := envInt("DATABASE_POOL_MIN", 0)
+	max := clamp(config.EnvInt("DATABASE_POOL_MAX", 30), 5, 200)
+	min := config.EnvInt("DATABASE_POOL_MIN", 0)
 	if min > max {
 		min = max
 	}
@@ -40,15 +39,6 @@ func Connect(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 		return nil, fmt.Errorf("postgres ping failed: %w", err)
 	}
 	return pool, nil
-}
-
-func envInt(key string, fallback int) int {
-	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
-			return n
-		}
-	}
-	return fallback
 }
 
 func clamp(v, lo, hi int) int {

@@ -2,8 +2,10 @@ package gemini
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -30,8 +32,20 @@ func TestGenerateQueryEmbeddingHonoursBudget(t *testing.T) {
 
 	s := New("test-key", "gemini-test", 128)
 	start := time.Now()
-	if _, err := s.GenerateQueryEmbedding(context.Background(), "how much is shipping"); err == nil {
+	_, err := s.GenerateQueryEmbedding(context.Background(), "how much is shipping")
+	if err == nil {
 		t.Fatal("a hung embed endpoint must surface as an error, not a hang")
+	}
+	// The error must NAME the budget. The caller's only signal is a WARN
+	// ("vector knowledge search failed; retaining lexical results") carrying this
+	// string, and an unlabelled "context deadline exceeded" is indistinguishable
+	// from a customer hanging up — which is the difference between "this host's
+	// embed hop is too slow for the budget" and "nobody was waiting".
+	if !strings.Contains(err.Error(), "GEMINI_EMBED_BUDGET_MS") {
+		t.Errorf("embed budget error must name the knob, got: %v", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("the labelled error must still unwrap to the deadline, got: %v", err)
 	}
 	took := time.Since(start)
 	// Generous ceiling: anything near the 60s client timeout, or the three
