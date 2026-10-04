@@ -18,7 +18,7 @@ import {
 } from "@/components/ui/dialog";
 import {
   BookOpen, ChevronDown, ChevronUp, File, FileCode2, FileSpreadsheet, FileText,
-  FileType2, GitCompareArrows, Loader2, Pencil, RotateCw, Save, Search, Sparkles, ThumbsDown, ThumbsUp,
+  FileType2, FolderOpen, GitCompareArrows, Loader2, Pencil, RotateCw, Save, Search, Sparkles, ThumbsDown, ThumbsUp,
   Trash2, Plus, Wand2, Check, X, type LucideIcon,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -41,6 +41,10 @@ interface FileGroup {
   icon: LucideIcon;
   iconClass: string;
 }
+
+// Sentinel for the "no category" bucket. A real category can never be this, and
+// a value that cannot collide keeps uncategorized documents sorted last.
+const UNCATEGORIZED_KEY = "\u0000uncategorized";
 
 const FILE_GROUPS: FileGroup[] = [
   { kind: "txt", labelKey: "kb.groupTxt", extension: "TXT", icon: FileText, iconClass: "bg-sky-500/10 text-sky-600 dark:text-sky-400" },
@@ -82,7 +86,10 @@ export default function KnowledgePage() {
   const [searching, setSearching] = useState(false);
   const [retryingDocId, setRetryingDocId] = useState<number | null>(null);
   const [deletingDocId, setDeletingDocId] = useState<number | null>(null);
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<FileKind>>(() => new Set());
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set());
+  // Per-category expansion of the "AI compiled files" list. Collapsed by default:
+  // compiled summaries exist to be retrieved, they do not need to be browsed.
+  const [compiledOpen, setCompiledOpen] = useState<Set<string>>(() => new Set());
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewDoc, setPreviewDoc] = useState<KnowledgeDocument | null>(null);
@@ -211,12 +218,35 @@ export default function KnowledgePage() {
     return () => window.clearInterval(interval);
   }, [hasActiveIndexing, loadDocs]);
 
-  const documentGroups = useMemo(() => FILE_GROUPS
-    .map((group) => ({
-      ...group,
-      documents: documents.filter((doc) => fileKindFromTitle(doc.title) === group.kind),
-    }))
-    .filter((group) => group.documents.length > 0), [documents]);
+  // The library groups by category. It used to group by file extension, which
+  // told this tenant nothing: every document here is uploaded from a script with
+  // a slug title (SVN-011-panel-types), so fileKindFromTitle() put all 42 of them
+  // in one "other" bucket. Documents without a category keep their own group, and
+  // the compiled summaries are split out of the grid — they are derived, they
+  // outnumber nothing, and 12 rows of "· AI 编译摘要" beside their source is what
+  // made the list look like a dump.
+  const documentGroups = useMemo(() => {
+    const groups: { key: string; label: string; sources: KnowledgeDocument[]; compiled: KnowledgeDocument[] }[] = [];
+    const index = new Map<string, number>();
+    for (const doc of documents) {
+      const category = (doc.category || "").trim();
+      const key = category || UNCATEGORIZED_KEY;
+      let at = index.get(key);
+      if (at === undefined) {
+        at = groups.length;
+        index.set(key, at);
+        groups.push({ key, label: category || t("kb.uncategorized"), sources: [], compiled: [] });
+      }
+      if (doc.origin === "compiled") groups[at].compiled.push(doc);
+      else groups[at].sources.push(doc);
+    }
+    // Uncategorized last, the named categories alphabetically.
+    return groups.sort((a, b) => {
+      if (a.key === UNCATEGORIZED_KEY) return 1;
+      if (b.key === UNCATEGORIZED_KEY) return -1;
+      return a.label.localeCompare(b.label);
+    });
+  }, [documents, t]);
 
   const readyCount = documents.filter((doc) => doc.index_status === "ready").length;
   const previewKind = previewDoc ? fileKindFromTitle(previewDoc.title) : "other";
@@ -314,11 +344,20 @@ export default function KnowledgePage() {
     }
   };
 
-  const toggleGroup = (kind: FileKind) => {
+  const toggleGroup = (key: string) => {
     setCollapsedGroups((current) => {
       const next = new Set(current);
-      if (next.has(kind)) next.delete(kind);
-      else next.add(kind);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const toggleCompiled = (key: string) => {
+    setCompiledOpen((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
   };
@@ -550,25 +589,27 @@ export default function KnowledgePage() {
             ) : documentGroups.length === 0 ? (
               <Card><CardContent className="py-12"><EmptyState icon={FileText} title={t("kb.emptyTitle")} description={t("kb.emptyDesc")} action={<KnowledgeUploadDialog onUploaded={loadDocs} />} /></CardContent></Card>
             ) : documentGroups.map((group) => {
-              const collapsed = collapsedGroups.has(group.kind);
-              const GroupIcon = group.icon;
+              const collapsed = collapsedGroups.has(group.key);
+              const compiledExpanded = compiledOpen.has(group.key);
               return (
-                <Card key={group.kind} className="overflow-hidden border-border/80">
+                <Card key={group.key} className="overflow-hidden border-border/80">
                   <CardHeader className="flex flex-row items-center justify-between gap-3 border-b border-border bg-muted/20 px-4 py-3">
                     <div className="flex min-w-0 items-center gap-3">
-                      <div className={cn("flex size-8 shrink-0 items-center justify-center rounded-lg", group.iconClass)}>
-                        <GroupIcon className="size-4" />
+                      <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                        <FolderOpen className="size-4" />
                       </div>
                       <div className="min-w-0">
-                        <CardTitle className="text-sm">{t(group.labelKey)}</CardTitle>
-                        <p className="mt-0.5 text-xs text-muted-foreground">{tf("kb.groupSaved", { n: group.documents.length })}</p>
+                        <CardTitle className="text-sm">{group.label}</CardTitle>
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                          {tf("kb.groupBreakdown", { sources: group.sources.length, compiled: group.compiled.length })}
+                        </p>
                       </div>
                     </div>
                     <Button
                       type="button"
                       variant="ghost"
                       size="sm"
-                      onClick={() => toggleGroup(group.kind)}
+                      onClick={() => toggleGroup(group.key)}
                       aria-expanded={!collapsed}
                       className="h-8 shrink-0 gap-1.5 px-2 text-xs"
                     >
@@ -579,7 +620,7 @@ export default function KnowledgePage() {
                   {!collapsed && (
                     <CardContent className="p-3 sm:p-4">
                       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                        {group.documents.map((doc) => {
+                        {group.sources.map((doc) => {
                           const kind = fileKindFromTitle(doc.title);
                           const metadata = FILE_GROUPS.find((entry) => entry.kind === kind) ?? FILE_GROUPS[5];
                           const DocumentIcon = metadata.icon;
@@ -641,6 +682,61 @@ export default function KnowledgePage() {
                           );
                         })}
                       </div>
+
+                      {group.compiled.length > 0 && (
+                        <div className="mt-3 overflow-hidden rounded-xl border border-border/70 bg-muted/20">
+                          <button
+                            type="button"
+                            onClick={() => toggleCompiled(group.key)}
+                            aria-expanded={compiledExpanded}
+                            className="flex w-full items-center justify-between gap-2 px-3.5 py-2.5 text-left transition-colors hover:bg-muted/40"
+                          >
+                            <span className="flex items-center gap-2 text-xs font-medium">
+                              <Wand2 className="size-3.5 text-info" />
+                              {tf("kb.compiledFiles", { n: group.compiled.length })}
+                            </span>
+                            {compiledExpanded ? <ChevronUp className="size-3.5 text-muted-foreground" /> : <ChevronDown className="size-3.5 text-muted-foreground" />}
+                          </button>
+                          {compiledExpanded && (
+                            <ul className="divide-y divide-border/60 border-t border-border/60">
+                              {group.compiled.map((doc) => {
+                                const metadata = FILE_GROUPS.find((entry) => entry.kind === fileKindFromTitle(doc.title)) ?? FILE_GROUPS[5];
+                                const DocumentIcon = metadata.icon;
+                                return (
+                                  <li key={doc.doc_id} className="flex items-center gap-2.5 px-3.5 py-2">
+                                    <div className={cn("flex size-7 shrink-0 items-center justify-center rounded-md", metadata.iconClass)}>
+                                      <DocumentIcon className="size-3.5" />
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => { void handlePreview(doc); }}
+                                      className="min-w-0 flex-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                    >
+                                      <p className="truncate text-xs font-medium">{doc.title}</p>
+                                      <p className="truncate text-[10px] text-muted-foreground">
+                                        {doc.compiled_from_title ? tf("kb.compiledFrom", { title: doc.compiled_from_title }) : ""}
+                                        {doc.compiled_from_title ? " · " : ""}
+                                        {tf("kb.chunks", { n: doc.chunk_count })}
+                                      </p>
+                                    </button>
+                                    <IndexStatusBadge status={doc.index_status} />
+                                    <button
+                                      type="button"
+                                      title={tf("kb.deleteTitle", { title: doc.title })}
+                                      aria-label={tf("kb.deleteTitle", { title: doc.title })}
+                                      onClick={() => { void handleDelete(doc); }}
+                                      disabled={deletingDocId === doc.doc_id}
+                                      className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-danger disabled:opacity-50"
+                                    >
+                                      {deletingDocId === doc.doc_id ? <Loader2 className="size-3 animate-spin" /> : <Trash2 className="size-3" />}
+                                    </button>
+                                  </li>
+                                );
+                              })}
+                            </ul>
+                          )}
+                        </div>
+                      )}
                     </CardContent>
                   )}
                 </Card>
