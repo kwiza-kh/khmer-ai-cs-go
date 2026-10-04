@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   deleteKnowledge, dismissKnowledgeContradiction, getKnowledgeDocument, getRagSettings, knowledgeDocQuality,
   knowledgeGaps, knowledgeGapDraft, listKnowledge, listKnowledgeContradictions, ragQuery,
@@ -18,7 +19,7 @@ import {
 } from "@/components/ui/dialog";
 import {
   BookOpen, ChevronDown, ChevronUp, File, FileCode2, FileSpreadsheet, FileText,
-  FileType2, FolderOpen, GitCompareArrows, Loader2, Pencil, RotateCw, Save, Search, Sparkles, ThumbsDown, ThumbsUp,
+  FileType2, FolderOpen, GitCompareArrows, Loader2, Pencil, RotateCw, Save, Search, Sparkles, ThumbsUp,
   Trash2, Plus, Wand2, Check, X, type LucideIcon,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -77,6 +78,13 @@ function isEditableFileKind(kind: FileKind): boolean {
 
 export default function KnowledgePage() {
   const { t, tf } = useI18n();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  // The top-bar search hands this page ?q= (and ?doc= when a result was picked).
+  // Both stay in the URL — there is no local mirror to keep in sync.
+  const urlQuery = searchParams.get("q") ?? "";
+  const filterNeedle = urlQuery.trim().toLowerCase();
+  const deepLinkDocId = Number(searchParams.get("doc") ?? 0) || 0;
   const [documents, setDocuments] = useState<KnowledgeDocument[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -225,10 +233,18 @@ export default function KnowledgePage() {
   // the compiled summaries are split out of the grid — they are derived, they
   // outnumber nothing, and 12 rows of "· AI 编译摘要" beside their source is what
   // made the list look like a dump.
-  const documentGroups = useMemo(() => {
+  // ?q= narrows the library, and the whole derivation is deliberately a plain
+  // expression rather than useMemo: the React Compiler cannot preserve a manual
+  // memo over `documents` here, so a memo bought nothing but a lint error.
+  // Recomputing over a tenant's library (tens of rows) costs nothing.
+  const documentGroups = (() => {
     const groups: { key: string; label: string; sources: KnowledgeDocument[]; compiled: KnowledgeDocument[] }[] = [];
     const index = new Map<string, number>();
-    for (const doc of documents) {
+    const visible = filterNeedle
+      ? documents.filter((doc) =>
+          doc.title.toLowerCase().includes(filterNeedle) || (doc.category ?? "").toLowerCase().includes(filterNeedle))
+      : documents;
+    for (const doc of visible) {
       const category = (doc.category || "").trim();
       const key = category || UNCATEGORIZED_KEY;
       let at = index.get(key);
@@ -246,7 +262,7 @@ export default function KnowledgePage() {
       if (b.key === UNCATEGORIZED_KEY) return -1;
       return a.label.localeCompare(b.label);
     });
-  }, [documents, t]);
+  })();
 
   const readyCount = documents.filter((doc) => doc.index_status === "ready").length;
   const previewKind = previewDoc ? fileKindFromTitle(previewDoc.title) : "other";
@@ -326,6 +342,21 @@ export default function KnowledgePage() {
       setPreviewLoading(false);
     }
   };
+
+  // ?doc=<id> opens that document — the target a top-bar knowledge result links
+  // to. Deferred by a tick: opening it synchronously from the effect body is the
+  // cascading-render pattern the hooks lint (rightly) bans. The ref keeps this
+  // from re-opening on every render, which is why depending on handlePreview
+  // (a fresh function each render) is harmless here.
+  const deepLinkOpenedRef = useRef(0);
+  useEffect(() => {
+    if (!deepLinkDocId || deepLinkOpenedRef.current === deepLinkDocId) return;
+    const doc = documents.find((entry) => entry.doc_id === deepLinkDocId);
+    if (!doc) return;
+    deepLinkOpenedRef.current = deepLinkDocId;
+    const timer = window.setTimeout(() => { void handlePreview(doc); }, 0);
+    return () => window.clearTimeout(timer);
+  }, [deepLinkDocId, documents, handlePreview]);
 
   const handleSave = async () => {
     if (!previewDoc || !editContent.trim()) return;
@@ -579,7 +610,19 @@ export default function KnowledgePage() {
                 <p className="text-xs font-bold uppercase tracking-[0.1em] text-muted-foreground">{t("kb.savedKnowledge")}</p>
                 <h2 className="mt-1 text-lg font-semibold tracking-tight">{t("kb.docLibrary")}</h2>
               </div>
-              <Badge variant="secondary" className="h-6 px-2.5 text-xs">{tf("kb.docCount", { n: total })}</Badge>
+              <div className="flex items-center gap-2">
+                {filterNeedle && (
+                  <button
+                    type="button"
+                    onClick={() => router.replace("/knowledge")}
+                    className="flex items-center gap-1.5 rounded-full border border-border/70 bg-muted/40 px-2.5 py-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    {tf("kb.filterActive", { q: urlQuery })}
+                    <X className="size-3" />
+                  </button>
+                )}
+                <Badge variant="secondary" className="h-6 px-2.5 text-xs">{tf("kb.docCount", { n: total })}</Badge>
+              </div>
             </div>
 
             {loading ? (
@@ -587,7 +630,11 @@ export default function KnowledgePage() {
                 {[1, 2, 3].map((index) => <Skeleton key={index} className="h-44 rounded-xl" />)}
               </div>
             ) : documentGroups.length === 0 ? (
-              <Card><CardContent className="py-12"><EmptyState icon={FileText} title={t("kb.emptyTitle")} description={t("kb.emptyDesc")} action={<KnowledgeUploadDialog onUploaded={loadDocs} />} /></CardContent></Card>
+              filterNeedle ? (
+                <Card><CardContent className="py-12"><EmptyState icon={Search} title={t("nav.searchNoResults")} description={tf("kb.filterActive", { q: urlQuery })} action={<Button variant="outline" onClick={() => router.replace("/knowledge")}>{t("kb.filterClear")}</Button>} /></CardContent></Card>
+              ) : (
+                <Card><CardContent className="py-12"><EmptyState icon={FileText} title={t("kb.emptyTitle")} description={t("kb.emptyDesc")} action={<KnowledgeUploadDialog onUploaded={loadDocs} />} /></CardContent></Card>
+              )
             ) : documentGroups.map((group) => {
               const collapsed = collapsedGroups.has(group.key);
               const compiledExpanded = compiledOpen.has(group.key);

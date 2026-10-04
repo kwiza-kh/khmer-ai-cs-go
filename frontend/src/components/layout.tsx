@@ -6,12 +6,13 @@ import { usePathname, useRouter } from "next/navigation";
 import useSWR from "swr";
 import { motion } from "motion/react";
 import { useAuth } from "@/lib/auth-client";
-import { listHumanHandoffRequests } from "@/lib/api";
+import { listHumanHandoffRequests, listInbox, listKnowledge } from "@/lib/api";
+import type { InboxItem, KnowledgeDocument } from "@/lib/api";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { RelayChatLogo } from "@/components/relaychat-logo";
 import { cn } from "@/lib/utils";
 import {
-  BookOpen, Globe, Users, Settings, LogOut, Menu, Search,
+  BookOpen, Globe, Users, Settings, LogOut, Menu, Search, Loader2,
   Gauge, HelpCircle, Inbox, UserCheck, ShieldCheck, Coins, Cpu, FlaskConical,
   MessageCircle, ChevronRight, Bot, type LucideIcon,
 } from "lucide-react";
@@ -151,6 +152,78 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // Top-bar search: conversations (through the same server-side filter the inbox
+  // uses) plus knowledge-base documents. There is no document-search endpoint, so
+  // the library is fetched once and filtered here — a tenant's library is tens of
+  // rows, and typing must not re-query it on every keystroke.
+  //
+  // State is only written from the debounce callback, never from the effect body:
+  // a synchronous write there re-renders on every keystroke.
+  const searchWrapRef = React.useRef<HTMLDivElement>(null);
+  const libraryRef = React.useRef<KnowledgeDocument[] | null>(null);
+  const [searchOpen, setSearchOpen] = React.useState(false);
+  const [searchBusy, setSearchBusy] = React.useState(false);
+  const [searchResults, setSearchResults] = React.useState<{ sessions: InboxItem[]; docs: KnowledgeDocument[] }>({
+    sessions: [],
+    docs: [],
+  });
+  const searchTerm = globalSearch.trim();
+  const searchLive = searchTerm.length >= 2;
+  const closeSearch = React.useCallback(() => {
+    setSearchOpen(false);
+    setGlobalSearch("");
+  }, []);
+
+  // Fetched once per layout mount, then filtered in memory (see above).
+  const loadLibrary = React.useCallback(async () => {
+    if (!libraryRef.current) {
+      const res = await listKnowledge(1, 200);
+      libraryRef.current = res.data ?? [];
+    }
+    return libraryRef.current;
+  }, []);
+
+  React.useEffect(() => {
+    if (!searchLive) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      setSearchBusy(true);
+      void (async () => {
+        try {
+          const [inbox, library] = await Promise.all([
+            listInbox({ q: searchTerm, pageSize: 5 }),
+            loadLibrary(),
+          ]);
+          if (cancelled) return;
+          const needle = searchTerm.toLowerCase();
+          setSearchResults({
+            sessions: inbox.data ?? [],
+            docs: library
+              .filter((doc) => doc.title.toLowerCase().includes(needle) || (doc.category ?? "").toLowerCase().includes(needle))
+              .slice(0, 5),
+          });
+        } catch {
+          if (!cancelled) setSearchResults({ sessions: [], docs: [] });
+        } finally {
+          if (!cancelled) setSearchBusy(false);
+        }
+      })();
+    }, 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [searchTerm, searchLive, loadLibrary]);
+
+  // The panel is transient: Escape, and a click anywhere outside, close it.
+  React.useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      if (!searchWrapRef.current?.contains(e.target as Node)) setSearchOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, []);
+
   // inbox.notification realtime events refresh the bell immediately.
   // Every session mutation (new handoff, takeover, resolve) fans out as an
   // inbox.session event too — reuse the same socket to keep the sidebar's
@@ -213,24 +286,99 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           )}
           {/* Search + actions */}
           <div className="ml-auto flex items-center gap-3">
-            <div className="relative hidden md:block w-72">
+            <div ref={searchWrapRef} className="relative hidden md:block w-72">
               <Search className="absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground/50" />
               <input
                 ref={searchRef}
                 value={globalSearch}
-                onChange={(e) => setGlobalSearch(e.target.value)}
+                onChange={(e) => { setGlobalSearch(e.target.value); setSearchOpen(true); }}
+                onFocus={() => setSearchOpen(true)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && globalSearch.trim()) {
-                    router.push(`/inbox?q=${encodeURIComponent(globalSearch.trim())}`);
+                  if (e.key === "Escape") { setSearchOpen(false); return; }
+                  if (e.key === "Enter" && searchTerm) {
+                    setSearchOpen(false);
+                    router.push(`/inbox?q=${encodeURIComponent(searchTerm)}`);
                   }
                 }}
                 placeholder={t("nav.search")}
-                role="searchbox"
+                role="combobox"
                 aria-label={t("nav.search")}
+                aria-autocomplete="list"
+                aria-expanded={searchOpen && searchLive}
+                aria-controls="global-search-results"
                 aria-keyshortcuts="Meta+k Control+k"
                 className="h-9 w-full rounded-[10px] border border-border/80 bg-background/60 pl-9 pr-12 text-[13px] text-foreground placeholder:text-muted-foreground/50 transition-all focus:outline-none focus:border-ring/50 focus:ring-2 focus:ring-ring/25"
               />
               <span className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-md border border-border/70 bg-muted/80 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">⌘K</span>
+
+              {searchOpen && searchLive && (
+                <div id="global-search-results" className="absolute right-0 top-full z-50 mt-2 w-96 overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground shadow-lg">
+                  {searchBusy && searchResults.sessions.length === 0 && searchResults.docs.length === 0 && (
+                    <p className="flex items-center gap-2 px-3.5 py-3 text-xs text-muted-foreground">
+                      <Loader2 className="size-3.5 animate-spin" />
+                    </p>
+                  )}
+                  {!searchBusy && searchResults.sessions.length === 0 && searchResults.docs.length === 0 && (
+                    <p className="px-3.5 py-3 text-xs text-muted-foreground">{t("nav.searchNoResults")}</p>
+                  )}
+                  {searchResults.sessions.length > 0 && (
+                    <div>
+                      <p className="border-b border-border/70 bg-muted/30 px-3.5 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                        {t("nav.inbox")}
+                      </p>
+                      {searchResults.sessions.map((session) => (
+                        <button
+                          key={session.session_id}
+                          type="button"
+                          onClick={() => { closeSearch(); router.push(`/inbox?session=${encodeURIComponent(session.session_id)}`); }}
+                          className="flex w-full items-center gap-2.5 px-3.5 py-2 text-left transition-colors hover:bg-muted/50"
+                        >
+                          <Inbox className="size-3.5 shrink-0 text-muted-foreground" />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-xs font-medium">
+                              {session.user_display_name || session.title || session.platform_user_id || t("inbox.anonymous")}
+                            </span>
+                            {session.last_message && (
+                              <span className="block truncate text-[10px] text-muted-foreground">{session.last_message}</span>
+                            )}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {searchResults.docs.length > 0 && (
+                    <div className="border-t border-border/70">
+                      <p className="border-b border-border/70 bg-muted/30 px-3.5 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                        {t("nav.knowledge")}
+                      </p>
+                      {searchResults.docs.map((doc) => (
+                        <button
+                          key={doc.doc_id}
+                          type="button"
+                          onClick={() => { closeSearch(); router.push(`/knowledge?doc=${doc.doc_id}`); }}
+                          className="flex w-full items-center gap-2.5 px-3.5 py-2 text-left transition-colors hover:bg-muted/50"
+                        >
+                          <BookOpen className="size-3.5 shrink-0 text-muted-foreground" />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-xs font-medium">{doc.title}</span>
+                            {doc.category && (
+                              <span className="block truncate text-[10px] text-muted-foreground">{doc.category}</span>
+                            )}
+                          </span>
+                        </button>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() => { closeSearch(); router.push(`/knowledge?q=${encodeURIComponent(searchTerm)}`); }}
+                        className="flex w-full items-center justify-between gap-2 border-t border-border/70 px-3.5 py-2 text-[11px] font-medium text-primary transition-colors hover:bg-muted/50"
+                      >
+                        {t("nav.searchAllInKb")}
+                        <ChevronRight className="size-3" />
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
             <NotificationBell />
           </div>
