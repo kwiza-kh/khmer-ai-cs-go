@@ -29,16 +29,26 @@ func tenantOwnerAllowed(isAdmin, isAgent bool) bool {
 
 // isTenantOwner reports whether the caller may manage this tenant's team or
 // permanently delete its sessions.
-//
-// The lookup fails closed: it guards destructive and team-management actions, and
-// a database hiccup must not hand an agent owner-level powers.
 func (a *App) isTenantOwner(ctx context.Context, user *CurrentUser) bool {
-	if user.IsAdmin() {
+	return a.tenantOwnerFor(ctx, user.UserID, user.IsAdmin())
+}
+
+// isTenantOwnerID is isTenantOwner for callers that hold only what they read from
+// the database (login, register, profile) rather than a request's CurrentUser.
+func (a *App) isTenantOwnerID(ctx context.Context, userID int32, role string) bool {
+	return a.tenantOwnerFor(ctx, userID, role == "admin" || role == "platform_admin")
+}
+
+// tenantOwnerFor is the whole check. The membership lookup fails closed: it
+// guards destructive and team-management actions, and a database hiccup must not
+// hand an agent owner-level powers.
+func (a *App) tenantOwnerFor(ctx context.Context, userID int32, isAdmin bool) bool {
+	if isAdmin {
 		return true
 	}
 	var isAgent bool
-	if err := a.DB.QueryRow(ctx, sqlCallerIsAgent, user.UserID).Scan(&isAgent); err != nil {
-		a.Logger.Warn("tenant-owner check failed; refusing", "user_id", user.UserID, "error", err.Error())
+	if err := a.DB.QueryRow(ctx, sqlCallerIsAgent, userID).Scan(&isAgent); err != nil {
+		a.Logger.Warn("tenant-owner check failed; refusing", "user_id", userID, "error", err.Error())
 		return false
 	}
 	return tenantOwnerAllowed(false, isAgent)

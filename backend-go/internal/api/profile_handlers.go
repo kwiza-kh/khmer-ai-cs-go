@@ -90,15 +90,21 @@ func (a *App) uploadAvatar(w http.ResponseWriter, r *http.Request) (any, error) 
 
 // profileFields is the JSON shape shared by GET and PUT.
 type profileFields struct {
-	UserID      int32  `json:"user_id"`
-	Username    string `json:"username"`
-	Email       string `json:"email"`
-	Role        string `json:"role"`
-	DisplayName string `json:"display_name"`
-	JobTitle    string `json:"job_title"`
-	Phone       string `json:"phone"`
-	Timezone    string `json:"timezone"`
-	AvatarURL   string `json:"avatar_url"`
+	UserID   int32  `json:"user_id"`
+	Username string `json:"username"`
+	Email    string `json:"email"`
+	Role     string `json:"role"`
+	// IsTenantOwner is what the console needs to decide whether to show tenant
+	// administration. The role string says how the account was created, not
+	// whether it owns its tenant (self-service and SSO signups are owners with
+	// role "user"). Read on every console load, so a session that predates this
+	// field still gets the answer without re-login.
+	IsTenantOwner bool   `json:"is_tenant_owner"`
+	DisplayName   string `json:"display_name"`
+	JobTitle      string `json:"job_title"`
+	Phone         string `json:"phone"`
+	Timezone      string `json:"timezone"`
+	AvatarURL     string `json:"avatar_url"`
 	// Linked login methods (read-only, derived).
 	HasPassword bool   `json:"has_password"`
 	HasGoogle   bool   `json:"has_google"`
@@ -123,6 +129,7 @@ func (a *App) getProfile(w http.ResponseWriter, r *http.Request) (any, error) {
 	if err != nil {
 		return nil, ErrNotFound("用户不存在")
 	}
+	p.IsTenantOwner = a.isTenantOwnerID(r.Context(), p.UserID, p.Role)
 	p.DisplayName = textutil.DerefString(displayName)
 	p.JobTitle = textutil.DerefString(jobTitle)
 	p.Phone = textutil.DerefString(phone)

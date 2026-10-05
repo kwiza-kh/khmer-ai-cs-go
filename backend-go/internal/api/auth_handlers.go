@@ -159,6 +159,10 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) (any, error) {
 			"username": username,
 			"email":    email,
 			"role":     role,
+			// Whether this account owns its tenant. The console needs it because
+			// the role string cannot answer it: self-service and SSO signups are
+			// owners with role "user" (see isTenantOwner).
+			"is_tenant_owner": a.isTenantOwnerID(ctx, userID, role),
 		},
 	}, nil
 }
@@ -274,6 +278,8 @@ func (a *App) register(w http.ResponseWriter, r *http.Request) (any, error) {
 			"username": username,
 			"email":    req.Email,
 			"role":     "user",
+			// A brand-new signup is its own tenant's owner: nothing owns it.
+			"is_tenant_owner": a.isTenantOwnerID(ctx, userID, "user"),
 		},
 	}}, nil
 }

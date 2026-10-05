@@ -1,6 +1,7 @@
 package api
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -31,6 +32,31 @@ func TestTenantOwnerDecision(t *testing.T) {
 					tc.isAdmin, tc.isAgent, got, tc.want)
 			}
 		})
+	}
+}
+
+// The route guard is the one place that decides who may touch tenant
+// administration, so pin the decision at the source: the role-based guard must
+// not come back, because it silently locks out every self-service merchant.
+func TestTenantRoutesUseTheOwnerGuard(t *testing.T) {
+	raw, err := os.ReadFile("router.go")
+	if err != nil {
+		t.Fatalf("read router.go: %v", err)
+	}
+	src := string(raw)
+	if strings.Contains(src, "a.adminOnly(") {
+		t.Error("router.go still wires the role-based adminOnly guard")
+	}
+	if strings.Contains(src, "user.IsAdmin()") {
+		t.Error("router.go still decides by role; use a.isTenantOwner")
+	}
+	if n := strings.Count(src, "a.tenantAdminOnly("); n < 16 {
+		t.Errorf("router.go wires tenantAdminOnly %d times, want >= 16", n)
+	}
+	// The platform console keeps its own, stricter guard: that is where money and
+	// other tenants' data actually move.
+	if n := strings.Count(src, "a.platformAdminOnly("); n < 8 {
+		t.Errorf("router.go wires platformAdminOnly %d times, want >= 8", n)
 	}
 }
 

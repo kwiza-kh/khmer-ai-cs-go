@@ -102,12 +102,12 @@ func (a *App) Router() http.Handler {
 	// Bindings are addressed by (scope, target) and never by binding_id —
 	// 067_personas.sql makes that pair unique per tenant, so a rebind is one PUT
 	// and the console never has to carry an id back.
-	authed.Handle("GET /api/v1/personas", a.adminOnly(a.handle(a.listPersonas)))
-	authed.Handle("POST /api/v1/personas", a.adminOnly(a.handle(a.createPersona)))
-	authed.Handle("PUT /api/v1/personas/{id}", a.adminOnly(a.handle(a.updatePersona)))
-	authed.Handle("DELETE /api/v1/personas/{id}", a.adminOnly(a.handle(a.deletePersona)))
-	authed.Handle("PUT /api/v1/persona-bindings", a.adminOnly(a.handle(a.putPersonaBinding)))
-	authed.Handle("DELETE /api/v1/persona-bindings", a.adminOnly(a.handle(a.deletePersonaBinding)))
+	authed.Handle("GET /api/v1/personas", a.tenantAdminOnly(a.handle(a.listPersonas)))
+	authed.Handle("POST /api/v1/personas", a.tenantAdminOnly(a.handle(a.createPersona)))
+	authed.Handle("PUT /api/v1/personas/{id}", a.tenantAdminOnly(a.handle(a.updatePersona)))
+	authed.Handle("DELETE /api/v1/personas/{id}", a.tenantAdminOnly(a.handle(a.deletePersona)))
+	authed.Handle("PUT /api/v1/persona-bindings", a.tenantAdminOnly(a.handle(a.putPersonaBinding)))
+	authed.Handle("DELETE /api/v1/persona-bindings", a.tenantAdminOnly(a.handle(a.deletePersonaBinding)))
 	// Agent copilot: one-shot translation (Khmer ↔ 中文 ↔ English).
 	authed.Handle("POST /api/v1/translate", a.handle(a.translateText))
 	authed.Handle("POST /api/v1/translate/batch", a.handle(a.translateBatch))
@@ -168,20 +168,20 @@ func (a *App) Router() http.Handler {
 	// it lands in audit_logs via the /api/v1/admin/ prefix.
 	authed.Handle("GET /api/v1/admin/models/{id}/prompt-history", a.platformAdminOnly(a.handleDoc(a.listPromptVersions)))
 	authed.Handle("POST /api/v1/admin/models/{id}/prompt-history/{version}/restore", a.platformAdminOnly(a.handlePromptRestore()))
-	authed.Handle("GET /api/v1/admin/users", a.adminOnly(a.handle(a.listUsers)))
-	authed.Handle("PUT /api/v1/admin/users/{id}/role", a.adminOnly(a.handleDoc(a.updateUserRole)))
-	authed.Handle("GET /api/v1/admin/analytics/overview", a.adminOnly(a.handle(a.analyticsOverview)))
-	authed.Handle("GET /api/v1/admin/rag/gaps", a.adminOnly(a.handle(a.ragGaps)))
+	authed.Handle("GET /api/v1/admin/users", a.tenantAdminOnly(a.handle(a.listUsers)))
+	authed.Handle("PUT /api/v1/admin/users/{id}/role", a.tenantAdminOnly(a.handleDoc(a.updateUserRole)))
+	authed.Handle("GET /api/v1/admin/analytics/overview", a.tenantAdminOnly(a.handle(a.analyticsOverview)))
+	authed.Handle("GET /api/v1/admin/rag/gaps", a.tenantAdminOnly(a.handle(a.ragGaps)))
 
 	// Analytics: timeline, breakdowns, top queries, token stats, feedback list.
-	authed.Handle("GET /api/v1/admin/analytics/timeline", a.adminOnly(a.handle(a.analyticsTimeline)))
-	authed.Handle("GET /api/v1/admin/analytics/top-queries", a.adminOnly(a.handle(a.topQueries)))
-	authed.Handle("GET /api/v1/admin/analytics/languages", a.adminOnly(a.handle(a.languageBreakdown)))
-	authed.Handle("GET /api/v1/admin/tokens/stats", a.adminOnly(a.handle(a.tokenStats)))
-	authed.Handle("GET /api/v1/admin/feedback", a.adminOnly(a.handle(a.feedbackList)))
-	authed.Handle("GET /api/v1/admin/agent-performance", a.adminOnly(a.handle(a.agentPerformance)))
-	authed.Handle("GET /api/v1/admin/intent-analytics", a.adminOnly(a.handle(a.intentAnalytics)))
-	authed.Handle("GET /api/v1/admin/integrations/status", a.adminOnly(a.handle(a.integrationsStatus)))
+	authed.Handle("GET /api/v1/admin/analytics/timeline", a.tenantAdminOnly(a.handle(a.analyticsTimeline)))
+	authed.Handle("GET /api/v1/admin/analytics/top-queries", a.tenantAdminOnly(a.handle(a.topQueries)))
+	authed.Handle("GET /api/v1/admin/analytics/languages", a.tenantAdminOnly(a.handle(a.languageBreakdown)))
+	authed.Handle("GET /api/v1/admin/tokens/stats", a.tenantAdminOnly(a.handle(a.tokenStats)))
+	authed.Handle("GET /api/v1/admin/feedback", a.tenantAdminOnly(a.handle(a.feedbackList)))
+	authed.Handle("GET /api/v1/admin/agent-performance", a.tenantAdminOnly(a.handle(a.agentPerformance)))
+	authed.Handle("GET /api/v1/admin/intent-analytics", a.tenantAdminOnly(a.handle(a.intentAnalytics)))
+	authed.Handle("GET /api/v1/admin/integrations/status", a.tenantAdminOnly(a.handle(a.integrationsStatus)))
 
 	// CSV report export.
 	authed.HandleFunc("GET /api/v1/reports/{kind}", a.reportCSV)
@@ -506,17 +506,22 @@ func (a *App) audit(next http.Handler) http.Handler {
 	})
 }
 
-// adminOnly guards handlers that require the tenant admin (or platform admin).
+// tenantAdminOnly guards handlers that act on the caller's own tenant and
+// therefore require that tenant's owner — not "the role string reads admin",
+// which no self-service or SSO signup ever satisfies (see isTenantOwner).
 //
-// This App method is the live gate — every route uses it. middleware.go used to
+// The platform console keeps platformAdminOnly: that is where money and other
+// tenants' data actually move.
+//
+// This App method is the live gate — every tenant-scoped route uses it. middleware.go used to
 // carry a package-level function of the same name (reached by no route) that
 // answered 401 instead of 403 for a missing token; it was dead code and is
 // gone. Reinstating that shape would silently change the status code callers
 // see, so keep the gate on App and keep it single.
-func (a *App) adminOnly(next http.Handler) http.Handler {
+func (a *App) tenantAdminOnly(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user, ok := UserFrom(r)
-		if !ok || !user.IsAdmin() {
+		if !ok || !a.isTenantOwner(r.Context(), user) {
 			WriteJSON(w, http.StatusForbidden, map[string]string{"error": "需要管理员权限"})
 			return
 		}
