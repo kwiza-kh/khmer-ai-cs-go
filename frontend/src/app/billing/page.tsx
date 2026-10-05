@@ -128,7 +128,12 @@ export default function BillingPage() {
             <p>
               {current?.paid_until
                 ? tf("bl.paidUntil", { date: new Date(current.paid_until).toLocaleDateString() })
-                : t("bl.neverPaid")}
+                : currentPlan === "free"
+                  ? t("bl.neverPaid")
+                  // A plan granted from the platform console has no paid_until:
+                  // telling that merchant "no paid plan yet" while the badge reads
+                  // PRO is simply wrong.
+                  : t("bl.planGranted")}
             </p>
             <div className="grid gap-4 sm:grid-cols-2">
               {[
