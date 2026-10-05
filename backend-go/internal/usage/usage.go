@@ -6,6 +6,7 @@ package usage
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -18,7 +19,31 @@ const (
 	inputPer1M    = 0.30
 	outputPer1M   = 2.50
 	cachedInPer1M = 0.03
+	// embeddingPer1M is the embedding model's list price. It is a separate rate
+	// because an embedding billed at the chat input rate would overstate a
+	// document ingest by an order of magnitude and shed turns at the spend gate
+	// for no reason.
+	embeddingPer1M = 0.15
 )
+
+// EstimateCostFor prices one call by the model that served it: the chat formula
+// is the default, embedding models bill input only.
+func EstimateCostFor(model string, prompt, completion, cached int) float64 {
+	if isEmbeddingModel(model) {
+		if prompt < 0 {
+			prompt = 0
+		}
+		return float64(prompt) / 1e6 * embeddingPer1M
+	}
+	return EstimateCost(prompt, completion, cached)
+}
+
+// isEmbeddingModel matches the embedding family by name. Both the chat path and
+// the auxiliary observer pass whatever model string the client used, and an
+// embedding call has no completion tokens to feed the chat formula.
+func isEmbeddingModel(model string) bool {
+	return strings.Contains(strings.ToLower(model), "embedding")
+}
 
 // EstimateCost returns the USD cost of one turn given non-cached prompt,
 // completion and cached-input token counts.
@@ -61,7 +86,7 @@ func Record(ctx context.Context, db *pgxpool.Pool, userID int32, sessionID *stri
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	cost := EstimateCost(prompt, completion, cached)
+	cost := EstimateCostFor(model, prompt, completion, cached)
 	if _, err := db.Exec(ctx,
 		"INSERT INTO token_usage (user_id, session_id, model, prompt_tokens, completion_tokens, total_tokens, cached_tokens, cost_estimate, created_at) "+
 			"VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",

@@ -2163,6 +2163,17 @@ func (s *Service) embedBatch(ctx context.Context, texts []string) ([][]float32, 
 	if status != http.StatusOK {
 		return nil, fmt.Errorf("batchEmbedContents failed (%d): %s", status, textutil.Ellipsize(respText, 300))
 	}
+	// Embedded spend used to be invisible: the auxiliary observer is fed by the
+	// generative calls only. Reported here, before the provider split, because the
+	// provider billed this call the moment it answered 200 — a later parse failure
+	// does not un-bill it. Token count is estimated from the text (the embedding API
+	// returns a vector, not usageMetadata), the same 4-chars-per-token heuristic the
+	// mock path uses; the rate is usage.embeddingPer1M, not the chat input rate.
+	total := 0
+	for _, t := range texts {
+		total += len(t)
+	}
+	reportAuxUsage(ctx, EmbeddingModel, total/4, 0, 0)
 	if prov.kind == providerVertex {
 		return parseVertexPredictBatch(respText, len(texts))
 	}
@@ -2227,6 +2238,9 @@ func (s *Service) embed(ctx context.Context, text, taskType string) ([]float32, 
 	if status != http.StatusOK {
 		return nil, fmt.Errorf("embedContent failed (%d): %s", status, textutil.Ellipsize(respText, 300))
 	}
+	// Single-document/query embedding: same reasoning as embedBatch above —
+	// reported before validation so a billed call is always recorded.
+	reportAuxUsage(ctx, EmbeddingModel, len(text)/4, 0, 0)
 	var v map[string]any
 	if json.Unmarshal([]byte(respText), &v) != nil {
 		return nil, fmt.Errorf("embedContent: invalid response")

@@ -6,10 +6,9 @@ import {
   listSlaPolicies, upsertSlaPolicy, deleteSlaPolicy, listSlaBreaches,
   listRoutingRules, upsertRoutingRule, deleteRoutingRule,
   listMacros, createMacro, deleteMacro,
-  listRoles, createRole, deleteRole,
   listWebhookSubscriptions, createWebhookSubscription, deleteWebhookSubscription,
   getAgentPerformance, getIntentAnalytics, getIntegrationStatus,
-  type SlaPolicy, type RoutingRule, type Macro, type Role, type WebhookSubscription,
+  type SlaPolicy, type RoutingRule, type Macro, type WebhookSubscription,
   type AgentPerformance, type IntentCount, type IntegrationStatus,
 } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -22,17 +21,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { EmptyState } from "@/components/empty-state";
 import { toast } from "sonner";
 import {
-  AlarmClock, GitBranch, ListChecks, ShieldCheck, Webhook, BarChart3, Plug, Trash2, Plus,
+  AlarmClock, GitBranch, ListChecks, Webhook, BarChart3, Plug, Trash2, Plus,
 } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { confirmDelete } from "@/lib/confirm-delete";
 
-const PERMISSION_OPTIONS = [
-  "inbox.view", "inbox.reply", "inbox.assign", "inbox.status",
-  "knowledge.manage", "sla.view", "sla.manage", "routing.manage", "macros.manage",
-  "roles.manage", "webhooks.manage", "customers.view", "reports.export",
-  "billing.manage", "team.manage", "campaigns.manage", "admin.analytics", "admin.models",
-];
 
 const EVENT_OPTIONS = [
   "session.created", "message.received", "message.sent", "handoff.requested",
@@ -225,57 +218,6 @@ function MacrosPanel() {
   );
 }
 
-// ---------------- Roles ----------------
-function RolesPanel() {
-  const { t } = useI18n();
-  const { data, mutate } = useSWR<Role[]>("roles", listRoles);
-  const [name, setName] = React.useState("");
-  const [perms, setPerms] = React.useState<string[]>(["inbox.view", "inbox.reply"]);
-
-  const toggle = (p: string) => setPerms((prev) => prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p]);
-
-  const submit = async () => {
-    if (!name.trim()) { toast.error(t("ent.roleNameRequired")); return; }
-    try {
-      await createRole({ name, permissions: perms });
-      await mutate();
-      setName("");
-      toast.success(t("ent.roleSaved"));
-    } catch (e) { toast.error((e as Error).message); }
-  };
-
-  const roles = data ?? [];
-  return (
-    <SectionCard title={t("ent.rolesTitle")} action={<ShieldCheck className="size-4 text-muted-foreground" />}>
-      <div className="mb-3 space-y-2">
-        <Input placeholder={t("ent.roleNamePh")} value={name} onChange={(e) => setName(e.target.value)} className="h-8 text-xs" />
-        <div className="flex flex-wrap gap-1.5">
-          {PERMISSION_OPTIONS.map((p) => (
-            <Badge key={p} variant={perms.includes(p) ? "info" : "outline"} onClick={() => toggle(p)} className="cursor-pointer text-[10px]">{p}</Badge>
-          ))}
-        </div>
-        <Button size="sm" onClick={submit} className="h-8 gap-1.5 text-xs"><Plus className="size-3" />{t("ent.createRole")}</Button>
-      </div>
-      {roles.length === 0 ? <EmptyState icon={ShieldCheck} title={t("ent.noRoles")} /> : (
-        <Table>
-          <TableHeader><TableRow><TableHead className="text-xs">{t("ent.colName")}</TableHead><TableHead className="text-xs">{t("ent.colPermissions")}</TableHead><TableHead className="text-xs">{t("ent.colActions")}</TableHead></TableRow></TableHeader>
-          <TableBody>
-            {roles.map((r) => (
-              <TableRow key={r.role_id}>
-                <TableCell className="text-xs font-medium">{r.name}</TableCell>
-                <TableCell className="text-xs">{r.permissions.join(", ")}</TableCell>
-                <TableCell>
-                  <Button size="sm" variant="ghost" onClick={() => confirmDelete(t("ent.deleteRoleConfirm"), () => deleteRole(r.role_id), mutate)} className="h-7 text-xs text-danger"><Trash2 className="size-3" /></Button>
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      )}
-    </SectionCard>
-  );
-}
-
 // ---------------- Webhooks ----------------
 function WebhooksPanel() {
   const { t } = useI18n();
@@ -408,14 +350,12 @@ export function EnterpriseTab() {
         <TabsTrigger value="sla" className="gap-1.5 text-xs"><AlarmClock className="size-3" />{t("ent.tabSla")}</TabsTrigger>
         <TabsTrigger value="routing" className="gap-1.5 text-xs"><GitBranch className="size-3" />{t("ent.tabRouting")}</TabsTrigger>
         <TabsTrigger value="macros" className="gap-1.5 text-xs"><ListChecks className="size-3" />{t("ent.tabMacros")}</TabsTrigger>
-        <TabsTrigger value="roles" className="gap-1.5 text-xs"><ShieldCheck className="size-3" />{t("ent.tabRoles")}</TabsTrigger>
         <TabsTrigger value="webhooks" className="gap-1.5 text-xs"><Webhook className="size-3" />{t("ent.tabWebhooks")}</TabsTrigger>
         <TabsTrigger value="analytics" className="gap-1.5 text-xs"><BarChart3 className="size-3" />{t("ent.tabPerformance")}</TabsTrigger>
       </TabsList>
       <TabsContent value="sla" className="mt-4"><SlaPanel /></TabsContent>
       <TabsContent value="routing" className="mt-4"><RoutingPanel /></TabsContent>
       <TabsContent value="macros" className="mt-4"><MacrosPanel /></TabsContent>
-      <TabsContent value="roles" className="mt-4"><RolesPanel /></TabsContent>
       <TabsContent value="webhooks" className="mt-4"><WebhooksPanel /></TabsContent>
       <TabsContent value="analytics" className="mt-4"><AnalyticsPanel /></TabsContent>
     </Tabs>

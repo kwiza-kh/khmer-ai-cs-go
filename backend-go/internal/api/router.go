@@ -233,12 +233,10 @@ func (a *App) Router() http.Handler {
 	authed.HandleFunc("PUT /api/v1/macros/{id}", a.handleDoc(a.updateMacro))
 	authed.HandleFunc("DELETE /api/v1/macros/{id}", a.handleDoc(a.deleteMacro))
 
-	// Roles.
-	authed.Handle("GET /api/v1/roles", a.handle(a.listRoles))
-	authed.Handle("POST /api/v1/roles", a.handle(a.createRole))
-	authed.HandleFunc("DELETE /api/v1/roles/{id}", a.handleDoc(a.deleteRole))
-	authed.HandleFunc("POST /api/v1/roles/{id}/assign", a.handleDoc(a.assignRole))
-	authed.HandleFunc("POST /api/v1/roles/{id}/unassign", a.handleDoc(a.unassignRole))
+	// Roles / user_roles were removed here (migration 069 drops the tables, both
+	// were empty). They had CRUD endpoints and no authorization reader anywhere,
+	// so they only looked like access control — the real boundaries are
+	// agent_teams membership plus the tenant-owner checks in tenant_owner.go.
 
 	// Webhook subscriptions.
 	authed.Handle("GET /api/v1/webhooks/subscriptions", a.handle(a.listWebhooks))

@@ -1165,7 +1165,7 @@ FAQ 的 `ស9`（5 条产品线）在 chunk 2 里的偏移：枚举句起点 695
 | 语言 | **回复语言跟随客户实际所写**（组件/控制台此前拿界面语言当回复语言：中文提问被整条链路按柬语处理，e520838）；三语文案 km/en/zh |
 | 多模态 | 语音转写（Gemini ASR，mime 规范化；渠道语音留言会被计费）、翻译（单条/批量） |
 | 内容安全 | 两段 gate（screen-inbound / screen-reply），KeywordStrategy + ModelStrategy；**默认关闭**，开关见 `.env`（6 个键尚未写入 `.env.example`） |
-| 成本护栏 | 平台级滚动花费预算门（`usage.Budget`，Google 免费额度分档），按租户配额门见第 6 组 |
+| 成本护栏 | 平台级滚动花费预算门（`usage.Budget`，Google 免费额度分档）；**计量覆盖**：主聊天路径 + 辅助生成调用（摄入编译 / 翻译 / rerank / 分类 / 语音转写 / TTS / 图像描述，经 `gemini.AuxUsageObserver` + `usage.WithUser`）+ **嵌入**（`usage.EstimateCostFor` 按模型选费率，输入计价）。按租户配额门见第 6 组 |
 
 #### 3. 知识库（RAG）
 
@@ -1210,7 +1210,7 @@ FAQ 的 `ស9`（5 条产品线）在 chunk 2 里的偏移：枚举句起点 695
 
 | 能力 | 说明 |
 |---|---|
-| 权限 | RBAC（`roles` / `user_roles`）、平台管理员与租户管理员分层 |
+| 权限 | 租户**所有者** vs 成员的边界：`agent_teams` 成员关系 + `internal/api/tenant_owner.go`（18 条租户级路由用 `tenantAdminOnly`）；平台级操作保持 `platform_admin`（`/admin/models*`、`/platform/*`、全局 RAG 编译开关）。· 曾有的 `roles`/`user_roles` CRUD 接口**没有任何授权读者**，只像访问控制，已删除（迁移 069；两表均为空） |
 | 安全 | TOTP 2FA（`user_totp`）、SSO（Google / Telegram OIDC）、API keys、审计日志（`audit_logs`）、数据删除请求（`deletion_requests` + 隐私页/删除状态页） |
 | 集成 | Webhook 订阅与投递（`webhook_subscriptions` / `webhook_deliveries`）、定时任务（`scheduled_jobs`，迁移 066） |
 | 平台管理台 | 租户列表（用量/配额/套餐/会话数）、平台分析、花费预算视图、改套餐 |
