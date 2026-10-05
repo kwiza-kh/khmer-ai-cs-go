@@ -19,6 +19,7 @@ import (
 	"khmer-ai-cs-go/internal/config"
 	"khmer-ai-cs-go/internal/db"
 	"khmer-ai-cs-go/internal/gemini"
+	"khmer-ai-cs-go/internal/paypal"
 	"khmer-ai-cs-go/internal/platform"
 	"khmer-ai-cs-go/internal/rag"
 	"khmer-ai-cs-go/internal/realtime"
@@ -253,6 +254,15 @@ func main() {
 		Media:  media,
 		Pipe:   pipe,
 		Cache:  replyCache,
+		// The platform's own PayPal business account. Left unconfigured (no
+		// credentials) the billing endpoints answer "not configured" and nothing
+		// in the console offers a purchase, which is the correct state for a
+		// deployment that is not selling yet.
+		PayPal: paypal.New(paypal.Config{
+			ClientID:     cfg.PayPal.ClientID,
+			ClientSecret: cfg.PayPal.ClientSecret,
+			Mode:         cfg.PayPal.Mode,
+		}),
 	}
 
 	// Converge migration-era plaintext secrets to sealed form. Migration 052's

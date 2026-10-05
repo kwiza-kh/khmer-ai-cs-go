@@ -33,6 +33,11 @@ func (a *App) StartBackgroundTasks(ctx context.Context) {
 	go a.loop(ctx, 30*time.Second, a.dispatchDueCampaigns)
 	go a.loop(ctx, 60*time.Second, a.scanSLABreaches)
 	go a.loop(ctx, 1*time.Hour, a.resetBillingCycles)
+	// Lapsed paid plans fall back to free. Entitlement is a timestamp on
+	// tenant_billing (set by a PayPal capture), deliberately separate from the
+	// 30-day usage cycle: a renewal extends paid_until, an expiry revokes the
+	// plan, and a plan set by hand (paid_until NULL) is never touched here.
+	go a.loop(ctx, 10*time.Minute, a.expirePaidPlans)
 	// Watchdog: nothing else notices a degraded dependency. The process keeps
 	// running, the HTTP port stays open, and customers simply stop getting
 	// answers — the operator finds out from a complaint.
@@ -62,6 +67,7 @@ func (a *App) StartBackgroundTasks(ctx context.Context) {
 		"platform_health":   a.checkPlatformHealth,
 		"retention":         a.pruneStaleSupportRelays,
 		"billing_reset":     a.resetBillingCycles,
+		"billing_expiry":    a.expirePaidPlans,
 		"sla_scan":          a.scanSLABreaches,
 		"digest":            a.sendDueDigests,
 	} {

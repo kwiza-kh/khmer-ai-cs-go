@@ -154,6 +154,26 @@ type TTSConfig struct {
 	Enabled bool // TTS_ENABLED — off by default (per-voice replies surprise merchants)
 }
 
+// PayPalConfig configures collecting money through the platform's own PayPal
+// business account. Prices live in the environment because they are a business
+// decision, not a code constant: a plan with no price is simply not purchasable
+// (the upgrade page offers nothing), so the service can ship with credentials and
+// no prices and still be correct.
+type PayPalConfig struct {
+	ClientID        string // PAYPAL_CLIENT_ID
+	ClientSecret    string // PAYPAL_CLIENT_SECRET
+	Mode            string // PAYPAL_MODE: sandbox (default) | live
+	WebhookID       string // PAYPAL_WEBHOOK_ID — required to accept webhooks
+	Currency        string // PAYPAL_CURRENCY, default USD
+	PricePro        string // PAYPAL_PRICE_PRO — empty = not for sale
+	PriceEnterprise string // PAYPAL_PRICE_ENTERPRISE — empty = not for sale
+}
+
+// Enabled reports whether the platform can take money at all.
+func (p PayPalConfig) Enabled() bool {
+	return strings.TrimSpace(p.ClientID) != "" && strings.TrimSpace(p.ClientSecret) != ""
+}
+
 type Config struct {
 	Server                 ServerConfig
 	DatabaseURL            string
@@ -175,6 +195,7 @@ type Config struct {
 	TTS                    TTSConfig
 	AllowRegistration      bool
 	RegistrationInviteCode string
+	PayPal                 PayPalConfig
 }
 
 // Load reads .env from the working directory (real environment variables win)
@@ -278,6 +299,15 @@ func Load() (*Config, error) {
 		},
 		AllowRegistration:      envBool("ALLOW_REGISTRATION", false),
 		RegistrationInviteCode: env("REGISTRATION_INVITE_CODE", ""),
+		PayPal: PayPalConfig{
+			ClientID:        env("PAYPAL_CLIENT_ID", ""),
+			ClientSecret:    env("PAYPAL_CLIENT_SECRET", ""),
+			Mode:            env("PAYPAL_MODE", "sandbox"),
+			WebhookID:       env("PAYPAL_WEBHOOK_ID", ""),
+			Currency:        env("PAYPAL_CURRENCY", "USD"),
+			PricePro:        env("PAYPAL_PRICE_PRO", ""),
+			PriceEnterprise: env("PAYPAL_PRICE_ENTERPRISE", ""),
+		},
 	}
 
 	for _, o := range strings.Split(env("ALLOWED_ORIGINS", "http://localhost:3000"), ",") {
@@ -312,7 +342,39 @@ func (c *Config) Validate() error {
 	if c.PlatformCredentialKey == "" {
 		return fmt.Errorf("PLATFORM_CREDENTIAL_KEY is required")
 	}
+	if err := c.validatePayPal(); err != nil {
+		return err
+	}
 	return c.validateDatabaseURL()
+}
+
+// validatePayPal refuses a half-configured payment integration. No credentials is
+// fine (payments simply stay off); a half-set pair or an unknown mode is a
+// deployment mistake that would otherwise only surface at checkout.
+func (c *Config) validatePayPal() error {
+	p := c.PayPal
+	hasID, hasSecret := strings.TrimSpace(p.ClientID) != "", strings.TrimSpace(p.ClientSecret) != ""
+	if hasID != hasSecret {
+		return fmt.Errorf("PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET must be set together")
+	}
+	if !hasID {
+		return nil
+	}
+	switch strings.ToLower(strings.TrimSpace(p.Mode)) {
+	case "", "sandbox", "live":
+	default:
+		return fmt.Errorf("PAYPAL_MODE must be sandbox or live")
+	}
+	if strings.TrimSpace(p.Currency) == "" {
+		return fmt.Errorf("PAYPAL_CURRENCY is required when PayPal is configured")
+	}
+	if strings.TrimSpace(p.PricePro) == "" && strings.TrimSpace(p.PriceEnterprise) == "" {
+		// Not a violation — credentials may land before the pricing decision — but
+		// an id/secret pair with nothing sellable is almost always an unfinished
+		// rollout, so say it out loud instead of only failing at checkout.
+		fmt.Fprintln(os.Stderr, "config: PayPal is configured but no plan has a price (PAYPAL_PRICE_PRO / PAYPAL_PRICE_ENTERPRISE); the upgrade page will offer nothing")
+	}
+	return nil
 }
 
 func (c *Config) validateDatabaseURL() error {

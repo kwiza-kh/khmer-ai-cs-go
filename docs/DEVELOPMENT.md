@@ -1288,3 +1288,61 @@ FAQ 的 `ស9`（5 条产品线）在 chunk 2 里的偏移：枚举句起点 695
 2. SQL 类改动：`SQLCHECK_REQUIRED=1 DATABASE_URL=<隧道> go test -count=1 ./internal/sqlcheck/`（对生产 schema PREPARE，未设 DSN 会静默 skip）。
 3. 计费数字：`go run ./cmd/billingreconcile`（dry-run），`0 mismatch` 才算计数器与真实行数一致。
 4. 服务与版本：`curl -s http://127.0.0.1:8081/ready`、`cat /opt/khmer-ai-cs/frontend/.next/BUILD_ID`。
+
+---
+
+## 十二、收款（PayPal，2026-10-05）
+
+### 流程
+
+```text
+控制台 /billing
+  → GET  /api/v1/billing/plans         （套餐目录，价格来自环境变量，不在前端包里）
+  → POST /api/v1/billing/paypal/order  （服务端建单，价格不由浏览器决定）
+  → 浏览器跳 PayPal approve URL
+  → 回到 /billing?paypal=return&token=<orderId>
+  → POST /api/v1/billing/paypal/capture（服务端捕获 + 校验金额 + 开通）
+  ← 同时 POST /api/v1/billing/paypal/webhook（PayPal 直接通知，验签后开通）
+```
+
+### 关键设计（都是“钱不能错”的那几条）
+
+| 点 | 做法 |
+|---|---|
+| **幂等** | `payments` 行从 `created → captured` 只用**一条条件 UPDATE** 完成；前端回调与 webhook 会同时到达，只有把行翻过去的那一个发放 30 天 |
+| **金额** | 捕获金额与币种必须与**我们下单时写进行里**的完全一致；不一致就把该行标 `failed` 并拒绍开通（币种精确比较，数值忽略尾零） |
+| **归属** | 订单号是能力凭证：别人的订单与“不存在”返回同一个 404 |
+| **重定向** | approve 链接**两层**钉死在 PayPal 自家域名（后端按 mode 校验 sandbox/live 主机，前端导航前再校一次 https + 主机白名单）——被污染的后端响应不能把买家送到钓鱼页 |
+| **重试** | PayPal 侧用 `PayPal-Request-Id=orderID` 让捕获本身幂等；webhook 开通失败返回 5xx 让 PayPal 重试 |
+| **到期** | `tenant_billing.paid_until` 与 30 天用量周期**分开**：续费从已付到期日顺延；到期由 `expirePaidPlans`（10 分钟一扫）降回 free；`paid_until IS NULL`（平台管理员手工授权的套餐）永不被动 |
+
+### 端点
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/v1/billing/plans` | 目录：价格、是否可购买、当前套餐与用量 |
+| POST | `/api/v1/billing/paypal/order` | {plan} → {order_id, approve_url, amount, currency} |
+| POST | `/api/v1/billing/paypal/capture` | {order_id} → 捕获并开通（幂等） |
+| POST | `/api/v1/billing/paypal/webhook` | 公开路由，签名校验是唯一认证 |
+
+### 环境变量
+
+见 `.env.example` 的「收款：PayPal」段：`PAYPAL_CLIENT_ID` / `PAYPAL_CLIENT_SECRET` / `PAYPAL_MODE` /
+`PAYPAL_CURRENCY` / `PAYPAL_PRICE_PRO` / `PAYPAL_PRICE_ENTERPRISE` / `PAYPAL_WEBHOOK_ID`。
+未配置 = 不出售（安全默认）；只配一半或 mode 拼错 = 拒绝启动。
+
+### 上线与验收（先 sandbox）
+
+1. 跑迁移 068（`payments` + `tenant_billing.paid_until`）→ **应用后立即**跑 SQL 引用门禁
+   （`SQLCHECK_REQUIRED=1 … go test ./internal/sqlcheck/`）：新代码引用新列，只有库已迁移才通过——这正是 runbook 里那个强制窗口。
+2. 填 sandbox 凭据 + 一个价格（如 `PAYPAL_PRICE_PRO=1.00`）→ 重启 → /billing 出现「用 PayPal 支付」。
+3. 用 PayPal sandbox 买家号真实买一次：应跳转、回跳 `?paypal=return`、自动开通、`paid_until` = 今天+30 天、
+   `payments.status=captured`。再手动重放一次 capture → 应返回 `already`，`paid_until` **不再增加**。
+4. 换 live 凭据与真实价格；在 PayPal 后台建 webhook（事件 `PAYMENT.CAPTURE.COMPLETED`）指向
+   `https://<部署域名>/api/v1/billing/paypal/webhook`，把它的 id 写进 `PAYPAL_WEBHOOK_ID`。
+
+### 尚未做（下一步）
+
+- **自动续费**：目前是一次性 30 天、到期降级；接 PayPal Billing Plans/订阅可在此之上加，不需改现有幂等结构。
+- 退款/争议（`PAYMENT.CAPTURE.REFUNDED` 现在被忽略并返回 200）、发票/收据、税费。
+- 试用期（`trial_ends_at`）与催缴；目前“试用”等同于 free。

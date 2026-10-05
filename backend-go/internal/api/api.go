@@ -14,6 +14,7 @@ import (
 	"khmer-ai-cs-go/internal/auth"
 	"khmer-ai-cs-go/internal/config"
 	"khmer-ai-cs-go/internal/gemini"
+	"khmer-ai-cs-go/internal/paypal"
 	"khmer-ai-cs-go/internal/platform"
 	"khmer-ai-cs-go/internal/rag"
 	"khmer-ai-cs-go/internal/realtime"
@@ -38,6 +39,11 @@ type App struct {
 	// Cache is the semantic reply cache for the widget path (may be nil in
 	// tests; nil = the widget always takes the full generation path).
 	Cache *replycache.Service
+
+	// PayPal is the checkout client for the platform's own business account (may
+	// be nil in tests). Billing endpoints check Enabled() and answer "not
+	// configured" rather than failing later at the redirect.
+	PayPal *paypal.Client
 
 	// Pipe is the platform pipeline (used to wake outbound workers when an
 	// agent reply or campaign template is enqueued).

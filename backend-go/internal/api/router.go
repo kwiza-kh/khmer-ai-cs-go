@@ -48,6 +48,13 @@ func (a *App) Router() http.Handler {
 	// code itself is the capability and carries 80 bits of entropy.
 	mux.Handle("GET /api/v1/privacy/deletion-status", a.rateLimit(30)(a.handle(a.deletionStatus)))
 
+	// PayPal webhook. Public for the same reason the widget routes are — PayPal
+	// holds no account here — and authenticated by the signature PayPal signs
+	// with the webhook id we configured: an unverified webhook route would grant
+	// paid plans to anyone who can POST to it. Rate limited per client; PayPal
+	// retries a 5xx, so a slow dependency is answered with one.
+	mux.Handle("POST /api/v1/billing/paypal/webhook", a.rateLimit(120)(a.handle(a.paypalWebhook)))
+
 	// Authenticated group.
 	authed := http.NewServeMux()
 	authed.Handle("PUT /api/v1/auth/password", a.handle(a.changePassword))
@@ -257,6 +264,12 @@ func (a *App) Router() http.Handler {
 	// Billing.
 	authed.Handle("GET /api/v1/billing", a.handle(a.getBilling))
 	authed.Handle("PUT /api/v1/billing/plan", a.handle(a.setPlan))
+	// Plan catalogue (prices come from configuration) and PayPal checkout.
+	// Activation is idempotent, so the capture call and the webhook racing each
+	// other grant the paid window exactly once.
+	authed.Handle("GET /api/v1/billing/plans", a.handle(a.billingCatalog))
+	authed.Handle("POST /api/v1/billing/paypal/order", a.handle(a.paypalCreateOrder))
+	authed.Handle("POST /api/v1/billing/paypal/capture", a.handle(a.paypalCapture))
 
 	// Teams (agent management) — agent_teams doubles as the tenant boundary
 	// consumed by userInCallerTenant, so claiming requires the owner role.
