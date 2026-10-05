@@ -112,6 +112,7 @@ const BREADCRUMBS: { match: string; section: string; page: string }[] = [
   { match: "/admin/tokens", section: "nav.administration", page: "nav.tokens" },
   { match: "/admin", section: "nav.administration", page: "nav.dashboard" },
   { match: "/platform-admin", section: "nav.superAdmin", page: "nav.platformAdmin" },
+  { match: "/billing", section: "nav.preferences", page: "bl.title" },
   { match: "/settings", section: "nav.preferences", page: "nav.settings" },
   { match: "/help", section: "nav.preferences", page: "nav.help" },
 ];
@@ -424,6 +425,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                 </NavSection>
               )}
               <NavSection label={t("nav.preferences")}>
+                <NavItem href="/billing" icon={Coins} label={t("bl.title")} active={isActive("/billing")} onNavigate={close} />
                 <NavItem href="/settings" icon={Settings} label={t("nav.settings")} active={isActive("/settings")} onNavigate={close} />
                 <NavItem href="/help" icon={HelpCircle} label={t("nav.help")} active={isActive("/help")} onNavigate={close} />
               </NavSection>
