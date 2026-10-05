@@ -211,7 +211,11 @@ export default function KnowledgePage() {
   }, [loadDocs, loadInsights]);
 
   const { user } = useAuth();
-  const isAdmin = user?.role === "admin" || user?.role === "platform_admin";
+  // The AI-compile switch is a PLATFORM-wide flag (the rag:compile_enabled Redis
+  // key) behind platformAdminOnly routes, so only the platform admin may see it.
+  // It used to key off "role is admin", which showed tenant admins a control
+  // their own API refuses with 403.
+  const isAdmin = user?.role === "platform_admin";
   useEffect(() => {
     if (!isAdmin) return;
     getRagSettings()

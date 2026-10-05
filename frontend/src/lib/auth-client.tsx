@@ -8,6 +8,13 @@ interface User {
   username: string;
   email: string;
   role: "user" | "admin" | "platform_admin";
+  /**
+   * Whether this account owns its tenant. The role above cannot answer it:
+   * self-service and SSO signups own their tenant with role "user". Server-
+   * provided on login/register; GET /profile re-reports it so a session that
+   * predates this field still gets the answer without re-login.
+   */
+  is_tenant_owner?: boolean;
 }
 
 interface AuthContextType {

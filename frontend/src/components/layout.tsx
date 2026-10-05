@@ -6,7 +6,7 @@ import { usePathname, useRouter } from "next/navigation";
 import useSWR from "swr";
 import { motion } from "motion/react";
 import { useAuth } from "@/lib/auth-client";
-import { listHumanHandoffRequests, listInbox, listKnowledge } from "@/lib/api";
+import { listHumanHandoffRequests, listInbox, listKnowledge, getProfile } from "@/lib/api";
 import type { InboxItem, KnowledgeDocument } from "@/lib/api";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { RelayChatLogo } from "@/components/relaychat-logo";
@@ -138,7 +138,21 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const searchRef = React.useRef<HTMLInputElement>(null);
   const [globalSearch, setGlobalSearch] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const isAdmin = user?.role === "admin" || user?.role === "platform_admin";
+  // Who administers this tenant. The role string cannot answer it: self-service
+  // and SSO signups own their tenant with role "user" (see isTenantOwner on the
+  // backend), and the tenant-scoped admin routes now accept exactly that owner.
+  // login/register already carry the flag; this fetch covers a session created
+  // before it existed. The narrow inline type is deliberate — the central
+  // UserProfile type is not ours to change in this pass.
+  const { data: selfProfile } = useSWR(token ? "profile-self" : null, () => getProfile());
+  // The field exists on the server (profileFields.IsTenantOwner); the shared
+  // UserProfile type has not caught up yet, so narrow it here rather than editing
+  // that type in this pass.
+  const isTenantOwner =
+    (selfProfile as { is_tenant_owner?: boolean } | undefined)?.is_tenant_owner ??
+    user?.is_tenant_owner ??
+    false;
+  const isAdmin = isTenantOwner || user?.role === "admin" || user?.role === "platform_admin";
   const isPlatformAdmin = user?.role === "platform_admin";
 
   // ⌘K / Ctrl+K focuses the top-bar search.
