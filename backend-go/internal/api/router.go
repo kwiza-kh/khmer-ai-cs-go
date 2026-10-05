@@ -280,11 +280,15 @@ func (a *App) Router() http.Handler {
 	authed.Handle("POST /api/v1/billing/paypal/order", a.handle(a.paypalCreateOrder))
 	authed.Handle("POST /api/v1/billing/paypal/capture", a.handle(a.paypalCapture))
 
-	// Teams (agent management) — agent_teams doubles as the tenant boundary
-	// consumed by userInCallerTenant, so claiming requires the owner role.
-	authed.Handle("GET /api/v1/team", a.adminOnly(a.handle(a.listTeam)))
-	authed.Handle("POST /api/v1/team/agents", a.adminOnly(a.handle(a.addTeamAgent)))
-	authed.Handle("DELETE /api/v1/team/agents/{id}", a.adminOnly(a.handleDoc(a.removeTeamAgent)))
+	// Teams (agent management). The tenant boundary lives in each statement, not
+	// in a role check: listTeam filters on owner_user_id, removeTeamAgent deletes
+	// only rows it owns, and the claim path still requires a tenant owner — but
+	// "owner" now means the tenant's own account, not "role == admin", which no
+	// self-service or SSO signup ever satisfies (2026-10-05: user 10 could not
+	// add a single agent to its own team).
+	authed.Handle("GET /api/v1/team", a.handle(a.listTeam))
+	authed.Handle("POST /api/v1/team/agents", a.handle(a.addTeamAgent))
+	authed.Handle("DELETE /api/v1/team/agents/{id}", a.handleDoc(a.removeTeamAgent))
 
 	// Copilot (agent AI suggestions).
 	authed.HandleFunc("POST /api/v1/inbox/sessions/{id}/copilot/suggest", a.handleSession(a.copilotSuggest))

@@ -816,10 +816,13 @@ type addAgentRequest struct {
 
 func (a *App) addTeamAgent(w http.ResponseWriter, r *http.Request) (any, error) {
 	user, _ := UserFrom(r)
-	// agent_teams doubles as the tenant boundary; only tenant owners may
-	// claim agents. Defense in depth alongside the route-level adminOnly gate.
-	if !user.IsAdmin() {
-		return nil, ErrForbidden("仅管理员可添加客服")
+	// Only this tenant's owner may claim agents into it. The old test was
+	// IsAdmin() — "the role string reads admin" — which self-service and SSO
+	// provisioned merchants (role "user") never satisfy, so the tenants who buy
+	// Pro could not use one of its five seats. Membership in another tenant's team
+	// is still refused; see isTenantOwner.
+	if !a.isTenantOwner(r.Context(), user) {
+		return nil, ErrForbidden("只有租户所有者可以添加客服")
 	}
 	// Plan limit: seats are a live count, not a consumed counter (see
 	// plan_limits.go). Checked after the role guard so an unauthorised caller

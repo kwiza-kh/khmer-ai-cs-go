@@ -818,8 +818,11 @@ func (a *App) listSessionMessages(w http.ResponseWriter, r *http.Request, sessio
 // agents must use archiveSession instead; only tenant admins may hard-delete.
 func (a *App) deleteSession(w http.ResponseWriter, r *http.Request, sessionID string) (any, error) {
 	user, _ := UserFrom(r)
-	if !user.IsAdmin() {
-		return nil, ErrForbidden("仅管理员可永久删除会话，请使用归档")
+	// Owner, not role — the same fix as addTeamAgent: a self-service or SSO
+	// merchant carries role "user". The DELETE below is already scoped to the
+	// caller's own user_id, and membership in another tenant's team is refused.
+	if !a.isTenantOwner(r.Context(), user) {
+		return nil, ErrForbidden("只有租户所有者可以永久删除会话，请使用归档")
 	}
 	if r.URL.Query().Get("confirm") != "1" {
 		return nil, ErrBadRequest("缺少确认参数")
