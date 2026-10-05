@@ -366,6 +366,11 @@ func (a *App) saveMetaConfigTx(ctx context.Context, tx pgx.Tx, userID int32, pla
 	} else {
 		igVal = integrationID
 	}
+	// Only a new Meta/Instagram connection consumes the plan's channel allowance
+	// (the update path above returns early for an existing config).
+	if err := a.checkChannelLimit(ctx, userID); err != nil {
+		return 0, err
+	}
 	var configID int32
 	if err := tx.QueryRow(ctx,
 		"INSERT INTO platform_configs (user_id, platform, access_token, page_id, instagram_business_id, webhook_secret, webhook_secret_hash, is_active) VALUES ($1,$2::platform_type,$3,$4,$5,$6,$7,true) RETURNING config_id",
@@ -599,6 +604,11 @@ func (a *App) embeddedSignupComplete(w http.ResponseWriter, r *http.Request) (an
 	}
 	encSecret, _ := a.Sealer.Encrypt(c.AppSecret)
 	secretHash := sha256HexStr(c.AppSecret)
+	// Plan limit before saving: the embedded-signup path always creates a new
+	// config (there is no update branch here).
+	if err := a.checkChannelLimit(r.Context(), user.UserID); err != nil {
+		return nil, err
+	}
 	var configID int32
 	if err := a.DB.QueryRow(r.Context(),
 		"INSERT INTO platform_configs (user_id, platform, access_token, page_id, whatsapp_business_account_id, webhook_secret, webhook_secret_hash, is_active) VALUES ($1,'whatsapp',$2,$3,$4,$5,$6,true) RETURNING config_id",

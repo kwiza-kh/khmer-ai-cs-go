@@ -821,6 +821,12 @@ func (a *App) addTeamAgent(w http.ResponseWriter, r *http.Request) (any, error) 
 	if !user.IsAdmin() {
 		return nil, ErrForbidden("仅管理员可添加客服")
 	}
+	// Plan limit: seats are a live count, not a consumed counter (see
+	// plan_limits.go). Checked after the role guard so an unauthorised caller
+	// still gets 403 rather than a limit message.
+	if err := a.checkSeatLimit(r.Context(), user.UserID); err != nil {
+		return nil, err
+	}
 	var req addAgentRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		return nil, ErrBadRequest("请求格式错误")

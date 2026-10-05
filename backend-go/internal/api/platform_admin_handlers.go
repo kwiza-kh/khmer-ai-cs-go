@@ -174,19 +174,18 @@ func (a *App) setTenantPlan(w http.ResponseWriter, r *http.Request, userID int32
 }
 
 // applyPlan sets plan + quotas (shared by setPlan and setTenantPlan).
+//
+// The quotas come from usage.Plans — the same table the upgrade card renders and
+// the gates compare against — so a plan change cannot leave a tenant metered on
+// numbers that do not match the tier they were shown.
 func (a *App) applyPlan(ctx context.Context, userID int32, plan string) error {
-	if plan != "free" && plan != "pro" && plan != "enterprise" {
+	spec, ok := usage.PlanByName(plan)
+	if !ok {
 		return ErrBadRequest("invalid plan")
 	}
-	msgQ, docQ := int64(500), int64(20)
-	switch plan {
-	case "pro":
-		msgQ, docQ = 5000, 500
-	case "enterprise":
-		msgQ, docQ = 1<<62, 1<<62
-	}
 	_, _ = a.DB.Exec(ctx, "INSERT INTO tenant_billing (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING", userID)
-	_, err := a.DB.Exec(ctx, "UPDATE tenant_billing SET plan = $1, monthly_message_quota = $2, monthly_doc_quota = $3 WHERE user_id = $4", plan, msgQ, docQ, userID)
+	_, err := a.DB.Exec(ctx, "UPDATE tenant_billing SET plan = $1, monthly_message_quota = $2, monthly_doc_quota = $3 WHERE user_id = $4",
+		spec.Name, spec.Messages, spec.Documents, userID)
 	return err
 }
 

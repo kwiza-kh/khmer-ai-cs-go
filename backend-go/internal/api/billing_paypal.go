@@ -143,14 +143,34 @@ func (a *App) paidState(ctx context.Context, userID int32) (map[string]any, erro
 func (a *App) billingCatalog(w http.ResponseWriter, r *http.Request) (any, error) {
 	user, _ := UserFrom(r)
 	type planEntry struct {
-		Plan        string `json:"plan"`
-		Price       string `json:"price,omitempty"`
-		Purchasable bool   `json:"purchasable"`
+		Plan        string   `json:"plan"`
+		Price       string   `json:"price,omitempty"`
+		Purchasable bool     `json:"purchasable"`
+		Messages    int64    `json:"messages"`
+		Documents   *int64   `json:"documents"`
+		Channels    *int64   `json:"channels"`
+		Seats       *int64   `json:"seats"`
+		Included    []string `json:"included"`
 	}
-	plans := []planEntry{{Plan: usage.PlanFree}}
-	for _, plan := range []string{usage.PlanPro, usage.PlanEnterprise} {
-		entry := planEntry{Plan: plan}
-		if price, ok := a.billingPlanPrice(plan); ok {
+	// unlimited serializes as null rather than 1000000000: the console then shows
+	// "不限" without having to know the sentinel, and the number can move later.
+	unlimited := func(v int64) *int64 {
+		if v >= usage.Unlimited {
+			return nil
+		}
+		return &v
+	}
+	plans := make([]planEntry, 0, len(usage.Plans()))
+	for _, spec := range usage.Plans() {
+		entry := planEntry{
+			Plan:      spec.Name,
+			Messages:  spec.Messages,
+			Documents: unlimited(spec.Documents),
+			Channels:  unlimited(spec.Channels),
+			Seats:     unlimited(spec.Seats),
+			Included:  spec.Included,
+		}
+		if price, ok := a.billingPlanPrice(spec.Name); ok {
 			entry.Price = price
 			entry.Purchasable = a.paypalEnabled()
 		}
