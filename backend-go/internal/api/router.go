@@ -267,9 +267,14 @@ func (a *App) Router() http.Handler {
 	// Plan catalogue (prices come from configuration) and PayPal checkout.
 	// Activation is idempotent, so the capture call and the webhook racing each
 	// other grant the paid window exactly once.
+	//
+	// Reading the catalogue is ordinary tenant information (any member may see the
+	// plan and usage), but *buying* is the tenant admin's decision: plan changes
+	// move money, and an agent paying with their own PayPal account would gift the
+	// tenant a plan — the same reason setPlan is platform-side only.
 	authed.Handle("GET /api/v1/billing/plans", a.handle(a.billingCatalog))
-	authed.Handle("POST /api/v1/billing/paypal/order", a.handle(a.paypalCreateOrder))
-	authed.Handle("POST /api/v1/billing/paypal/capture", a.handle(a.paypalCapture))
+	authed.Handle("POST /api/v1/billing/paypal/order", a.adminOnly(a.handle(a.paypalCreateOrder)))
+	authed.Handle("POST /api/v1/billing/paypal/capture", a.adminOnly(a.handle(a.paypalCapture)))
 
 	// Teams (agent management) — agent_teams doubles as the tenant boundary
 	// consumed by userInCallerTenant, so claiming requires the owner role.
