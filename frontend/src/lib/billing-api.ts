@@ -46,18 +46,18 @@ export interface PaypalCaptureResult {
   current: BillingStatus;
 }
 
-export async function getBillingCatalog(): Promise<BillingCatalog> {
+export function getBillingCatalog(): Promise<BillingCatalog> {
   return apiFetch<BillingCatalog>("/billing/plans");
 }
 
-export async function createPaypalOrder(plan: BillingPlan): Promise<PaypalOrder> {
+export function createPaypalOrder(plan: BillingPlan): Promise<PaypalOrder> {
   return apiFetch<PaypalOrder>("/billing/paypal/order", {
     method: "POST",
     body: JSON.stringify({ plan }),
   });
 }
 
-export async function capturePaypalOrder(orderId: string): Promise<PaypalCaptureResult> {
+export function capturePaypalOrder(orderId: string): Promise<PaypalCaptureResult> {
   return apiFetch<PaypalCaptureResult>("/billing/paypal/capture", {
     method: "POST",
     body: JSON.stringify({ order_id: orderId }),
