@@ -1239,7 +1239,8 @@ FAQ 的 `ស9`（5 条产品线）在 chunk 2 里的偏移：枚举句起点 695
 
 | 缺口 | 现状与影响 |
 |---|---|
-| 支付与订阅 | 全库无支付网关（ABA PayWay / KHQR / Wing / Bakong / Stripe 均无）、无账单/发票、无自助升降级、无定价页。能做的只有平台管理后台手改套餐 |
+| **嵌入配额耗尽（2026-10-05 起）** | Vertex 的 `gemini-embedding-001` 对项目 `gen-lang-client-0354228918` 返回 **429 RESOURCE_EXHAUSTED**（26 小时内 17 次，最早 10-04 23:13，自 10-05 12:13 起每分钟级）——**向量检索整条腿失效**，自动降级为**纯词法检索**（fail-open，所以回答仍出得来，但高棉语/中文的语义召回已丢），回复缓存也无法写入（`reply cache store skipped: embedding failed`）。修法在 Google 侧（查该项目 embedding 配额/结算/模型启用）；`GEMINI_API_KEY`（AI Studio）在环境里可作退路，但服务是**单一 provider**，整个切回去会把聊天也压到 $10/窗口的 Tier-1 天花板 |
+| 自动续费与自助升降级 | 一次性 30 天已跑通（order → capture → webhook 幂等 + `paid_until` 到期降级），但**无订阅自动续费**、无租户自助升降级（仍靠平台控制台手改）；`PAYMENT.CAPTURE.REFUNDED` 被忽略并返回 200，**退款/争议、发票/收据、税费全无** |
 | 试用与欠费生命周期 | 无 `trial_ends_at` / `suspended_at`，无到期降级/停服/催缴；注册与 SSO 均自动开通租户并给 free 配额 |
 | 按租户成本护栏 | 只有平台级滚动预算门；缺按租户日/月上限与异常突增告警（单租户跑飞会让全体 503） |
 
@@ -1252,7 +1253,7 @@ FAQ 的 `ស9`（5 条产品线）在 chunk 2 里的偏移：枚举句起点 695
 | 外部监控 | 无外部 uptime 探针；无延迟/错误率阈值告警（已有的是内部 Telegram 告警：预算、配额、渠道） |
 | 内容安全默认值 | `SAFETY_ENABLED=0`，且 6 个 `SAFETY_*` 开关未写入 `.env.example`；B2B 签约通常要求默认开 |
 | 合规文本 | 已有隐私政策 + 数据删除流程；**缺服务条款 / DPA** |
-| Khmer 文案 | 新增文案（含本次 4 个 i18n 键）需母语复核——这是目标市场的第一印象 |
+| Khmer 文案 | 累计新增文案（含套餐/结账/限额/功能项等 24 个 i18n 键）需母语复核——这是目标市场的第一印象 |
 
 #### P2 —— 影响成交与续费的产品化
 
@@ -1261,12 +1262,23 @@ FAQ 的 `ស9`（5 条产品线）在 chunk 2 里的偏移：枚举句起点 695
 | 知识库分类编辑 | 后端 `category` / `tags` 已支持，控制台无输入框 → 42 篇文档全在一个分类下，按分类分组只能显示一组 |
 | 文档内容搜索 | 后端 `GET /knowledge` 无 `q` 参数，现为前端本地过滤（几十篇够用；上千篇需后端搜索 + SQL 门禁） |
 | 去重 | 有矛盾检测，无重复/近似重复检测 |
-| 可用性 | 单机单实例（无温备/异地），且与 `wms.service` 同机 |
+| 可用性 | 单机单实例（无温备/异地），且与 `wms.service` 同机（4C/7G） |
 | 评测闭环 | `rageval` 语料已随测试租户删除（当前跑不动）；reply-cache 误命中率未量测 |
 | 控制台语音提示 | `/chat/voice` 前端默认发 `language=km` 当 ASR 提示，应留空自动判定（与 `TranscribeAudio` 注释的警告相反） |
 | RLS 兜底 | 迁移 061 已建策略，但生产代码未设 `app.user_id` GUC → 策略 fail-open，属于未接线脚手架（见第十节） |
 | 交付卫生 | 前端构建若在含未提交文件的工作树上执行，产物会带未入库代码——本次用按路径 `git stash` 把他人 WIP 排除在构建之外 |
 | 单点 | 平台 Telegram bot token 泄漏影响所有商家 |
+
+#### 技术债 / 低成本项（不影响成交，但记着）
+
+| 项 | 现状 |
+|---|---|
+| 测试残留 | 生产有 9 个 web 测试会话（含验证用），以及 7 笔未付款的 `payments` 行（`status=created`，不产生费用、不开通）。另 `/root/db-backups/tenant-wanfang-password.txt` 是**明文口令文件**，建议删除 |
+| 未提交 WIP | `frontend/src/app/widget/page.tsx` 与 `frontend/src/lib/api.ts`（widget token 进 URL query）**未提交、未部署**；后端已兼容 body token，因此不影响功能 |
+| 类型漂移 | `UserProfile`（api.ts）未加 `is_tenant_owner`，控制台布局里用了一次内联窄化；提交 WIP 后应补齐 |
+| 既有 lint | `inbox/page.tsx` 3 处 `set-state-in-effect` + 1 个未使用变量（既有）；`knowledge/page.tsx` 1 条 effect 依赖警告（已评估，故意保留：消它要包 `useCallback`，而 React Compiler 会拒绍保留手动 memo） |
+| 文案 | 成员被租户级路由拒绝时返回「需要管理员权限」——行为正确，改成「需要租户管理员权限」更准确（一行） |
+| 挂件死参数 | `widget-embed.js` 仍接受 `data-api`，但 `/widget` 页面早已不再读 `?api=`（安全整改移除）——留着会误导 |
 
 ### 2026-10-04 本次已上线（按提交）
 
@@ -1346,3 +1358,93 @@ FAQ 的 `ស9`（5 条产品线）在 chunk 2 里的偏移：枚举句起点 695
 - **自动续费**：目前是一次性 30 天、到期降级；接 PayPal Billing Plans/订阅可在此之上加，不需改现有幂等结构。
 - 退款/争议（`PAYMENT.CAPTURE.REFUNDED` 现在被忽略并返回 200）、发票/收据、税费。
 - 试用期（`trial_ends_at`）与催缴；目前“试用”等同于 free。
+
+---
+
+## 十三、生产环境清单（2026-10-05 实测）
+
+> 本节数值均为当天在服务器上实测。**密钥不写进本文件**：所有密钥只存在于
+> `/opt/khmer-ai-cs/.env-go`（mode 600，owner `khmerai`），仓库里只记录**变量名**
+> （见 `.env.example`；该类文件共 59 个键）。原 `deploy-khmer-ai-cs/SKILL.md` 刻意用
+> `<部署服务器IP>` 占位符；按运维要求，这里写明实际值（仓库为私有）。
+
+### 主机
+
+| 项 | 值 |
+|---|---|
+| 公网 IP | `38.55.192.90` |
+| 主机名 | `9a39ap5m3r79t3q` |
+| 系统 | Debian GNU/Linux 13 (trixie)，内核 `6.12.107+deb13-cloud-amd64`，x86_64 |
+| 规格 | 4 vCPU / 7 GB 内存（可用 ~6 GB）/ 根分区 89 GB（已用 30 GB，36%） |
+| 已运行 | 4 周 5 天（至 2026-10-05） |
+| SSH | root + **密钥**（`BatchMode=yes` 一次就登）；密码路径见 SKILL.md，**密码不入库** |
+| ⚠️ 同机共存 | **`wms.service` 与本站同机，勿动** |
+
+### 域名与入口
+
+| 项 | 值 |
+|---|---|
+| 控制台/API | `cs.wanfanginsulationmaterial.com`（Cloudflare 橙云代理；源站自签证书 `/etc/nginx/ssl/wms.crt` 与 WMS 共用 → zone SSL 模式必须 **Full**） |
+| 媒体 | `media.wanfanginsulationmaterial.com`（R2 公开域名：客户头像、渠道媒体、语音） |
+| nginx 站点 | `/etc/nginx/sites-enabled/khmer-ai-cs`：`:80`/`:443`，`server_name cs.wanfanginsulationmaterial.com`；`/api/` → `127.0.0.1:8081`；`/api/v1/realtime/inbox` → WebSocket 升级（3600s）；`/` → `127.0.0.1:3001` |
+
+### 服务与端口
+
+| 单元 | 监听 | 用户 | 备注 |
+|---|---|---|---|
+| `khmer-ai-cs-go.service` | `127.0.0.1:8081` | `khmerai` | env=`/opt/khmer-ai-cs/.env-go`；`/ready` 报 db/redis + 构建版本 |
+| `khmer-ai-cs-web.service` | `127.0.0.1:3001` | `khmerai` | Next 16 standalone，`/usr/bin/node server.js`（node **v20.20.2**） |
+| `khmer-ai-cs.service` | — | — | **旧后端，已 disable，留作回滚** |
+| `postgresql@17-main.service` | `127.0.0.1:5432` | — | PostgreSQL **17.11**，库 `khmer_ai_cs`，应用用户 `khmerai`；扩展 pgvector 0.8.0 + pg_trgm |
+| `redis-server.service` | `127.0.0.1:6379`（+`[::1]`） | — | Redis **8.0.2**，`requirepass` 已开 |
+| `nginx.service` | `0.0.0.0:80`/`:443`（+IPv6） | — | 见上 |
+| `wms.service` | — | — | **别人的服务，勿动** |
+
+### 目录与文件
+
+| 路径 | 用途 |
+|---|---|
+| `/opt/khmer-ai-cs/` | 应用根：`server-go`（755）、`frontend/`（standalone 运行目录）、`build/`、`.env-go`（**600**）+ 若干 `.env-go.bak-*` |
+| `/opt/khmer-ai-cs/frontend-backup-<ts>/` | 前端回滚点（自动保留最近 3 份） |
+| `/opt/khmer-ai-cs/server-go.bak-<ts>` | 后端回滚点（当前 **17 份**，建议定期清理只留 3~5） |
+| `/root/khmer-deploy/` | 上传落点 + 运维工具：`mktoken`（签 JWT，**需先 source `.env-go`**）、`jeveval` / `rageval` / `embedcmp` / `vertexprobe`、`audio-samples/`（ASR 回归样本） |
+| `/root/db-backups/` | `pg_dump` 产物（人工执行）+ `.env-go` 备份；⚠️ 其中 `tenant-wanfang-password.txt` 是**明文口令**，建议删除 |
+| `/etc/nginx/sites-enabled/khmer-ai-cs` | 站点配置（见上） |
+
+### 当前线上版本（2026-10-05）
+
+| 件 | 值 |
+|---|---|
+| 后端 | `ecf7609`（`/ready.version` 与 `strings server-go \| grep vcs.revision` 一致） |
+| 前端 | BUILD_ID `ChKe76kPqW8NAcHllUR7G`（见 `/opt/khmer-ai-cs/frontend/.next/BUILD_ID`） |
+| schema | `schema_migrations` = **69**（最新 `069_drop_decorative_rbac`） |
+| 套餐/价格 | admin=pro（平台手工开通）、user 10=pro（已真付款，`paid_until` 2026-11-04）；`PAYPAL_PRICE_PRO=29.00` / `PAYPAL_PRICE_ENTERPRISE=199.00`，`PAYPAL_MODE=sandbox` |
+
+### 发布流程速查（详见 `deploy-khmer-ai-cs/SKILL.md`）
+
+1. **step 0**：`strings /opt/khmer-ai-cs/server-go | grep vcs.revision` → 必须是**仓库里存在**的提交（否则先别编译，去构建树补齐）
+2. 本地门禁：`go build ./... && go vet ./... && go test ./...`；**SQL 引用门禁**：开隧道 →`SQLCHECK_REQUIRED=1 DATABASE_URL=<隧道 DSN> go test -count=1 ./internal/sqlcheck/`（不加 `SQLCHECK_REQUIRED=1` 会静默 skip）
+3. 交叉编译 `server-go` + `migrate-go`（`CGO_ENABLED=0 GOOS=linux GOARCH=amd64`，`-ldflags "-X khmer-ai-cs-go/internal/api.Version=<短哈希>"`；服务器上没有 Go）
+4. 上传 → **sha256 对账** → 备份 → `systemctl stop khmer-ai-cs-go` → （有迁移才）`migrate-go` → **迁移后立即再跑一次 SQL 门禁** → `install -o khmerai -g khmerai -m 755` → `start` → 查 `/ready`
+5. 前端：`NEXT_PUBLIC_API_URL=https://cs.wanfanginsulationmaterial.com/api/v1 npm run build` → 组装 standalone + `.next/static` + `public` → 打 tar → 上传 → 解包哨兵 `test -f server.js` → 换目录 → `chown -R khmerai:khmerai` → `restart khmer-ai-cs-web` → 比对 `.next/BUILD_ID`
+6. 回滚：后端 `cp -a server-go.bak-<ts> server-go` + restart（迁移是增量的，回滚二进制不坏库）；前端换回 `frontend-backup-<ts>`
+
+### 实测坑位（省下一个人的半天）
+
+| 症状 | 原因与做法 |
+|---|---|
+| Windows/Git Bash 发出的请求里中文变成 `?` | **Windows 版 curl 会把非 ASCII 参数转码**。改用文件（`--data-binary @file`）或本地 python 直发 UTF-8 字节；输出用 `sys.stdout.buffer` 或写文件再 `cat`（python 的 stdout 在 Windows 是 cp1252） |
+| 本地写的文件“找不到” | MSYS 的 `/tmp` 与 Windows 程序的 `C:\tmp` 不是同一个；**Windows 版 python 里 `/tmp/x` = 当前盘符根**（`D:\tmp\x`），要用 `D:/tmp/x` 或 `process.cwd()` 相对路径。Node/python 是 Windows 程序，bash 的 `ls /tmp` 看不到它们写的文件 |
+| 服务端脚本 403 但本地 curl 200 | Cloudflare 会拦 `Python-urllib` 的 UA，**以及来自源站自身 IP 的请求**：脚本里带浏览器 UA + `Origin`，或干脆在服务器上打 `127.0.0.1:8081` |
+| `git show origin/main:path` 报 `ambiguous argument` | MSYS 把 `:path` 当路径转换 → `MSYS_NO_PATHCONV=1 git show ...` |
+| `pg_dump` 权限错误 | 应用用户 `khmerai` 对遗留表无权限 → 用 **postgres 超级用户** dump |
+| 日志查不到旧事件 | journald 只保留有限窗口（2026-10-05 时仅能回溯到 10-01 16:45 左右） |
+| 二进制版本戳 `vcs.modified=true` | 构建时工作树里有未提交的**已跟踪**文件（哪怕只是别人改的前端文件）就这样；要干净戳得先确保 `git status` 干净（可用按路径 `git stash` 排除他人 WIP） |
+| `mktoken` 打印 `JWT_SECRET missing` | 它需要环境变量 → `set -a; . /opt/khmer-ai-cs/.env-go; set +a` 之后再跑 |
+| SQL 引号被 shell 吃掉 | 复杂 SQL 一律 **base64 传参**：`echo <b64> \| base64 -d > /tmp/q.sql && psql -f /tmp/q.sql` |
+
+### 安全卫生（建议尽快做）
+
+1. 删除 `/root/db-backups/tenant-wanfang-password.txt`（明文口令）；同理 `.env-go.bak-*` 建议只留必要的。
+2. 本次会话中 Paypal **sandbox** 凭据曾出现在聊天里（只动假钱，风险低）；**换 live 凭据时不要经聊天传递**，直接写入 `.env-go`，并顺手轮换一次 sandbox 密钥。
+3. `payments` 表里有 7 笔未付款的 `created` 订单（测试残留），可清。
