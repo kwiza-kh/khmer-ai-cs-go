@@ -3,32 +3,29 @@
 import * as React from "react";
 import { useSearchParams } from "next/navigation";
 import useSWR from "swr";
-import { CreditCard, Check, Loader2, ShieldCheck } from "lucide-react";
+import { Check, CreditCard, Loader2, ShieldCheck, Sparkles } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useI18n } from "@/lib/i18n";
+import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import {
   capturePaypalOrder,
   createPaypalOrder,
   getBillingCatalog,
   type BillingPlan,
+  type BillingStatus,
+  type PlanOffer,
 } from "@/lib/billing-api";
 
 // The approve URL comes from PayPal by way of our own API, but the browser must
 // not follow "whatever the server said": a compromised or misconfigured backend
 // response would turn the checkout button into a phishing redirect. Only PayPal's
 // own hosts, over https, are allowed to receive the buyer. The backend validates
-// the same thing on the way in (internal/paypal), so a bad URL has to survive two
-// independent checks.
-const PAYPAL_HOSTS = new Set([
-  "paypal.com",
-  "www.paypal.com",
-  "sandbox.paypal.com",
-  "www.sandbox.paypal.com",
-]);
+// the same thing (internal/paypal), so a bad URL survives two independent checks.
+const PAYPAL_HOSTS = new Set(["paypal.com", "www.paypal.com", "sandbox.paypal.com", "www.sandbox.paypal.com"]);
 
 function paypalApproveURL(raw: string): string | null {
   try {
@@ -41,14 +38,13 @@ function paypalApproveURL(raw: string): string | null {
   }
 }
 
-// Buying a plan: the catalogue comes from the server (prices live in the
-// deployment's environment, not in this bundle), the order is created
-// server-side, the browser is handed to PayPal's approve URL, and PayPal returns
-// it here with ?token=<order id> — which triggers the capture.
+// Buying a plan: the catalogue comes from the server (prices are the
+// deployment's, not this bundle's), the order is created server-side, the buyer
+// goes to PayPal and returns with ?token=<order id>, which triggers the capture.
 //
 // The capture runs through SWR rather than an effect: it is a one-shot side
-// effect keyed by the order id, and the server is idempotent, so a reload (or a
-// webhook that got there first) cannot grant a second month.
+// effect keyed by the order id, and the server is idempotent, so a reload — or a
+// webhook that got there first — cannot grant a second month.
 export default function BillingPage() {
   const { t, tf } = useI18n();
   const searchParams = useSearchParams();
@@ -90,133 +86,173 @@ export default function BillingPage() {
     }
   };
 
-  const current = data?.current;
+  const current: BillingStatus | undefined = data?.current;
   const currency = data?.currency || "USD";
-  const usage = (used?: number, quota?: number) => {
+  const currentPlan = current?.plan ?? "free";
+  const percent = (used?: number, quota?: number) => {
     if (!used || !quota || !Number.isFinite(quota)) return 0;
     return Math.min(100, Math.round((used / quota) * 100));
   };
+  const limit = (value: number | null | undefined) =>
+    value === null || value === undefined ? t("bl.unlimited") : value.toLocaleString("en-US");
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-auto">
-      <PageHeader
-        icon={CreditCard}
-        kicker={t("bl.kicker")}
-        title={t("bl.title")}
-        description={t("bl.desc")}
-      />
+      <PageHeader icon={CreditCard} kicker={t("bl.kicker")} title={t("bl.title")} description={t("bl.desc")} />
 
-      <div className="space-y-5 px-5 pb-8 sm:px-6">
+      <div className="mx-auto w-full max-w-6xl space-y-6 px-5 pb-12 sm:px-6">
         {paypalState === "cancel" && (
-          <Card className="border-border/80">
-            <CardContent className="py-3 text-sm text-muted-foreground">{t("bl.canceled")}</CardContent>
-          </Card>
+          <div className="rounded-xl border border-border bg-muted/30 px-4 py-3 text-sm text-muted-foreground">{t("bl.canceled")}</div>
         )}
         {capture?.captured && (
-          <Card className="border-primary/40 bg-primary/5">
-            <CardContent className="flex items-center gap-2 py-3 text-sm">
-              <Check className="size-4 text-primary" />
-              {capture.already ? t("bl.paidAlready") : t("bl.paidToast")}
-              <Badge variant="secondary" className="ml-2 h-5 px-2 text-[11px]">
-                {capture.current?.plan?.toUpperCase() ?? ""}
-              </Badge>
-            </CardContent>
-          </Card>
+          <div className="flex items-center gap-2 rounded-xl border border-primary/40 bg-primary/5 px-4 py-3 text-sm">
+            <Check className="size-4 text-primary" />
+            {capture.already ? t("bl.paidAlready") : t("bl.paidToast")}
+            <Badge variant="secondary" className="ml-1 h-5 px-2 text-[11px] uppercase">{capture.current?.plan ?? ""}</Badge>
+          </div>
         )}
         {captureError && (
-          <Card className="border-destructive/40">
-            <CardContent className="py-3 text-sm text-destructive">{(captureError as Error).message}</CardContent>
-          </Card>
+          <div className="rounded-xl border border-destructive/40 px-4 py-3 text-sm text-destructive">{(captureError as Error).message}</div>
         )}
         {error && (
-          <Card className="border-destructive/40">
-            <CardContent className="py-3 text-sm text-destructive">{(error as Error).message}</CardContent>
-          </Card>
+          <div className="rounded-xl border border-destructive/40 px-4 py-3 text-sm text-destructive">{(error as Error).message}</div>
         )}
 
-        {/* Current entitlement + usage: the same numbers the platform meters on. */}
+        {/* Current entitlement: the same numbers the platform meters on. */}
         <Card className="border-border/80">
           <CardHeader className="flex flex-row items-center justify-between gap-3 pb-3">
             <CardTitle className="text-sm">{t("bl.currentPlan")}</CardTitle>
-            <Badge variant="secondary" className="h-6 px-2.5 text-xs uppercase">
-              {isLoading ? "…" : current?.plan ?? "free"}
-            </Badge>
+            <Badge variant="secondary" className="h-6 px-2.5 text-xs uppercase">{isLoading ? "…" : currentPlan}</Badge>
           </CardHeader>
-          <CardContent className="space-y-3 text-xs text-muted-foreground">
+          <CardContent className="space-y-4 text-xs text-muted-foreground">
             <p>
               {current?.paid_until
                 ? tf("bl.paidUntil", { date: new Date(current.paid_until).toLocaleDateString() })
                 : t("bl.neverPaid")}
             </p>
-            <div className="space-y-2">
-              <div>
-                <div className="flex justify-between">
-                  <span>{t("bl.docsLabel")}</span>
-                  <span className="tabular-nums">
-                    {current?.docs_used ?? 0} / {current?.monthly_doc_quota ?? 0}
-                  </span>
+            <div className="grid gap-4 sm:grid-cols-2">
+              {[
+                { label: t("bl.docsLabel"), used: current?.docs_used, quota: current?.monthly_doc_quota },
+                { label: t("bl.msgsLabel"), used: current?.messages_used, quota: current?.monthly_message_quota },
+              ].map((row) => (
+                <div key={row.label}>
+                  <div className="flex justify-between text-[11px]">
+                    <span>{row.label}</span>
+                    <span className="tabular-nums">
+                      {(row.used ?? 0).toLocaleString("en-US")} / {(row.quota ?? 0).toLocaleString("en-US")}
+                    </span>
+                  </div>
+                  <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-muted">
+                    <div className="h-full rounded-full bg-primary/70" style={{ width: `${percent(row.used, row.quota)}%` }} />
+                  </div>
                 </div>
-                <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-muted">
-                  <div className="h-full rounded-full bg-primary/70" style={{ width: `${usage(current?.docs_used, current?.monthly_doc_quota)}%` }} />
-                </div>
-              </div>
-              <div>
-                <div className="flex justify-between">
-                  <span>{t("bl.msgsLabel")}</span>
-                  <span className="tabular-nums">
-                    {current?.messages_used ?? 0} / {current?.monthly_message_quota ?? 0}
-                  </span>
-                </div>
-                <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-muted">
-                  <div className="h-full rounded-full bg-primary/70" style={{ width: `${usage(current?.messages_used, current?.monthly_message_quota)}%` }} />
-                </div>
-              </div>
+              ))}
             </div>
             {current?.cycle_end && <p>{tf("bl.cycleEnds", { date: new Date(current.cycle_end).toLocaleDateString() })}</p>}
           </CardContent>
         </Card>
 
-        {/* Plan offers. Prices come from configuration; a plan without one is not
-            for sale, which is how a deployment that is not selling yet looks. */}
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-          {(data?.plans ?? []).map((offer) => {
-            const isCurrent = (current?.plan ?? "free") === offer.plan;
-            return (
-              <Card key={offer.plan} className={isCurrent ? "border-primary/50" : "border-border/80"}>
-                <CardHeader className="pb-2">
-                  <CardTitle className="flex items-center justify-between text-sm uppercase">
-                    {offer.plan}
-                    {isCurrent && <Badge className="h-5 px-2 text-[10px]">{t("bl.current")}</Badge>}
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  <p className="text-lg font-semibold tracking-tight">
-                    {offer.price ? `${offer.price} ${currency}` : "—"}
-                  </p>
-                  {offer.purchasable ? (
-                    <Button
-                      className="w-full gap-2"
-                      disabled={busy !== null}
-                      onClick={() => { void startCheckout(offer.plan); }}
-                    >
-                      {busy === offer.plan ? <Loader2 className="size-3.5 animate-spin" /> : <CreditCard className="size-3.5" />}
-                      {t("bl.buy")}
-                    </Button>
-                  ) : (
-                    <p className="text-xs text-muted-foreground">
-                      {offer.plan === "free" ? t("bl.freeNote") : t("bl.notForSale")}
-                    </p>
-                  )}
-                </CardContent>
-              </Card>
-            );
-          })}
+        {/* Plans. Prices come from configuration; a plan without one is not for
+            sale, which is what a deployment that is not selling yet looks like. */}
+        <div className="grid gap-5 lg:grid-cols-3">
+          {(data?.plans ?? []).map((offer) => (
+            <PlanCard
+              key={offer.plan}
+              offer={offer}
+              currency={currency}
+              isCurrent={currentPlan === offer.plan}
+              busy={busy}
+              onBuy={() => void startCheckout(offer.plan)}
+              t={t}
+              limit={limit}
+            />
+          ))}
         </div>
 
         <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
           <ShieldCheck className="size-3.5" />
           {data?.checkout_ready ? t("bl.checkoutHint") : t("bl.notConfigured")}
         </p>
+      </div>
+    </div>
+  );
+}
+
+function PlanCard({
+  offer, currency, isCurrent, busy, onBuy, t, limit,
+}: {
+  offer: PlanOffer;
+  currency: string;
+  isCurrent: boolean;
+  busy: BillingPlan | null;
+  onBuy: () => void;
+  t: (key: string) => string;
+  limit: (value: number | null | undefined) => string;
+}) {
+  const recommended = offer.plan === "pro";
+  const rows: { label: string; value: string }[] = [
+    { label: t("bl.limitMessages"), value: limit(offer.messages) },
+    { label: t("bl.limitDocuments"), value: limit(offer.documents) },
+    { label: t("bl.limitChannels"), value: limit(offer.channels) },
+    { label: t("bl.limitSeats"), value: limit(offer.seats) },
+  ];
+  return (
+    <div
+      className={cn(
+        "relative flex flex-col rounded-2xl border bg-card p-5 transition-shadow hover:shadow-lg",
+        recommended ? "border-primary/40 shadow-md ring-1 ring-primary/15" : "border-border/80",
+      )}
+    >
+      {recommended && (
+        <Badge className="absolute -top-2.5 left-5 h-5 gap-1 px-2 text-[10px]">
+          <Sparkles className="size-2.5" />
+          {t("bl.recommended")}
+        </Badge>
+      )}
+
+      <div className="flex items-center justify-between">
+        <h3 className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">{offer.plan}</h3>
+        {isCurrent && <Badge variant="secondary" className="h-5 px-2 text-[10px]">{t("bl.current")}</Badge>}
+      </div>
+
+      <p className="mt-3 flex items-baseline gap-1.5">
+        <span className="text-3xl font-semibold tracking-tight text-foreground">{offer.price ?? "—"}</span>
+        {offer.price && <span className="text-xs text-muted-foreground">{currency} {t("bl.per30days")}</span>}
+      </p>
+
+      <div className="mt-4">
+        {offer.purchasable ? (
+          <Button className="w-full gap-2" disabled={busy !== null} onClick={onBuy}>
+            {busy === offer.plan ? <Loader2 className="size-3.5 animate-spin" /> : <CreditCard className="size-3.5" />}
+            {t("bl.buy")}
+          </Button>
+        ) : (
+          <p className="rounded-lg bg-muted/40 px-3 py-2.5 text-[11px] leading-5 text-muted-foreground">
+            {offer.plan === "free" ? t("bl.freeNote") : t("bl.notForSale")}
+          </p>
+        )}
+      </div>
+
+      {/* The metered allowances first: these are the numbers the gates enforce. */}
+      <dl className="mt-5 space-y-2 border-t border-border/70 pt-4 text-xs">
+        {rows.map((row) => (
+          <div key={row.label} className="flex items-baseline justify-between gap-3">
+            <dt className="text-muted-foreground">{row.label}</dt>
+            <dd className="shrink-0 font-medium tabular-nums text-foreground">{row.value}</dd>
+          </div>
+        ))}
+      </dl>
+
+      <div className="mt-4 flex-1 border-t border-border/70 pt-4">
+        <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">{t("bl.included")}</p>
+        <ul className="mt-2.5 space-y-2">
+          {(offer.included ?? []).map((key) => (
+            <li key={key} className="flex items-start gap-2 text-xs leading-5">
+              <Check className="mt-0.5 size-3.5 shrink-0 text-primary" />
+              <span className="text-foreground/90">{t(key)}</span>
+            </li>
+          ))}
+        </ul>
       </div>
     </div>
   );

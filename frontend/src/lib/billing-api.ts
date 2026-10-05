@@ -12,6 +12,13 @@ export interface PlanOffer {
   /** Absent when the plan has no configured price (not for sale). */
   price?: string;
   purchasable: boolean;
+  /** null = unlimited (the backend sends null rather than a sentinel number). */
+  messages: number;
+  documents: number | null;
+  channels: number | null;
+  seats: number | null;
+  /** i18n keys for what the plan includes, e.g. "bl.feature.kb". */
+  included: string[];
 }
 
 export interface BillingStatus {
