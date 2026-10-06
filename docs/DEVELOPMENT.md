@@ -1274,7 +1274,7 @@ FAQ 的 `ស9`（5 条产品线）在 chunk 2 里的偏移：枚举句起点 695
 | 项 | 现状 |
 |---|---|
 | 测试残留 | 生产有 9 个 web 测试会话（含验证用），以及 7 笔未付款的 `payments` 行（`status=created`，不产生费用、不开通）。另 `/root/db-backups/tenant-wanfang-password.txt` 是**明文口令文件**，建议删除 |
-| 既有 lint | `inbox/page.tsx` 3 处 `set-state-in-effect` + 1 个未使用变量（既有）；`widget/page.tsx` 同类 3 条（1 处 effect 内 setState + 2 处闭包计数，HEAD 上同样报）；`knowledge/page.tsx` 1 条 effect 依赖警告（已评估，故意保留：消它要包 `useCallback`，而 React Compiler 会拒绍保留手动 memo） |
+| 既有 lint | `inbox/page.tsx` 3 处 `set-state-in-effect` + 1 个未使用变量（既有）；`widget/page.tsx` 同类 3 条（1 处 effect 内 setState + 2 处闭包计数，HEAD 上同样报）；`login/page.tsx` 的 OAuth 回跳 effect 2 处（`setError`/`setLoading`，HEAD 上同样报，加行内 eslint-disable 说明后 0 error）；`knowledge/page.tsx` 1 条 effect 依赖警告（已评估，故意保留：消它要包 `useCallback`，而 React Compiler 会拒绍保留手动 memo） |
 
 ### 2026-10-04 本次已上线（按提交）
 
@@ -1435,9 +1435,9 @@ FAQ 的 `ស9`（5 条产品线）在 chunk 2 里的偏移：枚举句起点 695
 
 | 件 | 值 |
 |---|---|
-| 后端 | `ee9fd00`（`/ready.version` 与 `strings server-go \| grep vcs.revision` 一致，`vcs.modified=false`；构建机 go1.26.5） |
-| 前端 | BUILD_ID `lL7Gfmoe5lbAJRbC_1k67`（见 `/opt/khmer-ai-cs/frontend/.next/BUILD_ID`） |
-| schema | `schema_migrations` = **69**（最新 `069_drop_decorative_rbac`；本次发布 0 pending，未跑迁移） |
+| 后端 | `7ec1cf9`（`/ready.version` 与 `strings server-go \| grep vcs.revision` 一致，`vcs.modified=false`；构建机 go1.26.5） |
+| 前端 | BUILD_ID `Veyq-l52XSeashvqEUFuB`（见 `/opt/khmer-ai-cs/frontend/.next/BUILD_ID`） |
+| schema | `schema_migrations` = **70**（最新 `070_team_invites`；本次发布跑了一个迁移） |
 | 收款 | `PAYPAL_MODE=sandbox`、`PAYPAL_PRICE_PRO=29.00` / `_ENTERPRISE=199.00`、`PAYPAL_WEBHOOK_ID=7J2288704D8439049`（**应用锚定**；dashboard 里 account 锚定的 `9E4063638Y8280225` 应删） |
 | 套餐 | admin=pro（平台手工开通）、user 10=pro、user 11=pro（sandbox 两笔，`paid_until` **2026-12-05**） |
 
@@ -1551,3 +1551,46 @@ NEXT_PUBLIC_API_URL=https://cs.wanfanginsulationmaterial.com/api/v1 npm run buil
 
 注意 `go test ./...` 不带 `DATABASE_URL` 会**静默跳过**那些 DB 门控测试（本轮两个
 真问题就是这么漏到今天的），发布前尽量带上本地库或隧道跑一遍。
+
+---
+
+## 十五、客服席位改成邀请链接（`7ec1cf9`，2026-10-06 夜）
+
+### 为什么不是「user_id 太简单」而是走不通 + 可接管
+
+- **走不通**：没有任何界面把 user_id 给到客服本人（profile 只有 username/邮箱），
+  而店主的用户列表（`tenantUserScope`）只包含店主自己 + 已入席的成员——新客服
+  根本不在列表里。密码注册在生产是关的（`ALLOW_REGISTRATION` 未设 = false），
+  账号只来自 Google/Telegram SSO 或平台管理员手工建，所以只有平台管理员能读到
+  那个 id，租户自助流程无法完成。
+- **可接管**：user_id 是顺序整数，而 `addTeamAgent` 的准入只拒 platform_admin /
+  已被认领 / 已有 tenant 状态（billing/渠道/会话/知识库）。刚注册的 SSO 账号这
+  些行一个都没有——任何店主猜一个小整数就能把陌生人认领进自己的团队；而
+  `agent_teams` 成员关系就是 `userInCallerTenant` 的答案，所以店主随后能改它的
+  角色、停用它（还会 bump token_version 当场踢下线），受害者同时因
+  `tenantOwnerAllowed = !isAgent` 失去自己账号的所有者身份。
+
+### 现在的形状
+
+| 件 | 行为 |
+|---|---|
+| 迁移 070 `team_invites` | 只存 token 的 **SHA-256**；链接仅在生成时显示一次（丢了就撤销重建）。待接受的邀请**不占席位** |
+| `POST /team/invites` | 租户所有者；可带可选称呼/技能；生成时先查席位，满员直接 402 |
+| `GET /team/invites` | 待接受列表（不含链接，只有哈希）；`DELETE /team/invites/{id}` 撤销，按 owner 隔离 |
+| `POST /team/invites/accept` | **任何已登录用户**；请求体只有 code，绑定的是调用者自己的 user_id——这就是旧流程缺的那份同意 |
+| 事务 | 接受在一个事务里：锁 owner 行 → `checkSeatLimitFrom` → guarded UPDATE 领取邀请 → INSERT；失败全部回滚，所以满员/已在别队都不会烧掉链接 |
+| `POST /team/agents` | 收成**平台破窗**（`platform_admin` only）；租户侧已无按 id 认领的路径 |
+| `updateUserRole` | 启用/停用账号只允许 platform_admin（租户侧用「移出席位」收回权限）——把「认领后停用」半条链彻底切断 |
+| 前端 | 席位卡 = 生成链接/复制（只读框，一次性提示）/待接受列表/撤销；新公开路由 `/join?code=`（未登录把 code 存 sessionStorage，登录页四条成功路径都会回到它）；`#user_id` 复制按钮改为仅平台管理员可见 |
+| 测试 | `team_invites_test.go`（DB 门控）：绑定调用者/一次性/满席回滚后可重试/自邀·平台管理员·独立商家·已在他队各拒绝/撤销 owner 隔离；`team_agent_conflict_test.go` 改平台管理员调用并补租户 403 |
+
+### 上线记录（`ee9fd00 → 7ec1cf9`，含迁移 070）
+
+- 门禁：`vertexprobe` 必需项 exit 0；**迁移后**用生产 schema 跑
+  `SQLCHECK_REQUIRED=1`（119s 全绿）——本次新表 `team_invites` 只有先迁移
+  才存在，所以顺序必须是 stop → migrate → sqlcheck → start。
+- 回滚点：`server-go.bak-20261006113023` / `migrate-go.bak-20261006113023` /
+  `frontend-backup-20261006113239`（旧二进制不引用新表，迁移是附加式的，可直接回退）。
+- 验证：`/ready.version=7ec1cf9`；域名登录 401、`POST /team/invites` 未登录
+  401、`/join?code=…` 200、首页 200+CSP；`team_invites` 在生产库存在（0 行）；
+  重启后 journal 无 ERROR，`embed keep-warm` 仍在（step 0 那条教训）。
