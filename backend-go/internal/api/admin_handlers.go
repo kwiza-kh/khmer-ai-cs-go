@@ -739,13 +739,12 @@ func (a *App) listUsers(w http.ResponseWriter, r *http.Request) (any, error) {
 	}
 
 	selArgs := append(append([]any{}, args...), pageSize, offset)
+	// No token/cost columns: model spend is operator-metered data and this list
+	// is served to tenant owners (tenantAdminOnly).
 	rows, err := a.DB.Query(r.Context(),
 		"SELECT u.user_id, u.username, COALESCE(u.email,''), u.role::text, u.is_active, u.created_at, "+
-			"u.google_sub IS NOT NULL, u.telegram_sub IS NOT NULL, COALESCE(u.password_hash,'') <> '', "+
-			"COALESCE(t.total_tokens, 0), COALESCE(t.cost_estimate, 0) "+
-			"FROM users u LEFT JOIN LATERAL ("+
-			"SELECT SUM(total_tokens) AS total_tokens, SUM(cost_estimate) AS cost_estimate "+
-			"FROM token_usage WHERE user_id = u.user_id) t ON TRUE"+
+			"u.google_sub IS NOT NULL, u.telegram_sub IS NOT NULL, COALESCE(u.password_hash,'') <> '' "+
+			"FROM users u"+
 			whereClause+" ORDER BY u.user_id LIMIT $"+strconv.Itoa(len(selArgs)-1)+" OFFSET $"+strconv.Itoa(len(selArgs)),
 		selArgs...)
 	if err != nil {
@@ -759,10 +758,8 @@ func (a *App) listUsers(w http.ResponseWriter, r *http.Request) (any, error) {
 		var username, email, role string
 		var isActive, hasGoogle, hasTelegram, hasPassword bool
 		var createdAt *time.Time
-		var totalTokens int64
-		var cost float64
 		if err := rows.Scan(&uid, &username, &email, &role, &isActive, &createdAt,
-			&hasGoogle, &hasTelegram, &hasPassword, &totalTokens, &cost); err != nil {
+			&hasGoogle, &hasTelegram, &hasPassword); err != nil {
 			skipped++
 			continue
 		}
@@ -784,7 +781,6 @@ func (a *App) listUsers(w http.ResponseWriter, r *http.Request) (any, error) {
 		out = append(out, map[string]any{
 			"user_id": uid, "username": username, "email": email, "role": role,
 			"is_active": isActive, "created_at": createdAt, "auth_methods": authMethods,
-			"total_tokens": totalTokens, "cost_estimate": cost,
 		})
 	}
 	// Skipped rows are reported to the client; an iteration error is not a

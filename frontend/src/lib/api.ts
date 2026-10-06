@@ -86,8 +86,6 @@ export interface UserItem {
   updated_at?: string;
   /** Every sign-in method the account carries: "password" | "google" | "telegram". */
   auth_methods?: string[];
-  total_tokens?: number;
-  cost_estimate?: number;
 }
 
 export interface UsersStats {
@@ -341,15 +339,10 @@ export interface AnalyticsOverview {
   csat: number;        // 0..1
   escalation_rate: number; // 0..1
   deflection_rate: number; // 0..1
-  total_tokens: number;
-  total_cost: number;
-  cache_hit_rate: number;
 }
 
 export interface TimelinePoint {
   date: string;
-  tokens: number;
-  cost: number;
   sessions: number;
   messages: number;
   avg_response_ms: number;

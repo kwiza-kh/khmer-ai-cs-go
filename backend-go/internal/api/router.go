@@ -175,7 +175,7 @@ func (a *App) Router() http.Handler {
 	authed.Handle("GET /api/v1/admin/analytics/timeline", a.tenantAdminOnly(a.handle(a.analyticsTimeline)))
 	authed.Handle("GET /api/v1/admin/analytics/top-queries", a.tenantAdminOnly(a.handle(a.topQueries)))
 	authed.Handle("GET /api/v1/admin/analytics/languages", a.tenantAdminOnly(a.handle(a.languageBreakdown)))
-	authed.Handle("GET /api/v1/admin/tokens/stats", a.tenantAdminOnly(a.handle(a.tokenStats)))
+	authed.Handle("GET /api/v1/admin/tokens/stats", a.platformAdminOnly(a.handle(a.tokenStats)))
 	authed.Handle("GET /api/v1/admin/feedback", a.tenantAdminOnly(a.handle(a.feedbackList)))
 	authed.Handle("GET /api/v1/admin/agent-performance", a.tenantAdminOnly(a.handle(a.agentPerformance)))
 	authed.Handle("GET /api/v1/admin/intent-analytics", a.tenantAdminOnly(a.handle(a.intentAnalytics)))
