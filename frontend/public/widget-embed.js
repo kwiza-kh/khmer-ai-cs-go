@@ -71,48 +71,68 @@
       "border:0;border-radius:14px;box-shadow:0 18px 48px -12px rgba(17,20,45,0.35);background:#fff;";
 
     var CHAT_SVG =
-      '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">' +
+      '<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">' +
       '<path d="M21 11.5a8.38 8.38 0 0 1-8.5 8.5 8.5 8.5 0 0 1-3.8-.9L3 21l1.9-5.7a8.5 8.5 0 1 1 16.1-3.8z"/></svg>';
     var CLOSE_SVG =
-      '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.4" stroke-linecap="round">' +
+      '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.4" stroke-linecap="round">' +
       '<path d="M6 6l12 12M18 6L6 18"/></svg>';
+
+    // The two icons are constants, so innerHTML would be safe today — but this
+    // script is pasted into other people's pages, and neither a scanner nor a
+    // reviewer should have to re-derive that nothing variable reaches a markup
+    // sink. Parse the static markup into nodes instead. The xmlns is what makes
+    // this work: XML parsing (unlike HTML's) does NOT put a bare <svg> in the
+    // SVG namespace, and a namespace-less svg silently renders nothing.
+    var svgNode = function (markup) {
+      var parsed = new DOMParser().parseFromString(markup, "image/svg+xml");
+      return document.importNode(parsed.documentElement, true);
+    };
 
     var btn = document.createElement("button");
     btn.type = "button";
     btn.id = "khmer-widget-btn";
     btn.setAttribute("aria-label", "Open support chat");
-    btn.innerHTML = CHAT_SVG + '<span id="khmer-widget-badge"></span>';
     btn.style.cssText = "position:relative;display:flex;align-items:center;justify-content:center;width:56px;height:56px;border-radius:50%;" +
       "border:none;background:" + color + ";cursor:pointer;box-shadow:0 10px 28px -8px rgba(17,20,45,0.45);" +
       "transition:transform .15s ease;margin-left:auto;";
     btn.onmouseenter = function () { btn.style.transform = "scale(1.06)"; };
     btn.onmouseleave = function () { btn.style.transform = "scale(1)"; };
 
+    var unread = false;
     var badge = null;
+    var showLauncher = function () {
+      while (btn.firstChild) btn.removeChild(btn.firstChild);
+      btn.appendChild(svgNode(CHAT_SVG));
+      badge = document.createElement("span");
+      badge.id = "khmer-widget-badge";
+      badge.style.display = unread ? "block" : "none";
+      btn.appendChild(badge);
+    };
+    showLauncher();
+
     var setOpen = function (open) {
       if (open) {
         frame.classList.add("kw-open");
-        btn.innerHTML = CLOSE_SVG;
+        while (btn.firstChild) btn.removeChild(btn.firstChild);
+        btn.appendChild(svgNode(CLOSE_SVG));
         unread = false;
         if (badge) badge.style.display = "none";
         try { frame.contentWindow.postMessage({ khmerWidgetFocus: true }, origin); } catch { /* noop */ }
       } else {
         frame.classList.remove("kw-open");
-        btn.innerHTML = CHAT_SVG + '<span id="khmer-widget-badge"></span>';
-        badge = document.getElementById("khmer-widget-badge");
-        if (badge && unread) badge.style.display = "block";
+        showLauncher();
       }
     };
     var isOpen = function () { return frame.classList.contains("kw-open"); };
 
     // Unread ping from the widget iframe (new agent/AI message while closed).
-    var unread = false;
     window.addEventListener("message", function (ev) {
       if (ev.source !== frame.contentWindow) return;
       var d = ev.data;
       if (d && d.khmerWidgetUnread) {
         unread = true;
-        badge = document.getElementById("khmer-widget-badge");
+        // badge stays live: showLauncher() rebuilds it on close, and while the
+        // panel is open the launcher children (badge included) are detached.
         if (badge && !isOpen()) badge.style.display = "block";
       }
     });
