@@ -705,15 +705,28 @@ func (a *App) addTeamAgent(w http.ResponseWriter, r *http.Request) (any, error) 
 	if !a.isTenantOwner(r.Context(), user) {
 		return nil, ErrForbidden("只有租户所有者可以添加客服")
 	}
+	var req addAgentRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		return nil, ErrBadRequest("请求格式错误")
+	}
+	// A repeat claim is not a new seat. Answer 409 before the seat gate below,
+	// or a tenant already at its cap is told to buy more seats for an account it
+	// has already added — and the unique-key 409 further down never fires.
+	// is_active is deliberately not filtered: any row blocks the INSERT.
+	var alreadySeated bool
+	if err := a.DB.QueryRow(r.Context(),
+		"SELECT EXISTS (SELECT 1 FROM agent_teams WHERE owner_user_id = $1 AND agent_user_id = $2)",
+		user.UserID, req.AgentUserID).Scan(&alreadySeated); err != nil {
+		return nil, ErrInternal("查询失败")
+	}
+	if alreadySeated {
+		return nil, ErrConflict("该用户已在客服团队中")
+	}
 	// Plan limit: seats are a live count, not a consumed counter (see
 	// plan_limits.go). Checked after the role guard so an unauthorised caller
 	// still gets 403 rather than a limit message.
 	if err := a.checkSeatLimit(r.Context(), user.UserID); err != nil {
 		return nil, err
-	}
-	var req addAgentRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-		return nil, ErrBadRequest("请求格式错误")
 	}
 	// Verify the agent user exists and can join this tenant. Membership is
 	// exclusive: agent_teams doubles as the tenant boundary for every
@@ -765,9 +778,9 @@ func (a *App) addTeamAgent(w http.ResponseWriter, r *http.Request) (any, error) 
 	if err := a.DB.QueryRow(r.Context(),
 		"INSERT INTO agent_teams (owner_user_id, agent_user_id, display_name, skills, is_active) VALUES ($1,$2,$3,$4::text[],true) RETURNING team_id",
 		user.UserID, req.AgentUserID, req.DisplayName, req.Skills).Scan(&teamID); err != nil {
-		// The SELECT above and this INSERT are a check-then-act pair, so the
-		// loser of a concurrent claim — or a plain double-submit — arrives here
-		// rather than at the claimedElsewhere branch. Both unique keys that can
+		// The checks above and this INSERT are a check-then-act pair, so the
+		// loser of a concurrent claim arrives here rather than at the
+		// claimedElsewhere branch. Both unique keys that can
 		// fire mean "this account already belongs to a tenant" (059's
 		// uq_agent_teams_agent_user_id, 024's (owner_user_id, agent_user_id)),
 		// which is the same fact the pre-check reports as 409. Answering 500

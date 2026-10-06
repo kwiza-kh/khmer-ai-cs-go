@@ -520,7 +520,7 @@ func (a *App) tenantAdminOnly(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user, ok := UserFrom(r)
 		if !ok || !a.isTenantOwner(r.Context(), user) {
-			WriteJSON(w, http.StatusForbidden, map[string]string{"error": "需要管理员权限"})
+			WriteJSON(w, http.StatusForbidden, map[string]string{"error": "需要租户管理员权限"})
 			return
 		}
 		next.ServeHTTP(w, r)
