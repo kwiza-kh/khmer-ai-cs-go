@@ -1550,12 +1550,14 @@ export function ModelsAdminPage() {
   }, [data, loadAvailableModels, regionsResolved, regionByConfig, currentRegion]);
 
   return (
-    <AdminPageFrame
-      icon={Zap}
-      title={t("admin.modelsTitle")}
-      maxWidth="max-w-4xl"
-      actions={<RefreshAction onClick={() => void mutate()} refreshing={isLoading} />}
-    >
+    <div className="space-y-4 max-w-4xl">
+      {/* No page frame: this is a panel inside the platform console now
+          (/platform-admin). The refresh action stays where it was, and the
+          form-width ceiling the frame used to supply goes on the wrapper. */}
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="text-sm font-semibold text-foreground">{t("admin.modelsTitle")}</h3>
+        <RefreshAction onClick={() => void mutate()} refreshing={isLoading} />
+      </div>
       {isLoading ? <PageLoadingState /> : models.length === 0 ? (
         <Card><CardContent><EmptyState icon={Zap} title={t("admin.noModels")} /></CardContent></Card>
       ) : (
@@ -1971,7 +1973,7 @@ export function ModelsAdminPage() {
           })}
         </div>
       )}
-    </AdminPageFrame>
+    </div>
   );
 }
 
@@ -1981,11 +1983,11 @@ export function TokensAdminPage() {
   const usage = data?.daily_usage ?? [];
 
   return (
-    <AdminPageFrame
-      icon={TrendingUp}
-      title={t("admin.tokensTitle")}
-      actions={<RefreshAction onClick={() => void mutate()} refreshing={isLoading} />}
-    >
+    <div className="space-y-4">
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="text-sm font-semibold text-foreground">{t("admin.tokensTitle")}</h3>
+        <RefreshAction onClick={() => void mutate()} refreshing={isLoading} />
+      </div>
       {isLoading ? <PageLoadingState /> : (
         <Card>
           <CardHeader className="pb-3"><CardTitle className="text-sm">{t("admin.dailyTokens")}</CardTitle></CardHeader>
@@ -2015,6 +2017,6 @@ export function TokensAdminPage() {
           </CardContent>
         </Card>
       )}
-    </AdminPageFrame>
+    </div>
   );
 }
