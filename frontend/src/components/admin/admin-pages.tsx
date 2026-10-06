@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import useSWR from "swr";
 import Link from "next/link";
-import { listUsers, updateUserRole, getTokenStats, listModelConfigs, listAvailableModels, listVertexRegions, testModelConfig, updateModelConfig, getDefaultSystemPrompt, listPromptVersions, restorePromptVersion, listPersonas, createPersona, updatePersona, deletePersona, putPersonaBinding, deletePersonaBinding, type AvailableModel, type ModelItem, type PaginatedResponse, type PersonaBinding, type PersonaItem, type PersonasResponse, listTeam, removeAgent, listTeamInvites, listTeamInviteHistory, createTeamInvite, revokeTeamInvite, type InviteHistoryEntry, type UserItem, type UsersStats } from "@/lib/api";
+import { listUsers, updateUserRole, getTokenStats, listModelConfigs, listAvailableModels, listVertexRegions, testModelConfig, updateModelConfig, getDefaultSystemPrompt, listPromptVersions, restorePromptVersion, listPersonas, createPersona, updatePersona, deletePersona, putPersonaBinding, deletePersonaBinding, type AvailableModel, type ModelItem, type PaginatedResponse, type PersonaBinding, type PersonaItem, type PersonasResponse, listTeam, removeAgent, updateTeamMemberPermissions, listTeamInvites, listTeamInviteHistory, createTeamInvite, revokeTeamInvite, type AgentMember, type InviteHistoryEntry, type UserItem, type UsersStats } from "@/lib/api";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -472,6 +472,19 @@ const INVITE_STATUS: Record<InviteHistoryEntry["status"], { key: string; classNa
   revoked: { key: "admin.inviteStatusRevoked", className: "bg-destructive/10 text-destructive" },
 };
 
+// What a seat may do. The keys are the wire contract (member_permissions.go);
+// only wired capabilities appear here, and the hints say plainly what each one
+// grants. Channels, widget tokens, billing and the team stay owner-only and are
+// deliberately absent from this list.
+const MEMBER_PERMISSIONS: { key: string; label: string; hint: string }[] = [
+  { key: "inbox_view", label: "admin.permInboxView", hint: "admin.permInboxViewHint" },
+  { key: "inbox_reply", label: "admin.permInboxReply", hint: "admin.permInboxReplyHint" },
+  { key: "inbox_takeover", label: "admin.permInboxTakeover", hint: "admin.permInboxTakeoverHint" },
+  { key: "inbox_assign", label: "admin.permInboxAssign", hint: "admin.permInboxAssignHint" },
+  { key: "knowledge_view", label: "admin.permKnowledgeView", hint: "admin.permKnowledgeViewHint" },
+  { key: "knowledge_edit", label: "admin.permKnowledgeEdit", hint: "admin.permKnowledgeEditHint" },
+];
+
 export function UsersAdminPage() {
   const { t, tf } = useI18n();
   const { user } = useAuth();
@@ -519,6 +532,11 @@ export function UsersAdminPage() {
   // The link lives only in this state: the server keeps a hash, so a reload
   // means reissuing (and revoking the old one) rather than re-reading it.
   const [inviteUrl, setInviteUrl] = useState("");
+  // Permission dialog: the draft starts from the row's effective set, so saving
+  // an untouched dialog is a no-op rather than a silent reset to the defaults.
+  const [permMember, setPermMember] = useState<AgentMember | null>(null);
+  const [permDraft, setPermDraft] = useState<Record<string, boolean>>({});
+  const [savingPerms, setSavingPerms] = useState(false);
   const seatsUsed = catalog?.current?.seats_used ?? null;
   const seatsQuota = catalog?.current?.seats_quota ?? null;
   const seatsFull = seatsUsed !== null && seatsQuota !== null && seatsUsed >= seatsQuota;
@@ -575,6 +593,26 @@ export function UsersAdminPage() {
       await Promise.all([mutateInvites(), mutateHistory()]);
     } catch (error: unknown) {
       toast.error((error as Error).message);
+    }
+  };
+
+  const openPermissions = (member: AgentMember) => {
+    setPermMember(member);
+    setPermDraft({ ...(member.permissions ?? {}) });
+  };
+
+  const handleSavePermissions = async () => {
+    if (!permMember) return;
+    setSavingPerms(true);
+    try {
+      await updateTeamMemberPermissions(permMember.team_id, permDraft);
+      toast.success(t("admin.permSaved"));
+      setPermMember(null);
+      await mutateTeam();
+    } catch (error: unknown) {
+      toast.error((error as Error).message);
+    } finally {
+      setSavingPerms(false);
     }
   };
 
@@ -964,17 +1002,30 @@ export function UsersAdminPage() {
                             {t("admin.seatOwner")}
                           </Badge>
                         ) : teamIdByAgent.has(user.user_id) ? (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-6 gap-1 px-1.5 text-[11px] text-muted-foreground hover:text-destructive"
-                            onClick={() => {
-                              const teamId = teamIdByAgent.get(user.user_id);
-                              if (teamId) void handleRemoveSeat(teamId);
-                            }}
-                          >
-                            <Trash2 className="size-3" />{t("admin.seatRemove")}
-                          </Button>
+                          <div className="flex items-center gap-1">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-6 gap-1 px-1.5 text-[11px] text-muted-foreground hover:text-foreground"
+                              onClick={() => {
+                                const member = memberByAgent.get(user.user_id);
+                                if (member) openPermissions(member);
+                              }}
+                            >
+                              <SlidersHorizontal className="size-3" />{t("admin.permButton")}
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-6 gap-1 px-1.5 text-[11px] text-muted-foreground hover:text-destructive"
+                              onClick={() => {
+                                const teamId = teamIdByAgent.get(user.user_id);
+                                if (teamId) void handleRemoveSeat(teamId);
+                              }}
+                            >
+                              <Trash2 className="size-3" />{t("admin.seatRemove")}
+                            </Button>
+                          </div>
                         ) : (
                           <span className="text-[11px] text-muted-foreground">—</span>
                         )}
@@ -1000,6 +1051,57 @@ export function UsersAdminPage() {
           )}
         </CardContent>
       </Card>
+
+      <Dialog open={permMember !== null} onOpenChange={(open) => { if (!open) setPermMember(null); }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-sm">
+              {t("admin.permTitle")}
+              {permMember ? <span className="text-muted-foreground"> · {permMember.display_name || permMember.username}</span> : null}
+            </DialogTitle>
+            <DialogDescription className="text-[11px]">{t("admin.permHint")}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-1.5">
+            {MEMBER_PERMISSIONS.map((perm) => {
+              const enabled = permDraft[perm.key] ?? false;
+              return (
+                <button
+                  key={perm.key}
+                  type="button"
+                  onClick={() => setPermDraft((cur) => ({ ...cur, [perm.key]: !enabled }))}
+                  className={cn(
+                    "flex w-full items-start justify-between gap-3 rounded-md border border-border px-3 py-2 text-left transition-colors",
+                    enabled ? "bg-success/5" : "bg-muted/30",
+                  )}
+                >
+                  <span className="min-w-0">
+                    <span className="block text-xs font-medium">{t(perm.label)}</span>
+                    <span className="block text-[11px] text-muted-foreground">{t(perm.hint)}</span>
+                  </span>
+                  <Badge
+                    variant="outline"
+                    className={cn(
+                      "mt-0.5 h-5 shrink-0 px-1.5 text-[11px] font-normal",
+                      enabled ? "bg-success/10 text-success" : "text-muted-foreground",
+                    )}
+                  >
+                    {enabled ? t("admin.permOn") : t("admin.permOff")}
+                  </Badge>
+                </button>
+              );
+            })}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => setPermMember(null)}>
+              {t("admin.permCancel")}
+            </Button>
+            <Button size="sm" className="h-8 gap-1 text-xs" onClick={() => void handleSavePermissions()} disabled={savingPerms}>
+              {savingPerms ? <RefreshCw className="size-3 animate-spin" /> : null}
+              {t("admin.permSave")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </AdminPageFrame>
   );
 }

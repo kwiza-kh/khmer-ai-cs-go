@@ -1310,6 +1310,8 @@ export interface AgentMember {
   is_active: boolean;
   username: string;
   email: string;
+  /** Effective grants (owner's settings merged over the defaults). */
+  permissions?: Record<string, boolean>;
 }
 
 export interface CampaignItem {
@@ -1363,6 +1365,13 @@ export function listTeam() {
 }
 export function removeAgent(teamId: number) {
   return apiFetch<{ message: string }>(`/team/agents/${teamId}`, { method: "DELETE" });
+}
+/** Replaces a seat's whole permission set (the dialog sends what the toggles show). */
+export function updateTeamMemberPermissions(teamId: number, permissions: Record<string, boolean>) {
+  return apiFetch<{ message: string; permissions: Record<string, boolean> }>(`/team/agents/${teamId}/permissions`, {
+    method: "PUT",
+    body: JSON.stringify({ permissions }),
+  });
 }
 
 /** A pending invite: still actionable (not revoked/expired/used up). */
