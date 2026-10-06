@@ -8,7 +8,7 @@ import {
   type PaginatedTenants,
 } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ModelsAdminPage, TokensAdminPage } from "@/components/admin/admin-pages";
+import { ModelsAdminPage } from "@/components/admin/admin-pages";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -16,11 +16,12 @@ import { EmptyState } from "@/components/empty-state";
 import { PageHeader } from "@/components/page-header";
 import {
   Building2, Search, Power, ShieldCheck, Loader2, Plus, Users, MessageSquare, FileText,
-  Coins, BarChart3, Eye, ScrollText, ChevronLeft, ChevronRight, Cpu,
+  Coins, BarChart3, Eye, ScrollText, ChevronLeft, ChevronRight, Cpu, Zap,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useI18n } from "@/lib/i18n";
-import { fmtDateTime, fmtInt } from "@/lib/format";
+import { fmtDateTime, fmtInt, fmtMoney } from "@/lib/format";
+import { PlatformTokensPanel } from "@/components/admin/platform-tokens-panel";
 
 /**
  * Platform super-admin console: cross-tenant management.
@@ -60,7 +61,7 @@ export default function PlatformAdminPage() {
           {section === "tenants" && <TenantsPanel />}
           {section === "create" && <CreateTenantPanel />}
           {section === "models" && <ModelsAdminPage />}
-          {section === "tokens" && <TokensAdminPage />}
+          {section === "tokens" && <PlatformTokensPanel />}
           {section === "audit" && <AuditLogsPanel />}
         </div>
       </div>
@@ -76,7 +77,9 @@ function OverviewPanel() {
     { label: t("pa.statTenants"), value: fmtInt(data.total_tenants), icon: Building2, sub: tf("pa.activeCount", { n: data.active_tenants }) },
     { label: t("pa.statSessions"), value: fmtInt(data.total_sessions), icon: MessageSquare },
     { label: t("pa.statMessages"), value: fmtInt(data.total_messages), icon: MessageSquare },
-    { label: t("pa.statTokens"), value: fmtInt(data.total_tokens), icon: Coins },
+    { label: t("pt.totalTokens"), value: fmtInt(data.total_tokens), icon: Coins },
+    { label: t("pt.totalCost"), value: fmtMoney(data.total_cost, 4), icon: Coins },
+    { label: t("pt.cacheHit"), value: `${(data.cache_hit_rate ?? 0).toFixed(1)}%`, icon: Zap },
     { label: t("pa.statKbDocs"), value: fmtInt(data.total_documents), icon: FileText },
   ];
   // 柱子百分比高度需要一个确定高度的父级 —— 提前算好窗口最大值。
@@ -88,7 +91,7 @@ function OverviewPanel() {
         <CardTitle className="text-sm flex items-center gap-2"><BarChart3 className="size-4 text-primary" /> {t("pa.overviewTitle")}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
           {stats.map((s) => (
             <div key={s.label} className="rounded-md border border-border p-3">
               <s.icon className="size-4 text-muted-foreground" />

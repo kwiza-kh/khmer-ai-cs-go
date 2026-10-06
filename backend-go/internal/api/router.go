@@ -171,11 +171,13 @@ func (a *App) Router() http.Handler {
 	authed.Handle("PUT /api/v1/admin/users/{id}/role", a.tenantAdminOnly(a.handleDoc(a.updateUserRole)))
 	authed.Handle("GET /api/v1/admin/analytics/overview", a.tenantAdminOnly(a.handle(a.analyticsOverview)))
 
-	// Analytics: timeline, breakdowns, top queries, token stats, feedback list.
+	// Analytics: timeline, breakdowns, top queries, feedback list.
 	authed.Handle("GET /api/v1/admin/analytics/timeline", a.tenantAdminOnly(a.handle(a.analyticsTimeline)))
 	authed.Handle("GET /api/v1/admin/analytics/top-queries", a.tenantAdminOnly(a.handle(a.topQueries)))
 	authed.Handle("GET /api/v1/admin/analytics/languages", a.tenantAdminOnly(a.handle(a.languageBreakdown)))
-	authed.Handle("GET /api/v1/admin/tokens/stats", a.platformAdminOnly(a.handle(a.tokenStats)))
+	// Token/cost board for every tenant lives on the platform console
+	// (/api/v1/platform/tokens); the own-tenant variant it replaced is gone, so
+	// there is exactly one place that shows model spend.
 	authed.Handle("GET /api/v1/admin/feedback", a.tenantAdminOnly(a.handle(a.feedbackList)))
 	authed.Handle("GET /api/v1/admin/agent-performance", a.tenantAdminOnly(a.handle(a.agentPerformance)))
 	authed.Handle("GET /api/v1/admin/intent-analytics", a.tenantAdminOnly(a.handle(a.intentAnalytics)))
@@ -329,6 +331,8 @@ func (a *App) Router() http.Handler {
 	// Gemini spend window: one billing account serves every tenant, so both the
 	// ceiling and the distance to it are platform-global, not tenant analytics.
 	authed.Handle("GET /api/v1/platform/spend", a.platformAdminOnly(a.handle(a.getSpendBudget)))
+	// Cross-tenant token/cost board: totals, daily series, model mix, every tenant.
+	authed.Handle("GET /api/v1/platform/tokens", a.platformAdminOnly(a.handle(a.platformTokens)))
 	authed.Handle("GET /api/v1/platform/audit-logs", a.platformAdminOnly(a.handle(a.listAuditLogs)))
 
 	// 180/min per user: the admin SPA legitimately aggregates 6-10 pollers

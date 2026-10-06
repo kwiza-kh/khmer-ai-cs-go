@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import useSWR from "swr";
 import Link from "next/link";
-import { listUsers, updateUserRole, getTokenStats, listModelConfigs, listAvailableModels, listVertexRegions, testModelConfig, updateModelConfig, getDefaultSystemPrompt, listPromptVersions, restorePromptVersion, listPersonas, createPersona, updatePersona, deletePersona, putPersonaBinding, deletePersonaBinding, type AvailableModel, type ModelItem, type PaginatedResponse, type PersonaBinding, type PersonaItem, type PersonasResponse, listTeam, removeAgent, updateTeamMemberPermissions, listTeamInvites, listTeamInviteHistory, createTeamInvite, revokeTeamInvite, type AgentMember, type InviteHistoryEntry, type UserItem, type UsersStats } from "@/lib/api";
+import { listUsers, updateUserRole, listModelConfigs, listAvailableModels, listVertexRegions, testModelConfig, updateModelConfig, getDefaultSystemPrompt, listPromptVersions, restorePromptVersion, listPersonas, createPersona, updatePersona, deletePersona, putPersonaBinding, deletePersonaBinding, type AvailableModel, type ModelItem, type PaginatedResponse, type PersonaBinding, type PersonaItem, type PersonasResponse, listTeam, removeAgent, updateTeamMemberPermissions, listTeamInvites, listTeamInviteHistory, createTeamInvite, revokeTeamInvite, type AgentMember, type InviteHistoryEntry, type UserItem, type UsersStats } from "@/lib/api";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -26,7 +26,7 @@ import { cn } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
 import { getBillingCatalog } from "@/lib/billing-api";
 import { useAuth } from "@/lib/auth-client";
-import { fmtDate, fmtDateTime, fmtInt, fmtMoney } from "@/lib/format";
+import { fmtDate, fmtDateTime, fmtInt } from "@/lib/format";
 import { EmptyState } from "@/components/empty-state";
 import { confirmDelete } from "@/lib/confirm-delete";
 import { PageHeader } from "@/components/page-header";
@@ -38,10 +38,6 @@ import { ReportsTab } from "@/components/admin/reports-tab";
 import { EnterpriseTab } from "@/components/admin/enterprise-tab";
 
 type UsersResponse = PaginatedResponse<UserItem> & { stats?: UsersStats };
-
-interface TokenStats {
-  daily_usage: { date: string; tokens: number; cost: number }[];
-}
 
 function AdminPageFrame({
   icon,
@@ -1972,50 +1968,6 @@ export function ModelsAdminPage() {
             );
           })}
         </div>
-      )}
-    </div>
-  );
-}
-
-export function TokensAdminPage() {
-  const { t } = useI18n();
-  const { data, isLoading, mutate } = useSWR<TokenStats>("admin-token-stats", () => getTokenStats(30));
-  const usage = data?.daily_usage ?? [];
-
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between gap-3">
-        <h3 className="text-sm font-semibold text-foreground">{t("admin.tokensTitle")}</h3>
-        <RefreshAction onClick={() => void mutate()} refreshing={isLoading} />
-      </div>
-      {isLoading ? <PageLoadingState /> : (
-        <Card>
-          <CardHeader className="pb-3"><CardTitle className="text-sm">{t("admin.dailyTokens")}</CardTitle></CardHeader>
-          <CardContent>
-            {usage.length === 0 ? (
-              <EmptyState icon={TrendingUp} title={t("an.noUsage")} />
-            ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="text-xs">{t("admin.colDate")}</TableHead>
-                    <TableHead className="text-xs">{t("admin.colTokens")}</TableHead>
-                    <TableHead className="text-xs">{t("admin.colCost")}</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {usage.map((day) => (
-                    <TableRow key={day.date}>
-                      <TableCell className="text-xs">{day.date}</TableCell>
-                      <TableCell className="text-xs font-medium tabular-nums">{fmtInt(day.tokens)}</TableCell>
-                      <TableCell className="text-xs text-success tabular-nums">{fmtMoney(day.cost, 4)}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            )}
-          </CardContent>
-        </Card>
       )}
     </div>
   );

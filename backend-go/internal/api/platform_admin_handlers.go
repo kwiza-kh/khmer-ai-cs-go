@@ -215,11 +215,18 @@ func (a *App) getSpendBudget(w http.ResponseWriter, r *http.Request) (any, error
 func (a *App) platformAnalytics(w http.ResponseWriter, r *http.Request) (any, error) {
 	var totalTenants, activeTenants, totalSessions, totalMessages, totalDocuments int64
 	var totalTokens int64
+	var totalCost, cacheHit float64
+	var cachedTokens, promptTokens int64
 	_ = a.DB.QueryRow(r.Context(), "SELECT COUNT(*) FROM users WHERE role <> 'platform_admin'").Scan(&totalTenants)
 	_ = a.DB.QueryRow(r.Context(), "SELECT COUNT(*) FROM users WHERE role <> 'platform_admin' AND is_active = true").Scan(&activeTenants)
 	_ = a.DB.QueryRow(r.Context(), "SELECT COUNT(*) FROM sessions").Scan(&totalSessions)
 	_ = a.DB.QueryRow(r.Context(), "SELECT COUNT(*) FROM chat_messages").Scan(&totalMessages)
-	_ = a.DB.QueryRow(r.Context(), "SELECT COALESCE(SUM(total_tokens),0) FROM token_usage").Scan(&totalTokens)
+	// One query for the three money numbers: they come from the same rows, and a
+	// second query could disagree with the first if a turn lands between them.
+	_ = a.DB.QueryRow(r.Context(), `SELECT COALESCE(SUM(total_tokens),0), COALESCE(SUM(cost_estimate),0),
+			COALESCE(SUM(cached_tokens),0), COALESCE(SUM(prompt_tokens),0) FROM token_usage`).
+		Scan(&totalTokens, &totalCost, &cachedTokens, &promptTokens)
+	cacheHit = cachedPct(cachedTokens, promptTokens)
 	_ = a.DB.QueryRow(r.Context(), "SELECT COUNT(*) FROM knowledge_documents").Scan(&totalDocuments)
 	planDist := make([]map[string]any, 0)
 	prows, err := a.DB.Query(r.Context(),
@@ -256,7 +263,163 @@ func (a *App) platformAnalytics(w http.ResponseWriter, r *http.Request) (any, er
 	return map[string]any{
 		"total_tenants": totalTenants, "active_tenants": activeTenants, "total_sessions": totalSessions,
 		"total_messages": totalMessages, "total_tokens": totalTokens, "total_documents": totalDocuments,
+		"total_cost": totalCost, "cache_hit_rate": cacheHit,
 		"plan_distribution": planDist, "daily_messages": daily,
+	}, nil
+}
+
+// ============================================
+// Platform token board (cross-tenant god view)
+// ============================================
+
+// platformTokenDay is one day of the board's series.
+type platformTokenDay struct {
+	Tokens int64   `json:"tokens"`
+	Cost   float64 `json:"cost"`
+	Calls  int64   `json:"calls"`
+	Date   string  `json:"date"`
+}
+
+// bytesCachedPct is "what share of the prompt was served from cache", the one
+// number that explains a cost curve that is not following the token curve.
+// 0 when nothing was sent (no prompts → no ratio, not 0%).
+func cachedPct(cached, prompt int64) float64 {
+	if prompt <= 0 {
+		return 0
+	}
+	return float64(cached) / float64(prompt) * 100.0
+}
+
+// platformTokens — the cross-tenant token/cost board: totals, a daily series,
+// the model mix, and every account that can spend (including the ones that
+// never spent a token and the operator's own, because "tenant X has not sent a
+// message" is exactly what an operator needs to see). Read-only: no writes, no
+// budgets, no gates.
+func (a *App) platformTokens(w http.ResponseWriter, r *http.Request) (any, error) {
+	ctx := r.Context()
+	days := daysParam(r, 30)
+	since := time.Now().AddDate(0, 0, -days+1)
+	since = time.Date(since.Year(), since.Month(), since.Day(), 0, 0, 0, 0, since.Location())
+
+	// --- totals ---
+	var (
+		totalTokens, totalCalls                int64
+		totalCost                              float64
+		promptTokens, completionTokens, cached int64
+	)
+	if err := a.DB.QueryRow(ctx, `SELECT COALESCE(SUM(total_tokens),0), COALESCE(SUM(cost_estimate),0), COUNT(*),
+			COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0), COALESCE(SUM(cached_tokens),0)
+		FROM token_usage WHERE created_at >= $1`, since).
+		Scan(&totalTokens, &totalCost, &totalCalls, &promptTokens, &completionTokens, &cached); err != nil {
+		return nil, ErrInternal("查询失败")
+	}
+
+	// --- daily series (zero-filled so the chart has a continuous x-axis) ---
+	byDate := map[string]*platformTokenDay{}
+	rows, err := a.DB.Query(ctx, `SELECT to_char(date_trunc('day', created_at), 'YYYY-MM-DD'),
+			COALESCE(SUM(total_tokens),0), COALESCE(SUM(cost_estimate),0), COUNT(*)
+		FROM token_usage WHERE created_at >= $1 GROUP BY 1`, since)
+	if err != nil {
+		return nil, ErrInternal("查询失败")
+	}
+	for rows.Next() {
+		var d string
+		var t, c int64
+		var cost float64
+		if rows.Scan(&d, &t, &cost, &c) == nil {
+			byDate[d] = &platformTokenDay{Date: d, Tokens: t, Cost: cost, Calls: c}
+		}
+	}
+	rows.Close()
+	// A short read must not be published as a short series: the caller cannot
+	// tell "no traffic" from "the query stopped early".
+	if err := rows.Err(); err != nil {
+		return nil, ErrInternal("查询失败")
+	}
+	daily := make([]platformTokenDay, 0, days)
+	for i := 0; i < days; i++ {
+		d := since.AddDate(0, 0, i).Format("2006-01-02")
+		if p, ok := byDate[d]; ok {
+			daily = append(daily, *p)
+		} else {
+			daily = append(daily, platformTokenDay{Date: d})
+		}
+	}
+
+	// --- model mix ---
+	byModel := make([]map[string]any, 0)
+	mrows, err := a.DB.Query(ctx, `SELECT COALESCE(model,''), COALESCE(SUM(total_tokens),0),
+			COALESCE(SUM(cost_estimate),0), COUNT(*)
+		FROM token_usage WHERE created_at >= $1 GROUP BY 1 ORDER BY 2 DESC`, since)
+	if err != nil {
+		return nil, ErrInternal("查询失败")
+	}
+	for mrows.Next() {
+		var name string
+		var t, c int64
+		var cost float64
+		if mrows.Scan(&name, &t, &cost, &c) == nil {
+			if name == "" {
+				name = "(unknown)"
+			}
+			byModel = append(byModel, map[string]any{"model": name, "tokens": t, "cost": cost, "calls": c})
+		}
+	}
+	mrows.Close()
+	if err := mrows.Err(); err != nil {
+		return nil, ErrInternal("查询失败")
+	}
+
+	// --- every account, whether or not it ever spent a token ---
+	//
+	// Deliberately NOT filtered to role <> 'platform_admin' the way the tenant
+	// list is: the Gemini bill does not care about roles, and on this deployment
+	// almost all traffic so far came from the operator's own account. Filtering
+	// it out made this table sum to 5k tokens against a 640k total — a board
+	// whose numbers do not reconcile is worse than no board. The role rides
+	// along so the console can label that row honestly.
+	byTenant := make([]map[string]any, 0)
+	trows, err := a.DB.Query(ctx, `SELECT u.user_id, u.username, u.role::text, COALESCE(b.plan,'free'),
+			COALESCE(SUM(t.total_tokens),0), COALESCE(SUM(t.cost_estimate),0), COUNT(t.usage_id),
+			COALESCE(SUM(t.prompt_tokens),0), COALESCE(SUM(t.cached_tokens),0), MAX(t.created_at)
+		FROM users u
+		LEFT JOIN tenant_billing b ON b.user_id = u.user_id
+		LEFT JOIN token_usage t ON t.user_id = u.user_id AND t.created_at >= $1
+		GROUP BY u.user_id, u.username, u.role, b.plan
+		ORDER BY 5 DESC, u.user_id`, since)
+	if err != nil {
+		return nil, ErrInternal("查询失败")
+	}
+	for trows.Next() {
+		var uid int32
+		var username, role, plan string
+		var tokens, calls, prompt, cachedTok int64
+		var cost float64
+		var lastCall *time.Time
+		if trows.Scan(&uid, &username, &role, &plan, &tokens, &cost, &calls, &prompt, &cachedTok, &lastCall) == nil {
+			byTenant = append(byTenant, map[string]any{
+				"user_id": uid, "username": username, "role": role, "plan": plan,
+				"tokens": tokens, "cost": cost, "calls": calls,
+				"cache_hit_rate": cachedPct(cachedTok, prompt),
+				"last_call_at":   lastCall,
+			})
+		}
+	}
+	trows.Close()
+	if err := trows.Err(); err != nil {
+		return nil, ErrInternal("查询失败")
+	}
+
+	return map[string]any{
+		"days": days,
+		"totals": map[string]any{
+			"tokens": totalTokens, "cost": totalCost, "calls": totalCalls,
+			"prompt_tokens": promptTokens, "completion_tokens": completionTokens,
+			"cached_tokens": cached, "cache_hit_rate": cachedPct(cached, promptTokens),
+		},
+		"daily":     daily,
+		"by_model":  byModel,
+		"by_tenant": byTenant,
 	}, nil
 }
 

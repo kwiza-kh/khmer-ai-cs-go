@@ -258,13 +258,6 @@ export interface KnowledgeContradiction {
   created_at: string;
 }
 
-export interface TokenStatsResponse {
-  total_tokens: number;
-  total_cost: number;
-  cache_hit_rate: number;
-  daily_usage: { date: string; tokens: number; cost: number }[];
-}
-
 // ============================================
 // Sessions / messages (B2)
 // ============================================
@@ -698,10 +691,6 @@ export async function updateUserRole(userId: number, role?: string, isActive?: b
     method: "PUT",
     body: JSON.stringify(body),
   });
-}
-
-export async function getTokenStats(days = 30) {
-  return apiFetch<TokenStatsResponse>(`/admin/tokens/stats?days=${days}`);
 }
 
 export async function listModelConfigs() {
@@ -1342,13 +1331,15 @@ export interface TenantDetail {
   sessions: TenantSessionRow[];
 }
 
-export interface PlatformAnalytics {
-  total_tenants: number;
+export interface PlatformAnalytics {  total_tenants: number;
   active_tenants: number;
   total_sessions: number;
   total_messages: number;
   total_tokens: number;
   total_documents: number;
+  /** Platform-wide model spend and cache reuse (token_usage, all tenants). */
+  total_cost: number;
+  cache_hit_rate: number;
   plan_distribution: { plan: string; count: number }[];
   daily_messages: { date: string; messages: number }[];
 }
@@ -1378,6 +1369,49 @@ export function setTenantPlan(userId: number, plan: string) {
 }
 export function getPlatformAnalytics() {
   return apiFetch<PlatformAnalytics>("/platform/analytics");
+}
+
+// Cross-tenant token/cost board (platform console). Read-only.
+export interface PlatformTokenDay {
+  date: string;
+  tokens: number;
+  cost: number;
+  calls: number;
+}
+
+export interface PlatformTokenTotals {
+  tokens: number;
+  cost: number;
+  calls: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cached_tokens: number;
+  cache_hit_rate: number;
+}
+
+export interface PlatformTokenTenant {
+  user_id: number;
+  username: string;
+  /** "platform_admin" | "admin" | "user" — the operator's own row is labelled. */
+  role: string;
+  plan: string;
+  tokens: number;
+  cost: number;
+  calls: number;
+  cache_hit_rate: number;
+  last_call_at: string | null;
+}
+
+export interface PlatformTokens {
+  days: number;
+  totals: PlatformTokenTotals;
+  daily: PlatformTokenDay[];
+  by_model: { model: string; tokens: number; cost: number; calls: number }[];
+  by_tenant: PlatformTokenTenant[];
+}
+
+export function getPlatformTokens(days = 30) {
+  return apiFetch<PlatformTokens>(`/platform/tokens?days=${days}`);
 }
 export function createTenant(input: { username: string; email: string; password: string; plan?: string }) {
   return apiFetch<{ user_id: number; message: string }>("/platform/tenants", { method: "POST", body: JSON.stringify(input) });

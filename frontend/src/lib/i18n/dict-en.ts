@@ -769,7 +769,6 @@ export const en: Dict = {
   "admin.geminiConnectedToast": "Gemini connected — {n} chat models available",
   "admin.settingsSavedUnconfirmed": "Settings saved, but Gemini connection could not be confirmed",
   "admin.modelSaved": "Model settings saved",
-  "admin.tokensTitle": "Token usage",
   "personas.title": "Personas",
   "personas.subtitle": "Give the AI a different voice on chosen conversations. The most specific binding wins: session, then conversation, then the workspace default.",
   "personas.new": "New persona",
@@ -798,10 +797,6 @@ export const en: Dict = {
   "personas.scope.session": "This session",
   "personas.scope.conversation": "This conversation",
   "personas.scope.global": "Whole workspace",
-  "admin.dailyTokens": "Daily token usage",
-  "admin.colDate": "Date",
-  "admin.colTokens": "Tokens",
-  "admin.colCost": "Cost (USD)",
 
   // Analytics panel
   "an.sessions": "Sessions",
@@ -1175,7 +1170,6 @@ export const en: Dict = {
   "pa.statTenants": "Tenants",
   "pa.statSessions": "Sessions",
   "pa.statMessages": "Messages",
-  "pa.statTokens": "Tokens",
   "pa.statKbDocs": "KB documents",
   "pa.activeCount": "{n} active",
   "pa.overviewTitle": "Platform overview",
@@ -1223,6 +1217,32 @@ export const en: Dict = {
   "pa.pageN": "Page {page} / {total}",
   "pa.prev": "Prev",
   "pa.next": "Next",
+
+  // Platform token board (cross-tenant god view). Khmer strings here follow the
+  // wording already used elsewhere in the console; a native pass is still owed
+  // (see the Khmer-copy item in docs/DEVELOPMENT.md).
+  "pt.title": "Token & cost (all tenants)",
+  "pt.hint": "Every tenant, every model. Read-only.",
+  "pt.totalTokens": "Total tokens",
+  "pt.totalCost": "Total cost",
+  "pt.calls": "Model calls",
+  "pt.cacheHit": "Cache hit",
+  "pt.activeTenants": "Tenants with usage",
+  "pt.avgPerDay": "Avg tokens/day",
+  "pt.daily": "Daily tokens and cost",
+  "pt.byModel": "By model",
+  "pt.topTenants": "Top tenants by tokens",
+  "pt.allTenants": "All tenants",
+  "pt.search": "Search tenant",
+  "pt.tenant": "Tenant",
+  "pt.plan": "Plan",
+  "pt.tokens": "Tokens",
+  "pt.cost": "Cost",
+  "pt.lastCall": "Last call",
+  "pt.never": "never",
+  "pt.noUsage": "No model calls in this window",
+  "pt.days": "Last {days} days",
+  "pt.zeroHint": "Tenants with no calls are listed too — that is the point.",
 
   // Two-factor on login
   "login.totp": "Verification code",
