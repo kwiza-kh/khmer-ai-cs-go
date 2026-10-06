@@ -1435,9 +1435,9 @@ FAQ 的 `ស9`（5 条产品线）在 chunk 2 里的偏移：枚举句起点 695
 
 | 件 | 值 |
 |---|---|
-| 后端 | `f1ddfdf`（`/ready.version` 与 `strings server-go \| grep vcs.revision` 一致，`vcs.modified=false`；构建机 go1.26.5） |
-| 前端 | BUILD_ID `OD03Yj_Wy1cthgfPaecdx`（见 `/opt/khmer-ai-cs/frontend/.next/BUILD_ID`） |
-| schema | `schema_migrations` = **71**（最新 `071_team_invite_history`） |
+| 后端 | `0223f1a`（`/ready.version` 与 `strings server-go \| grep vcs.revision` 一致，`vcs.modified=false`；构建机 go1.26.5） |
+| 前端 | BUILD_ID `tq3IV-GU8-fyyGbYpoaZd`（见 `/opt/khmer-ai-cs/frontend/.next/BUILD_ID`） |
+| schema | `schema_migrations` = **72**（最新 `072_member_permissions`） |
 | 收款 | `PAYPAL_MODE=sandbox`、`PAYPAL_PRICE_PRO=29.00` / `_ENTERPRISE=199.00`、`PAYPAL_WEBHOOK_ID=7J2288704D8439049`（**应用锚定**；dashboard 里 account 锚定的 `9E4063638Y8280225` 应删） |
 | 套餐 | admin=pro（平台手工开通）、user 10=pro、user 11=pro（sandbox 两笔，`paid_until` **2026-12-05**） |
 
@@ -1627,3 +1627,56 @@ NEXT_PUBLIC_API_URL=https://cs.wanfanginsulationmaterial.com/api/v1 npm run buil
 下一步：后台「模型」页把 `is_default` 切到健康档（建议 `gemini-3.6-flash`，
 区域仍 `global`，热生效），再跑一次 `vertexprobe` 确认转绿；本文档暂不改
 线上模型，需人工决定。
+
+---
+
+## 十六、成员权限矩阵 + 打通租户数据面（`0223f1a`，2026-10-06 深夜）
+
+### 先回答一个产品问题：席位到底买什么
+
+AI 先答所有会话，但产品里「人」出现的位置是明确的：客户要求/负面反馈/关键词
+触发转人工（`human_handoff_requests`）、AI 自述要转人工或答不出、配额用尽。
+所以**席位 = 能接管会话的那个人的身份**：买到的是接管/指派的归属、绩效与 SLA
+追责（`assigned_agent_id`、`agent-performance`）、权限隔离，以及 AI 顶不住时的
+人肉兜底。单人 + AI 的场景，1 个席位（free 自带）就够；席位数是给“团队”定价，
+不是给 AI 能力定价。反过来说，在这轮之前席位买不到东西——下面两个洞。
+
+### 这轮修的两个洞
+
+1. **数据面从没解析过「成员 → 店主租户」**：收件箱 `sessions.user_id`、知识库
+   `uploaded_by`、渠道/挂件 `user_id` 全按调用者本人过滤 —— 受邀成员看到的是
+   自己的空数据，还能在自己名下建孤儿渠道/文档。
+2. **若只接通数据面而不加权限模型**，每个成员直接继承店主全部权力。
+
+### 现在的形状
+
+| 件 | 行为 |
+|---|---|
+| 迁移 072 | `agent_teams.permissions JSONB`；`'{}'` = 用默认值，兼容旧席位 |
+| 解析 | 中间件把 `LEFT JOIN agent_teams` 并进原来那次 users 查询（不多一次往返），填 `TenantID/IsMember/Permissions`；解析失败**停在调用者自己的租户**（fail closed，绝不因读故障进入店主数据） |
+| 权限项 | `inbox_view/reply/takeover/assign`、`knowledge_view/edit`；默认：能回会话 + 查知识库，接管开、分配/编辑关 |
+| 接线 | 收件箱列表 + 全部会话动作走 `ensureSessionAccess`（权限 + 租户；跨租户仍 404 不泄露存在性）；知识库 17 处取数改租户、13 个写入口加 edit 门 |
+| 店主 API | `PUT /team/agents/{id}/permissions`（白名单校验，未知键 400）、`GET /team` 返回有效权限集 |
+| 仍然 owner-only | 渠道凭据、网站组件、营销、客户 360、话术管理、通知设置、FAQ —— 本轮一律 `tenantAdminOnly`：成员得到干净的 403，而不是空页面或孤儿写入；接线时再加进白名单 |
+| 前端 | 成员行的「权限」弹窗（六项开关 + 逐项说明）；店主与 platform_admin 不受矩阵约束 |
+| 测试 | 租户解析/默认值/停用即失效；店主改权限 + 未知键 400；成员在授权内看到租户会话与文档；撤销后 403；跨租户 404；owner-only 包裹成员 403/店主放行 |
+
+### 上线记录（`f1ddfdf → 0223f1a`，含迁移 072）
+
+- 门禁：`vertexprobe` **仍然红**（`gemini-3.8-flash` 超时，其余检查正常；见 §十五
+  未决项），按负责人决定照常发布；迁移后 `SQLCHECK_REQUIRED=1` 对生产 schema
+  134s 全绿。
+- 回滚点：`server-go.bak-20261006125034` / `migrate-go.bak-20261006125034` /
+  `frontend-backup-20261006125309`（迁移是加列的附加式变更，回退二进制安全）。
+- 验证：`/ready.version=0223f1a`、前端 BUILD_ID `tq3IV-GU8-fyyGbYpoaZd`；
+  `agent_teams.permissions` 列在生产库存在；未登录下 `/team`、`/inbox`、
+  `/knowledge`、`/platforms/configs`、`PUT /team/agents/{id}/permissions` 全 401；
+  首页与 `/join` 200；重启后 journal 无 ERROR，两条 keep-warm 都在。
+
+### 下一步（按优先级）
+
+1. **切主/快模型**：`gemini-3.8-flash` 仍 >60s，是当前唯一的线上隐患。
+2. 把其余 owner-only 的面逐步接进权限矩阵（客户 360、话术管理、分析只读）：
+   白名单加一键 + 端点加 `requirePermission` 即可。
+3. 成员侧导航按权限收敛（可选）：已接线的面按权限放行，未接线的入口点进去
+   就是 403。
