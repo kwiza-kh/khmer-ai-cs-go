@@ -8,6 +8,7 @@ import {
   type PaginatedTenants,
 } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ModelsAdminPage, TokensAdminPage } from "@/components/admin/admin-pages";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -15,7 +16,7 @@ import { EmptyState } from "@/components/empty-state";
 import { PageHeader } from "@/components/page-header";
 import {
   Building2, Search, Power, ShieldCheck, Loader2, Plus, Users, MessageSquare, FileText,
-  Coins, BarChart3, Eye, ScrollText, ChevronLeft, ChevronRight,
+  Coins, BarChart3, Eye, ScrollText, ChevronLeft, ChevronRight, Cpu,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useI18n } from "@/lib/i18n";
@@ -43,6 +44,11 @@ export default function PlatformAdminPage() {
               { key: "overview", labelKey: "pa.overview", icon: BarChart3 },
               { key: "tenants", labelKey: "pa.tenants", icon: Building2 },
               { key: "create", labelKey: "pa.createTenant", icon: Plus },
+              // Model config and its metering live here: both are
+              // platformAdminOnly APIs, so the console that owns the platform
+              // owns them (they used to be tenant-area pages that answered 403).
+              { key: "models", labelKey: "nav.models", icon: Cpu },
+              { key: "tokens", labelKey: "nav.tokens", icon: Coins },
               { key: "audit", labelKey: "pa.audit", icon: ScrollText },
             ].map((s) => (
               <Button key={s.key} size="sm" variant={section === s.key ? "default" : "outline"} className="gap-1.5 text-xs" onClick={() => setSection(s.key)}>
@@ -53,6 +59,8 @@ export default function PlatformAdminPage() {
           {section === "overview" && <OverviewPanel />}
           {section === "tenants" && <TenantsPanel />}
           {section === "create" && <CreateTenantPanel />}
+          {section === "models" && <ModelsAdminPage />}
+          {section === "tokens" && <TokensAdminPage />}
           {section === "audit" && <AuditLogsPanel />}
         </div>
       </div>

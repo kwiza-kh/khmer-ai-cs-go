@@ -14,7 +14,7 @@ import { RelayChatLogo } from "@/components/relaychat-logo";
 import { cn } from "@/lib/utils";
 import {
   BookOpen, Globe, Users, Settings, LogOut, Menu, Search, Loader2,
-  Gauge, HelpCircle, Inbox, UserCheck, ShieldCheck, Coins, Cpu, FlaskConical,
+  Gauge, HelpCircle, Inbox, UserCheck, ShieldCheck, Coins, FlaskConical,
   MessageCircle, ChevronRight, Bot, type LucideIcon,
 } from "lucide-react";
 import { useState } from "react";
@@ -109,8 +109,6 @@ const BREADCRUMBS: { match: string; section: string; page: string }[] = [
   { match: "/knowledge", section: "nav.groupContent", page: "nav.knowledge" },
   { match: "/platforms", section: "nav.groupContent", page: "nav.platforms" },
   { match: "/admin/users", section: "nav.administration", page: "nav.users" },
-  { match: "/admin/models", section: "nav.administration", page: "nav.models" },
-  { match: "/admin/tokens", section: "nav.administration", page: "nav.tokens" },
   { match: "/admin", section: "nav.administration", page: "nav.dashboard" },
   { match: "/platform-admin", section: "nav.superAdmin", page: "nav.platformAdmin" },
   { match: "/billing", section: "nav.preferences", page: "bl.title" },
@@ -429,15 +427,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                 <NavSection label={t("nav.administration")}>
                   <NavItem href="/admin" icon={Gauge} label={t("nav.dashboard")} active={isActive("/admin")} onNavigate={close} />
                   <NavItem href="/admin/users" icon={Users} label={t("nav.users")} active={isActive("/admin/users")} onNavigate={close} />
-                  {/* Model config and model spend are platform-admin surfaces
-                      (platformAdminOnly): showing the link to a tenant owner only
-                      produced a page whose every request 403s. */}
-                  {isPlatformAdmin && (
-                    <>
-                      <NavItem href="/admin/models" icon={Cpu} label={t("nav.models")} active={isActive("/admin/models")} onNavigate={close} />
-                      <NavItem href="/admin/tokens" icon={Coins} label={t("nav.tokens")} active={isActive("/admin/tokens")} onNavigate={close} />
-                    </>
-                  )}
                   <NavItem href="/admin/personas" icon={Bot} label={t("nav.personas")} active={isActive("/admin/personas")} onNavigate={close} />
                 </NavSection>
               )}
