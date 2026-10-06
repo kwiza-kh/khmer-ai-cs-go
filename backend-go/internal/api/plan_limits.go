@@ -27,12 +27,23 @@ const (
 	sqlCountActiveSeats = "SELECT count(*) FROM agent_teams WHERE owner_user_id = $1 AND is_active = true"
 )
 
+// querier is the slice of pgxpool.Pool / pgx.Tx the plan gates need. Invite
+// acceptance re-checks the seat count inside its transaction (with the owner row
+// locked), so the same SQL has to run on either.
+type querier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
 // tenantPlan resolves the tenant's plan. A missing billing row means free: the
 // row is provisioned lazily, and these gates must agree with what applyPlan
 // would write for a tenant that has never been touched.
 func (a *App) tenantPlan(ctx context.Context, userID int32) usage.Plan {
+	return a.tenantPlanFrom(ctx, a.DB, userID)
+}
+
+func (a *App) tenantPlanFrom(ctx context.Context, q querier, userID int32) usage.Plan {
 	var name string
-	if err := a.DB.QueryRow(ctx, sqlTenantPlanName, userID).Scan(&name); err != nil {
+	if err := q.QueryRow(ctx, sqlTenantPlanName, userID).Scan(&name); err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			a.Logger.Warn("tenant plan lookup failed; treating as free", "user_id", userID, "error", err.Error())
 		}
@@ -75,12 +86,16 @@ func (a *App) checkChannelLimit(ctx context.Context, userID int32) error {
 
 // checkSeatLimit refuses a new agent seat once the plan's allowance is in use.
 func (a *App) checkSeatLimit(ctx context.Context, userID int32) error {
-	spec := a.tenantPlan(ctx, userID)
+	return a.checkSeatLimitFrom(ctx, a.DB, userID)
+}
+
+func (a *App) checkSeatLimitFrom(ctx context.Context, q querier, userID int32) error {
+	spec := a.tenantPlanFrom(ctx, q, userID)
 	if spec.Seats >= usage.Unlimited {
 		return nil
 	}
 	var used int64
-	if err := a.DB.QueryRow(ctx, sqlCountActiveSeats, userID).Scan(&used); err != nil {
+	if err := q.QueryRow(ctx, sqlCountActiveSeats, userID).Scan(&used); err != nil {
 		a.Logger.Warn("seat count failed; allowing the invite", "user_id", userID, "error", err.Error())
 		return nil
 	}

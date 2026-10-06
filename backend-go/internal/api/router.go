@@ -285,8 +285,16 @@ func (a *App) Router() http.Handler {
 	// self-service or SSO signup ever satisfies (2026-10-05: user 10 could not
 	// add a single agent to its own team).
 	authed.Handle("GET /api/v1/team", a.handle(a.listTeam))
+	// The claim path is platform break-glass now (see addTeamAgent): binding a
+	// stranger's account with nothing but their user_id is what the invite flow
+	// replaced, so tenants go through /team/invites, where the invitee accepts
+	// with their own authenticated account.
 	authed.Handle("POST /api/v1/team/agents", a.handle(a.addTeamAgent))
 	authed.Handle("DELETE /api/v1/team/agents/{id}", a.handleDoc(a.removeTeamAgent))
+	authed.Handle("GET /api/v1/team/invites", a.handle(a.listTeamInvites))
+	authed.Handle("POST /api/v1/team/invites", a.handle(a.createTeamInvite))
+	authed.Handle("POST /api/v1/team/invites/accept", a.handle(a.acceptTeamInvite))
+	authed.HandleFunc("DELETE /api/v1/team/invites/{id}", a.handleDoc(a.deleteTeamInvite))
 
 	// Copilot (agent AI suggestions).
 	authed.HandleFunc("POST /api/v1/inbox/sessions/{id}/copilot/suggest", a.handleSession(a.copilotSuggest))

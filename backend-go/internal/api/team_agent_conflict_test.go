@@ -40,9 +40,9 @@ func TestAddTeamAgentDoubleAddIsConflict(t *testing.T) {
 	t.Cleanup(pool.Close)
 
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 10)
-	var ownerID, agentID int32
+	var ownerID, agentID, tenantOwnerID int32
 	if err := pool.QueryRow(ctx,
-		"INSERT INTO users (username, email, password_hash, role) VALUES ($1,$2,'probe','admin') RETURNING user_id",
+		"INSERT INTO users (username, email, password_hash, role) VALUES ($1,$2,'probe','platform_admin') RETURNING user_id",
 		"__owner_"+suffix, "__owner_"+suffix+"@agent-probe.invalid").Scan(&ownerID); err != nil {
 		t.Fatalf("seed owner: %v", err)
 	}
@@ -51,30 +51,41 @@ func TestAddTeamAgentDoubleAddIsConflict(t *testing.T) {
 		"__agent_"+suffix, "__agent_"+suffix+"@agent-probe.invalid").Scan(&agentID); err != nil {
 		t.Fatalf("seed agent: %v", err)
 	}
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO users (username, email, password_hash) VALUES ($1,$2,'probe') RETURNING user_id",
+		"__tenant_"+suffix, "__tenant_"+suffix+"@agent-probe.invalid").Scan(&tenantOwnerID); err != nil {
+		t.Fatalf("seed tenant owner: %v", err)
+	}
 	t.Cleanup(func() {
 		c, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		_, _ = pool.Exec(c, "DELETE FROM agent_teams WHERE owner_user_id = $1", ownerID)
-		_, _ = pool.Exec(c, "DELETE FROM users WHERE user_id = ANY($1::int[])", []int32{ownerID, agentID})
+		_, _ = pool.Exec(c, "DELETE FROM users WHERE user_id = ANY($1::int[])", []int32{ownerID, agentID, tenantOwnerID})
 	})
 
 	app := &App{DB: pool, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
-	add := func() (any, error) {
+	addAs := func(caller *CurrentUser) (any, error) {
 		body := `{"agent_user_id":` + strconv.Itoa(int(agentID)) + `,"display_name":"probe"}`
 		r := httptest.NewRequest(http.MethodPost, "/api/v1/team/agents", strings.NewReader(body))
-		r = r.WithContext(context.WithValue(r.Context(), userKey,
-			&CurrentUser{UserID: ownerID, Username: "probe-owner", Role: "admin"}))
+		r = r.WithContext(context.WithValue(r.Context(), userKey, caller))
 		return app.addTeamAgent(httptest.NewRecorder(), r)
 	}
+	// The break-glass path is platform-only now: a tenant owner reaching for a
+	// raw user_id is told to invite instead (the invitee binds their own id).
+	_, err = addAs(&CurrentUser{UserID: tenantOwnerID, Username: "probe-tenant", Role: "user"})
+	apiErr, ok := err.(*ApiError)
+	if !ok || apiErr.Status != http.StatusForbidden {
+		t.Fatalf("tenant owner add = %v, want 403 forbidden", err)
+	}
 
-	if _, err := add(); err != nil {
+	if _, err := addAs(&CurrentUser{UserID: ownerID, Username: "probe-owner", Role: "platform_admin"}); err != nil {
 		t.Fatalf("first add must succeed: %v", err)
 	}
-	_, err = add()
+	_, err = addAs(&CurrentUser{UserID: ownerID, Username: "probe-owner", Role: "platform_admin"})
 	if err == nil {
 		t.Fatal("adding the same agent twice must fail")
 	}
-	apiErr, ok := err.(*ApiError)
+	apiErr, ok = err.(*ApiError)
 	if !ok {
 		t.Fatalf("want *ApiError, got %T: %v", err, err)
 	}

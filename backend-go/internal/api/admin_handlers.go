@@ -883,6 +883,14 @@ func (a *App) updateUserRole(w http.ResponseWriter, r *http.Request, userID int3
 		if targetRole == "platform_admin" && caller.Role != "platform_admin" {
 			return nil, ErrForbidden("无权修改平台管理员")
 		}
+		// Disabling an account is a platform action, not a tenant one. An agent
+		// who joins by invite keeps their own account: the tenant boundary
+		// (agent_teams membership) must not become a way to lock a person out of
+		// the whole platform, which is what made the old claim-by-user_id flow a
+		// takeover primitive. Owners offboard by removing the seat.
+		if caller.Role != "platform_admin" {
+			return nil, ErrForbidden("只有平台管理员可以启用或停用账号")
+		}
 		if _, err := a.DB.Exec(r.Context(), "UPDATE users SET is_active = $1 WHERE user_id = $2", *req.IsActive, userID); err != nil {
 			return nil, ErrInternal("更新失败")
 		}
