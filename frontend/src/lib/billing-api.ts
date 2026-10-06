@@ -28,6 +28,10 @@ export interface BillingStatus {
   monthly_message_quota?: number;
   docs_used?: number;
   monthly_doc_quota?: number;
+  /** Active agent seats in use; null when the count could not be read. */
+  seats_used?: number | null;
+  /** null = unlimited, matching PlanOffer.seats. */
+  seats_quota?: number | null;
   cycle_end?: string;
 }
 

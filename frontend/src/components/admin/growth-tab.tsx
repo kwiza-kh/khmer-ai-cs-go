@@ -4,9 +4,9 @@ import * as React from "react";
 import useSWR, { mutate as globalMutate } from "swr";
 import {
   listCustomers, getCustomer360, updateCustomerNotes, listFaqSuggestions, acceptFaqSuggestion,
-  dismissFaqSuggestion, listTeam, addAgent, removeAgent, listCampaigns, createCampaign,
+  dismissFaqSuggestion, listCampaigns, createCampaign,
   cancelCampaign, getBilling, setPlan,
-  CustomerProfile, FaqSuggestion, AgentMember, CampaignItem, BillingInfo,
+  CustomerProfile, FaqSuggestion, CampaignItem, BillingInfo,
 } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -16,7 +16,7 @@ import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/empty-state";
 import { useAuth } from "@/lib/auth-client";
 import {
-  Users, Lightbulb, Headset, Megaphone, CreditCard, Loader2, Plus, Trash2, Search,
+  Users, Lightbulb, Megaphone, CreditCard, Loader2, Search,
   BookOpenCheck, XCircle, CheckCircle2, Send,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -26,8 +26,10 @@ import { fmtDate, fmtDateTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 /**
- * Growth tab: customers 360 (F1/F6), FAQ mining (F3), agent team (F4),
- * marketing campaigns (F5), and billing/quota (F9).
+ * Growth tab: customers 360 (F1/F6), FAQ mining (F3), marketing campaigns (F5),
+ * and billing/quota (F9). The agent team moved to the user management page —
+ * that page's roster and a seat are the same people, and a second entry point
+ * only ever disagreed with it.
  */
 export function GrowthTab() {
   const { t } = useI18n();
@@ -40,7 +42,6 @@ export function GrowthTab() {
         {[
           { key: "customers", labelKey: "gr.customers", icon: Users },
           { key: "faq", labelKey: "gr.faq", icon: Lightbulb },
-          { key: "team", labelKey: "gr.team", icon: Headset },
           { key: "campaigns", labelKey: "gr.campaigns", icon: Megaphone },
           { key: "billing", labelKey: "gr.billing", icon: CreditCard },
         ].map((s) => (
@@ -51,7 +52,6 @@ export function GrowthTab() {
       </TabsList>
       <TabsContent value="customers" className="mt-4"><CustomersCard /></TabsContent>
       <TabsContent value="faq" className="mt-4"><FaqCard /></TabsContent>
-      <TabsContent value="team" className="mt-4"><TeamCard /></TabsContent>
       <TabsContent value="campaigns" className="mt-4"><CampaignsCard /></TabsContent>
       <TabsContent value="billing" className="mt-4"><BillingCard /></TabsContent>
     </Tabs>
@@ -206,76 +206,6 @@ function FaqCard() {
                     <XCircle className="size-3" /> {t("gr.dismiss")}
                   </Button>
                 </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-// ============================================
-// Agent team
-// ============================================
-function TeamCard() {
-  const { t } = useI18n();
-  const { data: team, mutate } = useSWR("agent-team", listTeam);
-  const [agentId, setAgentId] = React.useState("");
-  const [name, setName] = React.useState("");
-  const [skills, setSkills] = React.useState("");
-  const [adding, setAdding] = React.useState(false);
-
-  const handleAdd = async () => {
-    if (!agentId) return;
-    setAdding(true);
-    try {
-      await addAgent(Number(agentId), name, skills.split(",").map((s) => s.trim()).filter(Boolean));
-      setAgentId(""); setName(""); setSkills("");
-      toast.success(t("gr.agentAdded"));
-      void mutate();
-    } catch (e) { toast.error((e as Error).message); }
-    finally { setAdding(false); }
-  };
-  const handleRemove = async (id: number) => {
-    try {
-      await removeAgent(id);
-      void mutate();
-    } catch (e) { toast.error((e as Error).message); }
-  };
-
-  return (
-    <Card>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm flex items-center gap-2">
-          <Headset className="size-4 text-primary" /> {t("gr.team")}
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <div className="rounded-md border border-border p-3 space-y-2 bg-muted/30">
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-            <Input placeholder={t("gr.agentIdPh")} value={agentId} onChange={(e) => setAgentId(e.target.value)} className="h-8 text-xs" />
-            <Input placeholder={t("gr.displayNamePh")} value={name} onChange={(e) => setName(e.target.value)} className="h-8 text-xs" />
-            <Input placeholder={t("gr.skillsPh")} value={skills} onChange={(e) => setSkills(e.target.value)} className="h-8 text-xs" />
-          </div>
-          <Button size="sm" className="h-7 text-xs gap-1" onClick={handleAdd} disabled={adding || !agentId}>
-            {adding ? <Loader2 className="size-3 animate-spin" /> : <Plus className="size-3" />} {t("gr.addAgent")}
-          </Button>
-        </div>
-        {!team || team.length === 0 ? (
-          <EmptyState icon={Headset} title={t("gr.noAgents")} description={t("gr.noAgentsDesc")} />
-        ) : (
-          <div className="space-y-1.5">
-            {(team as AgentMember[]).map((a) => (
-              <div key={a.team_id} className="rounded-md border border-border p-2.5 flex items-center gap-2">
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs font-medium">{a.display_name || a.username}</p>
-                  <p className="text-[11px] text-muted-foreground">{a.email}</p>
-                  <div className="flex gap-1 mt-1 flex-wrap">
-                    {a.skills.map((sk) => <Badge key={sk} variant="outline" className="h-4 px-1 text-[11px]">{sk}</Badge>)}
-                  </div>
-                </div>
-                <button onClick={() => handleRemove(a.team_id)} className="text-muted-foreground hover:text-danger" title={t("gr.remove")}><Trash2 className="size-3.5" /></button>
               </div>
             ))}
           </div>

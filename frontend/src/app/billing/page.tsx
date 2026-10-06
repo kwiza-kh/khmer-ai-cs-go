@@ -89,12 +89,16 @@ export default function BillingPage() {
   const current: BillingStatus | undefined = data?.current;
   const currency = data?.currency || "USD";
   const currentPlan = current?.plan ?? "free";
-  const percent = (used?: number, quota?: number) => {
+  const percent = (used?: number | null, quota?: number | null) => {
     if (!used || !quota || !Number.isFinite(quota)) return 0;
     return Math.min(100, Math.round((used / quota) * 100));
   };
   const limit = (value: number | null | undefined) =>
     value === null || value === undefined ? t("bl.unlimited") : value.toLocaleString("en-US");
+  // A used count of null means the server could not read it; rendering that as
+  // 0 would be a number the merchant acts on.
+  const usedText = (value?: number | null) =>
+    value === null || value === undefined ? "—" : value.toLocaleString("en-US");
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-auto">
@@ -135,16 +139,17 @@ export default function BillingPage() {
                   // PRO is simply wrong.
                   : t("bl.planGranted")}
             </p>
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid gap-4 sm:grid-cols-3">
               {[
                 { label: t("bl.docsLabel"), used: current?.docs_used, quota: current?.monthly_doc_quota },
                 { label: t("bl.msgsLabel"), used: current?.messages_used, quota: current?.monthly_message_quota },
+                { label: t("bl.limitSeats"), used: current?.seats_used, quota: current?.seats_quota },
               ].map((row) => (
                 <div key={row.label}>
                   <div className="flex justify-between text-[11px]">
                     <span>{row.label}</span>
                     <span className="tabular-nums">
-                      {(row.used ?? 0).toLocaleString("en-US")} / {(row.quota ?? 0).toLocaleString("en-US")}
+                      {usedText(row.used)} / {limit(row.quota)}
                     </span>
                   </div>
                   <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-muted">

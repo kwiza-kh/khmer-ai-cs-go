@@ -119,7 +119,15 @@ func (a *App) paidState(ctx context.Context, userID int32) (map[string]any, erro
 	var cycleEnd time.Time
 	err := a.DB.QueryRow(ctx, sqlPaidState, userID).Scan(&plan, &paidUntil, &msgUsed, &msgQuota, &docUsed, &docQuota, &cycleEnd)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return map[string]any{"plan": usage.PlanFree, "paid_until": nil}, nil
+		out := map[string]any{"plan": usage.PlanFree, "paid_until": nil}
+		// A tenant with no billing row is metered as free by tenantPlan, so the
+		// card has to show the free tier's numbers rather than 0/0.
+		if spec, ok := usage.PlanByName(usage.PlanFree); ok {
+			out["monthly_message_quota"] = spec.Messages
+			out["monthly_doc_quota"] = spec.Documents
+		}
+		a.addSeatState(ctx, userID, usage.PlanFree, out)
+		return out, nil
 	}
 	if err != nil {
 		return nil, ErrInternal("读取计费状态失败")
@@ -136,7 +144,38 @@ func (a *App) paidState(ctx context.Context, userID int32) (map[string]any, erro
 	if paidUntil != nil {
 		out["paid_until"] = *paidUntil
 	}
+	a.addSeatState(ctx, userID, plan, out)
 	return out, nil
+}
+
+// addSeatState appends the agent-seat counters to a billing payload. Seats are a
+// live count (see plan_limits.go), not a metered column, so the console reads
+// them here rather than from tenant_billing. An unknown plan falls back to free,
+// matching tenantPlan. A failed count is reported as null, never as 0 — a card
+// that claims "0 seats used" when the read failed is worse than an absent number.
+func (a *App) addSeatState(ctx context.Context, userID int32, plan string, out map[string]any) {
+	spec, ok := usage.PlanByName(plan)
+	if !ok {
+		spec = planByName(usage.PlanFree)
+	}
+	out["seats_quota"] = unlimitedPtr(spec.Seats)
+	var used int64
+	if err := a.DB.QueryRow(ctx, sqlCountActiveSeats, userID).Scan(&used); err != nil {
+		a.Logger.Warn("seat count failed; omitting the usage number", "user_id", userID, "error", err.Error())
+		out["seats_used"] = nil
+		return
+	}
+	out["seats_used"] = used
+}
+
+// unlimitedPtr serializes an unlimited quota as null rather than the 1e9
+// sentinel: the console then shows "不限" without having to know the sentinel,
+// and the number can move later.
+func unlimitedPtr(v int64) *int64 {
+	if v >= usage.Unlimited {
+		return nil
+	}
+	return &v
 }
 
 // billingCatalog — GET /api/v1/billing/plans. What the upgrade page renders.
@@ -152,22 +191,14 @@ func (a *App) billingCatalog(w http.ResponseWriter, r *http.Request) (any, error
 		Seats       *int64   `json:"seats"`
 		Included    []string `json:"included"`
 	}
-	// unlimited serializes as null rather than 1000000000: the console then shows
-	// "不限" without having to know the sentinel, and the number can move later.
-	unlimited := func(v int64) *int64 {
-		if v >= usage.Unlimited {
-			return nil
-		}
-		return &v
-	}
 	plans := make([]planEntry, 0, len(usage.Plans()))
 	for _, spec := range usage.Plans() {
 		entry := planEntry{
 			Plan:      spec.Name,
 			Messages:  spec.Messages,
-			Documents: unlimited(spec.Documents),
-			Channels:  unlimited(spec.Channels),
-			Seats:     unlimited(spec.Seats),
+			Documents: unlimitedPtr(spec.Documents),
+			Channels:  unlimitedPtr(spec.Channels),
+			Seats:     unlimitedPtr(spec.Seats),
 			Included:  spec.Included,
 		}
 		if price, ok := a.billingPlanPrice(spec.Name); ok {

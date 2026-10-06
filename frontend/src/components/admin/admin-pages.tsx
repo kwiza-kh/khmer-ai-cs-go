@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import useSWR from "swr";
-import { listUsers, updateUserRole, getTokenStats, listModelConfigs, listAvailableModels, listVertexRegions, testModelConfig, updateModelConfig, getDefaultSystemPrompt, listPromptVersions, restorePromptVersion, listPersonas, createPersona, updatePersona, deletePersona, putPersonaBinding, deletePersonaBinding, type AvailableModel, type ModelItem, type PaginatedResponse, type PersonaBinding, type PersonaItem, type PersonasResponse, type UserItem, type UsersStats } from "@/lib/api";
+import Link from "next/link";
+import { listUsers, updateUserRole, getTokenStats, listModelConfigs, listAvailableModels, listVertexRegions, testModelConfig, updateModelConfig, getDefaultSystemPrompt, listPromptVersions, restorePromptVersion, listPersonas, createPersona, updatePersona, deletePersona, putPersonaBinding, deletePersonaBinding, type AvailableModel, type ModelItem, type PaginatedResponse, type PersonaBinding, type PersonaItem, type PersonasResponse, listTeam, addAgent, removeAgent, type UserItem, type UsersStats } from "@/lib/api";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -16,13 +17,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { AlertTriangle, BarChart3, Bot, Clock, Cpu, KeyRound, MessageSquare, Pencil, Plus, RefreshCw, Send, SlidersHorizontal, Sparkles, Trash2, TrendingUp, Users, X, Zap, Download, ShieldCheck, Search, UserCheck, UserPlus, Lock, History, RotateCcw, type LucideIcon } from "lucide-react";
+import { AlertTriangle, BarChart3, Bot, Clock, Copy, Cpu, Headset, KeyRound, MessageSquare, Pencil, Plus, RefreshCw, Send, SlidersHorizontal, Sparkles, Trash2, TrendingUp, Users, X, Zap, Download, ShieldCheck, Search, UserCheck, UserPlus, Lock, History, RotateCcw, type LucideIcon } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
+import { getBillingCatalog } from "@/lib/billing-api";
+import { useAuth } from "@/lib/auth-client";
 import { fmtDate, fmtInt, fmtMoney } from "@/lib/format";
 import { EmptyState } from "@/components/empty-state";
 import { confirmDelete } from "@/lib/confirm-delete";
@@ -462,6 +465,7 @@ AUTH_LABEL["password"] = "admin.authPassword";
 
 export function UsersAdminPage() {
   const { t, tf } = useI18n();
+  const { user } = useAuth();
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
   useEffect(() => {
@@ -477,6 +481,74 @@ export function UsersAdminPage() {
   const userTotal = data?.total ?? 0;
   const stats = data?.stats;
   const maxTokens = users.reduce((max, u) => Math.max(max, u.total_tokens ?? 0), 0);
+
+  // Agent seats. A seat IS the agent_teams row (GET /team), and the allowance
+  // rides on the billing catalogue the layout already caches under
+  // "billing-catalog" — so the card costs no extra request on a warm page.
+  // This lived in the dashboard's Growth tab; the roster below is the same set
+  // of people (owner + members), so a second screen only ever disagreed.
+  const { data: team, mutate: mutateTeam } = useSWR("agent-team", listTeam);
+  const { data: catalog, mutate: mutateCatalog } = useSWR("billing-catalog", getBillingCatalog);
+  const [agentId, setAgentId] = useState("");
+  const [agentName, setAgentName] = useState("");
+  const [agentSkills, setAgentSkills] = useState("");
+  const [adding, setAdding] = useState(false);
+  const seatsUsed = catalog?.current?.seats_used ?? null;
+  const seatsQuota = catalog?.current?.seats_quota ?? null;
+  const seatsFull = seatsUsed !== null && seatsQuota !== null && seatsUsed >= seatsQuota;
+  const seatPercent = seatsUsed !== null && seatsQuota
+    ? Math.min(100, Math.round((seatsUsed / seatsQuota) * 100))
+    : 0;
+  const memberByAgent = new Map((team ?? []).map((member) => [member.agent_user_id, member]));
+  const teamIdByAgent = new Map((team ?? []).map((member) => [member.agent_user_id, member.team_id]));
+  // platform_admin's user list spans tenants, so there is no single allowance to
+  // show — and seat writes are tenant-scoped server-side.
+  const isPlatformAdmin = user?.role === "platform_admin";
+  const ownerId = user?.user_id;
+
+  // Every seat write changes both lists: claiming an account adds it to the
+  // roster, releasing one removes it from the scope the list is built on.
+  const refreshSeats = async () => {
+    await Promise.all([mutate(), mutateTeam(), mutateCatalog()]);
+  };
+
+  const handleAddSeat = async () => {
+    const userId = Number(agentId);
+    if (!Number.isInteger(userId) || userId <= 0) {
+      toast.error(t("admin.agentIdInvalid"));
+      return;
+    }
+    setAdding(true);
+    try {
+      await addAgent(userId, agentName, agentSkills.split(",").map((s) => s.trim()).filter(Boolean));
+      setAgentId(""); setAgentName(""); setAgentSkills("");
+      toast.success(t("gr.agentAdded"));
+      await refreshSeats();
+    } catch (error: unknown) {
+      toast.error((error as Error).message);
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const handleRemoveSeat = async (teamId: number) => {
+    try {
+      await removeAgent(teamId);
+      toast.success(t("admin.seatRemoved"));
+      await refreshSeats();
+    } catch (error: unknown) {
+      toast.error((error as Error).message);
+    }
+  };
+
+  const copyUserId = async (userId: number) => {
+    try {
+      await navigator.clipboard.writeText(String(userId));
+      toast.success(t("admin.userIdCopied"));
+    } catch {
+      /* clipboard blocked — the id stays visible in the row, so nothing to announce */
+    }
+  };
 
   const handleUpdateRole = async (userId: number, role: string) => {
     try {
@@ -524,6 +596,69 @@ export function UsersAdminPage() {
         <UserStatCard icon={ShieldCheck} label={t("admin.statAdmins")} value={stats?.admins} tone="warning" />
       </div>
 
+      {!isPlatformAdmin && (
+        <Card className="mt-4">
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <Headset className="text-primary size-4" />
+              {t("admin.seatCardTitle")}
+              <span className="text-[11px] font-normal tabular-nums text-muted-foreground">
+                {tf("admin.seatUsage", {
+                  used: seatsUsed === null ? "—" : seatsUsed,
+                  limit: seatsQuota === null ? t("bl.unlimited") : seatsQuota,
+                })}
+              </span>
+            </CardTitle>
+            <CardDescription className="text-[11px]">{t("admin.seatOwnerNote")}</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {seatsUsed !== null && seatsQuota !== null && (
+              <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+                <div className="bg-primary h-full rounded-full" style={{ width: `${seatPercent}%` }} />
+              </div>
+            )}
+            {seatsFull && (
+              <p className="flex items-center gap-1 text-[11px] text-warning">
+                <AlertTriangle className="size-3" />
+                {t("admin.seatFull")}
+                <Link href="/billing" className="text-primary hover:underline">{t("bl.title")}</Link>
+              </p>
+            )}
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_1fr_1fr_auto]">
+              <Input
+                value={agentId}
+                onChange={(event) => setAgentId(event.target.value)}
+                placeholder={t("gr.agentIdPh")}
+                inputMode="numeric"
+                className="h-8 text-xs"
+              />
+              <Input
+                value={agentName}
+                onChange={(event) => setAgentName(event.target.value)}
+                placeholder={t("gr.displayNamePh")}
+                className="h-8 text-xs"
+              />
+              <Input
+                value={agentSkills}
+                onChange={(event) => setAgentSkills(event.target.value)}
+                placeholder={t("gr.skillsPh")}
+                className="h-8 text-xs"
+              />
+              <Button
+                size="sm"
+                className="h-8 gap-1 text-xs"
+                onClick={() => void handleAddSeat()}
+                disabled={adding || !agentId || seatsFull}
+              >
+                {adding ? <RefreshCw className="size-3 animate-spin" /> : <UserPlus className="size-3" />}
+                {t("gr.addAgent")}
+              </Button>
+            </div>
+            <p className="text-[11px] text-muted-foreground">{t("admin.seatAddHint")}</p>
+          </CardContent>
+        </Card>
+      )}
+
       <Card className="mt-4">
         <CardHeader className="pb-3">
           <CardTitle className="text-sm">{tf("admin.registeredUsers", { n: userTotal })}</CardTitle>
@@ -538,6 +673,7 @@ export function UsersAdminPage() {
                   <TableHead className="text-xs">{t("admin.colUser")}</TableHead>
                   <TableHead className="text-xs">{t("admin.colRole")}</TableHead>
                   <TableHead className="text-xs">{t("admin.colStatus")}</TableHead>
+                  <TableHead className="text-xs">{t("admin.colSeat")}</TableHead>
                   <TableHead className="text-xs">{t("admin.colUsage")}</TableHead>
                   <TableHead className="text-xs">{t("admin.colRegistered")}</TableHead>
                 </TableRow>
@@ -546,6 +682,10 @@ export function UsersAdminPage() {
                 {users.map((user) => {
                   const tokens = user.total_tokens ?? 0;
                   const usagePct = maxTokens > 0 ? Math.round((tokens / maxTokens) * 100) : 0;
+                  // Skills drive routing rules (routing_rules.target_skills), so a
+                  // member's skill set stays visible here — the card that used to
+                  // show it was removed with the duplicate team screen.
+                  const member = memberByAgent.get(user.user_id);
                   return (
                     <TableRow key={user.user_id}>
                       <TableCell>
@@ -570,6 +710,24 @@ export function UsersAdminPage() {
                               ))}
                             </p>
                             <p className="truncate text-[11px] text-muted-foreground">{user.email}</p>
+                            {member && (member.display_name || member.skills.length > 0) && (
+                              <p className="mt-0.5 flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
+                                {member.display_name && <span className="truncate">{member.display_name}</span>}
+                                {member.skills.map((skill) => (
+                                  <Badge key={skill} variant="outline" className="h-4 px-1 text-[11px] font-normal">
+                                    {skill}
+                                  </Badge>
+                                ))}
+                              </p>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => void copyUserId(user.user_id)}
+                              title={t("admin.copyUserId")}
+                              className="mt-0.5 inline-flex items-center gap-1 text-[11px] text-muted-foreground/80 transition-colors hover:text-primary"
+                            >
+                              <Copy className="size-2.5" />#{user.user_id}
+                            </button>
                           </div>
                         </div>
                       </TableCell>
@@ -607,6 +765,29 @@ export function UsersAdminPage() {
                           <span className={cn("size-1.5 rounded-full", user.is_active ? "bg-success" : "bg-muted-foreground/50")} />
                           {user.is_active ? t("admin.statusActive") : t("admin.statusDisabled")}
                         </button>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        {isPlatformAdmin ? (
+                          <span className="text-[11px] text-muted-foreground">—</span>
+                        ) : user.user_id === ownerId ? (
+                          <Badge variant="outline" className="h-5 px-1.5 text-[11px] font-normal text-muted-foreground">
+                            {t("admin.seatOwner")}
+                          </Badge>
+                        ) : teamIdByAgent.has(user.user_id) ? (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 gap-1 px-1.5 text-[11px] text-muted-foreground hover:text-destructive"
+                            onClick={() => {
+                              const teamId = teamIdByAgent.get(user.user_id);
+                              if (teamId) void handleRemoveSeat(teamId);
+                            }}
+                          >
+                            <Trash2 className="size-3" />{t("admin.seatRemove")}
+                          </Button>
+                        ) : (
+                          <span className="text-[11px] text-muted-foreground">—</span>
                         )}
                       </TableCell>
                       <TableCell>
