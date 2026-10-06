@@ -65,6 +65,9 @@ type ragQueryRequest struct {
 // UploadKnowledge — paste-text document creation (quota enforced).
 func (a *App) uploadKnowledge(w http.ResponseWriter, r *http.Request) (any, error) {
 	user, _ := UserFrom(r)
+	if err := requirePermission(user, PermKnowledgeEdit); err != nil {
+		return nil, err
+	}
 	var req knowledgeUploadRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		return nil, ErrBadRequest("请求格式错误")
@@ -72,7 +75,7 @@ func (a *App) uploadKnowledge(w http.ResponseWriter, r *http.Request) (any, erro
 	if strings.TrimSpace(req.Title) == "" || strings.TrimSpace(req.Content) == "" {
 		return nil, ErrBadRequest("请求格式错误")
 	}
-	if err := consumeDocQuota(r.Context(), a.DB, user.UserID); err != nil {
+	if err := consumeDocQuota(r.Context(), a.DB, user.Tenant()); err != nil {
 		return nil, err
 	}
 	language := "km"
@@ -87,12 +90,15 @@ func (a *App) uploadKnowledge(w http.ResponseWriter, r *http.Request) (any, erro
 	if tags == nil {
 		tags = []string{}
 	}
-	return a.RAG.UploadDocument(r.Context(), user.UserID, strings.TrimSpace(req.Title), req.Content, language, category, tags, nil)
+	return a.RAG.UploadDocument(r.Context(), user.Tenant(), strings.TrimSpace(req.Title), req.Content, language, category, tags, nil)
 }
 
 // UploadKnowledgeFile — multipart file upload (file/category/language fields).
 func (a *App) uploadKnowledgeFile(w http.ResponseWriter, r *http.Request) (any, error) {
 	user, _ := UserFrom(r)
+	if err := requirePermission(user, PermKnowledgeEdit); err != nil {
+		return nil, err
+	}
 	// Hard cap the whole request before any parsing/reading (DoS guard);
 	// the effective file limit stays MaxUploadBytes, checked after parse.
 	r.Body = http.MaxBytesReader(w, r.Body, 40<<20)
@@ -145,7 +151,7 @@ func (a *App) uploadKnowledgeFile(w http.ResponseWriter, r *http.Request) (any, 
 		return nil, ErrBadRequest("文档处理失败: 无可提取的文本内容")
 	}
 
-	if err := consumeDocQuota(r.Context(), a.DB, user.UserID); err != nil {
+	if err := consumeDocQuota(r.Context(), a.DB, user.Tenant()); err != nil {
 		return nil, err
 	}
 	title := strings.TrimSuffix(filename, filepath.Ext(filename))
@@ -156,7 +162,7 @@ func (a *App) uploadKnowledgeFile(w http.ResponseWriter, r *http.Request) (any, 
 	if lang == "" {
 		lang = "km"
 	}
-	doc, err := a.RAG.UploadDocument(r.Context(), user.UserID, title, text, lang, category, []string{}, nil)
+	doc, err := a.RAG.UploadDocument(r.Context(), user.Tenant(), title, text, lang, category, []string{}, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -214,6 +220,9 @@ func (a *App) extractKnowledgeText(ctx context.Context, filename string, data []
 // IngestKnowledgeURL — SSRF-guarded page fetch + text ingest.
 func (a *App) ingestKnowledgeURL(w http.ResponseWriter, r *http.Request) (any, error) {
 	user, _ := UserFrom(r)
+	if err := requirePermission(user, PermKnowledgeEdit); err != nil {
+		return nil, err
+	}
 	var req ingestURLRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		return nil, ErrBadRequest("请求格式错误")
@@ -241,12 +250,12 @@ func (a *App) ingestKnowledgeURL(w http.ResponseWriter, r *http.Request) (any, e
 	if req.Category != nil {
 		category = *req.Category
 	}
-	if err := consumeDocQuota(r.Context(), a.DB, user.UserID); err != nil {
+	if err := consumeDocQuota(r.Context(), a.DB, user.Tenant()); err != nil {
 		return nil, err
 	}
 	sourceURL := req.URL
 	a.Logger.Info("url ingest: success", "url", req.URL)
-	return a.RAG.UploadDocument(r.Context(), user.UserID, title, text, language, category, []string{}, &sourceURL)
+	return a.RAG.UploadDocument(r.Context(), user.Tenant(), title, text, language, category, []string{}, &sourceURL)
 }
 
 // AcceptedFileTypes — extension list + size cap for the UI.
@@ -261,6 +270,9 @@ func (a *App) acceptedFileTypes(w http.ResponseWriter, r *http.Request) (any, er
 // ListKnowledge — paginated summaries.
 func (a *App) listKnowledge(w http.ResponseWriter, r *http.Request) (any, error) {
 	user, _ := UserFrom(r)
+	if err := requirePermission(user, PermKnowledgeView); err != nil {
+		return nil, err
+	}
 	q := r.URL.Query()
 	page := int64(1)
 	if v := q.Get("page"); v != "" {
@@ -274,16 +286,22 @@ func (a *App) listKnowledge(w http.ResponseWriter, r *http.Request) (any, error)
 			pageSize = n
 		}
 	}
-	return a.RAG.ListDocuments(r.Context(), user.UserID, page, pageSize)
+	return a.RAG.ListDocuments(r.Context(), user.Tenant(), page, pageSize)
 }
 
 func (a *App) getKnowledgeDocument(w http.ResponseWriter, r *http.Request, docID int32) (any, error) {
 	user, _ := UserFrom(r)
-	return a.RAG.GetDocument(r.Context(), user.UserID, docID)
+	if err := requirePermission(user, PermKnowledgeView); err != nil {
+		return nil, err
+	}
+	return a.RAG.GetDocument(r.Context(), user.Tenant(), docID)
 }
 
 func (a *App) updateKnowledgeDocument(w http.ResponseWriter, r *http.Request, docID int32) (any, error) {
 	user, _ := UserFrom(r)
+	if err := requirePermission(user, PermKnowledgeEdit); err != nil {
+		return nil, err
+	}
 	var req updateKnowledgeRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		return nil, ErrBadRequest("请求格式错误")
@@ -292,12 +310,15 @@ func (a *App) updateKnowledgeDocument(w http.ResponseWriter, r *http.Request, do
 	if req.Content != nil {
 		content = *req.Content
 	}
-	return a.RAG.UpdateDocument(r.Context(), user.UserID, docID, content, req.Title, req.Language, req.Category, req.Tags)
+	return a.RAG.UpdateDocument(r.Context(), user.Tenant(), docID, content, req.Title, req.Language, req.Category, req.Tags)
 }
 
 func (a *App) deleteKnowledge(w http.ResponseWriter, r *http.Request, docID int32) (any, error) {
 	user, _ := UserFrom(r)
-	if err := a.RAG.DeleteDocument(r.Context(), user.UserID, docID); err != nil {
+	if err := requirePermission(user, PermKnowledgeEdit); err != nil {
+		return nil, err
+	}
+	if err := a.RAG.DeleteDocument(r.Context(), user.Tenant(), docID); err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			return nil, ErrNotFound(err.Error())
 		}
@@ -308,7 +329,10 @@ func (a *App) deleteKnowledge(w http.ResponseWriter, r *http.Request, docID int3
 
 func (a *App) retryKnowledge(w http.ResponseWriter, r *http.Request, docID int32) (any, error) {
 	user, _ := UserFrom(r)
-	if err := a.RAG.RetryDocument(r.Context(), user.UserID, docID); err != nil {
+	if err := requirePermission(user, PermKnowledgeEdit); err != nil {
+		return nil, err
+	}
+	if err := a.RAG.RetryDocument(r.Context(), user.Tenant(), docID); err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			return nil, ErrNotFound(err.Error())
 		}
@@ -320,6 +344,9 @@ func (a *App) retryKnowledge(w http.ResponseWriter, r *http.Request, docID int32
 // RagQuery — standalone RAG Q&A over the tenant's knowledge base.
 func (a *App) ragQuery(w http.ResponseWriter, r *http.Request) (any, error) {
 	user, _ := UserFrom(r)
+	if err := requirePermission(user, PermKnowledgeView); err != nil {
+		return nil, err
+	}
 	var req ragQueryRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		return nil, ErrBadRequest("请求格式错误")
@@ -335,7 +362,7 @@ func (a *App) ragQuery(w http.ResponseWriter, r *http.Request) (any, error) {
 	if req.TopK != nil {
 		topK = *req.TopK
 	}
-	ctx := a.RAG.Ground(r.Context(), user.UserID, nil, req.Query, language, nil, topK)
+	ctx := a.RAG.Ground(r.Context(), user.Tenant(), nil, req.Query, language, nil, topK)
 	if !ctx.HasMatch {
 		return map[string]any{
 			"query":   req.Query,
@@ -349,7 +376,7 @@ func (a *App) ragQuery(w http.ResponseWriter, r *http.Request) (any, error) {
 		"say you don't know and offer to escalate to a human agent. Reply in the user's language."
 	result, err := a.Gemini.Chat(r.Context(), augmented, nil, language)
 	if err != nil {
-		a.Logger.Error("rag query generation failed", "user_id", user.UserID, "error", err.Error())
+		a.Logger.Error("rag query generation failed", "tenant_id", user.Tenant(), "actor_user_id", user.UserID, "error", err.Error())
 		return nil, ErrInternal("生成回答失败")
 	}
 	answer := result.Reply
@@ -378,6 +405,9 @@ func parseInt64(s string) (int64, error) {
 // operators can spot documents that get cited often but rated poorly.
 func (a *App) knowledgeDocQuality(w http.ResponseWriter, r *http.Request) (any, error) {
 	user, _ := UserFrom(r)
+	if err := requirePermission(user, PermKnowledgeView); err != nil {
+		return nil, err
+	}
 	rows, err := a.DB.Query(r.Context(), `
 		WITH cited AS (
 			SELECT (s->>'doc_id')::int AS doc_id, COUNT(*)::bigint AS uses
@@ -405,7 +435,7 @@ func (a *App) knowledgeDocQuality(w http.ResponseWriter, r *http.Request) (any, 
 		LEFT JOIN rated rt ON rt.doc_id = kd.doc_id
 		WHERE kd.uploaded_by = $1
 		ORDER BY COALESCE(rt.down, 0) DESC, COALESCE(u.uses, 0) DESC
-		LIMIT 50`, user.UserID)
+		LIMIT 50`, user.Tenant())
 	if err != nil {
 		return nil, ErrInternal("查询失败")
 	}
@@ -431,6 +461,12 @@ func (a *App) knowledgeDocQuality(w http.ResponseWriter, r *http.Request) (any, 
 // base could not answer. The draft returns to the operator for review and is
 // published through the normal editor flow; it is never saved automatically.
 func (a *App) knowledgeGapDraft(w http.ResponseWriter, r *http.Request) (any, error) {
+	user, _ := UserFrom(r)
+	// Drafting costs model spend and exists to feed the knowledge base, so it
+	// follows the edit permission rather than the view one.
+	if err := requirePermission(user, PermKnowledgeEdit); err != nil {
+		return nil, err
+	}
 	var req struct {
 		Query string `json:"query"`
 	}
@@ -469,8 +505,11 @@ func (a *App) knowledgeGapDraft(w http.ResponseWriter, r *http.Request) (any, er
 // knowledgeGaps — the tenant's own no-hit queries (KB growth candidates).
 func (a *App) knowledgeGaps(w http.ResponseWriter, r *http.Request) (any, error) {
 	user, _ := UserFrom(r)
+	if err := requirePermission(user, PermKnowledgeView); err != nil {
+		return nil, err
+	}
 	days := parseIntOr(r.URL.Query().Get("days"), 14)
-	gaps, err := a.RAG.KnowledgeGaps(r.Context(), user.UserID, int64(days))
+	gaps, err := a.RAG.KnowledgeGaps(r.Context(), user.Tenant(), int64(days))
 	if err != nil {
 		return nil, ErrInternal("查询失败")
 	}
@@ -484,6 +523,9 @@ func (a *App) knowledgeGaps(w http.ResponseWriter, r *http.Request) (any, error)
 // listContradictions — ingest-time KB conflicts awaiting human review.
 func (a *App) listContradictions(w http.ResponseWriter, r *http.Request) (any, error) {
 	user, _ := UserFrom(r)
+	if err := requirePermission(user, PermKnowledgeView); err != nil {
+		return nil, err
+	}
 	status := r.URL.Query().Get("status")
 	if status == "" {
 		status = "pending"
@@ -494,7 +536,7 @@ func (a *App) listContradictions(w http.ResponseWriter, r *http.Request) (any, e
 			"JOIN knowledge_documents nd ON nd.doc_id = c.new_doc_id "+
 			"LEFT JOIN knowledge_documents od ON od.doc_id = c.old_doc_id "+
 			"WHERE c.user_id = $1 AND c.status = $2 ORDER BY c.created_at DESC LIMIT 50",
-		user.UserID, status)
+		user.Tenant(), status)
 	if err != nil {
 		return nil, ErrInternal("查询失败")
 	}
@@ -525,6 +567,9 @@ func (a *App) listContradictions(w http.ResponseWriter, r *http.Request) (any, e
 
 func (a *App) setContradictionStatus(w http.ResponseWriter, r *http.Request, id int32, status string) (any, error) {
 	user, _ := UserFrom(r)
+	if err := requirePermission(user, PermKnowledgeEdit); err != nil {
+		return nil, err
+	}
 	if status != "resolved" && status != "dismissed" {
 		return nil, ErrBadRequest("无效状态")
 	}
@@ -537,7 +582,7 @@ func (a *App) setContradictionStatus(w http.ResponseWriter, r *http.Request, id 
 	tag, err := a.DB.Exec(r.Context(),
 		"UPDATE kb_contradictions SET status = $1::varchar, resolved_at = "+resolvedAt+
 			" WHERE contradiction_id = $2 AND user_id = $3",
-		status, id, user.UserID)
+		status, id, user.Tenant())
 	if err != nil {
 		return nil, ErrInternal("更新失败")
 	}

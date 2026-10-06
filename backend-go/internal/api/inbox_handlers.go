@@ -20,6 +20,9 @@ import (
 // listInbox — cross-platform sessions with avatar + last message (owner-scoped).
 func (a *App) listInbox(w http.ResponseWriter, r *http.Request) (any, error) {
 	user, _ := UserFrom(r)
+	if err := requirePermission(user, PermInboxView); err != nil {
+		return nil, err
+	}
 	page := parseIntOr(r.URL.Query().Get("page"), 1)
 	pageSize := parseIntOr(r.URL.Query().Get("page_size"), 100)
 	if pageSize > 200 {
@@ -97,7 +100,9 @@ func (a *App) listInbox(w http.ResponseWriter, r *http.Request) (any, error) {
 	if searchQ != "" {
 		searchArg = "%" + searchQ + "%"
 	}
-	scopedArgs := []any{user.UserID, statusArg, archivedOnly, searchArg}
+	// The tenant the caller works in: their own for an owner, the owner's for a
+	// seat — so an invited agent sees the conversations they came to handle.
+	scopedArgs := []any{user.Tenant(), statusArg, archivedOnly, searchArg}
 
 	var total int64
 	if err := a.DB.QueryRow(r.Context(), countSQL, scopedArgs...).Scan(&total); err != nil {
@@ -194,7 +199,7 @@ func (a *App) assignSession(w http.ResponseWriter, r *http.Request, sessionID st
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		return nil, ErrBadRequest("请求格式错误")
 	}
-	if err := a.ensureSessionOwner(r.Context(), sessionID, user.UserID); err != nil {
+	if err := a.ensureSessionAccess(r.Context(), sessionID, user, PermInboxAssign); err != nil {
 		return nil, err
 	}
 	// The target agent must belong to the caller's tenant — otherwise any
@@ -219,7 +224,7 @@ func (a *App) assignSession(w http.ResponseWriter, r *http.Request, sessionID st
 // takeoverSession — the current user takes over the session.
 func (a *App) takeoverSession(w http.ResponseWriter, r *http.Request, sessionID string) (any, error) {
 	user, _ := UserFrom(r)
-	if err := a.ensureSessionOwner(r.Context(), sessionID, user.UserID); err != nil {
+	if err := a.ensureSessionAccess(r.Context(), sessionID, user, PermInboxTakeover); err != nil {
 		return nil, err
 	}
 	if _, err := a.DB.Exec(r.Context(),
@@ -247,7 +252,7 @@ func (a *App) agentReply(w http.ResponseWriter, r *http.Request, sessionID strin
 	if req.Content == "" && req.Payload == nil {
 		return nil, ErrBadRequest("回复内容不能为空")
 	}
-	if err := a.ensureSessionOwner(r.Context(), sessionID, user.UserID); err != nil {
+	if err := a.ensureSessionAccess(r.Context(), sessionID, user, PermInboxReply); err != nil {
 		return nil, err
 	}
 	// Load the session's platform + recipient for delivery. Web/NULL-platform
@@ -311,7 +316,7 @@ func (a *App) updateSessionStatus(w http.ResponseWriter, r *http.Request, sessio
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		return nil, ErrBadRequest("请求格式错误")
 	}
-	if err := a.ensureSessionOwner(r.Context(), sessionID, user.UserID); err != nil {
+	if err := a.ensureSessionAccess(r.Context(), sessionID, user, PermInboxReply); err != nil {
 		return nil, err
 	}
 	now := time.Now()
@@ -342,7 +347,7 @@ func (a *App) setSessionTags(w http.ResponseWriter, r *http.Request, sessionID s
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		return nil, ErrBadRequest("请求格式错误")
 	}
-	if err := a.ensureSessionOwner(r.Context(), sessionID, user.UserID); err != nil {
+	if err := a.ensureSessionAccess(r.Context(), sessionID, user, PermInboxReply); err != nil {
 		return nil, err
 	}
 	if req.Tags == nil {
@@ -358,19 +363,25 @@ func (a *App) setSessionTags(w http.ResponseWriter, r *http.Request, sessionID s
 // getInboundMediaURL — presigned URL for an inbound attachment (owner-checked).
 func (a *App) getInboundMediaURL(w http.ResponseWriter, r *http.Request) (any, error) {
 	user, _ := UserFrom(r)
+	if err := requirePermission(user, PermInboxView); err != nil {
+		return nil, err
+	}
 	msgID := parseIntOr(r.PathValue("id"), 0)
 	if msgID == 0 {
 		return nil, ErrBadRequest("无效的消息 ID")
 	}
+	// The media key is namespaced by the **tenant** (the uploader is whoever the
+	// session belongs to), so both the query and the prefix guard use Tenant().
+	tid := user.Tenant()
 	var mediaURL *string
 	err := a.DB.QueryRow(r.Context(),
 		"SELECT cm.media_url FROM chat_messages cm JOIN sessions s ON s.session_id = cm.session_id WHERE cm.message_id = $1 AND s.user_id = $2",
-		msgID, user.UserID).Scan(&mediaURL)
+		msgID, tid).Scan(&mediaURL)
 	if err != nil || mediaURL == nil || *mediaURL == "" {
 		return nil, ErrNotFound("媒体不存在")
 	}
 	// Owner-scoped prefix guard.
-	prefix := "platform-media/" + strconv.Itoa(int(user.UserID)) + "/"
+	prefix := "platform-media/" + strconv.Itoa(int(tid)) + "/"
 	if len(*mediaURL) < len(prefix) || (*mediaURL)[:len(prefix)] != prefix {
 		return nil, ErrNotFound("媒体不存在")
 	}
@@ -394,7 +405,7 @@ func (a *App) getInboundMediaURL(w http.ResponseWriter, r *http.Request) (any, e
 // generated; ?refresh=1 forces regeneration.
 func (a *App) sessionSummary(w http.ResponseWriter, r *http.Request, sessionID string) (any, error) {
 	user, _ := UserFrom(r)
-	if err := a.ensureSessionOwner(r.Context(), sessionID, user.UserID); err != nil {
+	if err := a.ensureSessionAccess(r.Context(), sessionID, user, PermInboxView); err != nil {
 		return nil, err
 	}
 	force := r.URL.Query().Get("refresh") == "1"
@@ -507,10 +518,17 @@ func summaryPrompt(transcript, language string) string {
 	return "Summarize this customer-service conversation in 2-3 short sentences (same language as the conversation):\n\n" + transcript
 }
 
-// ensureSessionOwner checks the session belongs to the user (or user is admin).
-func (a *App) ensureSessionOwner(ctx context.Context, sessionID string, userID int32) error {
+// ensureSessionAccess is the inbox's authorization funnel: it requires the
+// member permission the action needs, then resolves the session inside the
+// caller's effective tenant. An agent works in the owner's tenant, so a session
+// that is not theirs stays a 404 (not a 403) — no existence leak — while an
+// owner keeps exactly the behaviour they had before permissions existed.
+func (a *App) ensureSessionAccess(ctx context.Context, sessionID string, user *CurrentUser, perm string) error {
+	if err := requirePermission(user, perm); err != nil {
+		return err
+	}
 	var sid string
-	err := a.DB.QueryRow(ctx, "SELECT session_id FROM sessions WHERE session_id = $1 AND user_id = $2", sessionID, userID).Scan(&sid)
+	err := a.DB.QueryRow(ctx, "SELECT session_id FROM sessions WHERE session_id = $1 AND user_id = $2", sessionID, user.Tenant()).Scan(&sid)
 	if err != nil {
 		return ErrNotFound("会话不存在")
 	}
@@ -561,7 +579,7 @@ func (a *App) unarchiveSession(w http.ResponseWriter, r *http.Request, sessionID
 
 func (a *App) setSessionArchived(w http.ResponseWriter, r *http.Request, sessionID string, archived bool) (any, error) {
 	user, _ := UserFrom(r)
-	if err := a.ensureSessionOwner(r.Context(), sessionID, user.UserID); err != nil {
+	if err := a.ensureSessionAccess(r.Context(), sessionID, user, PermInboxReply); err != nil {
 		return nil, err
 	}
 	var tag interface{ RowsAffected() int64 }

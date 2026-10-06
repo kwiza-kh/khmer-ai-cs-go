@@ -629,7 +629,7 @@ func (a *App) updateSession(w http.ResponseWriter, r *http.Request, sessionID st
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		return nil, ErrBadRequest("请求格式错误")
 	}
-	if err := a.ensureSessionOwner(r.Context(), sessionID, user.UserID); err != nil {
+	if err := a.ensureSessionAccess(r.Context(), sessionID, user, PermInboxReply); err != nil {
 		return nil, err
 	}
 	if req.Title != nil {

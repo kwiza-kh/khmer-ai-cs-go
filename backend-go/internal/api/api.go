@@ -159,6 +159,46 @@ type CurrentUser struct {
 	UserID   int32
 	Username string
 	Role     string
+
+	// TenantID is the account whose data the caller works in: their own for an
+	// independent tenant, the owner's for an active agent seat (resolved once per
+	// request in resolveMembership).
+	TenantID int32
+	// IsMember is true when the caller is an active seat rather than a tenant
+	// owner — the switch that turns the permission matrix on.
+	IsMember bool
+	// Permissions holds the owner's explicit grants for a member. Nil for owners,
+	// who are allowed everything in their own tenant.
+	Permissions map[string]bool
+}
+
+// Tenant is the id every tenant-scoped query should filter on. Falls back to
+// the caller's own id when unset (tests, or a request built by hand), which is
+// the pre-permissions behaviour.
+func (u *CurrentUser) Tenant() int32 {
+	if u == nil {
+		return 0
+	}
+	if u.TenantID == 0 {
+		return u.UserID
+	}
+	return u.TenantID
+}
+
+// Can reports whether the caller may perform an action gated by a member
+// permission key. Owners and platform admins always can; a member needs the key
+// granted, explicitly or by the defaults in member_permissions.go.
+func (u *CurrentUser) Can(perm string) bool {
+	if u == nil {
+		return false
+	}
+	if u.IsPlatformAdmin() || !u.IsMember {
+		return true
+	}
+	if granted, ok := u.Permissions[perm]; ok {
+		return granted
+	}
+	return memberPermissionDefaults[perm]
 }
 
 // IsAdmin — platform admins also manage their own tenant.

@@ -604,7 +604,7 @@ var waParamRe = regexp.MustCompile(`\{\{\s*[0-9]+\s*\}\}`)
 // to the session's connected WhatsApp account.
 func (a *App) sessionWhatsAppTemplates(w http.ResponseWriter, r *http.Request, sessionID string) (any, error) {
 	user, _ := UserFrom(r)
-	if err := a.ensureSessionOwner(r.Context(), sessionID, user.UserID); err != nil {
+	if err := a.ensureSessionAccess(r.Context(), sessionID, user, PermInboxView); err != nil {
 		return nil, err
 	}
 	var configID int32

@@ -35,6 +35,7 @@ const ridKey ctxKey = 2
 
 // cors enforces the configured origin allowlist (403 for strangers, 204 for
 // OPTIONS, always sets the Allow-* headers) — Go/Rust parity.
+// pi-lens-ignore: wildcard-cors
 func (a *App) cors(next http.Handler) http.Handler {
 	allowed := make(map[string]bool, len(a.Cfg.AllowedOrigins))
 	for _, o := range a.Cfg.AllowedOrigins {
@@ -250,12 +251,19 @@ func (a *App) authMiddleware(next http.Handler) http.Handler {
 		// Production guard: a disabled tenant is rejected on every request, and
 		// a JWT whose version no longer matches the account's has been revoked
 		// (password change, role change, or a 2FA change). Both checks ride on
-		// the one query this middleware already made.
+		// the one query this middleware already made — which now also resolves
+		// the caller's seat (tenant + permissions), so membership costs no extra
+		// round trip.
 		var isActive bool
 		var currentVersion int
+		var memberOwnerID *int32
+		var memberPerms []byte
 		err := a.DB.QueryRow(r.Context(),
-			"SELECT is_active, token_version FROM users WHERE user_id = $1", user.UserID).
-			Scan(&isActive, &currentVersion)
+			"SELECT u.is_active, u.token_version, t.owner_user_id, t.permissions "+
+				"FROM users u LEFT JOIN agent_teams t "+
+				"  ON t.agent_user_id = u.user_id AND t.is_active = true "+
+				"WHERE u.user_id = $1", user.UserID).
+			Scan(&isActive, &currentVersion, &memberOwnerID, &memberPerms)
 		if err != nil {
 			WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "用户查询失败"})
 			return
@@ -268,12 +276,14 @@ func (a *App) authMiddleware(next http.Handler) http.Handler {
 			WriteJSON(w, http.StatusUnauthorized, map[string]string{"error": "会话已失效，请重新登录"})
 			return
 		}
+		applyMembership(user, memberOwnerID, memberPerms)
 
 		// Tag the context with the caller so auxiliary model spend incurred
 		// while serving this request (translation, RAG rerank and rewrite,
 		// transcription, image description) is billed to their tenant via
-		// gemini.AuxUsageObserver.
-		ctx := usage.WithUser(r.Context(), user.UserID)
+		// gemini.AuxUsageObserver. For a seat that is the owner's tenant, not the
+		// member's own (empty) account.
+		ctx := usage.WithUser(r.Context(), user.Tenant())
 		r = r.WithContext(context.WithValue(ctx, userKey, user))
 		next.ServeHTTP(w, r)
 	})

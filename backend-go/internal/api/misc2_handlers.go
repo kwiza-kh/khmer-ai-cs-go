@@ -660,7 +660,7 @@ func (a *App) setPlan(w http.ResponseWriter, r *http.Request) (any, error) {
 func (a *App) listTeam(w http.ResponseWriter, r *http.Request) (any, error) {
 	user, _ := UserFrom(r)
 	rows, err := a.DB.Query(r.Context(),
-		"SELECT t.team_id, t.agent_user_id, t.display_name, t.skills, t.is_active, u.username, COALESCE(u.email,'') "+
+		"SELECT t.team_id, t.agent_user_id, t.display_name, t.skills, t.is_active, u.username, COALESCE(u.email,''), t.permissions "+
 			"FROM agent_teams t JOIN users u ON u.user_id = t.agent_user_id WHERE t.owner_user_id = $1 ORDER BY t.team_id", user.UserID)
 	if err != nil {
 		return nil, ErrInternal("查询失败")
@@ -672,12 +672,16 @@ func (a *App) listTeam(w http.ResponseWriter, r *http.Request) (any, error) {
 		var displayName, username, email string
 		var skills []string
 		var isActive bool
-		if err := rows.Scan(&teamID, &agentUserID, &displayName, &skills, &isActive, &username, &email); err != nil {
+		var rawPerms []byte
+		if err := rows.Scan(&teamID, &agentUserID, &displayName, &skills, &isActive, &username, &email, &rawPerms); err != nil {
 			continue
 		}
 		out = append(out, map[string]any{
 			"team_id": teamID, "agent_user_id": agentUserID, "display_name": displayName,
 			"skills": skills, "is_active": isActive, "username": username, "email": email,
+			// Effective set (owner grants merged over the defaults): the console
+			// toggles render exactly what the handlers enforce.
+			"permissions": effectivePermissions(decodePermissions(rawPerms)),
 		})
 	}
 	// A short read must not be published as a short list: the client cannot tell
@@ -815,7 +819,7 @@ func (a *App) removeTeamAgent(w http.ResponseWriter, r *http.Request, teamID int
 // copilotSuggest — suggested replies for a session's latest customer message.
 func (a *App) copilotSuggest(w http.ResponseWriter, r *http.Request, sessionID string) (any, error) {
 	user, _ := UserFrom(r)
-	if err := a.ensureSessionOwner(r.Context(), sessionID, user.UserID); err != nil {
+	if err := a.ensureSessionAccess(r.Context(), sessionID, user, PermInboxView); err != nil {
 		return nil, err
 	}
 	latest, history := a.loadSessionLatest(r.Context(), sessionID)
@@ -841,7 +845,7 @@ func (a *App) copilotSuggest(w http.ResponseWriter, r *http.Request, sessionID s
 // copilotKnowledge — top KB chunks for the latest customer message.
 func (a *App) copilotKnowledge(w http.ResponseWriter, r *http.Request, sessionID string) (any, error) {
 	user, _ := UserFrom(r)
-	if err := a.ensureSessionOwner(r.Context(), sessionID, user.UserID); err != nil {
+	if err := a.ensureSessionAccess(r.Context(), sessionID, user, PermInboxView); err != nil {
 		return nil, err
 	}
 	latest, _ := a.loadSessionLatest(r.Context(), sessionID)

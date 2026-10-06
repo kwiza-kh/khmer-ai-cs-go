@@ -89,10 +89,10 @@ func (a *App) Router() http.Handler {
 	// the three delivery toggles. The bring-your-own-bot setup (save a token,
 	// discover chats via getUpdates) was removed in 056; there is no endpoint
 	// left that accepts a bot token or an arbitrary chat id.
-	authed.Handle("GET /api/v1/settings/telegram-notify", a.handle(a.getTelegramNotify))
-	authed.Handle("PUT /api/v1/settings/telegram-notify", a.handle(a.putTelegramNotify))
-	authed.Handle("POST /api/v1/settings/telegram-notify/test", a.handle(a.postTelegramNotifyTest))
-	authed.Handle("POST /api/v1/settings/telegram-notify/link", a.handle(a.postTelegramNotifyLink))
+	authed.Handle("GET /api/v1/settings/telegram-notify", a.tenantAdminOnly(a.handle(a.getTelegramNotify)))
+	authed.Handle("PUT /api/v1/settings/telegram-notify", a.tenantAdminOnly(a.handle(a.putTelegramNotify)))
+	authed.Handle("POST /api/v1/settings/telegram-notify/test", a.tenantAdminOnly(a.handle(a.postTelegramNotifyTest)))
+	authed.Handle("POST /api/v1/settings/telegram-notify/link", a.tenantAdminOnly(a.handle(a.postTelegramNotifyLink)))
 	// Personas — named instruction sets that replace the tenant's system prompt
 	// for a turn. internal/persona resolves session → conversation → global and
 	// the inbound pipeline applies the result in its resolve-persona stage. These
@@ -190,9 +190,9 @@ func (a *App) Router() http.Handler {
 	authed.HandleFunc("GET /api/v1/inbox/sessions/{id}/whatsapp-templates", a.handleSession(a.sessionWhatsAppTemplates))
 
 	// Website widget token management (per tenant).
-	authed.Handle("GET /api/v1/widgets", a.handle(a.listWidgetTokens))
-	authed.Handle("POST /api/v1/widgets", a.handle(a.createWidgetToken))
-	authed.HandleFunc("DELETE /api/v1/widgets/{id}", a.handleDoc(a.deleteWidgetToken))
+	authed.Handle("GET /api/v1/widgets", a.tenantAdminOnly(a.handle(a.listWidgetTokens)))
+	authed.Handle("POST /api/v1/widgets", a.tenantAdminOnly(a.handle(a.createWidgetToken)))
+	authed.Handle("DELETE /api/v1/widgets/{id}", a.tenantAdminOnly(a.handleDoc(a.deleteWidgetToken)))
 
 	// TOTP (two-factor auth).
 	authed.Handle("POST /api/v1/auth/totp/setup", a.handle(a.totpSetup))
@@ -218,9 +218,9 @@ func (a *App) Router() http.Handler {
 	authed.Handle("GET /api/v1/sla/breaches", a.handle(a.listSLABreaches))
 
 	// Marketing campaigns.
-	authed.Handle("GET /api/v1/campaigns", a.handle(a.listCampaigns))
-	authed.Handle("POST /api/v1/campaigns", a.handle(a.createCampaign))
-	authed.HandleFunc("POST /api/v1/campaigns/{id}/cancel", a.handleDoc(a.cancelCampaign))
+	authed.Handle("GET /api/v1/campaigns", a.tenantAdminOnly(a.handle(a.listCampaigns)))
+	authed.Handle("POST /api/v1/campaigns", a.tenantAdminOnly(a.handle(a.createCampaign)))
+	authed.Handle("POST /api/v1/campaigns/{id}/cancel", a.tenantAdminOnly(a.handleDoc(a.cancelCampaign)))
 
 	// Routing rules.
 	authed.Handle("GET /api/v1/routing", a.handle(a.listRouting))
@@ -249,15 +249,15 @@ func (a *App) Router() http.Handler {
 	authed.HandleFunc("POST /api/v1/handoff-requests/{id}/resolve", a.handleSession(a.resolveHandoff))
 
 	// Customers.
-	authed.Handle("GET /api/v1/customers", a.handle(a.listCustomers))
-	authed.HandleFunc("GET /api/v1/customers/{id}", a.handleDoc(a.customer360))
-	authed.HandleFunc("PUT /api/v1/customers/{id}/notes", a.handleDoc(a.updateCustomerNotes))
+	authed.Handle("GET /api/v1/customers", a.tenantAdminOnly(a.handle(a.listCustomers)))
+	authed.Handle("GET /api/v1/customers/{id}", a.tenantAdminOnly(a.handleDoc(a.customer360)))
+	authed.Handle("PUT /api/v1/customers/{id}/notes", a.tenantAdminOnly(a.handleDoc(a.updateCustomerNotes)))
 
 	// FAQ suggestions — self-scoped like the settings above (faq_suggestions
 	// is keyed by user_id), so it belongs in the tenant namespace too.
-	authed.Handle("GET /api/v1/settings/faq/suggestions", a.handle(a.listFaqSuggestions))
-	authed.HandleFunc("POST /api/v1/settings/faq/suggestions/{id}/accept", a.handleDoc(a.acceptFaqSuggestion))
-	authed.HandleFunc("POST /api/v1/settings/faq/suggestions/{id}/dismiss", a.handleDoc(a.dismissFaqSuggestion))
+	authed.Handle("GET /api/v1/settings/faq/suggestions", a.tenantAdminOnly(a.handle(a.listFaqSuggestions)))
+	authed.Handle("POST /api/v1/settings/faq/suggestions/{id}/accept", a.tenantAdminOnly(a.handleDoc(a.acceptFaqSuggestion)))
+	authed.Handle("POST /api/v1/settings/faq/suggestions/{id}/dismiss", a.tenantAdminOnly(a.handleDoc(a.dismissFaqSuggestion)))
 
 	// Billing.
 	authed.Handle("GET /api/v1/billing", a.handle(a.getBilling))
@@ -291,6 +291,10 @@ func (a *App) Router() http.Handler {
 	// with their own authenticated account.
 	authed.Handle("POST /api/v1/team/agents", a.handle(a.addTeamAgent))
 	authed.Handle("DELETE /api/v1/team/agents/{id}", a.handleDoc(a.removeTeamAgent))
+	// What a seat may do inside the tenant. Owner-only, and the write set is the
+	// memberPermissionDefaults whitelist, so a typo cannot store a grant that no
+	// handler reads.
+	authed.HandleFunc("PUT /api/v1/team/agents/{id}/permissions", a.handleDoc(a.updateMemberPermissions))
 	authed.Handle("GET /api/v1/team/invites", a.handle(a.listTeamInvites))
 	authed.Handle("GET /api/v1/team/invites/history", a.handle(a.listTeamInviteHistory))
 	authed.Handle("POST /api/v1/team/invites", a.handle(a.createTeamInvite))
@@ -305,22 +309,22 @@ func (a *App) Router() http.Handler {
 	authed.HandleFunc("POST /api/v1/chat/messages/{id}/feedback", a.handleDoc(a.messageFeedback))
 
 	// Platform configs CRUD + verify + work + retry.
-	authed.Handle("GET /api/v1/platforms/configs", a.handle(a.listPlatformConfigs))
-	authed.Handle("PUT /api/v1/platforms/configs", a.handle(a.upsertPlatformConfig))
-	authed.HandleFunc("POST /api/v1/platforms/configs/{id}/verify", a.handleDoc(a.verifyPlatformConfig))
-	authed.HandleFunc("DELETE /api/v1/platforms/configs/{id}", a.handleDoc(a.deactivatePlatformConfig))
-	authed.HandleFunc("GET /api/v1/platforms/configs/{id}/work", a.handleDoc(a.listPlatformWork))
-	authed.HandleFunc("POST /api/v1/platforms/configs/{config_id}/inbound-events/{id}/retry", a.handlePlatformRetry("inbound-events"))
-	authed.HandleFunc("POST /api/v1/platforms/configs/{config_id}/deliveries/{id}/retry", a.handlePlatformRetry("deliveries"))
+	authed.Handle("GET /api/v1/platforms/configs", a.tenantAdminOnly(a.handle(a.listPlatformConfigs)))
+	authed.Handle("PUT /api/v1/platforms/configs", a.tenantAdminOnly(a.handle(a.upsertPlatformConfig)))
+	authed.Handle("POST /api/v1/platforms/configs/{id}/verify", a.tenantAdminOnly(a.handleDoc(a.verifyPlatformConfig)))
+	authed.Handle("DELETE /api/v1/platforms/configs/{id}", a.tenantAdminOnly(a.handleDoc(a.deactivatePlatformConfig)))
+	authed.Handle("GET /api/v1/platforms/configs/{id}/work", a.tenantAdminOnly(a.handleDoc(a.listPlatformWork)))
+	authed.Handle("POST /api/v1/platforms/configs/{config_id}/inbound-events/{id}/retry", a.tenantAdminOnly(a.handlePlatformRetry("inbound-events")))
+	authed.Handle("POST /api/v1/platforms/configs/{config_id}/deliveries/{id}/retry", a.tenantAdminOnly(a.handlePlatformRetry("deliveries")))
 
 	// Meta OAuth.
-	authed.Handle("POST /api/v1/platforms/meta/oauth/start", a.handle(a.metaOAuthStart))
-	authed.HandleFunc("GET /api/v1/platforms/meta/oauth/sessions/{id}", a.handleOAuthSession)
-	authed.Handle("POST /api/v1/platforms/meta/oauth/complete", a.handle(a.metaOAuthComplete))
+	authed.Handle("POST /api/v1/platforms/meta/oauth/start", a.tenantAdminOnly(a.handle(a.metaOAuthStart)))
+	authed.Handle("GET /api/v1/platforms/meta/oauth/sessions/{id}", a.tenantAdminOnly(http.HandlerFunc(a.handleOAuthSession)))
+	authed.Handle("POST /api/v1/platforms/meta/oauth/complete", a.tenantAdminOnly(a.handle(a.metaOAuthComplete)))
 
 	// WhatsApp Embedded Signup.
-	authed.Handle("GET /api/v1/platforms/whatsapp/embedded-signup/config", a.handle(a.embeddedSignupConfig))
-	authed.Handle("POST /api/v1/platforms/whatsapp/embedded-signup/complete", a.handle(a.embeddedSignupComplete))
+	authed.Handle("GET /api/v1/platforms/whatsapp/embedded-signup/config", a.tenantAdminOnly(a.handle(a.embeddedSignupConfig)))
+	authed.Handle("POST /api/v1/platforms/whatsapp/embedded-signup/complete", a.tenantAdminOnly(a.handle(a.embeddedSignupComplete)))
 
 	// Platform super-admin (cross-tenant) management.
 	authed.Handle("GET /api/v1/platform/tenants", a.platformAdminOnly(a.handle(a.listTenants)))
