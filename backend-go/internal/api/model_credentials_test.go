@@ -158,6 +158,10 @@ func studioEnv(t *testing.T, platform *modelStub) {
 	t.Setenv("GEMINI_PROVIDER", "")
 	t.Setenv("GEMINI_API_BASE", platform.URL)
 	t.Setenv("GEMINI_VERTEX_API_BASE", "")
+	// A shell that sourced .env carries GEMINI_CACHE_TTL=3600, which turns a
+	// Chat call into a cache-create + generate pair and breaks the "exactly one
+	// request" assertions. Pin the switch off, as gemini's own cache tests do.
+	t.Setenv("GEMINI_CACHE_TTL", "")
 }
 
 // listRows is the handler's array result, asserted to be the shape the console
