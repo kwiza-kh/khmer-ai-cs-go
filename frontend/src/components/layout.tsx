@@ -8,6 +8,7 @@ import { motion } from "motion/react";
 import { useAuth } from "@/lib/auth-client";
 import { listHumanHandoffRequests, listInbox, listKnowledge, getProfile } from "@/lib/api";
 import type { InboxItem, KnowledgeDocument } from "@/lib/api";
+import { getBillingCatalog } from "@/lib/billing-api";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { RelayChatLogo } from "@/components/relaychat-logo";
 import { cn } from "@/lib/utils";
@@ -154,6 +155,13 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     false;
   const isAdmin = isTenantOwner || user?.role === "admin" || user?.role === "platform_admin";
   const isPlatformAdmin = user?.role === "platform_admin";
+  // Which plan the tenant is on, shown on the "plan & billing" label so a
+  // merchant sees their tier without opening the page. The same SWR key as
+  // /billing ("billing-catalog") on purpose: one fetch feeds both, and buying a
+  // plan there revalidates the label here. Read is open to any member, so a
+  // member who cannot buy still sees the plan rather than a silently empty label.
+  const { data: billing } = useSWR(token ? "billing-catalog" : null, getBillingCatalog);
+  const planName = billing?.current.plan;
 
   // ⌘K / Ctrl+K focuses the top-bar search.
   React.useEffect(() => {
@@ -439,7 +447,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                 </NavSection>
               )}
               <NavSection label={t("nav.preferences")}>
-                <NavItem href="/billing" icon={Coins} label={t("bl.title")} active={isActive("/billing")} onNavigate={close} />
+                <NavItem href="/billing" icon={Coins} label={planName ? `${t("bl.title")} · ${planName.toUpperCase()}` : t("bl.title")} active={isActive("/billing")} onNavigate={close} />
                 <NavItem href="/settings" icon={Settings} label={t("nav.settings")} active={isActive("/settings")} onNavigate={close} />
                 <NavItem href="/help" icon={HelpCircle} label={t("nav.help")} active={isActive("/help")} onNavigate={close} />
               </NavSection>
