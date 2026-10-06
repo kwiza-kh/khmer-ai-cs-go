@@ -1436,7 +1436,7 @@ FAQ 的 `ស9`（5 条产品线）在 chunk 2 里的偏移：枚举句起点 695
 | 件 | 值 |
 |---|---|
 | 后端 | `0223f1a`（`/ready.version` 与 `strings server-go \| grep vcs.revision` 一致，`vcs.modified=false`；构建机 go1.26.5） |
-| 前端 | BUILD_ID `tq3IV-GU8-fyyGbYpoaZd`（见 `/opt/khmer-ai-cs/frontend/.next/BUILD_ID`） |
+| 前端 | BUILD_ID `3919Ac0R2ie4s5UbB1rcS`（见 `/opt/khmer-ai-cs/frontend/.next/BUILD_ID`） |
 | schema | `schema_migrations` = **72**（最新 `072_member_permissions`） |
 | 收款 | `PAYPAL_MODE=sandbox`、`PAYPAL_PRICE_PRO=29.00` / `_ENTERPRISE=199.00`、`PAYPAL_WEBHOOK_ID=7J2288704D8439049`（**应用锚定**；dashboard 里 account 锚定的 `9E4063638Y8280225` 应删） |
 | 套餐 | admin=pro（平台手工开通）、user 10=pro、user 11=pro（sandbox 两笔，`paid_until` **2026-12-05**） |
@@ -1680,3 +1680,38 @@ AI 先答所有会话，但产品里「人」出现的位置是明确的：客�
    白名单加一键 + 端点加 `requirePermission` 即可。
 3. 成员侧导航按权限收敛（可选）：已接线的面按权限放行，未接线的入口点进去
    就是 403。
+
+---
+
+## 十七、前端数据刷新提速（2026-10-06 深夜，纯前端）
+
+### 先量：瓶颈不在后端
+
+拉生产 journal 最近 6 小时按 `latency_ms` 排序，最慢的依次是：PayPal webhook
+400（0.7～2.0s，已知的验签失败路径）、OAuth 回调（0.14～0.7s，登录必需）、
+`/admin/models/{id}/available`（0.19～0.36s，管理员页面才用）、login 0.27s（bcrypt）。
+**控制台真正在刷新的接口（收件箱/用户/知识库/计费）全部 1–8ms**。
+
+所以“刷新慢”是客户端策略问题，不是服务端：
+
+- `revalidateOnFocus: false` —— 切回标签页不重新验证，看到的是打开那一刻的数据，
+  除非手动操作或等轮询；
+- 没有 `keepPreviousData` —— 换筛选/翻页/切 tab 时列表会先变成 loading，3ms 的
+  请求被“闪白”主导了体感。
+
+顺带查到知识库那个 3 秒轮询**已经**只在 `index_status ∈ {pending,indexing}` 时跑，
+不是无条件轮询（不用改）。
+
+### 改了什么
+
+| 位置 | 改动 | 效果 |
+|---|---|---|
+| `src/lib/swr-provider.tsx` | `revalidateOnFocus: true` + `focusThrottleInterval: 5000` | 切回标签页立即刷新；快速来回切最多 5s 一次请求 |
+| 同上 | `keepPreviousData: true` | 换 key 时保留上一批行，不再闪 loading |
+| `src/lib/auth-client.tsx` | 新增 `clearSWRCache()`（遍历 cache.keys() delete）；`adoptSession()` 统一四条登录成功路径；`logout()` 也清 | 修掉一个**既有隐患**：SWR 缓存按路径而非账号键控，同标签页换账号会先画出上个账号的行——`keepPreviousData` 会让这个窗口更明显，所以一起修 |
+
+### 上线
+
+前端 BUILD_ID `3919Ac0R2ie4s5UbB1rcS`（后端 `0223f1a` 未动，无迁移）；回滚点
+`frontend-backup-20261006130035`；验证：域名首页与 `/join` 200、服务端 BUILD_ID
+一致、web 服务重启后无 ERROR。
