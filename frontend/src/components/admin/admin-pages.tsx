@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import useSWR from "swr";
 import Link from "next/link";
-import { listUsers, updateUserRole, getTokenStats, listModelConfigs, listAvailableModels, listVertexRegions, testModelConfig, updateModelConfig, getDefaultSystemPrompt, listPromptVersions, restorePromptVersion, listPersonas, createPersona, updatePersona, deletePersona, putPersonaBinding, deletePersonaBinding, type AvailableModel, type ModelItem, type PaginatedResponse, type PersonaBinding, type PersonaItem, type PersonasResponse, listTeam, removeAgent, listTeamInvites, createTeamInvite, revokeTeamInvite, type UserItem, type UsersStats } from "@/lib/api";
+import { listUsers, updateUserRole, getTokenStats, listModelConfigs, listAvailableModels, listVertexRegions, testModelConfig, updateModelConfig, getDefaultSystemPrompt, listPromptVersions, restorePromptVersion, listPersonas, createPersona, updatePersona, deletePersona, putPersonaBinding, deletePersonaBinding, type AvailableModel, type ModelItem, type PaginatedResponse, type PersonaBinding, type PersonaItem, type PersonasResponse, listTeam, removeAgent, listTeamInvites, listTeamInviteHistory, createTeamInvite, revokeTeamInvite, type InviteHistoryEntry, type UserItem, type UsersStats } from "@/lib/api";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -26,7 +26,7 @@ import { cn } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
 import { getBillingCatalog } from "@/lib/billing-api";
 import { useAuth } from "@/lib/auth-client";
-import { fmtDate, fmtInt, fmtMoney } from "@/lib/format";
+import { fmtDate, fmtDateTime, fmtInt, fmtMoney } from "@/lib/format";
 import { EmptyState } from "@/components/empty-state";
 import { confirmDelete } from "@/lib/confirm-delete";
 import { PageHeader } from "@/components/page-header";
@@ -463,6 +463,15 @@ const AUTH_LABEL: Record<string, string> = {
 };
 AUTH_LABEL["password"] = "admin.authPassword";
 
+// Invite history states. Exhausted/expired are neutral (the link did its job or
+// aged out); revoked is destructive-styled because someone killed it on purpose.
+const INVITE_STATUS: Record<InviteHistoryEntry["status"], { key: string; className: string }> = {
+  pending: { key: "admin.inviteStatusPending", className: "bg-success/10 text-success" },
+  exhausted: { key: "admin.inviteStatusExhausted", className: "bg-muted text-muted-foreground" },
+  expired: { key: "admin.inviteStatusExpired", className: "bg-muted text-muted-foreground" },
+  revoked: { key: "admin.inviteStatusRevoked", className: "bg-destructive/10 text-destructive" },
+};
+
 export function UsersAdminPage() {
   const { t, tf } = useI18n();
   const { user } = useAuth();
@@ -497,8 +506,15 @@ export function UsersAdminPage() {
   // show — and seat writes are tenant-scoped server-side.
   const isPlatformAdmin = user?.role === "platform_admin";
   const { data: invites, mutate: mutateInvites } = useSWR(isPlatformAdmin ? null : "team-invites", listTeamInvites);
+  // The full log: every link ever minted, including revoked/expired ones — the
+  // pending list above is only the actionable slice. This is what answers "who
+  // did we invite, through which link, and when does it stop working".
+  const { data: history, mutate: mutateHistory } = useSWR(isPlatformAdmin ? null : "team-invite-history", listTeamInviteHistory);
   const [inviteName, setInviteName] = useState("");
   const [inviteSkills, setInviteSkills] = useState("");
+  // Expiry and capacity are per link: 1/7/30 days and 1..remaining seats.
+  const [inviteHours, setInviteHours] = useState("168");
+  const [inviteMaxUses, setInviteMaxUses] = useState("1");
   const [creating, setCreating] = useState(false);
   // The link lives only in this state: the server keeps a hash, so a reload
   // means reissuing (and revoking the old one) rather than re-reading it.
@@ -514,9 +530,9 @@ export function UsersAdminPage() {
   const ownerId = user?.user_id;
 
   // Every seat write changes all lists: a new invite, an accepted one, or a
-  // released seat moves the roster, the counters and the plan card together.
+  // released seat moves the roster, the counters, the plan card and the log.
   const refreshSeats = async () => {
-    await Promise.all([mutate(), mutateTeam(), mutateCatalog(), mutateInvites()]);
+    await Promise.all([mutate(), mutateTeam(), mutateCatalog(), mutateInvites(), mutateHistory()]);
   };
 
   const handleCreateInvite = async () => {
@@ -525,11 +541,14 @@ export function UsersAdminPage() {
       const created = await createTeamInvite({
         display_name: inviteName.trim(),
         skills: inviteSkills.split(",").map((s) => s.trim()).filter(Boolean),
+        expires_in_hours: Number(inviteHours) || 168,
+        max_uses: Number(inviteMaxUses) || 1,
       });
       setInviteUrl(created.url);
       setInviteName("");
       setInviteSkills("");
-      await mutateInvites();
+      setInviteMaxUses("1");
+      await Promise.all([mutateInvites(), mutateHistory()]);
       toast.success(t("admin.inviteCreated"));
     } catch (error: unknown) {
       toast.error((error as Error).message);
@@ -551,7 +570,9 @@ export function UsersAdminPage() {
     try {
       await revokeTeamInvite(inviteId);
       toast.success(t("admin.inviteRevoked"));
-      await mutateInvites();
+      // Revoking keeps the row (the server marks it), so the log re-renders
+      // with the link now reading as 已撤销 while the pending list drops it.
+      await Promise.all([mutateInvites(), mutateHistory()]);
     } catch (error: unknown) {
       toast.error((error as Error).message);
     }
@@ -650,7 +671,7 @@ export function UsersAdminPage() {
                 <Link href="/billing" className="text-primary hover:underline">{t("bl.title")}</Link>
               </p>
             )}
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_1fr_auto]">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
               <Input
                 value={inviteName}
                 onChange={(event) => setInviteName(event.target.value)}
@@ -663,16 +684,31 @@ export function UsersAdminPage() {
                 placeholder={t("admin.inviteSkillsPh")}
                 className="h-8 text-xs"
               />
-              <Button
-                size="sm"
-                className="h-8 gap-1 text-xs"
-                onClick={() => void handleCreateInvite()}
-                disabled={creating || seatsFull}
-              >
-                {creating ? <RefreshCw className="size-3 animate-spin" /> : <UserPlus className="size-3" />}
-                {t("admin.inviteCreate")}
-              </Button>
+              <Select value={inviteHours} onValueChange={(value) => setInviteHours(value ?? "168")}>
+                <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="24">{t("admin.inviteExpiry24h")}</SelectItem>
+                  <SelectItem value="168">{t("admin.inviteExpiry7d")}</SelectItem>
+                  <SelectItem value="720">{t("admin.inviteExpiry30d")}</SelectItem>
+                </SelectContent>
+              </Select>
+              <Input
+                value={inviteMaxUses}
+                onChange={(event) => setInviteMaxUses(event.target.value.replace(/[^0-9]/g, ""))}
+                inputMode="numeric"
+                placeholder={t("admin.inviteMaxUses")}
+                className="h-8 text-xs"
+              />
             </div>
+            <Button
+              size="sm"
+              className="h-8 w-full gap-1 text-xs"
+              onClick={() => void handleCreateInvite()}
+              disabled={creating || seatsFull}
+            >
+              {creating ? <RefreshCw className="size-3 animate-spin" /> : <UserPlus className="size-3" />}
+              {t("admin.inviteCreate")}
+            </Button>
             <p className="text-[11px] text-muted-foreground">{t("admin.inviteHint")}</p>
             {inviteUrl && (
               <div className="space-y-1.5 rounded-md border border-border bg-muted/30 p-2">
@@ -707,6 +743,8 @@ export function UsersAdminPage() {
                   <div key={invite.invite_id} className="flex items-center justify-between gap-2 text-[11px]">
                     <span className="truncate text-muted-foreground">
                       {invite.display_name ? `${invite.display_name} · ` : ""}
+                      {tf("admin.inviteJoinedCount", { used: invite.use_count, max: invite.max_uses })}
+                      {" · "}
                       {tf("admin.inviteExpires", { date: fmtDate(invite.expires_at) })}
                     </span>
                     <button
@@ -719,6 +757,74 @@ export function UsersAdminPage() {
                   </div>
                 ))}
               </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {!isPlatformAdmin && (
+        <Card className="mt-4">
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <History className="text-primary size-4" />
+              {t("admin.inviteHistory")}
+            </CardTitle>
+            <CardDescription className="text-[11px]">{t("admin.inviteHistoryHint")}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {(history ?? []).length === 0 ? (
+              <EmptyState icon={History} title={t("admin.inviteHistoryEmpty")} />
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="text-xs">{t("admin.colInviteStatus")}</TableHead>
+                    <TableHead className="text-xs">{t("admin.colInviteLink")}</TableHead>
+                    <TableHead className="text-xs">{t("admin.colInviteCreated")}</TableHead>
+                    <TableHead className="text-xs">{t("admin.colInviteExpires")}</TableHead>
+                    <TableHead className="text-xs">{t("admin.colInviteJoined")}</TableHead>
+                    <TableHead className="text-xs">{t("admin.colInviteNames")}</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {(history ?? []).map((entry) => {
+                    const meta = INVITE_STATUS[entry.status] ?? INVITE_STATUS.pending;
+                    return (
+                      <TableRow key={entry.invite_id}>
+                        <TableCell>
+                          <Badge variant="outline" className={cn("h-5 px-1.5 text-[11px] font-normal", meta.className)}>
+                            {t(meta.key)}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="font-mono text-[11px] text-muted-foreground">#{entry.fingerprint}</TableCell>
+                        <TableCell className="text-[11px] whitespace-nowrap text-muted-foreground">
+                          {fmtDateTime(entry.created_at)}
+                        </TableCell>
+                        <TableCell className="text-[11px] whitespace-nowrap text-muted-foreground">
+                          {fmtDateTime(entry.expires_at)}
+                        </TableCell>
+                        <TableCell className="text-[11px] tabular-nums">
+                          {entry.use_count}/{entry.max_uses}
+                        </TableCell>
+                        <TableCell>
+                          {entry.invited.length === 0 ? (
+                            <span className="text-[11px] text-muted-foreground">—</span>
+                          ) : (
+                            <div className="space-y-0.5">
+                              {entry.invited.map((invited) => (
+                                <p key={`${invited.username}-${invited.used_at}`} className="text-[11px] whitespace-nowrap text-muted-foreground">
+                                  <span className="text-foreground">{invited.display_name || invited.username}</span>
+                                  {" · "}{invited.username}{" · "}{fmtDateTime(invited.used_at)}
+                                </p>
+                              ))}
+                            </div>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
             )}
           </CardContent>
         </Card>

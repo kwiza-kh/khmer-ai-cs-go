@@ -55,5 +55,9 @@ JOIN users u ON u.user_id = i.used_by_user_id
 WHERE i.used_by_user_id IS NOT NULL
 ON CONFLICT DO NOTHING;
 
-ALTER TABLE team_invites DROP COLUMN IF EXISTS used_by_user_id;
-ALTER TABLE team_invites DROP COLUMN IF EXISTS used_at;
+-- used_by_user_id / used_at are deliberately LEFT IN PLACE. Dropping them would
+-- make this migration non-rollback-safe: the previous binary (7ec1cf9) writes
+-- them on every acceptance, so a binary rollback would fail with "column does
+-- not exist". They are dead weight for the new code and cost two nullable
+-- columns; a later migration can drop them once this release is old enough that
+-- nobody rolls back to it.

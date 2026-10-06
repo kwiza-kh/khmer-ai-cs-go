@@ -1365,25 +1365,53 @@ export function removeAgent(teamId: number) {
   return apiFetch<{ message: string }>(`/team/agents/${teamId}`, { method: "DELETE" });
 }
 
-/** A pending invite. The link itself is not returned: the server stores only
- *  its hash, so a code is shown once at creation and reissued if lost. */
+/** A pending invite: still actionable (not revoked/expired/used up). */
 export interface TeamInvite {
   invite_id: number;
   display_name: string;
   skills: string[];
   expires_at: string;
   created_at: string;
+  /** How many people this link may seat, and how many it already has. */
+  max_uses: number;
+  use_count: number;
 }
 export interface CreatedTeamInvite {
   invite_id: number;
-  /** Shown exactly once, at creation. */
+  /** Shown exactly once, at creation — the server stores only a hash. */
   url: string;
   expires_at: string;
+  max_uses: number;
+}
+/** One line of the invite history: the link, its state, and who joined through it. */
+export interface InviteHistoryEntry {
+  invite_id: number;
+  display_name: string;
+  skills: string[];
+  created_at: string;
+  expires_at: string;
+  revoked_at?: string | null;
+  status: "pending" | "exhausted" | "expired" | "revoked";
+  max_uses: number;
+  use_count: number;
+  /** First 8 hex characters of the token hash (the token itself is not stored). */
+  fingerprint: string;
+  invited: { username: string; display_name: string; used_at: string }[];
 }
 export function listTeamInvites() {
   return apiFetch<TeamInvite[]>("/team/invites");
 }
-export function createTeamInvite(input: { display_name?: string; skills?: string[] }) {
+export function listTeamInviteHistory() {
+  return apiFetch<InviteHistoryEntry[]>("/team/invites/history");
+}
+export function createTeamInvite(input: {
+  display_name?: string;
+  skills?: string[];
+  /** Link validity in hours; the server defaults to 7 days. */
+  expires_in_hours?: number;
+  /** How many people may join through this link; the server defaults to 1. */
+  max_uses?: number;
+}) {
   return apiFetch<CreatedTeamInvite>("/team/invites", { method: "POST", body: JSON.stringify(input) });
 }
 export function revokeTeamInvite(inviteId: number) {
