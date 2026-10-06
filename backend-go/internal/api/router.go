@@ -292,6 +292,7 @@ func (a *App) Router() http.Handler {
 	authed.Handle("POST /api/v1/team/agents", a.handle(a.addTeamAgent))
 	authed.Handle("DELETE /api/v1/team/agents/{id}", a.handleDoc(a.removeTeamAgent))
 	authed.Handle("GET /api/v1/team/invites", a.handle(a.listTeamInvites))
+	authed.Handle("GET /api/v1/team/invites/history", a.handle(a.listTeamInviteHistory))
 	authed.Handle("POST /api/v1/team/invites", a.handle(a.createTeamInvite))
 	authed.Handle("POST /api/v1/team/invites/accept", a.handle(a.acceptTeamInvite))
 	authed.HandleFunc("DELETE /api/v1/team/invites/{id}", a.handleDoc(a.deleteTeamInvite))
