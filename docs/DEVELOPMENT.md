@@ -1435,9 +1435,9 @@ FAQ 的 `ស9`（5 条产品线）在 chunk 2 里的偏移：枚举句起点 695
 
 | 件 | 值 |
 |---|---|
-| 后端 | `7ec1cf9`（`/ready.version` 与 `strings server-go \| grep vcs.revision` 一致，`vcs.modified=false`；构建机 go1.26.5） |
-| 前端 | BUILD_ID `Veyq-l52XSeashvqEUFuB`（见 `/opt/khmer-ai-cs/frontend/.next/BUILD_ID`） |
-| schema | `schema_migrations` = **70**（最新 `070_team_invites`；本次发布跑了一个迁移） |
+| 后端 | `f1ddfdf`（`/ready.version` 与 `strings server-go \| grep vcs.revision` 一致，`vcs.modified=false`；构建机 go1.26.5） |
+| 前端 | BUILD_ID `OD03Yj_Wy1cthgfPaecdx`（见 `/opt/khmer-ai-cs/frontend/.next/BUILD_ID`） |
+| schema | `schema_migrations` = **71**（最新 `071_team_invite_history`） |
 | 收款 | `PAYPAL_MODE=sandbox`、`PAYPAL_PRICE_PRO=29.00` / `_ENTERPRISE=199.00`、`PAYPAL_WEBHOOK_ID=7J2288704D8439049`（**应用锚定**；dashboard 里 account 锚定的 `9E4063638Y8280225` 应删） |
 | 套餐 | admin=pro（平台手工开通）、user 10=pro、user 11=pro（sandbox 两笔，`paid_until` **2026-12-05**） |
 
@@ -1594,3 +1594,36 @@ NEXT_PUBLIC_API_URL=https://cs.wanfanginsulationmaterial.com/api/v1 npm run buil
 - 验证：`/ready.version=7ec1cf9`；域名登录 401、`POST /team/invites` 未登录
   401、`/join?code=…` 200、首页 200+CSP；`team_invites` 在生产库存在（0 行）；
   重启后 journal 无 ERROR，`embed keep-warm` 仍在（step 0 那条教训）。
+
+### 上线记录二（`7ec1cf9 → f1ddfdf`，含迁移 071，2026-10-06 夜）
+
+**内容**：邀请链接可设有效期（1h～90d，UI 1/7/30 天）与人数上限（1～100，
+不超剩余席位）；新增邀请历史（`GET /team/invites/history` + 控制台表：状态/
+指纹/创建/有效期至/已加入 x/y/名单含加入时间）；撤销改为标记留痕；迁移 071
+建 `team_invite_uses` 日志表（加入时快照用户名）。
+
+**迁移的向前兼容**：071 **故意不删** `used_by_user_id`/`used_at` —— 旧二进制
+（`7ec1cf9`）每次接受都会写这两列，删了就没法二进制回滚。等这个版本足够
+老再补一个迁移清理。
+
+- 门禁：`vertexprobe` **红**（详见下）但按负责人决定照常发布；**迁移后**用
+  生产 schema 跑 `SQLCHECK_REQUIRED=1` → 121s 全绿。
+- 回滚点：`server-go.bak-20261006122446` / `migrate-go.bak-20261006122446` /
+  `frontend-backup-20261006122705`。
+- 验证：`/ready.version=f1ddfdf`、前端 BUILD_ID `OD03Yj_Wy1cthgfPaecdx`；
+  `POST/GET /team/invites` 与 `GET /team/invites/history` 未登录均 401、
+  `/join?code=…` 200、首页 200+CSP；生产 schema 里 `max_uses` 在、旧列也在、
+  `team_invite_uses` 0 行；重启后 journal 无 ERROR。
+
+#### ⚠️ 未决：`gemini-3.8-flash` 延迟（发布时门禁红的原因）
+
+2026-10-06 12:20Z 左右连测：`vertexprobe` 必需项 `chat: gemini-3.8-flash`
+连续 3 次在 45s/60s 预算下 `context deadline exceeded`，把预算拉到 **180s 才通过**；
+同一模型的 context-cache 检查能过，其他模型（`gemini-3.5-flash-lite` /
+`gemini-3.6-flash` / `gemini-3.5-flash` / `gemini-2.5-*`）与 embedding 全部正常。
+它就是生产的主模型+快模型（`model_configs.is_default`），所以真有人来消息，
+一轮回复会慢到不可用。当时 `token_usage` 最后一次成功调用在 ~23.5h 前
+（同期只有 1 条访客消息）——是**没流量**，不是回复失败；门禁先发现了。
+下一步：后台「模型」页把 `is_default` 切到健康档（建议 `gemini-3.6-flash`，
+区域仍 `global`，热生效），再跑一次 `vertexprobe` 确认转绿；本文档暂不改
+线上模型，需人工决定。
