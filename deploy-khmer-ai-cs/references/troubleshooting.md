@@ -94,3 +94,34 @@ set -a; . ./.env-go; set +a   # 先导出真配置
 
 - `SERVER_PORT=8081` 绑定全网卡, **公网可直连后端**, 绕过 nginx 的安全头/日志
 - 修复建议: iptables/nft 限 8081 仅本机, 或改代码绑 127.0.0.1; 在改之前, `.env-go` 泄露 = 全网可访问的严重事故
+
+## 17. PayPal webhook 的两种锚定: dashboard 建的那个永远验不过 (2026-10-06)
+
+- 症状: PayPal 真的投递到了 (nginx 有 `PayPal/AUHD-1.0-1` 的 POST、后端也有请求行), 但每次都 400,
+  journal: `paypal: webhook verification failed (FAILURE)` —— 把 `PAYPAL_WEBHOOK_ID` 填成 dashboard 里那个 id 也一样
+- 原因: dashboard「Apps & Credentials → Webhooks」建出来的是 **account 锚定** (只有 `?anchor_type=ACCOUNT` 才列得出来),
+  与应用凭据 (client id/secret) 不同域: 同一个 id 用应用凭据 `GET /v1/notifications/webhooks/{id}` 返回
+  `INVALID_RESOURCE_ID`, `webhooks-events?webhook_id=…` 也查不到它的事件 —— 验签无从通过
+- 正确做法 (应用锚定, 同域):
+  ```bash
+  curl -s -u "$PAYPAL_CLIENT_ID:$PAYPAL_CLIENT_SECRET" -H "Content-Type: application/json" \
+    -d '{"url":"https://cs.<域名>/api/v1/billing/paypal/webhook","event_types":[{"name":"PAYMENT.CAPTURE.COMPLETED"}]}' \
+    https://api-m.sandbox.paypal.com/v1/notifications/webhooks | python3 -m json.tool   # 取返回的 id
+  ```
+  换 id 重启后端, 下一次真实付款的投递就 200 (实测: capture 后 6 秒到、INFO 无 rejected)
+- 两个弯路: `POST /v1/notifications/simulate-event` 对四种 payload 形状全回 `MALFORMED_REQUEST_JSON` (别耗时间);
+  dashboard 的「Send test」模拟的是 account 锚定那个 webhook, 本来就测不到应用锚定那条
+- 判“通了没有”的唯一硬证据: 真实付款后 journal 里 `/api/v1/billing/paypal/webhook` 是 **200** (INFO) 且没有 `rejected`;
+  伪造事件永远 400 (fail closed 是对的, 但区分不了“签名假”与“id 不对”)
+
+## 18. `migrate-go` 的内嵌迁移集会被忽略 (2026-10-06)
+
+- 症状: `./migrate-go --status` 报 “67 applied, 0 pending”, 而仓库里明明有 068/069
+- 原因: 迁移 SQL 是**编译进二进制**的, 服务器上那份 `migrate-go` 是 2026-10-03 构建的 (只认到 067)
+- 判断真伪要核库而不是核工具:
+  ```bash
+  psql "$DATABASE_URL" -tAc "select max(version) from schema_migrations"
+  psql "$DATABASE_URL" -tAc "select to_regclass('public.payments')"   # 迁移带来的表/列在不在
+  ```
+  本例两者都在 = 068/069 早已应用, 纯代码发布即可; 直接信工具输出会白跑一次迁移
+- 规矩: **每次发布先 `install` 本次构建的 `migrate-go`**, 再用它 `--status`

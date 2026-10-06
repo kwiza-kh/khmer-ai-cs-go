@@ -196,6 +196,16 @@ echo "EXIT=${PIPESTATUS[0]}"   # 退出码才是结论；不要拿管道尾部�
 - ⚠️ **别拿 `vertexprobe -tasktype` 当门禁**: 平台上"没有任何拼写能条件化嵌入"就是实测结论, 它**必然 `exit 1`** —— 那是诊断工具要报的结果, 不是故障。
 - ⚠️ **换 provider 不会自动重嵌入知识库**（重嵌入扫描只认**模型名**, 而 `gemini-embedding-001` 在两个 provider 上同名）⇒ 切流后要么重建一次文档、要么立刻用 `rageval` 实测确认, 别假设等于对照实验里的路径 B（详见 deploy-commands §10.1）。
 
+## 收款（PayPal）
+
+| 项 | 值 / 要点 |
+|---|---|
+| 变量 | `PAYPAL_CLIENT_ID` / `_SECRET` / `_MODE`(`sandbox` 或 `live`) / `_CURRENCY` / `_PRICE_PRO` / `_PRICE_ENTERPRISE` / `_WEBHOOK_ID`；**缺 webhook id 不阻止启动**（只拒“id/secret 只配一半”和非法 mode），所以缺了是静默的 |
+| 建 webhook | **用应用凭据调 API 建（应用锚定）**：`POST https://api-m.sandbox.paypal.com/v1/notifications/webhooks`，正文 `{"url":"https://cs.<域名>/api/v1/billing/paypal/webhook","event_types":[{"name":"PAYMENT.CAPTURE.COMPLETED"}]}` → 把返回的 id 写进 `.env-go` 重启。dashboard「Add webhook」建的是 **account 锚定**，与应用凭据不同域：验签**必然** `FAILURE`，事件在 `webhooks-events` 里也查不到；它上面的「Send test」同样测不到应用锚定那条 |
+| 验证 | 只有真实付款能证明：`POST /billing/paypal/capture` 200 后几秒内 journal 出现 `/api/v1/billing/paypal/webhook` **200** 且无 `paypal webhook rejected`。已验证时 `/billing` 卡片会显示“有效期至”；`payments.detail.source` 是 `capture` 还是 `webhook` 能看出哪条路先到 |
+| 续费/到期 | `paid_until` 从**原到期日**顺延 30 天（不从付款日重算）；用量周期（`cycle_end`）不跟着动；到期由 `expirePaidPlans` 降回 free；退款事件**不处理**（手工改） |
+| 回滚 | 收款是追加式的：回滚二进制不会坏 `payments` / `tenant_billing.paid_until` |
+
 ## 验证清单
 
 ```bash
@@ -239,6 +249,8 @@ journalctl 里周期性 `/api/v1/realtime/inbox 401 WARN` = 未带 token 的 WS 
 | 密码被拒 Permission denied | 少打了末尾的点 | 密码结尾是**两个点** |
 | 大文件上传 413 | 该 server 块没配 `client_max_body_size` (默认 1m) | cs 的 443 块按需加大后 `nginx -s reload` |
 | Telegram webhook 注册失败 | `PUBLIC_API_URL` 不对或没走 https | 必须 `https://<部署域名>` (不带 /api/v1) |
+| PayPal 投递每次都 `verification failed (FAILURE)` | webhook 建在 dashboard（account 锚定）→ 与应用凭据不同域，验签无从通过 | 用应用凭据 `POST /v1/notifications/webhooks` 建应用锚定那个，id 写进 `PAYPAL_WEBHOOK_ID` 重启（见「收款（PayPal）」） |
+| `migrate-go --status` 报 “N applied, 0 pending” 但仓库里有更新的迁移 | 服务器上那份 `migrate-go` 是**旧构建**：迁移 SQL 内嵌在二进制里，不是读目录 | 先把本次构建的 `migrate-go` `install` 上去再用它判断；核库用 `select max(version) from schema_migrations`（2026-10-06：068/069 实际早已应用） |
 
 ## 详细参考（按需阅读）
 

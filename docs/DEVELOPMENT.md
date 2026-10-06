@@ -1350,14 +1350,38 @@ FAQ 的 `ស9`（5 条产品线）在 chunk 2 里的偏移：枚举句起点 695
 2. 填 sandbox 凭据 + 一个价格（如 `PAYPAL_PRICE_PRO=1.00`）→ 重启 → /billing 出现「用 PayPal 支付」。
 3. 用 PayPal sandbox 买家号真实买一次：应跳转、回跳 `?paypal=return`、自动开通、`paid_until` = 今天+30 天、
    `payments.status=captured`。再手动重放一次 capture → 应返回 `already`，`paid_until` **不再增加**。
-4. 换 live 凭据与真实价格；在 PayPal 后台建 webhook（事件 `PAYMENT.CAPTURE.COMPLETED`）指向
-   `https://<部署域名>/api/v1/billing/paypal/webhook`，把它的 id 写进 `PAYPAL_WEBHOOK_ID`。
+4. 建 webhook —— **必须用应用凭据调 API 建（应用锚定），不要用 dashboard 的 "Add webhook"**：
+   ```bash
+   curl -s -u "$PAYPAL_CLIENT_ID:$PAYPAL_CLIENT_SECRET" -H "Content-Type: application/json" \
+     -d '{"url":"https://cs.<域名>/api/v1/billing/paypal/webhook","event_types":[{"name":"PAYMENT.CAPTURE.COMPLETED"}]}' \
+     https://api-m.sandbox.paypal.com/v1/notifications/webhooks     # live 换成 api-m.paypal.com
+   # 返回 {"id":"…"} → 写进 .env-go 的 PAYPAL_WEBHOOK_ID → systemctl restart khmer-ai-cs-go
+   ```
+   dashboard 建出来的是 **account 锚定**，与应用凭据不同域：事件在 `webhooks-events?webhook_id=…` 里查不到，
+   验签**必然** `FAILURE`（2026-10-06 实测，见 §十三 坑位）。live 与 sandbox 是两套注册，切 mode 时 id 要一起换。
+5. 只有**真实付款**能证明 webhook 通了：capture 200 之后几秒内 journal 出现
+   `/api/v1/billing/paypal/webhook` **200** 且没有 `paypal webhook rejected`。
+
+### sandbox 端到端实测（2026-10-06）
+
+| 验的东西 | 结果 |
+|---|---|
+| 回跳 capture 主路径 | `POST /billing/paypal/order` 200 → `POST /billing/paypal/capture` 200；`payments.status=captured`，`detail.source="capture"` |
+| 套餐到账 | `plan=pro`、消息 5000 / 文档 300（与 `usage/plans.go` 一致）、`paid_until` = 付款日 +30 天、用量周期同步起算 |
+| 续费 | 第二笔（21 分钟后）→ `paid_until` 从 11-05 顺延到 **12-05**（`GREATEST(COALESCE(paid_until,NOW()),NOW())`，不从付款日重算）= 两笔共 60 天；**用量窗口不叠加**（`cycle_end` 仍是 11-05） |
+| 幂等 | 同一单被 capture 三次只加 30 天；第 2、3 次命中 `status=='captured'` 短路，返回 `{"already":true}`（前端「该笔支付已开通（无需重复操作）」），**PayPal 侧无第二次扣款**（逐单核对：每单 1 笔 capture） |
+| webhook 兜底 | 应用锚定的 webhook 在 capture 后 6 秒投递到达、验签 **200**（journal INFO、无 `rejected`） |
+| 未验到的 | `POST /v1/notifications/simulate-event` 对四种 payload 形状全回 `MALFORMED_REQUEST_JSON`（别耗时间）；dashboard 的 "Send test" 只能测 account 锚定那条，测不到应用锚定的 |
+| 账目 | sandbox 2×29.00 USD（假钱）：订单 `6WK71865HM856823L` / `6R4493701U744974F`，capture `9XA43510JE936922L` / `84S66721EM517713N` |
 
 ### 尚未做（下一步）
 
 - **自动续费**：目前是一次性 30 天、到期降级；接 PayPal Billing Plans/订阅可在此之上加，不需改现有幂等结构。
 - 退款/争议（`PAYMENT.CAPTURE.REFUNDED` 现在被忽略并返回 200）、发票/收据、税费。
 - 试用期（`trial_ends_at`）与催缴；目前“试用”等同于 free。
+- **拉模式对账（建议）**：扫 `payments` 里停在 `created` 的单子，主动向 PayPal 查单补开通
+  （`cmd/billingreconcile` 是现成骨架）。它不依赖 PayPal 愿不愿意投递，对“买家付完不回跳”比 webhook 更可靠。
+- live 切换清单：live 凭据 + live 价格 + **live webhook**（另建一个，连同 `PAYPAL_WEBHOOK_ID` 一起换）。
 
 ---
 
@@ -1411,14 +1435,15 @@ FAQ 的 `ស9`（5 条产品线）在 chunk 2 里的偏移：枚举句起点 695
 | `/root/db-backups/` | `pg_dump` 产物（人工执行）+ `.env-go` 备份；⚠️ 其中 `tenant-wanfang-password.txt` 是**明文口令**，建议删除 |
 | `/etc/nginx/sites-enabled/khmer-ai-cs` | 站点配置（见上） |
 
-### 当前线上版本（2026-10-05）
+### 当前线上版本（2026-10-06）
 
 | 件 | 值 |
 |---|---|
-| 后端 | `ecf7609`（`/ready.version` 与 `strings server-go \| grep vcs.revision` 一致） |
-| 前端 | BUILD_ID `ChKe76kPqW8NAcHllUR7G`（见 `/opt/khmer-ai-cs/frontend/.next/BUILD_ID`） |
-| schema | `schema_migrations` = **69**（最新 `069_drop_decorative_rbac`） |
-| 套餐/价格 | admin=pro（平台手工开通）、user 10=pro（已真付款，`paid_until` 2026-11-04）；`PAYPAL_PRICE_PRO=29.00` / `PAYPAL_PRICE_ENTERPRISE=199.00`，`PAYPAL_MODE=sandbox` |
+| 后端 | `8a50de9`（`/ready.version` 与 `strings server-go \| grep vcs.revision` 一致，`vcs.modified=false`） |
+| 前端 | BUILD_ID `zVYWUXSJxITFM3xkGIMCR`（见 `/opt/khmer-ai-cs/frontend/.next/BUILD_ID`） |
+| schema | `schema_migrations` = **69**（最新 `069_drop_decorative_rbac`；068/069 于 10-05 早已应用 —— 见坑位） |
+| 收款 | `PAYPAL_MODE=sandbox`、`PAYPAL_PRICE_PRO=29.00` / `_ENTERPRISE=199.00`、`PAYPAL_WEBHOOK_ID=7J2288704D8439049`（**应用锚定**；dashboard 里 account 锚定的 `9E4063638Y8280225` 应删） |
+| 套餐 | admin=pro（平台手工开通）、user 10=pro、user 11=pro（sandbox 两笔，`paid_until` **2026-12-05**） |
 
 ### 发布流程速查（详见 `deploy-khmer-ai-cs/SKILL.md`）
 
