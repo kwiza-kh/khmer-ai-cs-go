@@ -1470,6 +1470,7 @@ FAQ 的 `ស9`（5 条产品线）在 chunk 2 里的偏移：枚举句起点 695
 | `pg_dump` 权限错误 | 应用用户 `khmerai` 对遗留表无权限 → 用 **postgres 超级用户** dump |
 | 日志查不到旧事件 | journald 只保留有限窗口（2026-10-05 时仅能回溯到 10-01 16:45 左右） |
 | 二进制版本戳 `vcs.modified=true` | 构建时工作树里有未提交的**已跟踪**文件（哪怕只是别人改的前端文件）就这样；要干净戳得先确保 `git status` 干净（可用按路径 `git stash` 排除他人 WIP） |
+| 线上 `vcs.revision` 不在 `git log main` 里 | GitHub **rebase 合并不是快进**：它按新 committer 时间重放提交，SHA 会变。2026-10-06 PR#1 就是如此 —— main `2c245ff`/`bfbed86` 与 `deploy/cef61b7`/`deploy/d75df26` **内容完全相同**（`git diff` 为空），但线上二进制烙的是旧 SHA。核对时用 `git cat-file -t <revision>`（tag 解析得到）而不是只看 `git log`；**下次发布直接从 main HEAD 构建**即可对齐 |
 | `mktoken` 打印 `JWT_SECRET missing` | 它需要环境变量 → `set -a; . /opt/khmer-ai-cs/.env-go; set +a` 之后再跑 |
 | SQL 引号被 shell 吃掉 | 复杂 SQL 一律 **base64 传参**：`echo <b64> \| base64 -d > /tmp/q.sql && psql -f /tmp/q.sql` |
 
