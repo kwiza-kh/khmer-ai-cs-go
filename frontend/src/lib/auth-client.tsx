@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useContext, useState, useEffect, ReactNode } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";import { useSWRConfig } from "swr";
 
 interface User {
   user_id: number;
@@ -80,6 +80,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const router = useRouter();
+  // The SWR cache is keyed by request path, not by account. Adopting a
+  // session clears it: logging out and back in as someone else in the same
+  // tab must not paint the previous account's rows while the new ones load
+  // (keepPreviousData would otherwise make that window visible).
+  const { cache } = useSWRConfig();
+  const clearSWRCache = () => {
+    for (const key of cache.keys()) cache.delete(key);
+  };
+
+  const adoptSession = (nextToken: string, nextUser: User) => {
+    clearSWRCache();
+    setToken(nextToken);
+    setUser(nextUser);
+    localStorage.setItem("token", nextToken);
+    localStorage.setItem("user", JSON.stringify(nextUser));
+  };
 
   // localStorage 是外部存储, 必须在客户端挂载后才能读取 (SSR 期间 window 不存在).
   // 这是 React 官方推荐的 "从外部系统同步状态" 用法, 因此显式关闭 set-state-in-effect 规则.
@@ -112,10 +128,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return { twoFactorRequired: true };
     }
     if (!res.ok) throw new Error(localizeCurrentLang(data.error || "登录失败"));
-    setToken(data.token);
-    setUser(data.user);
-    localStorage.setItem("token", data.token);
-    localStorage.setItem("user", JSON.stringify(data.user));
+    adoptSession(data.token, data.user);
     return {};
   };
 
@@ -127,10 +140,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }));
     const data = await res.json();
     if (!res.ok) throw new Error(localizeCurrentLang(data.error || "注册失败"));
-    setToken(data.token);
-    setUser(data.user);
-    localStorage.setItem("token", data.token);
-    localStorage.setItem("user", JSON.stringify(data.user));
+    adoptSession(data.token, data.user);
   };
 
   // completeGoogleLogin — the OAuth callback redirects back with a one-time
@@ -143,10 +153,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }));
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(localizeCurrentLang(data.error || "Google 登录失败"));
-    setToken(data.token);
-    setUser(data.user);
-    localStorage.setItem("token", data.token);
-    localStorage.setItem("user", JSON.stringify(data.user));
+    adoptSession(data.token, data.user);
   };
 
   // completeTelegramLogin — same one-time-code exchange as Google, against the
@@ -160,13 +167,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }));
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(localizeCurrentLang(data.error || "Telegram 登录失败"));
-    setToken(data.token);
-    setUser(data.user);
-    localStorage.setItem("token", data.token);
-    localStorage.setItem("user", JSON.stringify(data.user));
+    adoptSession(data.token, data.user);
   };
 
   const logout = () => {
+    clearSWRCache();
     setToken(null);
     setUser(null);
     localStorage.removeItem("token");
