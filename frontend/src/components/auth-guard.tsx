@@ -14,12 +14,15 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
   // Public routes that never require a session (/widget = the chat widget
   // iframe, /privacy = the Meta app review privacy policy,
   // /privacy/deletion-status = the status page Meta's Data Deletion callback
-  // hands to a data subject). Exact match only — /widget-admin is an
+  // hands to a data subject, /join = an invite landing page whose visitor
+  // usually has no session yet and must keep the ?code= through the login
+  // round trip). Exact match only — /widget-admin is an
   // authenticated admin page that must keep the app shell (and the auth
   // redirect), and the deletion-status path is listed explicitly rather than
   // matched by prefix so this stays true.
   const isPublic =
     pathname === "/login" ||
+    pathname === "/join" ||
     pathname === "/widget" ||
     pathname === "/privacy" ||
     pathname === "/privacy/deletion-status";

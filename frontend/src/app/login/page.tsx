@@ -4,6 +4,7 @@ import * as React from "react";
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { API_BASE, useAuth } from "@/lib/auth-client";
+import { peekPendingInvite } from "@/lib/pending-invite";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -20,6 +21,13 @@ import { TelegramIcon } from "@/components/platform-icons";
 export default function LoginPage() {
   const { login, register, completeGoogleLogin, completeTelegramLogin } = useAuth();
   const router = useRouter();
+  // An invite link opened without a session parks its code in sessionStorage
+  // (see /join), so a successful sign-in finishes that job instead of dropping
+  // the visitor on the dashboard.
+  const afterAuthPath = () => {
+    const pending = peekPendingInvite();
+    return pending ? `/join?code=${encodeURIComponent(pending)}` : "/ai-test";
+  };
   const { lang, setLang, t } = useI18n();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -50,6 +58,12 @@ export default function LoginPage() {
     if (errReason) {
       const key = `login.googleErr.${errReason}`;
       const msg = t(key);
+      // The OAuth callback is a one-time external navigation event; this effect
+      // is where the redirect is turned into UI state. Deriving the message
+      // during render would mean moving the whole callback path onto
+      // useSearchParams + Suspense. Pre-existing debt (same class as the
+      // inbox/page.tsx entries in docs/DEVELOPMENT.md).
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setError(msg === key ? t("login.googleErr.failed") : msg);
       return;
     }
@@ -61,7 +75,7 @@ export default function LoginPage() {
       ? completeTelegramLogin(telegramCode, state)
       : completeGoogleLogin(googleCode!, state);
     void exchange
-      .then(() => router.push("/ai-test"))
+      .then(() => router.push(afterAuthPath()))
       .catch((err: unknown) => setError((err as Error).message))
       .finally(() => setLoading(false));
   }, [completeGoogleLogin, completeTelegramLogin, router, t]);
@@ -88,7 +102,7 @@ export default function LoginPage() {
         setNeed2fa(true);
         setError("");
       } else {
-        router.push("/ai-test");
+        router.push(afterAuthPath());
       }
     }
     catch (err: unknown) { setError((err as Error).message); }
@@ -97,7 +111,7 @@ export default function LoginPage() {
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault(); setError(""); setLoading(true);
-    try { await register(regUser, regEmail, regPass); router.push("/ai-test"); }
+    try { await register(regUser, regEmail, regPass); router.push(afterAuthPath()); }
     catch (err: unknown) { setError((err as Error).message); }
     finally { setLoading(false); }
   };

@@ -1361,11 +1361,37 @@ export function dismissFaqSuggestion(id: number) {
 export function listTeam() {
   return apiFetch<AgentMember[]>("/team");
 }
-export function addAgent(userId: number, displayName: string, skills: string[]) {
-  return apiFetch<{ message: string }>("/team/agents", { method: "POST", body: JSON.stringify({ user_id: userId, display_name: displayName, skills }) });
-}
 export function removeAgent(teamId: number) {
   return apiFetch<{ message: string }>(`/team/agents/${teamId}`, { method: "DELETE" });
+}
+
+/** A pending invite. The link itself is not returned: the server stores only
+ *  its hash, so a code is shown once at creation and reissued if lost. */
+export interface TeamInvite {
+  invite_id: number;
+  display_name: string;
+  skills: string[];
+  expires_at: string;
+  created_at: string;
+}
+export interface CreatedTeamInvite {
+  invite_id: number;
+  /** Shown exactly once, at creation. */
+  url: string;
+  expires_at: string;
+}
+export function listTeamInvites() {
+  return apiFetch<TeamInvite[]>("/team/invites");
+}
+export function createTeamInvite(input: { display_name?: string; skills?: string[] }) {
+  return apiFetch<CreatedTeamInvite>("/team/invites", { method: "POST", body: JSON.stringify(input) });
+}
+export function revokeTeamInvite(inviteId: number) {
+  return apiFetch<{ message: string }>(`/team/invites/${inviteId}`, { method: "DELETE" });
+}
+/** Accepting binds the caller's own account — the body carries only the code. */
+export function acceptTeamInvite(code: string) {
+  return apiFetch<{ message: string }>("/team/invites/accept", { method: "POST", body: JSON.stringify({ code }) });
 }
 export function listCampaigns() {
   return apiFetch<CampaignItem[]>("/campaigns");

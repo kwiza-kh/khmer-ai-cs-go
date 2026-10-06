@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import useSWR from "swr";
 import Link from "next/link";
-import { listUsers, updateUserRole, getTokenStats, listModelConfigs, listAvailableModels, listVertexRegions, testModelConfig, updateModelConfig, getDefaultSystemPrompt, listPromptVersions, restorePromptVersion, listPersonas, createPersona, updatePersona, deletePersona, putPersonaBinding, deletePersonaBinding, type AvailableModel, type ModelItem, type PaginatedResponse, type PersonaBinding, type PersonaItem, type PersonasResponse, listTeam, addAgent, removeAgent, type UserItem, type UsersStats } from "@/lib/api";
+import { listUsers, updateUserRole, getTokenStats, listModelConfigs, listAvailableModels, listVertexRegions, testModelConfig, updateModelConfig, getDefaultSystemPrompt, listPromptVersions, restorePromptVersion, listPersonas, createPersona, updatePersona, deletePersona, putPersonaBinding, deletePersonaBinding, type AvailableModel, type ModelItem, type PaginatedResponse, type PersonaBinding, type PersonaItem, type PersonasResponse, listTeam, removeAgent, listTeamInvites, createTeamInvite, revokeTeamInvite, type UserItem, type UsersStats } from "@/lib/api";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -487,12 +487,22 @@ export function UsersAdminPage() {
   // "billing-catalog" — so the card costs no extra request on a warm page.
   // This lived in the dashboard's Growth tab; the roster below is the same set
   // of people (owner + members), so a second screen only ever disagreed.
+  //
+  // Seats are filled by invite, not by typing a user_id: the invitee accepts
+  // the link while logged in and the server binds their own account, so the
+  // owner never needs an identifier and nobody can claim a stranger's signup.
   const { data: team, mutate: mutateTeam } = useSWR("agent-team", listTeam);
   const { data: catalog, mutate: mutateCatalog } = useSWR("billing-catalog", getBillingCatalog);
-  const [agentId, setAgentId] = useState("");
-  const [agentName, setAgentName] = useState("");
-  const [agentSkills, setAgentSkills] = useState("");
-  const [adding, setAdding] = useState(false);
+  // platform_admin's user list spans tenants, so there is no single allowance to
+  // show — and seat writes are tenant-scoped server-side.
+  const isPlatformAdmin = user?.role === "platform_admin";
+  const { data: invites, mutate: mutateInvites } = useSWR(isPlatformAdmin ? null : "team-invites", listTeamInvites);
+  const [inviteName, setInviteName] = useState("");
+  const [inviteSkills, setInviteSkills] = useState("");
+  const [creating, setCreating] = useState(false);
+  // The link lives only in this state: the server keeps a hash, so a reload
+  // means reissuing (and revoking the old one) rather than re-reading it.
+  const [inviteUrl, setInviteUrl] = useState("");
   const seatsUsed = catalog?.current?.seats_used ?? null;
   const seatsQuota = catalog?.current?.seats_quota ?? null;
   const seatsFull = seatsUsed !== null && seatsQuota !== null && seatsUsed >= seatsQuota;
@@ -501,33 +511,49 @@ export function UsersAdminPage() {
     : 0;
   const memberByAgent = new Map((team ?? []).map((member) => [member.agent_user_id, member]));
   const teamIdByAgent = new Map((team ?? []).map((member) => [member.agent_user_id, member.team_id]));
-  // platform_admin's user list spans tenants, so there is no single allowance to
-  // show — and seat writes are tenant-scoped server-side.
-  const isPlatformAdmin = user?.role === "platform_admin";
   const ownerId = user?.user_id;
 
-  // Every seat write changes both lists: claiming an account adds it to the
-  // roster, releasing one removes it from the scope the list is built on.
+  // Every seat write changes all lists: a new invite, an accepted one, or a
+  // released seat moves the roster, the counters and the plan card together.
   const refreshSeats = async () => {
-    await Promise.all([mutate(), mutateTeam(), mutateCatalog()]);
+    await Promise.all([mutate(), mutateTeam(), mutateCatalog(), mutateInvites()]);
   };
 
-  const handleAddSeat = async () => {
-    const userId = Number(agentId);
-    if (!Number.isInteger(userId) || userId <= 0) {
-      toast.error(t("admin.agentIdInvalid"));
-      return;
-    }
-    setAdding(true);
+  const handleCreateInvite = async () => {
+    setCreating(true);
     try {
-      await addAgent(userId, agentName, agentSkills.split(",").map((s) => s.trim()).filter(Boolean));
-      setAgentId(""); setAgentName(""); setAgentSkills("");
-      toast.success(t("gr.agentAdded"));
-      await refreshSeats();
+      const created = await createTeamInvite({
+        display_name: inviteName.trim(),
+        skills: inviteSkills.split(",").map((s) => s.trim()).filter(Boolean),
+      });
+      setInviteUrl(created.url);
+      setInviteName("");
+      setInviteSkills("");
+      await mutateInvites();
+      toast.success(t("admin.inviteCreated"));
     } catch (error: unknown) {
       toast.error((error as Error).message);
     } finally {
-      setAdding(false);
+      setCreating(false);
+    }
+  };
+
+  const handleCopyInvite = async () => {
+    try {
+      await navigator.clipboard.writeText(inviteUrl);
+      toast.success(t("admin.inviteCopied"));
+    } catch {
+      /* clipboard blocked — the read-only input below still holds the link */
+    }
+  };
+
+  const handleRevokeInvite = async (inviteId: number) => {
+    try {
+      await revokeTeamInvite(inviteId);
+      toast.success(t("admin.inviteRevoked"));
+      await mutateInvites();
+    } catch (error: unknown) {
+      toast.error((error as Error).message);
     }
   };
 
@@ -624,37 +650,76 @@ export function UsersAdminPage() {
                 <Link href="/billing" className="text-primary hover:underline">{t("bl.title")}</Link>
               </p>
             )}
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_1fr_1fr_auto]">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_1fr_auto]">
               <Input
-                value={agentId}
-                onChange={(event) => setAgentId(event.target.value)}
-                placeholder={t("gr.agentIdPh")}
-                inputMode="numeric"
+                value={inviteName}
+                onChange={(event) => setInviteName(event.target.value)}
+                placeholder={t("admin.inviteNamePh")}
                 className="h-8 text-xs"
               />
               <Input
-                value={agentName}
-                onChange={(event) => setAgentName(event.target.value)}
-                placeholder={t("gr.displayNamePh")}
-                className="h-8 text-xs"
-              />
-              <Input
-                value={agentSkills}
-                onChange={(event) => setAgentSkills(event.target.value)}
-                placeholder={t("gr.skillsPh")}
+                value={inviteSkills}
+                onChange={(event) => setInviteSkills(event.target.value)}
+                placeholder={t("admin.inviteSkillsPh")}
                 className="h-8 text-xs"
               />
               <Button
                 size="sm"
                 className="h-8 gap-1 text-xs"
-                onClick={() => void handleAddSeat()}
-                disabled={adding || !agentId || seatsFull}
+                onClick={() => void handleCreateInvite()}
+                disabled={creating || seatsFull}
               >
-                {adding ? <RefreshCw className="size-3 animate-spin" /> : <UserPlus className="size-3" />}
-                {t("gr.addAgent")}
+                {creating ? <RefreshCw className="size-3 animate-spin" /> : <UserPlus className="size-3" />}
+                {t("admin.inviteCreate")}
               </Button>
             </div>
-            <p className="text-[11px] text-muted-foreground">{t("admin.seatAddHint")}</p>
+            <p className="text-[11px] text-muted-foreground">{t("admin.inviteHint")}</p>
+            {inviteUrl && (
+              <div className="space-y-1.5 rounded-md border border-border bg-muted/30 p-2">
+                <div className="flex items-center gap-2">
+                  <Input
+                    readOnly
+                    value={inviteUrl}
+                    onFocus={(event) => event.currentTarget.select()}
+                    className="h-8 flex-1 text-xs"
+                  />
+                  <Button size="sm" className="h-8 gap-1 text-xs" onClick={() => void handleCopyInvite()}>
+                    <Copy className="size-3" />{t("admin.inviteCopy")}
+                  </Button>
+                </div>
+                <p className="flex items-center gap-2 text-[11px] text-warning">
+                  <AlertTriangle className="size-3" />
+                  {t("admin.inviteOnce")}
+                  <button
+                    type="button"
+                    onClick={() => setInviteUrl("")}
+                    className="ml-auto shrink-0 text-muted-foreground hover:text-foreground"
+                  >
+                    {t("admin.inviteAnother")}
+                  </button>
+                </p>
+              </div>
+            )}
+            {(invites ?? []).length > 0 && (
+              <div className="space-y-1 border-t border-border pt-2">
+                <p className="text-[11px] font-medium text-muted-foreground">{t("admin.invitePending")}</p>
+                {(invites ?? []).map((invite) => (
+                  <div key={invite.invite_id} className="flex items-center justify-between gap-2 text-[11px]">
+                    <span className="truncate text-muted-foreground">
+                      {invite.display_name ? `${invite.display_name} · ` : ""}
+                      {tf("admin.inviteExpires", { date: fmtDate(invite.expires_at) })}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => void handleRevokeInvite(invite.invite_id)}
+                      className="shrink-0 text-muted-foreground hover:text-destructive"
+                    >
+                      {t("admin.inviteRevoke")}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </CardContent>
         </Card>
       )}
@@ -720,14 +785,18 @@ export function UsersAdminPage() {
                                 ))}
                               </p>
                             )}
-                            <button
-                              type="button"
-                              onClick={() => void copyUserId(user.user_id)}
-                              title={t("admin.copyUserId")}
-                              className="mt-0.5 inline-flex items-center gap-1 text-[11px] text-muted-foreground/80 transition-colors hover:text-primary"
-                            >
-                              <Copy className="size-2.5" />#{user.user_id}
-                            </button>
+                            {/* The raw id is an operator tool now: tenants invite, and
+                                nothing in the tenant UI needs a user_id any more. */}
+                            {isPlatformAdmin && (
+                              <button
+                                type="button"
+                                onClick={() => void copyUserId(user.user_id)}
+                                title={t("admin.copyUserId")}
+                                className="mt-0.5 inline-flex items-center gap-1 text-[11px] text-muted-foreground/80 transition-colors hover:text-primary"
+                              >
+                                <Copy className="size-2.5" />#{user.user_id}
+                              </button>
+                            )}
                           </div>
                         </div>
                       </TableCell>
@@ -751,6 +820,20 @@ export function UsersAdminPage() {
                           >
                             <Lock className="size-2.5" />
                             {t("admin.statusActive")}
+                          </span>
+                        ) : !isPlatformAdmin ? (
+                          // Enabling/disabling an account is a platform action: a
+                          // tenant owner offboards by removing the seat, not by
+                          // locking the person out of the platform entirely.
+                          <span
+                            title={t("admin.statusTenantLockHint")}
+                            className={cn(
+                              "inline-flex cursor-not-allowed items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium",
+                              user.is_active ? "bg-success/10 text-success" : "bg-muted text-muted-foreground",
+                            )}
+                          >
+                            <span className={cn("size-1.5 rounded-full", user.is_active ? "bg-success" : "bg-muted-foreground/50")} />
+                            {user.is_active ? t("admin.statusActive") : t("admin.statusDisabled")}
                           </span>
                         ) : (
                         <button
