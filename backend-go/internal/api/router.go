@@ -119,7 +119,6 @@ func (a *App) Router() http.Handler {
 	// Chat (plain + SSE streaming) + sessions.
 	authed.Handle("POST /api/v1/chat", a.handle(a.chatPlain))
 	authed.HandleFunc("POST /api/v1/chat/stream", a.chatStream)
-	authed.Handle("POST /api/v1/chat/voice", a.handle(a.chatVoice))
 	authed.Handle("GET /api/v1/chat/sessions", a.handle(a.listSessions))
 	authed.Handle("POST /api/v1/chat/sessions", a.handle(a.createSession))
 	authed.HandleFunc("PATCH /api/v1/chat/sessions/{id}", a.handleSession(a.updateSession))
@@ -171,7 +170,6 @@ func (a *App) Router() http.Handler {
 	authed.Handle("GET /api/v1/admin/users", a.tenantAdminOnly(a.handle(a.listUsers)))
 	authed.Handle("PUT /api/v1/admin/users/{id}/role", a.tenantAdminOnly(a.handleDoc(a.updateUserRole)))
 	authed.Handle("GET /api/v1/admin/analytics/overview", a.tenantAdminOnly(a.handle(a.analyticsOverview)))
-	authed.Handle("GET /api/v1/admin/rag/gaps", a.tenantAdminOnly(a.handle(a.ragGaps)))
 
 	// Analytics: timeline, breakdowns, top queries, token stats, feedback list.
 	authed.Handle("GET /api/v1/admin/analytics/timeline", a.tenantAdminOnly(a.handle(a.analyticsTimeline)))
@@ -246,7 +244,6 @@ func (a *App) Router() http.Handler {
 	// Handoff requests.
 	authed.Handle("GET /api/v1/handoff-requests", a.handle(a.listHandoffs))
 	authed.Handle("POST /api/v1/handoff-requests", a.handle(a.createHandoffRequest))
-	authed.HandleFunc("POST /api/v1/handoff-requests/{id}/resolve", a.handleSession(a.resolveHandoff))
 
 	// Customers.
 	authed.Handle("GET /api/v1/customers", a.tenantAdminOnly(a.handle(a.listCustomers)))
@@ -303,10 +300,6 @@ func (a *App) Router() http.Handler {
 
 	// Copilot (agent AI suggestions).
 	authed.HandleFunc("POST /api/v1/inbox/sessions/{id}/copilot/suggest", a.handleSession(a.copilotSuggest))
-	authed.HandleFunc("GET /api/v1/inbox/sessions/{id}/copilot/knowledge", a.handleSession(a.copilotKnowledge))
-
-	// Message feedback.
-	authed.HandleFunc("POST /api/v1/chat/messages/{id}/feedback", a.handleDoc(a.messageFeedback))
 
 	// Platform configs CRUD + verify + work + retry.
 	authed.Handle("GET /api/v1/platforms/configs", a.tenantAdminOnly(a.handle(a.listPlatformConfigs)))

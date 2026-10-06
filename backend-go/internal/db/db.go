@@ -15,7 +15,7 @@ import (
 // Connect builds the pool from DATABASE_URL with the same sizing knobs as the
 // Rust backend (DATABASE_POOL_MAX/MIN), then pings to fail fast.
 func Connect(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
-	max := clamp(config.EnvInt("DATABASE_POOL_MAX", 30), 5, 200)
+	max := min(max(config.EnvInt("DATABASE_POOL_MAX", 30), 5), 200)
 	min := config.EnvInt("DATABASE_POOL_MIN", 0)
 	if min > max {
 		min = max
@@ -39,14 +39,4 @@ func Connect(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 		return nil, fmt.Errorf("postgres ping failed: %w", err)
 	}
 	return pool, nil
-}
-
-func clamp(v, lo, hi int) int {
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
 }

@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -148,18 +149,5 @@ func TestTOTPRoundtrip(t *testing.T) {
 }
 
 func padCode(code int) string {
-	s := strings.Repeat("0", 6-len(itoa(code))) + itoa(code)
-	return s
-}
-
-func itoa(v int) string {
-	if v == 0 {
-		return "0"
-	}
-	var buf []byte
-	for v > 0 {
-		buf = append([]byte{byte('0' + v%10)}, buf...)
-		v /= 10
-	}
-	return string(buf)
+	return fmt.Sprintf("%06d", code)
 }

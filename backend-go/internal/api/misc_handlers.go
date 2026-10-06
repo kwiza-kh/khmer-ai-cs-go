@@ -2,8 +2,8 @@ package api
 
 import (
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base32"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -175,27 +175,8 @@ func generateAPIKey() (string, string) {
 	if _, err := rand.Read(b); err != nil {
 		return "", ""
 	}
-	plain := "kcs_" + hexEncode(b)
-	return plain, sha256Hex(plain)
-}
-
-func hexEncode(b []byte) string {
-	const hexChars = "0123456789abcdef"
-	out := make([]byte, len(b)*2)
-	for i, c := range b {
-		out[i*2] = hexChars[c>>4]
-		out[i*2+1] = hexChars[c&0x0f]
-	}
-	return string(out)
-}
-
-func sha256Hex(s string) string {
-	return hexEncode(sha256Sum([]byte(s)))
-}
-
-func sha256Sum(b []byte) []byte {
-	sum := sha256.Sum256(b)
-	return sum[:]
+	plain := "kcs_" + hex.EncodeToString(b)
+	return plain, sha256HexStr(plain)
 }
 
 // ============================================

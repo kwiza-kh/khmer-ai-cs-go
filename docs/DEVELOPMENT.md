@@ -1264,7 +1264,7 @@ FAQ 的 `ស9`（5 条产品线）在 chunk 2 里的偏移：枚举句起点 695
 | 去重 | 有矛盾检测，无重复/近似重复检测 |
 | 可用性 | 单机单实例（无温备/异地），且与 `wms.service` 同机（4C/7G） |
 | 评测闭环 | `rageval` 语料已随测试租户删除（当前跑不动）；reply-cache 误命中率未量测 |
-| 控制台语音提示 | `/chat/voice` 前端默认发 `language=km` 当 ASR 提示，应留空自动判定（与 `TranscribeAudio` 注释的警告相反） |
+| 控制台语音输入 | 前端无录音 UI，`POST /chat/voice` 与 `chatVoice` 已随本次清理删除；`TranscribeAudio` 仍服务平台入站语音（webhook 侧），控制台要做语音输入需先补前端录音 |
 | RLS 兜底 | 迁移 061 已建策略，但生产代码未设 `app.user_id` GUC → 策略 fail-open，属于未接线脚手架（见第十节） |
 | 交付卫生 | 前端构建若在含未提交文件的工作树上执行，产物会带未入库代码——本次用按路径 `git stash` 把他人 WIP 排除在构建之外 |
 | 单点 | 平台 Telegram bot token 泄漏影响所有商家 |

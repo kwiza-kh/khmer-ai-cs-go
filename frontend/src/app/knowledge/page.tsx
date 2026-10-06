@@ -28,6 +28,7 @@ import { EmptyState } from "@/components/empty-state";
 import { KnowledgeUploadDialog } from "@/components/knowledge/upload-dialog";
 import { MarkdownKnowledgeEditor } from "@/components/knowledge/markdown-editor";
 import { cn } from "@/lib/utils";
+import { fmtDate } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
 import { useAuth } from "@/lib/auth-client";
 
@@ -64,12 +65,7 @@ function fileKindFromTitle(title: string): FileKind {
 }
 
 function formatDate(value: string | undefined, unavailable: string): string {
-  if (!value) return unavailable;
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return unavailable;
-  // Pin to English so dates render consistently regardless of browser locale
-  // (the browser may be localized to 中文, which produced "2026年8月11日").
-  return new Intl.DateTimeFormat("en-US", { year: "numeric", month: "short", day: "numeric" }).format(date);
+  return value ? fmtDate(value) : unavailable;
 }
 
 function isEditableFileKind(kind: FileKind): boolean {

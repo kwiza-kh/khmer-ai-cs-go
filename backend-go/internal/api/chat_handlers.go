@@ -63,7 +63,7 @@ func (a *App) resolveChatSession(ctx context.Context, userID int32, req *chatReq
 	if !isTest {
 		platformVal = "web"
 	}
-	title := truncateForTitle(req.Message, 60)
+	title := textutil.TruncateRunes(req.Message, 60)
 	_, err := a.DB.Exec(ctx,
 		"INSERT INTO sessions (session_id, user_id, platform, language, status, title, is_test, created_at) "+
 			"VALUES ($1,$2,$3::platform_type,$4,'active',$5,$6,NOW())",
@@ -73,14 +73,6 @@ func (a *App) resolveChatSession(ctx context.Context, userID int32, req *chatReq
 	}
 	req.SessionID = &sid
 	return sid, isTest, nil
-}
-
-func truncateForTitle(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	return string(r[:n])
 }
 
 // chatHistory loads the newest 20 persisted turns (chronological) so web/test
@@ -603,7 +595,7 @@ func (a *App) createSession(w http.ResponseWriter, r *http.Request) (any, error)
 	if _, err := a.DB.Exec(r.Context(),
 		"INSERT INTO sessions (session_id, user_id, platform, language, status, title, is_test, created_at) "+
 			"VALUES ($1,$2,$3::platform_type,$4,'active',$5,$6,NOW())",
-		sid, user.UserID, platformVal, language, truncateForTitle(req.Title, 60), req.Test); err != nil {
+		sid, user.UserID, platformVal, language, textutil.TruncateRunes(req.Title, 60), req.Test); err != nil {
 		return nil, ErrInternal("创建失败")
 	}
 	return map[string]any{
@@ -633,7 +625,7 @@ func (a *App) updateSession(w http.ResponseWriter, r *http.Request, sessionID st
 		return nil, err
 	}
 	if req.Title != nil {
-		_, _ = a.DB.Exec(r.Context(), "UPDATE sessions SET title = $1 WHERE session_id = $2", truncateForTitle(*req.Title, 200), sessionID)
+		_, _ = a.DB.Exec(r.Context(), "UPDATE sessions SET title = $1 WHERE session_id = $2", textutil.TruncateRunes(*req.Title, 200), sessionID)
 	}
 	if req.Status != nil {
 		status := *req.Status

@@ -14,6 +14,7 @@ package platform
 import (
 	"context"
 	"sort"
+	"strconv"
 	"time"
 )
 
@@ -109,28 +110,14 @@ func humanDuration(d time.Duration) string {
 	}
 	switch {
 	case d >= 24*time.Hour:
-		return itoa(int(d/(24*time.Hour))) + "d"
+		return strconv.Itoa(int(d/(24*time.Hour))) + "d"
 	case d >= time.Hour:
-		return itoa(int(d/time.Hour)) + "h"
+		return strconv.Itoa(int(d/time.Hour)) + "h"
 	case d >= time.Minute:
-		return itoa(int(d/time.Minute)) + "m"
+		return strconv.Itoa(int(d/time.Minute)) + "m"
 	default:
-		return itoa(int(d/time.Second)) + "s"
+		return strconv.Itoa(int(d/time.Second)) + "s"
 	}
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var buf [20]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	return string(buf[i:])
 }
 
 // IntegrationHealthFor reads the roll-up for one tenant (userID nil = every

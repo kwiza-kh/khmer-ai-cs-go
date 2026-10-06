@@ -904,14 +904,3 @@ func (a *App) updateUserRole(w http.ResponseWriter, r *http.Request, userID int3
 }
 
 // analyticsOverview moved to analytics_handlers.go (full KPI set).
-
-// ragGaps — knowledge-gap report.
-func (a *App) ragGaps(w http.ResponseWriter, r *http.Request) (any, error) {
-	user, _ := UserFrom(r)
-	days := parseIntOr(r.URL.Query().Get("days"), 7)
-	gaps, err := a.RAG.KnowledgeGaps(r.Context(), user.UserID, int64(days))
-	if err != nil {
-		return nil, ErrInternal("查询失败")
-	}
-	return map[string]any{"data": gaps}, nil
-}

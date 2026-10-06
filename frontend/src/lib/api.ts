@@ -209,14 +209,6 @@ export interface ChatImageInput {
   mime_type: string; // image/png | image/jpeg | image/webp | image/gif | ...
 }
 
-/** Result of POST /chat/voice — server-side transcription via Gemini. */
-export interface VoiceTranscription {
-  transcript: string;
-  tokens_used: number;
-  language: string;
-  used_mock: boolean;
-}
-
 export interface RAGSource {
   doc_id: number;
   title: string;
@@ -309,20 +301,6 @@ export interface WhatsAppTemplate {
 export interface AgentReplyRequest {
   content: string;
   payload?: PlatformMessagePayload;
-}
-
-export interface ChatSession {
-  session_id: string;
-  user_id: number;
-  status: SessionStatus;
-  language: string;
-  title?: string;
-  platform?: string;
-  user_message_count: number;
-  model_message_count: number;
-  first_response_at?: string | null;
-  created_at: string;
-  closed_at?: string | null;
 }
 
 export interface ChatMessageItem {
@@ -445,100 +423,12 @@ export interface TopQuery { query: string; count: number }
 export interface LanguageBreakdown { language: string; count: number }
 
 // Chat
-export async function sendMessage(message: string, sessionId?: string, language?: string) {
-  return apiFetch<ChatResponse>("/chat", {
-    method: "POST",
-    body: JSON.stringify({ message, session_id: sessionId, language: language || "km" }),
-  });
-}
-
 /** Sends an internal RAG-backed trial that is excluded from the customer Inbox. */
 export async function sendTestMessage(message: string, sessionId?: string, language?: string) {
   return apiFetch<ChatResponse>("/chat", {
     method: "POST",
     body: JSON.stringify({ message, session_id: sessionId, language: language || "km", test: true }),
   });
-}
-
-/** One simulated customer turn in the AI test bench report. */
-export interface SimulatedTurn {
-  index: number;
-  customer_message: string;
-  detected_language: string;
-  decision: "ai_reply" | "handoff_customer_request" | "handoff_no_knowledge_base" | "handoff_ai_decision" | "handoff_low_confidence";
-  decision_reason: string;
-  reply: string;
-  sources: RAGSource[];
-  top_score?: number | null;
-  elapsed_ms: number;
-  used_mock: boolean;
-}
-
-export interface SimulateResponse {
-  session_id: string;
-  platform?: string | null;
-  turns: SimulatedTurn[];
-  summary: { total_turns: number; ai_replies: number; handoffs: number; avg_latency_ms: number };
-}
-
-/**
- * Runs a scripted multi-turn customer simulation through the real reply
- * pipeline (keyword escalation → AI handoff classifier → RAG → Gemini) in a
- * private is_test session. Escalations are reported per turn, never executed.
- */
-export async function runTestSimulation(body: {
-  platform?: string;
-  language?: string;
-  messages: string[];
-  session_id?: string;
-}) {
-  return apiFetch<SimulateResponse>("/chat/test-simulate", {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
-}
-
-/**
- * Transcribe an audio blob server-side via Gemini (POST /chat/voice, multipart).
- * Returns the transcript text; the caller feeds it into the normal /chat/stream
- * pipeline so voice turns still get full RAG + history + streaming treatment.
- *
- * The client feeds back the transcript rather than relying on the browser's
- * SpeechRecognition because Khmer support in the Web Speech API is poor, while
- * Gemini transcribes Khmer reliably.
- */
-export async function chatVoice(
-  audio: Blob,
-  language = "km",
-  opts?: { signal?: AbortSignal },
-): Promise<VoiceTranscription> {
-  const token = localStorage.getItem("token");
-  const form = new FormData();
-  // Preserve the recording mime so the backend can pass the right MIMEType to Gemini.
-  form.append("audio", audio, `voice.${(audio.type.split("/")[1] || "webm").split(";")[0]}`);
-  form.append("language", language);
-
-  const res = await settle(fetch(`${API_BASE}/chat/voice`, {
-    method: "POST",
-    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-    body: form,
-    signal: opts?.signal,
-  }));
-  if (res.status === 401) signalAuthExpired();
-
-  const contentType = res.headers.get("content-type") || "";
-  let data: unknown = null;
-  if (contentType.includes("application/json")) {
-    data = await res.json();
-  } else {
-    const text = await res.text().catch(() => "");
-    throw new ApiError(text || `Transcription failed (HTTP ${res.status})`, res.status);
-  }
-  if (!res.ok) {
-    const message = (data as { error?: string } | null)?.error || `Transcription failed (HTTP ${res.status})`;
-    throw new ApiError(message, res.status);
-  }
-  return data as VoiceTranscription;
 }
 
 // RAG Knowledge
@@ -908,26 +798,6 @@ export async function listVertexRegions() {
 // Sessions (B2)
 // ============================================
 
-export async function listSessions(page = 1, pageSize = 50, q?: string) {
-  const qs = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
-  if (q) qs.set("q", q);
-  return apiFetch<PaginatedResponse<ChatSession>>(`/chat/sessions?${qs}`);
-}
-
-export async function createSession(data: { title?: string; language?: string }) {
-  return apiFetch<ChatSession>("/chat/sessions", {
-    method: "POST",
-    body: JSON.stringify(data),
-  });
-}
-
-export async function updateSession(id: string, data: { title?: string; status?: SessionStatus }) {
-  return apiFetch<{ message: string }>(`/chat/sessions/${id}`, {
-    method: "PATCH",
-    body: JSON.stringify(data),
-  });
-}
-
 // archiveSession — hide a conversation from the inbox without deleting data.
 export async function archiveSession(id: string) {
   return apiFetch<{ message: string }>(`/inbox/sessions/${id}/archive`, { method: "POST" });
@@ -961,13 +831,6 @@ export interface InboundPlatformMedia {
 
 export async function getInboundPlatformMediaURL(messageId: number) {
   return apiFetch<{ url: string; expires_at: string }>(`/inbox/messages/${messageId}/media-url`);
-}
-
-export async function sendFeedback(messageId: number, rating: -1 | 1, comment?: string) {
-  return apiFetch<{ message: string }>(`/chat/messages/${messageId}/feedback`, {
-    method: "POST",
-    body: JSON.stringify({ rating, comment: comment || "" }),
-  });
 }
 
 /**
@@ -1578,8 +1441,6 @@ export function notificationsReadAll() {
 // CSV report export
 // ============================================
 
-export interface ReportQuery { from: string; to: string }
-
 /** Trigger a browser download of a CSV report. */
 export async function downloadReport(kind: "sessions" | "messages" | "tokens", from: string, to: string) {
   const qs = new URLSearchParams({ from, to });
@@ -1655,29 +1516,11 @@ export interface Macro {
   updated_at: string;
 }
 
-export interface Role {
-  role_id: number;
-  name: string;
-  permissions: string[];
-  is_system: boolean;
-  created_at: string;
-}
-
 export interface WebhookSubscription {
   subscription_id: number;
   url: string;
   events: string[];
   is_active: boolean;
-  created_at: string;
-}
-
-export interface WebhookDelivery {
-  delivery_id: number;
-  subscription_id: number;
-  event: string;
-  status_code?: number | null;
-  success: boolean;
-  error?: string | null;
   created_at: string;
 }
 
@@ -1766,17 +1609,6 @@ export function deleteMacro(id: number) {
   return apiFetch<{ message: string }>(`/macros/${id}`, { method: "DELETE" });
 }
 
-// Roles
-export function listRoles() {
-  return apiFetch<Role[]>("/roles");
-}
-export function createRole(input: { name: string; permissions: string[] }) {
-  return apiFetch<{ role_id: number }>("/roles", { method: "POST", body: JSON.stringify(input) });
-}
-export function deleteRole(id: number) {
-  return apiFetch<{ message: string }>(`/roles/${id}`, { method: "DELETE" });
-}
-
 // Outbound webhooks
 export function listWebhookSubscriptions() {
   return apiFetch<WebhookSubscription[]>("/webhooks/subscriptions");
@@ -1787,9 +1619,6 @@ export function createWebhookSubscription(input: { url: string; events: string[]
 export function deleteWebhookSubscription(id: number) {
   return apiFetch<{ message: string }>(`/webhooks/subscriptions/${id}`, { method: "DELETE" });
 }
-export function listWebhookDeliveries(limit = 50) {
-  return apiFetch<WebhookDelivery[]>(`/webhooks/deliveries?limit=${limit}`);
-}
 
 // Copilot
 export function copilotSuggest(sessionId: string, count = 3) {
@@ -1798,17 +1627,7 @@ export function copilotSuggest(sessionId: string, count = 3) {
     body: JSON.stringify({ count }),
   });
 }
-export function copilotKnowledge(sessionId: string) {
-  return apiFetch<{ sources: RAGSource[] }>(`/inbox/sessions/${sessionId}/copilot/knowledge`);
-}
-
 // Notes
-export function listMessageNotes(sessionId: string) {
-  return apiFetch<{ note_id: number; body: string; username: string; created_at: string }[]>(`/inbox/sessions/${sessionId}/notes`);
-}
-export function createMessageNote(sessionId: string, body: string) {
-  return apiFetch<{ note_id: number }>(`/inbox/sessions/${sessionId}/notes`, { method: "POST", body: JSON.stringify({ body }) });
-}
 
 // Performance + intent analytics + integrations
 export function getAgentPerformance(days = 30) {

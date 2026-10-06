@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useI18n } from "@/lib/i18n";
+import { fmtDate, fmtInt } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import {
@@ -94,11 +95,11 @@ export default function BillingPage() {
     return Math.min(100, Math.round((used / quota) * 100));
   };
   const limit = (value: number | null | undefined) =>
-    value === null || value === undefined ? t("bl.unlimited") : value.toLocaleString("en-US");
+    value === null || value === undefined ? t("bl.unlimited") : fmtInt(value);
   // A used count of null means the server could not read it; rendering that as
   // 0 would be a number the merchant acts on.
   const usedText = (value?: number | null) =>
-    value === null || value === undefined ? "—" : value.toLocaleString("en-US");
+    value === null || value === undefined ? "—" : fmtInt(value);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-auto">
@@ -131,7 +132,7 @@ export default function BillingPage() {
           <CardContent className="space-y-4 text-xs text-muted-foreground">
             <p>
               {current?.paid_until
-                ? tf("bl.paidUntil", { date: new Date(current.paid_until).toLocaleDateString() })
+                ? tf("bl.paidUntil", { date: fmtDate(current.paid_until) })
                 : currentPlan === "free"
                   ? t("bl.neverPaid")
                   // A plan granted from the platform console has no paid_until:
@@ -158,7 +159,7 @@ export default function BillingPage() {
                 </div>
               ))}
             </div>
-            {current?.cycle_end && <p>{tf("bl.cycleEnds", { date: new Date(current.cycle_end).toLocaleDateString() })}</p>}
+            {current?.cycle_end && <p>{tf("bl.cycleEnds", { date: fmtDate(current.cycle_end) })}</p>}
           </CardContent>
         </Card>
 

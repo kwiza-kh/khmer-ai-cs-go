@@ -666,7 +666,7 @@ func waTemplateBody(components any) (string, int) {
 				text, _ = body["text"].(string)
 			}
 		}
-		return truncateForTitle(text, 300), len(waParamRe.FindAllString(text, -1))
+		return textutil.TruncateRunes(text, 300), len(waParamRe.FindAllString(text, -1))
 	}
 	return "", 0
 }

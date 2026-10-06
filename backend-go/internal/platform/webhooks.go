@@ -375,7 +375,7 @@ func (wh *Webhooks) LineWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = json.Unmarshal(body, &envelope)
 
-	cfg, adoptable := wh.resolveLineConfig(r.Context(), envelope.Destination)
+	cfg, adoptable := wh.resolveChannelByWebhookIdentity(r.Context(), "line", envelope.Destination)
 	if cfg == nil {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -452,7 +452,7 @@ func (wh *Webhooks) ZaloWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = json.Unmarshal(body, &envelope)
 
-	cfg, adoptable := wh.resolveZaloConfig(r.Context(), envelope.OAID)
+	cfg, adoptable := wh.resolveChannelByWebhookIdentity(r.Context(), "zalo", envelope.OAID)
 	if cfg == nil {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -997,30 +997,19 @@ func (wh *Webhooks) bindChannelIdentity(ctx context.Context, configID int32, ide
 		identity, configID)
 }
 
-// resolveLineConfig routes a LINE webhook by the payload's top-level
-// "destination" (the bot's own userId). adoptable reports that the config has
-// no identity yet, so the caller may bind it once the signature checks out.
-func (wh *Webhooks) resolveLineConfig(ctx context.Context, destination string) (cfg *webhookConfig, adoptable bool) {
-	if c := wh.resolveChannelByIdentity(ctx, "line", destination); c != nil {
+// resolveChannelByWebhookIdentity routes a webhook to its tenant by the
+// identity the payload carries (LINE's top-level "destination", Zalo's
+// "oa_id"). adoptable reports that the config has no identity yet, so the
+// caller may bind it once the signature checks out.
+func (wh *Webhooks) resolveChannelByWebhookIdentity(ctx context.Context, platform, identity string) (cfg *webhookConfig, adoptable bool) {
+	if c := wh.resolveChannelByIdentity(ctx, platform, identity); c != nil {
 		return c, false
 	}
-	c := wh.resolveChannelForAdoption(ctx, "line")
+	c := wh.resolveChannelForAdoption(ctx, platform)
 	if c == nil {
 		return nil, false
 	}
-	return c, destination != ""
-}
-
-// resolveZaloConfig routes a Zalo webhook by the payload's "oa_id".
-func (wh *Webhooks) resolveZaloConfig(ctx context.Context, oaID string) (cfg *webhookConfig, adoptable bool) {
-	if c := wh.resolveChannelByIdentity(ctx, "zalo", oaID); c != nil {
-		return c, false
-	}
-	c := wh.resolveChannelForAdoption(ctx, "zalo")
-	if c == nil {
-		return nil, false
-	}
-	return c, oaID != ""
+	return c, identity != ""
 }
 
 // resolveWhatsAppConfig routes a WhatsApp webhook to its tenant by the
