@@ -3,8 +3,13 @@
 // Usage (paste before </body> on your site):
 //   <script src="https://<your-host>/widget-embed.js"
 //           data-token="wt_xxx"
-//           data-api="https://api.example.com/api/v1"
 //           data-lang="km" defer></script>
+//
+// The API base is baked into the /widget page at build time; there is no
+// data-api attribute. (One used to exist and was passed through as ?api=,
+// which the page stopped reading when trusting it would have let any page
+// frame the widget with someone else's token.) Keeping data-api here would
+// only promise a knob that does nothing.
 //
 // It renders a floating bubble that opens the chat panel in an iframe served
 // by the Next.js app (/widget). Nothing here requires the host page to have
@@ -21,12 +26,17 @@
   if (!script) return;
 
   var token = script.getAttribute("data-token") || "";
-  var api = script.getAttribute("data-api") || "";
   var lang = script.getAttribute("data-lang") || "km";
   var color = script.getAttribute("data-color") || "#4f46e5";
-  var origin = script.getAttribute("data-app") || (script.src ? new URL(script.src).origin : "");
-  if (!token || !api || !origin) {
-    console.warn("[khmer-widget] missing data-token / data-api / script origin");
+  // script.src is a resolved absolute URL, but a malformed data-app or a
+  // sandboxed document can still make URL() throw — fall back to no origin
+  // rather than aborting the whole embed.
+  var origin = script.getAttribute("data-app") || "";
+  if (!origin && script.src) {
+    try { origin = new URL(script.src).origin; } catch { origin = ""; }
+  }
+  if (!token || !origin) {
+    console.warn("[khmer-widget] missing data-token / script origin");
     return;
   }
 
@@ -55,7 +65,7 @@
     frame.id = "khmer-widget-frame";
     frame.setAttribute("title", "Support chat");
     frame.src = origin + "/widget?t=" + encodeURIComponent(token) +
-      "&api=" + encodeURIComponent(api) + "&lang=" + encodeURIComponent(lang) +
+      "&lang=" + encodeURIComponent(lang) +
       "&color=" + encodeURIComponent(color);
     frame.style.cssText = "width:360px;max-width:calc(100vw - 32px);height:520px;max-height:calc(100vh - 110px);" +
       "border:0;border-radius:14px;box-shadow:0 18px 48px -12px rgba(17,20,45,0.35);background:#fff;";
