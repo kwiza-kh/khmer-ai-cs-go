@@ -1183,7 +1183,7 @@ FAQ 的 `ស9`（5 条产品线）在 chunk 2 里的偏移：枚举句起点 695
 |---|---|
 | 转人工 | 三条自动来源：客户关键词、AI 回复声明（多语言句式匹配 `ReplyClaimsHandoff`）、Jev 决策；建请求 + 会话转 handoff + 通知店主 |
 | 队列 | `human_handoff_requests`（pending/assigned/resolved；每会话只允许一条开放，唯一部分索引），接管/指派/解决/关闭，SLA 策略与违约扫描 |
-| 协作 | 内部备注（`message_notes`）、话术库（`canned_responses`）、宏（`macros`）、客服团队（`agent_teams`）、会话指派（`session_assignments`） |
+| 协作 | 内部备注（`message_notes`）、话术库（`canned_responses`）、宏（`macros`）、客服团队（`agent_teams`，含**逐成员权限矩阵**：`inbox_view/reply/takeover/assign`、`knowledge_view/edit`）、会话指派（`session_assignments`） |
 
 #### 5. 收件箱（统一工作台）
 
@@ -1210,7 +1210,7 @@ FAQ 的 `ស9`（5 条产品线）在 chunk 2 里的偏移：枚举句起点 695
 
 | 能力 | 说明 |
 |---|---|
-| 权限 | 租户**所有者** vs 成员的边界：`agent_teams` 成员关系 + `internal/api/tenant_owner.go`（18 条租户级路由用 `tenantAdminOnly`）；平台级操作保持 `platform_admin`（`/admin/models*`、`/platform/*`、全局 RAG 编译开关）。· 曾有的 `roles`/`user_roles` CRUD 接口**没有任何授权读者**，只像访问控制，已删除（迁移 069；两表均为空） |
+| 权限 | 租户**所有者** vs 成员的边界：`agent_teams` 成员关系 + `internal/api/tenant_owner.go`（**46 条**租户级路由用 `tenantAdminOnly`，含尚未接入权限矩阵的渠道/挂件/营销/客户/话术/设置）；平台级操作保持 `platform_admin`（`/admin/models*`、`/platform/*`、全局 RAG 编译开关）。**成员数据面**：中间件把成员解析成「店主租户 + 逐项权限」（`CurrentUser.Tenant()/Can()`，迁移 072），已接线的收件箱与知识库按矩阵放行，未接线的面一律 owner-only。· 曾有的 `roles`/`user_roles` CRUD 接口**没有任何授权读者**，只像访问控制，已删除（迁移 069；两表均为空） |
 | 安全 | TOTP 2FA（`user_totp`）、SSO（Google / Telegram OIDC）、API keys、审计日志（`audit_logs`）、数据删除请求（`deletion_requests` + 隐私页/删除状态页） |
 | 集成 | Webhook 订阅与投递（`webhook_subscriptions` / `webhook_deliveries`）、定时任务（`scheduled_jobs`，迁移 066） |
 | 平台管理台 | 租户列表（用量/配额/套餐/会话数）、平台分析、花费预算视图、改套餐 |

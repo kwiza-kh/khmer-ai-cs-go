@@ -40,12 +40,18 @@ npm run build            # NEXT_PUBLIC_API_URL must be set: it is baked into the
 | `backend-go/internal/gemini` | the model client: provider failover, call budgets, history shape |
 | `backend-go/internal/scheduler` | DB-backed jobs (migration 066) |
 | `backend-go/internal/persona` | persona resolution, most specific binding wins |
+| `backend-go/internal/api/member_permissions.go` | seat permissions: the owner→member grant matrix, the `CurrentUser.Tenant()/Can()` resolution, and its owner-only write endpoint |
 | `backend-go/internal/sqlcheck` | the SQL gate described above |
 
 ## Conventions this codebase actually follows
 
 - **A decision belongs in data, not in a `switch`.** Channel differences live in
   the capability table; a missing capability is a bug, not a branch.
+- **A seat is not a tenant.** An active `agent_teams` row is resolved (middleware)
+  to the owner's tenant plus an explicit permission set: tenant-data handlers
+  filter on `user.Tenant()` and gate with `requirePermission`. A surface that is
+  not wired for permissions stays `tenantAdminOnly` — a member gets a clean 403,
+  never an empty page or a write that lands under their own user_id.
 - **A failure that a customer would feel must be either retried or recorded.**
   Several comments in this tree exist because one of those was missing.
 - **Fail open on auxiliary paths, fail loud on the money path.** Moderation and
