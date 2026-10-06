@@ -1860,11 +1860,17 @@ export function streamWidgetChat(
 }
 
 // Personal profile
+//
+// is_tenant_owner is the server's answer to "does this account administer its
+// own tenant": the role string cannot answer it, because self-service and SSO
+// signups own their tenant with role "user" (see isTenantOwner on the backend).
+// Optional because a cached user object from before the field existed has none.
 export interface UserProfile {
   user_id: number;
   username: string;
   email: string;
   role: string;
+  is_tenant_owner?: boolean;
   display_name: string;
   job_title: string;
   phone: string;

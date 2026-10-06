@@ -143,16 +143,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   // and SSO signups own their tenant with role "user" (see isTenantOwner on the
   // backend), and the tenant-scoped admin routes now accept exactly that owner.
   // login/register already carry the flag; this fetch covers a session created
-  // before it existed. The narrow inline type is deliberate — the central
-  // UserProfile type is not ours to change in this pass.
+  // before it existed.
   const { data: selfProfile } = useSWR(token ? "profile-self" : null, () => getProfile());
-  // The field exists on the server (profileFields.IsTenantOwner); the shared
-  // UserProfile type has not caught up yet, so narrow it here rather than editing
-  // that type in this pass.
-  const isTenantOwner =
-    (selfProfile as { is_tenant_owner?: boolean } | undefined)?.is_tenant_owner ??
-    user?.is_tenant_owner ??
-    false;
+  const isTenantOwner = selfProfile?.is_tenant_owner ?? user?.is_tenant_owner ?? false;
   const isAdmin = isTenantOwner || user?.role === "admin" || user?.role === "platform_admin";
   const isPlatformAdmin = user?.role === "platform_admin";
   // Which plan the tenant is on, shown on the "plan & billing" label so a
