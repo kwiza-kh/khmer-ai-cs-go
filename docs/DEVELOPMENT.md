@@ -1274,11 +1274,7 @@ FAQ 的 `ស9`（5 条产品线）在 chunk 2 里的偏移：枚举句起点 695
 | 项 | 现状 |
 |---|---|
 | 测试残留 | 生产有 9 个 web 测试会话（含验证用），以及 7 笔未付款的 `payments` 行（`status=created`，不产生费用、不开通）。另 `/root/db-backups/tenant-wanfang-password.txt` 是**明文口令文件**，建议删除 |
-| 未提交 WIP | `frontend/src/app/widget/page.tsx` 与 `frontend/src/lib/api.ts`（widget token 进 URL query）**未提交、未部署**；后端已兼容 body token，因此不影响功能 |
-| 类型漂移 | `UserProfile`（api.ts）未加 `is_tenant_owner`，控制台布局里用了一次内联窄化；提交 WIP 后应补齐 |
-| 既有 lint | `inbox/page.tsx` 3 处 `set-state-in-effect` + 1 个未使用变量（既有）；`knowledge/page.tsx` 1 条 effect 依赖警告（已评估，故意保留：消它要包 `useCallback`，而 React Compiler 会拒绍保留手动 memo） |
-| 文案 | 成员被租户级路由拒绝时返回「需要管理员权限」——行为正确，改成「需要租户管理员权限」更准确（一行） |
-| 挂件死参数 | `widget-embed.js` 仍接受 `data-api`，但 `/widget` 页面早已不再读 `?api=`（安全整改移除）——留着会误导 |
+| 既有 lint | `inbox/page.tsx` 3 处 `set-state-in-effect` + 1 个未使用变量（既有）；`widget/page.tsx` 同类 3 条（1 处 effect 内 setState + 2 处闭包计数，HEAD 上同样报）；`knowledge/page.tsx` 1 条 effect 依赖警告（已评估，故意保留：消它要包 `useCallback`，而 React Compiler 会拒绍保留手动 memo） |
 
 ### 2026-10-04 本次已上线（按提交）
 
@@ -1473,3 +1469,76 @@ FAQ 的 `ស9`（5 条产品线）在 chunk 2 里的偏移：枚举句起点 695
 1. 删除 `/root/db-backups/tenant-wanfang-password.txt`（明文口令）；同理 `.env-go.bak-*` 建议只留必要的。
 2. 本次会话中 Paypal **sandbox** 凭据曾出现在聊天里（只动假钱，风险低）；**换 live 凭据时不要经聊天传递**，直接写入 `.env-go`，并顺手轮换一次 sandbox 密钥。
 3. `payments` 表里有 7 笔未付款的 `created` 订单（测试残留），可清。
+
+---
+
+## 十四、席位管理并入用户管理页 + 技术债清单收口（2026-10-06）
+
+本轮提交未部署到生产；线上仍是 §十三 记录的版本。
+
+### 席位为什么搬家
+
+`agent_teams` 的成员既是“客服席位”也是“用户管理页的人员名单”（店主 + 成员），
+增长页那张客服卡片与用户管理页表格画的是同一批人，两个入口只会互相护驾。现在
+只剩用户管理页一处：
+
+- 顶部席位卡：`seats_used / seats_quota` 进度条；满员时提示升级并链到 `/billing`。
+- 表格新增“席位”列：店主标 `admin.seatOwner`，已占席位的显示“移出席位”，其余 `—`。
+- 行内 `#user_id` 可复制（添加客服要知道对方的 user_id）。
+- 技能的显示名、技能标签跟着成员行显示（路由规则按 `routing_rules.target_skills`
+  匹配，删掉那张卡片后这些字段不能跟着消失）。
+- 平台管理员不渲染这张卡：它跨租户，且席位写入在服务端是租户级的。
+
+### 后端契约（钱不能错的那一半）
+
+- `GET /billing` 的 `current` 新增 `seats_used` / `seats_quota`（`paidState` →
+  `addSeatState`）；`GET /billing/plans` 的 `seats` 复用同一个 `unlimitedPtr`。
+- 两边都走 `sqlCountActiveSeats`（`is_active = true`）——与 `checkSeatLimit`
+  是同一句 SQL，卡片上写 5，就不能第 5 个人被 402 拦住。
+- `seats_quota` 为 `null` = 不限（enterprise 的 `1e9` 哨兵不进浏览器），
+  控制台按 `bl.unlimited` 显示“不限”。
+- **计数失败写 `null` 不写 0**：把读失败渲染成“0 个在用”，商家会据此做决定。
+- 新增 DB 门控测试 `internal/api/billing_seats_test.go`：无 billing 行按 free、
+  只数 `is_active`、enterprise 为 `null` 三条断言。
+
+### 顺手收口的四件小事（原 §十一 技术债表里的行）
+
+1. **重复添加客服被席位门抢答 402**：`addTeamAgent` 原先先查席位再查重复，
+   free（1 席）第二次添加同一人得到“请升级套餐”；正确的答案是 409“已在团队中”。
+   现在先做 `(owner_user_id, agent_user_id)` 的 EXISTS、再进席位门，
+   `TestAddTeamAgentDoubleAddIsConflict` 恢复为 409（该测试只在 `DATABASE_URL`
+   存在时跑，CI 无库所以长期没暴露）。
+2. **`TestReloadGeminiFromDBStudioIsUnchanged` 只在该 shell 没 source `.env` 时通过**：
+   `.env` 的 `GEMINI_CACHE_TTL=3600` 把一次 Chat 变成“建缓存 + 生成”两个请求。
+   `studioEnv` 统一钉掉这个开关（与 gemini 包自己的缓存测试同款做法）。
+3. **文案**：租户级路由的 403 从「需要管理员权限」改成「需要租户管理员权限」
+   （`router.go` + `api-errors.ts` 的 km/en 映射同步；同时给新的 409 补了映射）。
+4. **类型与死参数**：`UserProfile` 补 `is_tenant_owner`（layout.tsx 的内联窄化删除）；
+   `widget-embed.js` 删掉早已不生效的 `data-api`（`/widget` 不再读 `?api=`），
+   忘写这个属性的挂件反而能正常起来。
+
+另：工作树里原有一份未提交 WIP——`widget/page.tsx` 与 `lib/api.ts` 的 POST 在 URL
+query 上再带一份 token。复核后**撤回**：POST 路径只认 body token
+（`widgetChat` / `widgetFeedback` 解出 `req.Token` 后调 `resolveWidgetToken`），
+query 这份没有任何读者；把公开 token 多塞进一层访问日志，换不到东西。
+
+### 校验
+
+```bash
+# 本地 PG（khmer-ai-local）起在 5440：5433 被 Windows 保留端口挡住，
+# 且本地库停在 057，先补 12 个待应用迁移
+cd backend-go
+set -a; . ./.env; set +a
+export DATABASE_URL="${DATABASE_URL/5433/5440}"
+go run ./cmd/migrate
+SQLCHECK_REQUIRED=1 go test -count=1 ./...   # 全绿，含 DB 门控的席位/团队/凭据测试
+```
+
+```bash
+cd frontend
+npx tsc --noEmit
+NEXT_PUBLIC_API_URL=https://cs.wanfanginsulationmaterial.com/api/v1 npm run build
+```
+
+注意 `go test ./...` 不带 `DATABASE_URL` 会**静默跳过**那些 DB 门控测试（本轮两个
+真问题就是这么漏到今天的），发布前尽量带上本地库或隧道跑一遍。
