@@ -1435,11 +1435,20 @@ FAQ 的 `ស9`（5 条产品线）在 chunk 2 里的偏移：枚举句起点 695
 
 | 件 | 值 |
 |---|---|
-| 后端 | `8a50de9`（`/ready.version` 与 `strings server-go \| grep vcs.revision` 一致，`vcs.modified=false`） |
-| 前端 | BUILD_ID `zVYWUXSJxITFM3xkGIMCR`（见 `/opt/khmer-ai-cs/frontend/.next/BUILD_ID`） |
-| schema | `schema_migrations` = **69**（最新 `069_drop_decorative_rbac`；068/069 于 10-05 早已应用 —— 见坑位） |
+| 后端 | `ee9fd00`（`/ready.version` 与 `strings server-go \| grep vcs.revision` 一致，`vcs.modified=false`；构建机 go1.26.5） |
+| 前端 | BUILD_ID `lL7Gfmoe5lbAJRbC_1k67`（见 `/opt/khmer-ai-cs/frontend/.next/BUILD_ID`） |
+| schema | `schema_migrations` = **69**（最新 `069_drop_decorative_rbac`；本次发布 0 pending，未跑迁移） |
 | 收款 | `PAYPAL_MODE=sandbox`、`PAYPAL_PRICE_PRO=29.00` / `_ENTERPRISE=199.00`、`PAYPAL_WEBHOOK_ID=7J2288704D8439049`（**应用锚定**；dashboard 里 account 锚定的 `9E4063638Y8280225` 应删） |
 | 套餐 | admin=pro（平台手工开通）、user 10=pro、user 11=pro（sandbox 两笔，`paid_until` **2026-12-05**） |
+
+**2026-10-06 晚发布（`ee9fd00`，8a50de9 → ee9fd00）**：席位管理并入用户管理页
++ 计费回报 `seats_used`/`seats_quota`（§十四）；重复添加客服 409 优先于席位门；
+租户权限文案、`UserProfile.is_tenant_owner`、widget `data-api` 死参数、`studioEnv`
+测试环境钉 TTL。发布前门禁：`vertexprobe` 必需项 exit 0，生产 schema
+`SQLCHECK_REQUIRED=1` 全绿（111s，走已有隧道）。回滚点
+`server-go.bak-20261006105524` / `migrate-go.bak-20261006105524` /
+`frontend-backup-20261006105535`；验证：`/ready.version=ee9fd00`、域名登录 401、
+首页 200 + CSP、live `widget-embed.js` 与仓库逐字节一致。
 
 ### 发布流程速查（详见 `deploy-khmer-ai-cs/SKILL.md`）
 
