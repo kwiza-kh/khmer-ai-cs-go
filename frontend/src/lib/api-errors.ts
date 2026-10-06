@@ -3,8 +3,6 @@
 // table maps it to English / Khmer at the API boundary. Unmapped or dynamic
 // messages pass through unchanged, so a stale entry degrades gracefully.
 
-export type ApiLang = "km" | "en" | "zh";
-
 interface ErrTranslation {
   en: string;
   km: string;

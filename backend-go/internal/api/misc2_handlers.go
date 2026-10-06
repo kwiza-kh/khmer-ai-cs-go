@@ -11,7 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"khmer-ai-cs-go/internal/gemini"
-	"khmer-ai-cs-go/internal/rag"
 	"khmer-ai-cs-go/internal/textutil"
 )
 
@@ -417,29 +416,6 @@ func (a *App) listHandoffs(w http.ResponseWriter, r *http.Request) (any, error) 
 	return map[string]any{"data": out, "total": total, "page": page, "page_size": pageSize}, nil
 }
 
-type resolveHandoffRequest struct {
-	ResolutionNote string `json:"resolution_note"`
-}
-
-// resolveHandoff closes one open request (request_id is a UUID string).
-func (a *App) resolveHandoff(w http.ResponseWriter, r *http.Request, requestID string) (any, error) {
-	user, _ := UserFrom(r)
-	var req resolveHandoffRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-		return nil, ErrBadRequest("请求格式错误")
-	}
-	tag, err := a.DB.Exec(r.Context(),
-		"UPDATE human_handoff_requests SET status='resolved', resolved_at=NOW(), resolution_note=$1 WHERE request_id = $2::uuid AND user_id = $3",
-		req.ResolutionNote, requestID, user.UserID)
-	if err != nil {
-		return nil, ErrInternal("更新失败")
-	}
-	if tag.RowsAffected() == 0 {
-		return nil, ErrNotFound("不存在")
-	}
-	return map[string]string{"message": "已解决"}, nil
-}
-
 // ============================================
 // Customers (360 + notes)
 // ============================================
@@ -842,23 +818,6 @@ func (a *App) copilotSuggest(w http.ResponseWriter, r *http.Request, sessionID s
 	return map[string]any{"suggestions": []string{reply}, "grounded": true}, nil
 }
 
-// copilotKnowledge — top KB chunks for the latest customer message.
-func (a *App) copilotKnowledge(w http.ResponseWriter, r *http.Request, sessionID string) (any, error) {
-	user, _ := UserFrom(r)
-	if err := a.ensureSessionAccess(r.Context(), sessionID, user, PermInboxView); err != nil {
-		return nil, err
-	}
-	latest, _ := a.loadSessionLatest(r.Context(), sessionID)
-	if latest == "" {
-		return map[string]any{"sources": []rag.Source{}}, nil
-	}
-	sources, err := a.RAG.Search(r.Context(), user.UserID, latest, 5)
-	if err != nil {
-		return map[string]any{"sources": []rag.Source{}}, nil
-	}
-	return map[string]any{"sources": sources}, nil
-}
-
 // loadSessionLatest returns the latest customer message + history.
 func (a *App) loadSessionLatest(ctx context.Context, sessionID string) (string, []gemini.HistoryItem) {
 	rows, err := a.DB.Query(ctx,
@@ -894,58 +853,4 @@ func (a *App) loadSessionLatest(ctx context.Context, sessionID string) (string, 
 		}
 	}
 	return latest, rev
-}
-
-// ============================================
-// Message feedback (👍/👎)
-// ============================================
-
-type feedbackRequest struct {
-	Rating  int    `json:"rating"`
-	Comment string `json:"comment"`
-}
-
-func (a *App) messageFeedback(w http.ResponseWriter, r *http.Request, messageID int32) (any, error) {
-	user, _ := UserFrom(r)
-	var req feedbackRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-		return nil, ErrBadRequest("请求格式错误")
-	}
-	if req.Rating != -1 && req.Rating != 1 {
-		return nil, ErrBadRequest("rating 必须是 -1 或 1")
-	}
-	// Only model messages; owner-checked via session join.
-	var (
-		mid       int64
-		sessionID string
-	)
-	err := a.DB.QueryRow(r.Context(),
-		"SELECT cm.message_id, cm.session_id FROM chat_messages cm JOIN sessions s ON s.session_id = cm.session_id "+
-			"WHERE cm.message_id = $1 AND cm.role = 'model' AND s.user_id = $2", messageID, user.UserID).Scan(&mid, &sessionID)
-	if err != nil {
-		return nil, ErrNotFound("消息不存在")
-	}
-	_, _ = a.DB.Exec(r.Context(),
-		"UPDATE chat_messages SET feedback_rating = $1, feedback_comment = $2, feedback_at = NOW() WHERE message_id = $3",
-		req.Rating, req.Comment, messageID)
-	// A 👎 means the AI answer missed the mark → queue the conversation for a
-	// human (deduped by the partial unique index on open requests).
-	if req.Rating == -1 {
-		_, _ = a.DB.Exec(r.Context(),
-			"INSERT INTO human_handoff_requests (session_id, user_id, status, priority, trigger, reason, created_at) "+
-				"VALUES ($1,$2,'pending','high','negative_feedback'::human_handoff_trigger,$3,NOW()) ON CONFLICT DO NOTHING",
-			sessionID, user.UserID, "Customer rated the AI reply 👎"+feedbackSuffix(req.Comment))
-		_, _ = a.DB.Exec(r.Context(),
-			"UPDATE sessions SET status='handoff', escalated_at=COALESCE(escalated_at, NOW()) WHERE session_id=$1 AND status='active'", sessionID)
-		a.notifyUser(r.Context(), user.UserID, "handoff", "New human-handoff request", "negative_feedback: customer rated an AI reply 👎", sessionID)
-		a.publishSessionEvent(r.Context(), user.UserID, sessionID)
-	}
-	return map[string]string{"message": "已记录"}, nil
-}
-
-func feedbackSuffix(comment string) string {
-	if comment == "" {
-		return ""
-	}
-	return ": " + comment
 }

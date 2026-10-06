@@ -168,7 +168,7 @@ func (a *App) metaOAuthStart(w http.ResponseWriter, r *http.Request) (any, error
 	oauthState := newOAuthState()
 	stateHash := sha256HexStr(oauthState)
 	now := time.Now()
-	sessionID := newUUIDv4()
+	sessionID := newUUID()
 	if _, err := a.DB.Exec(r.Context(),
 		"INSERT INTO platform_oauth_sessions (session_id, user_id, state_hash, payload_json, expires_at, created_at) VALUES ($1,$2,$3,'[]',$4,$5)",
 		sessionID, user.UserID, stateHash, now.Add(metaOAuthSessionTTL), now); err != nil {
@@ -644,20 +644,4 @@ func newOAuthState() string {
 func sha256HexStr(s string) string {
 	h := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(h[:])
-}
-
-func newUUIDv4() string {
-	b := make([]byte, 16)
-	_, _ = rand.Read(b)
-	b[6] = (b[6] & 0x0f) | 0x40
-	b[8] = (b[8] & 0x3f) | 0x80
-	const hexChars = "0123456789abcdef"
-	out := make([]byte, 0, 36)
-	for i, c := range b {
-		if i == 4 || i == 6 || i == 8 || i == 10 {
-			out = append(out, '-')
-		}
-		out = append(out, hexChars[c>>4], hexChars[c&0x0f])
-	}
-	return string(out)
 }

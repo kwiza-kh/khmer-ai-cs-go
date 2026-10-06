@@ -13,6 +13,7 @@ import {
 import { useAuth } from "@/lib/auth-client";
 import { useInboxRealtime } from "@/lib/realtime";
 import { useI18n } from "@/lib/i18n";
+import { fmtDateTime } from "@/lib/format";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -47,12 +48,13 @@ const STATUS_KEYS: Record<HumanHandoffRequestStatus, string> = {
   resolved: "inbox.statusResolved",
 };
 
-function formatTime(value?: string | null) {
-  if (!value) return "-";
-  return new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
-}
-
-/** Nudge the sidebar badge (layout exposes this global after its SWR mounts). */
+/**
+ * Nudge the sidebar badge (layout exposes this global after its SWR mounts).
+ *
+ * SAFETY: window.__refreshHandoffBadge is assigned by the layout's own module
+ * at runtime, so TypeScript cannot see it on Window. The cast only narrows the
+ * lookup; the optional call keeps a layout that never mounted harmless.
+ */
 function refreshHandoffBadge() {
   (window as unknown as { __refreshHandoffBadge?: () => void }).__refreshHandoffBadge?.();
 }
@@ -179,7 +181,7 @@ export default function HandoffRequestsPage() {
                         <p className="mt-1.5 text-sm leading-6 text-foreground">{request.reason}</p>
                         {request.last_message && <p className="mt-1.5 line-clamp-1 text-xs text-muted-foreground">{tf("handoff.latest", { msg: request.last_message })}</p>}
                         <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
-                          <span className="inline-flex items-center gap-1"><Clock3 className="size-3" /> {formatTime(request.created_at)}</span>
+                          <span className="inline-flex items-center gap-1"><Clock3 className="size-3" /> {fmtDateTime(request.created_at)}</span>
                           <span>{t(TRIGGER_KEYS[request.trigger])}</span>
                           {request.platform && <span className="capitalize">{request.platform === "meta" ? "Messenger" : request.platform}</span>}
                           {request.assigned_agent_name && <span className="inline-flex items-center gap-1"><UserRound className="size-3" /> {request.assigned_agent_name}</span>}

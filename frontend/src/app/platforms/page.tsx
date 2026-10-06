@@ -931,8 +931,8 @@ function PlatformCard({ meta, initial, onClose }: { meta: PlatformMeta; initial?
         <div className="mb-4 flex items-start justify-between gap-3">
           <div className="min-w-0">
             <p className="truncate text-sm font-semibold text-foreground">{health?.account_name || initial?.page_id || initial?.instagram_business_id || (initial?.config_id ? tf("pf.accountN", { id: initial.config_id }) : t("pf.newAccount"))}</p>
-            <p className="mt-0.5 text-xs text-muted-foreground">{health?.checked_at ? tf("pf.lastChecked", { time: formatTimestamp(health.checked_at) }) : t("pf.notVerifiedLine")}</p>
-            {initial?.last_inbound_at && <p className="mt-1 text-[11px] text-muted-foreground">{tf("pf.lastCustomerMsg", { time: formatTimestamp(initial.last_inbound_at) })}</p>}
+            <p className="mt-0.5 text-xs text-muted-foreground">{health?.checked_at ? tf("pf.lastChecked", { time: fmtDateTime(health.checked_at) }) : t("pf.notVerifiedLine")}</p>
+            {initial?.last_inbound_at && <p className="mt-1 text-[11px] text-muted-foreground">{tf("pf.lastCustomerMsg", { time: fmtDateTime(initial.last_inbound_at) })}</p>}
           </div>
           <Badge variant={statusVariant} className="h-5 shrink-0 px-1.5 text-[10px]">
             {status}
@@ -1177,7 +1177,7 @@ function CancelledDeliverySection({ items }: { items: PlatformDelivery[] }) {
             <div key={item.delivery_id} className="space-y-2 px-3 py-3">
               <p className="break-words text-xs text-foreground">{item.content}</p>
               <p className="break-words text-[11px] text-muted-foreground">{item.last_error || t("pf.heldDefaultError")}</p>
-              <p className="text-[10px] tabular-nums text-muted-foreground">{formatTimestamp(item.created_at)}</p>
+              <p className="text-[10px] tabular-nums text-muted-foreground">{fmtDateTime(item.created_at)}</p>
             </div>
           ))}
         </div>
@@ -1228,7 +1228,7 @@ function FailureSection<T extends { attempts: number; created_at: string }>({
                 </Button>
               </div>
               <p className="break-words text-[11px] text-danger">{getError(item) || t("pf.noProviderError")}</p>
-              <p className="text-[10px] tabular-nums text-muted-foreground">{tf("pf.attempts", { n: getAttempts(item), time: formatTimestamp(getCreated(item)) })}</p>
+              <p className="text-[10px] tabular-nums text-muted-foreground">{tf("pf.attempts", { n: getAttempts(item), time: fmtDateTime(getCreated(item)) })}</p>
             </div>;
           })}
         </div>
@@ -1237,13 +1237,6 @@ function FailureSection<T extends { attempts: number; created_at: string }>({
   );
 }
 
-function formatTimestamp(value: string) {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : fmtDateTime(date);
-}
-
-// stripPresent returns only the set scalar fields of a config, ignoring
-// undefined values so they don't overwrite user input on the form seed.
 function stripPresent(c?: PlatformConfig): Partial<PlatformConfig> {
   if (!c) return {};
   const out: Partial<PlatformConfig> = {};

@@ -4,18 +4,18 @@ import * as React from "react";
 import useSWR from "swr";
 import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
-  PieChart, Pie, Cell, Legend,
+  PieChart, Pie, Cell, Legend, LineChart, Line,
 } from "recharts";
 import {
   getAnalyticsOverview, getAnalyticsTimeline, getLanguageBreakdown, getTopQueries,
 } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatCard } from "@/components/stat-card";
-import { StatCards, type StatCardData } from "@/components/spectrumui/charts/stat-cards";
 import { EmptyState } from "@/components/empty-state";
-import { Zap, TrendingUp, BarChart3, Users, Clock, Smile, ThumbsUp, ThumbsDown, Activity, ShieldCheck } from "lucide-react";
+import { Zap, TrendingUp, TrendingDown, BarChart3, Users, Clock, Smile, Activity, ShieldCheck } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { fmtInt, fmtMoney } from "@/lib/format";
+import { cn } from "@/lib/utils";
 
 // 6 distinct token-driven colors (cycle through semantic tokens).
 const PIE_COLORS = ["var(--color-primary)", "var(--color-info)", "var(--color-warning)", "var(--color-success)", "var(--color-danger)", "var(--color-muted-foreground)"];
@@ -27,30 +27,29 @@ export function AnalyticsPanel({ days = 30 }: { days?: number }) {
   const { data: languages } = useSWR(`analytics-languages-${days}`, () => getLanguageBreakdown(days));
   const { data: topQueries } = useSWR(`analytics-top-${days}`, () => getTopQueries(days, 8));
 
-  // Spectrum UI stat cards (registry: @spectrumui/stat-cards, vendored with
-  // token colors) drive the trend row: real per-day series + a delta sentence
-  // computed against the period's first day.
-  const trendCards: StatCardData[] = React.useMemo(() => {
+  // Trend row: one per-day series per card, headline = the period's last day,
+  // delta = change against its first day.
+  const trendCards: TrendCardData[] = React.useMemo(() => {
     if (!timeline?.length) return [];
     const vsLabel = tf("an.vsPrev", { days });
     return [
       {
         label: t("an.totalTokens"),
-        series: timeline.map((p) => p.tokens),
+        series: timeline.map((p) => ({ date: p.date, value: p.tokens })),
         format: (v) => fmtInt(v),
         caption: t("an.perDay"),
         deltaLabel: vsLabel,
       },
       {
         label: t("an.sessions"),
-        series: timeline.map((p) => p.sessions),
+        series: timeline.map((p) => ({ date: p.date, value: p.sessions })),
         format: (v) => fmtInt(v),
         caption: t("an.perDay"),
         deltaLabel: vsLabel,
       },
       {
         label: t("an.estCost"),
-        series: timeline.map((p) => p.cost),
+        series: timeline.map((p) => ({ date: p.date, value: p.cost })),
         format: (v) => fmtMoney(v, 4),
         goodWhen: "down",
         caption: t("an.perDay"),
@@ -58,7 +57,7 @@ export function AnalyticsPanel({ days = 30 }: { days?: number }) {
       },
       {
         label: t("an.deflection"),
-        series: timeline.map((p) => +((p.deflection_rate ?? 0) * 100).toFixed(1)),
+        series: timeline.map((p) => ({ date: p.date, value: +((p.deflection_rate ?? 0) * 100).toFixed(1) })),
         format: (v) => `${v.toFixed(1)}%`,
         caption: t("an.perDay"),
         deltaLabel: vsLabel,
@@ -93,14 +92,16 @@ export function AnalyticsPanel({ days = 30 }: { days?: number }) {
         <StatCard icon={ShieldCheck} label={t("an.deflection")} value={`${((overview?.deflection_rate ?? 0) * 100).toFixed(1)}%`} tone="success" />
       </div>
 
-      {/* Trend row — Spectrum UI's stat cards: per-day sparkline, tweened
-          headline value and a delta sentence against the period's start. */}
+      {/* Trend row — per-day sparkline, headline value and a delta sentence
+          against the period's start. */}
       {trendCards.length > 0 && (
         <div className="space-y-2">
           <p className="px-0.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/70">
             {tf("an.trend", { days })}
           </p>
-          <StatCards cards={trendCards} />
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            {trendCards.map((card) => <TrendCard key={card.label} card={card} />)}
+          </div>
         </div>
       )}
 
@@ -303,5 +304,76 @@ function fmtMs(ms?: number): string {
   return `${(ms / 60_000).toFixed(1)} min`;
 }
 
-// Unused-icon imports kept for potential future use — silence TS noUnusedLocals.
-void ThumbsUp; void ThumbsDown;
+interface TrendCardData {
+  label: string;
+  series: { date: string; value: number }[];
+  format: (value: number) => string;
+  /** Which direction is good news — an increase is good unless this is "down". */
+  goodWhen?: "up" | "down";
+  caption: string;
+  deltaLabel: string;
+}
+
+/** One KPI trend tile: headline (last day), delta vs the first day, sparkline. */
+function TrendCard({ card }: { card: TrendCardData }) {
+  const { label, series, format, goodWhen = "up", caption, deltaLabel } = card;
+  const headline = series[series.length - 1]?.value ?? 0;
+  const base = series[0]?.value ?? 0;
+  const delta = base ? ((headline - base) / base) * 100 : null;
+  const rising = (delta ?? 0) >= 0;
+  const good = goodWhen === "up" ? rising : !rising;
+  const DeltaIcon = rising ? TrendingUp : TrendingDown;
+
+  return (
+    <Card>
+      <CardContent className="flex flex-col gap-2 p-4">
+        <p className="truncate text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+          {label}
+        </p>
+        <div className="flex flex-wrap items-baseline gap-2">
+          <p className="text-[27px] font-semibold leading-none tracking-[-0.02em] tabular-nums">
+            {format(headline)}
+          </p>
+          {delta != null && Number.isFinite(delta) && (
+            <span
+              className={cn(
+                "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] font-semibold tabular-nums",
+                good ? "bg-success/10 text-success" : "bg-danger/10 text-danger",
+              )}
+            >
+              <DeltaIcon className="size-3" />
+              {rising ? "+" : ""}
+              {delta.toFixed(0)}% {deltaLabel}
+            </span>
+          )}
+        </div>
+        <div className="h-10">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={series} margin={{ top: 4, right: 4, left: 4, bottom: 4 }}>
+              <Tooltip
+                contentStyle={{
+                  background: "var(--color-popover)",
+                  border: "1px solid var(--color-border)",
+                  borderRadius: 6,
+                  fontSize: 12,
+                  color: "var(--color-popover-foreground)",
+                }}
+                formatter={(v) => format(Number(v))}
+                labelFormatter={(l) => String(l)}
+              />
+              <Line
+                type="monotone"
+                dataKey="value"
+                stroke={good ? "var(--color-success)" : "var(--color-danger)"}
+                strokeWidth={2}
+                dot={false}
+                isAnimationActive={false}
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+        <p className="truncate text-[12px] leading-none text-muted-foreground">{caption}</p>
+      </CardContent>
+    </Card>
+  );
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
 
 	"khmer-ai-cs-go/internal/gemini"
 )
@@ -147,7 +148,7 @@ func legMetrics(name string, gs []evalGathered, limit int64, pick func(evalGathe
 func rankScore(expect, ranked []int32) (int, int, float64) {
 	best := 0
 	for i, id := range ranked {
-		if containsID32(expect, id) {
+		if slices.Contains(expect, id) {
 			best = i + 1
 			break
 		}
@@ -160,15 +161,6 @@ func rankScore(expect, ranked []int32) (int, int, float64) {
 		h5 = 1
 	}
 	return h5, 1, 1.0 / float64(best)
-}
-
-func containsID32(ids []int32, id int32) bool {
-	for _, v := range ids {
-		if v == id {
-			return true
-		}
-	}
-	return false
 }
 
 func chunkDocIDs(chunks []SearchChunk) []int32 {

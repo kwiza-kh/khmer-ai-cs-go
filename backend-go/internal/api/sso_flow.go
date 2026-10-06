@@ -31,7 +31,7 @@ const ssoFlowTTL = 10 * time.Minute
 // ssoFlowStart stores the flow binding and sets the cookie. Call it from the
 // /start handlers after minting the state.
 func (a *App) ssoFlowStart(w http.ResponseWriter, r *http.Request, provider, state string) {
-	flowID := newUUIDv4()
+	flowID := newUUID()
 	_ = a.Redis.SetString(r.Context(), provider+"-flow:"+flowID, state, ssoFlowTTL)
 	http.SetCookie(w, &http.Cookie{
 		Name:     ssoFlowCookie,

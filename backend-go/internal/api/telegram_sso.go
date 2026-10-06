@@ -181,7 +181,7 @@ func (a *App) telegramCallback(w http.ResponseWriter, r *http.Request) {
 	// Hand the token to the SPA through a short-lived one-time code rather than
 	// the URL fragment (keeps it out of history/referrer). The state rides in
 	// the payload so the exchange can verify code↔flow↔state.
-	loginCode := newUUIDv4()
+	loginCode := newUUID()
 	payload, _ := json.Marshal(map[string]any{
 		"token": token,
 		"state": state,

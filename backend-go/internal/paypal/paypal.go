@@ -24,6 +24,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"khmer-ai-cs-go/internal/textutil"
 )
 
 const (
@@ -162,7 +164,7 @@ func (c *Client) CreateOrder(ctx context.Context, in CreateOrderInput) (Order, e
 		// connection we authenticated, but a redirected or tampered response must
 		// not be able to point checkout at a phishing page — the host is pinned to
 		// PayPal, mode-aware, and the console checks it again before navigating.
-		return Order{}, fmt.Errorf("paypal: approve link is not a PayPal URL: %s", truncate(order.ApproveURL, 120))
+		return Order{}, fmt.Errorf("paypal: approve link is not a PayPal URL: %s", textutil.Ellipsize(strings.TrimSpace(order.ApproveURL), 120))
 	}
 	return order, nil
 }
@@ -293,7 +295,7 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any, hea
 		return fmt.Errorf("paypal %s %s: read response: %w", method, path, readErr)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return fmt.Errorf("paypal %s %s: HTTP %d: %s", method, path, resp.StatusCode, truncate(string(raw), maxErrorBody))
+		return fmt.Errorf("paypal %s %s: HTTP %d: %s", method, path, resp.StatusCode, textutil.Ellipsize(strings.TrimSpace(string(raw)), maxErrorBody))
 	}
 	if out != nil && len(raw) > 0 {
 		if err := json.Unmarshal(raw, out); err != nil {
@@ -334,7 +336,7 @@ func (c *Client) accessToken(ctx context.Context) (string, error) {
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		// The response never contains our secret, but the status is the whole
 		// diagnosis for a bad client id (401 invalid_client).
-		return "", fmt.Errorf("paypal: token request: HTTP %d: %s", resp.StatusCode, truncate(string(raw), maxErrorBody))
+		return "", fmt.Errorf("paypal: token request: HTTP %d: %s", resp.StatusCode, textutil.Ellipsize(strings.TrimSpace(string(raw)), maxErrorBody))
 	}
 	var out struct {
 		AccessToken string `json:"access_token"`
@@ -353,12 +355,4 @@ func (c *Client) accessToken(ctx context.Context) (string, error) {
 	}
 	c.tokenExpiry = time.Now().Add(lifetime)
 	return c.token, nil
-}
-
-func truncate(s string, n int) string {
-	s = strings.TrimSpace(s)
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
 }
