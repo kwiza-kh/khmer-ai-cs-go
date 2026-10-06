@@ -447,7 +447,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                 </NavSection>
               )}
               <NavSection label={t("nav.preferences")}>
-                <NavItem href="/billing" icon={Coins} label={planName ? `${t("bl.title")} · ${planName.toUpperCase()}` : t("bl.title")} active={isActive("/billing")} onNavigate={close} />
+                <NavItem href="/billing" icon={Coins} label={t("bl.title")} badge={planName?.toUpperCase()} active={isActive("/billing")} onNavigate={close} />
                 <NavItem href="/settings" icon={Settings} label={t("nav.settings")} active={isActive("/settings")} onNavigate={close} />
                 <NavItem href="/help" icon={HelpCircle} label={t("nav.help")} active={isActive("/help")} onNavigate={close} />
               </NavSection>
