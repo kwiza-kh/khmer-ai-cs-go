@@ -8,12 +8,17 @@ import { Input } from "@/components/ui/input";
 import { Loader2, Download, FileSpreadsheet, MessageSquare, Coins } from "lucide-react";
 import { toast } from "sonner";
 import { useI18n } from "@/lib/i18n";
+import { useAuth } from "@/lib/auth-client";
 
 /**
- * CSV report export (sessions / messages / tokens) for a date range.
+ * CSV report export (sessions / messages; tokens for platform admins only) for
+ * a date range. The token export is the platform's cost basis — the same rule
+ * the API enforces — so it is not offered to tenant owners.
  */
 export function ReportsTab() {
   const { t, tf } = useI18n();
+  const { user } = useAuth();
+  const isPlatformAdmin = user?.role === "platform_admin";
   const [from, setFrom] = React.useState(() => {
     const d = new Date(); d.setDate(d.getDate() - 30); return d.toISOString().slice(0, 10);
   });
@@ -33,7 +38,9 @@ export function ReportsTab() {
   const reports = [
     { kind: "sessions" as const, labelKey: "rp.sessions", icon: FileSpreadsheet, descKey: "rp.sessionsDesc" },
     { kind: "messages" as const, labelKey: "rp.messages", icon: MessageSquare, descKey: "rp.messagesDesc" },
-    { kind: "tokens" as const, labelKey: "rp.tokenUsage", icon: Coins, descKey: "rp.tokensDesc" },
+    ...(isPlatformAdmin
+      ? [{ kind: "tokens" as const, labelKey: "rp.tokenUsage", icon: Coins, descKey: "rp.tokensDesc" }]
+      : []),
   ];
 
   return (

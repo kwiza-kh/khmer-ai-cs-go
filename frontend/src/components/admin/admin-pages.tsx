@@ -399,12 +399,6 @@ export function DashboardPage() {
   );
 }
 
-function formatTokenCount(tokens: number): string {
-  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
-  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}k`;
-  return String(tokens);
-}
-
 function UserStatCard({
   icon: Icon,
   label,
@@ -502,7 +496,6 @@ export function UsersAdminPage() {
   const users = data?.data ?? [];
   const userTotal = data?.total ?? 0;
   const stats = data?.stats;
-  const maxTokens = users.reduce((max, u) => Math.max(max, u.total_tokens ?? 0), 0);
 
   // Agent seats. A seat IS the agent_teams row (GET /team), and the allowance
   // rides on the billing catalogue the layout already caches under
@@ -883,14 +876,11 @@ export function UsersAdminPage() {
                   <TableHead className="text-xs">{t("admin.colRole")}</TableHead>
                   <TableHead className="text-xs">{t("admin.colStatus")}</TableHead>
                   <TableHead className="text-xs">{t("admin.colSeat")}</TableHead>
-                  <TableHead className="text-xs">{t("admin.colUsage")}</TableHead>
                   <TableHead className="text-xs">{t("admin.colRegistered")}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {users.map((user) => {
-                  const tokens = user.total_tokens ?? 0;
-                  const usagePct = maxTokens > 0 ? Math.round((tokens / maxTokens) * 100) : 0;
                   // Skills drive routing rules (routing_rules.target_skills), so a
                   // member's skill set stays visible here — the card that used to
                   // show it was removed with the duplicate team screen.
@@ -1029,16 +1019,6 @@ export function UsersAdminPage() {
                         ) : (
                           <span className="text-[11px] text-muted-foreground">—</span>
                         )}
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-2">
-                          <div className="h-1.5 w-20 overflow-hidden rounded-full bg-muted">
-                            <div className="h-full rounded-full bg-primary" style={{ width: `${usagePct}%` }} />
-                          </div>
-                          <span className="text-[11px] font-medium tabular-nums text-foreground" title={tf("admin.tokenCost", { cost: (user.cost_estimate ?? 0).toFixed(4) })}>
-                            {formatTokenCount(tokens)}
-                          </span>
-                        </div>
                       </TableCell>
                       <TableCell className="whitespace-nowrap text-[11px] text-muted-foreground">
                         {user.created_at ? fmtDate(user.created_at) : "—"}

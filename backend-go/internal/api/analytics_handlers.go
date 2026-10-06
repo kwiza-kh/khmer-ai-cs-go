@@ -28,8 +28,13 @@ func daysParam(r *http.Request, def int) int {
 	return d
 }
 
-// analyticsOverview — the full KPI set the dashboard renders (sessions,
-// response times, CSAT, escalation/deflection, token cost).
+// analyticsOverview — the KPI set the tenant dashboard renders (sessions,
+// response times, CSAT, escalation/deflection).
+//
+// Model spend and token counters are deliberately NOT here: what a tenant is
+// billed is model-metered data, and the operator surface that owns it is
+// platformAdminOnly (/admin/tokens/stats, /platform/*). A tenant owner sees
+// conversation outcomes, not the platform's cost basis.
 func (a *App) analyticsOverview(w http.ResponseWriter, r *http.Request) (any, error) {
 	user, _ := UserFrom(r)
 	ctx := r.Context()
@@ -62,13 +67,6 @@ func (a *App) analyticsOverview(w http.ResponseWriter, r *http.Request) (any, er
 	var deflected int64
 	_ = a.DB.QueryRow(ctx, `SELECT COUNT(*) FROM sessions WHERE user_id=$1 AND is_test=FALSE AND created_at>=$2 AND status='resolved' AND escalated_at IS NULL`, user.UserID, since).Scan(&deflected)
 
-	var totalTokens int64
-	var totalCost, cacheHit float64
-	_ = a.DB.QueryRow(ctx, `SELECT COALESCE(SUM(total_tokens),0), COALESCE(SUM(cost_estimate),0),
-			CASE WHEN COALESCE(SUM(prompt_tokens),0) = 0 THEN 0
-				ELSE COALESCE(SUM(cached_tokens),0)::float8 / SUM(prompt_tokens)::float8 * 100.0 END
-		FROM token_usage WHERE user_id=$1 AND created_at>=$2`, user.UserID, since).Scan(&totalTokens, &totalCost, &cacheHit)
-
 	escalationRate, deflectionRate := 0.0, 0.0
 	if totalSessions > 0 {
 		escalationRate = float64(escalated) / float64(totalSessions)
@@ -84,9 +82,6 @@ func (a *App) analyticsOverview(w http.ResponseWriter, r *http.Request) (any, er
 		"csat":                  csat,
 		"escalation_rate":       escalationRate,
 		"deflection_rate":       deflectionRate,
-		"total_tokens":          totalTokens,
-		"total_cost":            totalCost,
-		"cache_hit_rate":        cacheHit,
 	}, nil
 }
 
@@ -100,8 +95,6 @@ func (a *App) analyticsTimeline(w http.ResponseWriter, r *http.Request) (any, er
 
 	type point struct {
 		Date          string  `json:"date"`
-		Tokens        int64   `json:"tokens"`
-		Cost          float64 `json:"cost"`
 		Sessions      int64   `json:"sessions"`
 		Messages      int64   `json:"messages"`
 		AvgResponseMs float64 `json:"avg_response_ms"`
@@ -117,22 +110,6 @@ func (a *App) analyticsTimeline(w http.ResponseWriter, r *http.Request) (any, er
 		return p
 	}
 
-	if rows, err := a.DB.Query(ctx, `SELECT to_char(created_at::date,'YYYY-MM-DD'), COALESCE(SUM(total_tokens),0), COALESCE(SUM(cost_estimate),0)
-		FROM token_usage WHERE user_id=$1 AND created_at>=$2 GROUP BY 1`, user.UserID, since); err == nil {
-		for rows.Next() {
-			var d string
-			var t int64
-			var c float64
-			if rows.Scan(&d, &t, &c) == nil {
-				p := ensure(d)
-				p.Tokens, p.Cost = t, c
-			}
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return nil, ErrInternal("查询失败")
-		}
-	}
 	if rows, err := a.DB.Query(ctx, `SELECT to_char(created_at::date,'YYYY-MM-DD'), COUNT(*),
 			COALESCE(AVG(EXTRACT(EPOCH FROM (first_response_at - created_at))*1000) FILTER (WHERE first_response_at IS NOT NULL),0),
 			COUNT(*) FILTER (WHERE status='resolved' AND escalated_at IS NULL)
@@ -458,6 +435,12 @@ func (a *App) integrationsStatus(w http.ResponseWriter, r *http.Request) (any, e
 func (a *App) reportCSV(w http.ResponseWriter, r *http.Request) {
 	user, _ := UserFrom(r)
 	kind := r.PathValue("kind")
+	// The token export is the platform's cost basis: platformAdminOnly, like
+	// /admin/tokens/stats. The conversation exports stay tenant-visible.
+	if kind == "tokens" && !user.IsPlatformAdmin() {
+		WriteJSON(w, http.StatusForbidden, map[string]string{"error": "需要平台管理员权限"})
+		return
+	}
 	from, err1 := time.Parse(time.RFC3339, r.URL.Query().Get("from"))
 	to, err2 := time.Parse(time.RFC3339, r.URL.Query().Get("to"))
 	if err1 != nil || err2 != nil {
@@ -518,10 +501,11 @@ func (a *App) reportCSV(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	case "messages":
-		_ = cw.Write([]string{"message_id", "session_id", "role", "type", "content", "tokens_used", "model", "used_mock", "feedback_rating", "feedback_comment", "created_at"})
+		// No tokens/model columns: per-message model accounting is platform data.
+		_ = cw.Write([]string{"message_id", "session_id", "role", "type", "content", "used_mock", "feedback_rating", "feedback_comment", "created_at"})
 		cw.Flush()
 		rows, err := a.DB.Query(r.Context(), `SELECT cm.message_id, cm.session_id::text, cm.role, cm.message_type, cm.content,
-				COALESCE(cm.tokens_used,0), COALESCE(cm.model_name,''), COALESCE(cm.used_mock,false), cm.feedback_rating, COALESCE(cm.feedback_comment,''), cm.created_at
+				COALESCE(cm.used_mock,false), cm.feedback_rating, COALESCE(cm.feedback_comment,''), cm.created_at
 			FROM chat_messages cm JOIN sessions s ON s.session_id = cm.session_id
 			WHERE s.user_id=$1 AND s.is_test=FALSE AND cm.created_at BETWEEN $2 AND $3 ORDER BY cm.message_id`,
 			user.UserID, from, to)
@@ -531,20 +515,18 @@ func (a *App) reportCSV(w http.ResponseWriter, r *http.Request) {
 					mid              int64
 					sid, role, mtype string
 					content          string
-					tokens           int32
-					model            string
 					usedMock         bool
 					rating           *int16
 					comment          string
 					createdAt        time.Time
 				)
-				if rows.Scan(&mid, &sid, &role, &mtype, &content, &tokens, &model, &usedMock, &rating, &comment, &createdAt) == nil {
+				if rows.Scan(&mid, &sid, &role, &mtype, &content, &usedMock, &rating, &comment, &createdAt) == nil {
 					r := ""
 					if rating != nil {
 						r = strconv.Itoa(int(*rating))
 					}
 					_ = cw.Write([]string{strconv.FormatInt(mid, 10), sid, role, mtype, csvCell(content),
-						strconv.Itoa(int(tokens)), model, strconv.FormatBool(usedMock), r, csvCell(comment), createdAt.Format(time.RFC3339)})
+						strconv.FormatBool(usedMock), r, csvCell(comment), createdAt.Format(time.RFC3339)})
 				}
 			}
 			rows.Close()
