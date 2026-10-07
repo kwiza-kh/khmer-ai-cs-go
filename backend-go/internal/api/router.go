@@ -333,6 +333,13 @@ func (a *App) Router() http.Handler {
 	authed.Handle("GET /api/v1/platform/spend", a.platformAdminOnly(a.handle(a.getSpendBudget)))
 	// Cross-tenant token/cost board: totals, daily series, model mix, every tenant.
 	authed.Handle("GET /api/v1/platform/tokens", a.platformAdminOnly(a.handle(a.platformTokens)))
+	// Operations surfaces: merchant support inbox, revenue, channel health, and the
+	// "what needs me today" summary. All read-only (the audit middleware records
+	// mutations only, so these add no noise to audit_logs).
+	authed.Handle("GET /api/v1/platform/support-messages", a.platformAdminOnly(a.handle(a.platformSupport)))
+	authed.Handle("GET /api/v1/platform/revenue", a.platformAdminOnly(a.handle(a.platformRevenue)))
+	authed.Handle("GET /api/v1/platform/channels", a.platformAdminOnly(a.handle(a.platformChannels)))
+	authed.Handle("GET /api/v1/platform/todo", a.platformAdminOnly(a.handle(a.platformTodo)))
 	authed.Handle("GET /api/v1/platform/audit-logs", a.platformAdminOnly(a.handle(a.listAuditLogs)))
 
 	// 180/min per user: the admin SPA legitimately aggregates 6-10 pollers

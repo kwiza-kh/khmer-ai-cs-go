@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +12,8 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"khmer-ai-cs-go/internal/config"
 )
 
 // cachedPct is the number an operator reads off the board to explain a cost
@@ -57,7 +61,7 @@ func TestPlatformTokensBoardIsInternallyConsistent(t *testing.T) {
 	}
 	defer pool.Close()
 
-	app := &App{DB: pool}
+	app := &App{DB: pool, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Cfg: &config.Config{}}
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/platform/tokens?days=30", nil)
 	// A platform admin is the only caller the route admits.
 	req = req.WithContext(context.WithValue(req.Context(), userKey,

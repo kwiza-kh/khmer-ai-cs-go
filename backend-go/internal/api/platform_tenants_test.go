@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,6 +12,8 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"khmer-ai-cs-go/internal/config"
 )
 
 // tenantRows drives listTenants and returns the rows + the reported total, so a
@@ -55,7 +59,7 @@ func TestTenantListSearchAndAuthFilter(t *testing.T) {
 		t.Skipf("DATABASE_URL unparseable, skipping: %v", err)
 	}
 	defer pool.Close()
-	app := &App{DB: pool}
+	app := &App{DB: pool, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Cfg: &config.Config{}}
 
 	all, totalAll := tenantRows(t, app, "page_size=200")
 	if int64(len(all)) != totalAll {
