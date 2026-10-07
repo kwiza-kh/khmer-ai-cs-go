@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -68,14 +69,17 @@ type supportShape struct {
 }
 
 type revenueShape struct {
-	GrossUSD     float64 `json:"gross_usd"`
-	Captured     int64   `json:"captured_payments"`
-	ExpiringSoon int64   `json:"expiring_soon"`
-	Overdue      int64   `json:"overdue"`
-	LapseDays    int     `json:"lapse_days"`
+	GrossUSD     float64            `json:"gross_usd"`
+	Captured     int64              `json:"captured_payments"`
+	ExpiringSoon int64              `json:"expiring_soon"`
+	Overdue      int64              `json:"overdue"`
+	LapseDays    int                `json:"lapse_days"`
+	MRR          float64            `json:"mrr_estimate_usd"`
+	Prices       map[string]float64 `json:"prices"`
 	Tenants      []struct {
 		UserID    int32   `json:"user_id"`
 		Username  string  `json:"username"`
+		Plan      string  `json:"plan"`
 		State     string  `json:"state"`
 		PaidUntil *string `json:"paid_until"`
 	} `json:"tenants"`
@@ -222,4 +226,19 @@ func TestPlatformOpsViewsReconcile(t *testing.T) {
 		}
 	}
 	_ = byState
+
+	// The recurring-revenue estimate counts tiers for tenants that still have
+	// time on the clock. A hand-granted plan never paid and a lapsed one is not
+	// revenue in force — the first production run summed a granted tenant and
+	// inflated the figure by a third, which is why this is pinned.
+	var wantMRR float64
+	for _, row := range rev.Tenants {
+		if row.State != "active" && row.State != "expiring" {
+			continue
+		}
+		wantMRR += rev.Prices[row.Plan]
+	}
+	if math.Abs(wantMRR-rev.MRR) > 0.001 {
+		t.Errorf("mrr_estimate_usd %v != price×non-lapsed (%v)", rev.MRR, wantMRR)
+	}
 }
