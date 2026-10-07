@@ -22,7 +22,7 @@ import { toast } from "sonner";
 import { useI18n } from "@/lib/i18n";
 import { fmtDateTime, fmtInt, fmtMoney } from "@/lib/format";
 import { PlatformTokensPanel } from "@/components/admin/platform-tokens-panel";
-import { ChannelsPanel, RevenuePanel, SupportPanel, TodoCard } from "@/components/admin/platform-ops-panels";
+import { ChannelsPanel, KnowledgeGapsPanel, RevenuePanel, SupportPanel, TodoCard, type PlatformSection } from "@/components/admin/platform-ops-panels";
 
 /**
  * Platform super-admin console: cross-tenant management.
@@ -58,6 +58,7 @@ export default function PlatformAdminPage() {
               { key: "support", labelKey: "po.support.title", icon: Headset },
               { key: "revenue", labelKey: "po.revenue.title", icon: CreditCard },
               { key: "channels", labelKey: "po.channels.title", icon: Activity },
+              { key: "gaps", labelKey: "po.gaps.title", icon: MessageSquare },
               // Model config and its metering live here: both are
               // platformAdminOnly APIs, so the console that owns the platform
               // owns them (they used to be tenant-area pages that answered 403).
@@ -76,6 +77,7 @@ export default function PlatformAdminPage() {
           {section === "support" && <SupportPanel />}
           {section === "revenue" && <RevenuePanel />}
           {section === "channels" && <ChannelsPanel />}
+          {section === "gaps" && <KnowledgeGapsPanel />}
           {section === "models" && <ModelsAdminPage />}
           {section === "tokens" && <PlatformTokensPanel />}
           {section === "audit" && <AuditLogsPanel />}
@@ -85,7 +87,7 @@ export default function PlatformAdminPage() {
   );
 }
 
-function OverviewPanel({ onNavigate }: { onNavigate: (s: "support" | "revenue" | "channels") => void }) {
+function OverviewPanel({ onNavigate }: { onNavigate: (s: PlatformSection) => void }) {
   const { t, tf } = useI18n();
   const { data } = useSWR<PlatformAnalytics>("platform-analytics", getPlatformAnalytics);
   if (!data) return <EmptyState icon={BarChart3} title={t("pa.loadingStats")} />;
@@ -293,6 +295,56 @@ function TenantsPanel() {
           ) : (
             <div className="space-y-2">
               <p className="text-xs font-semibold">{detail.tenant.username} <span className="text-muted-foreground font-normal">({detail.tenant.email})</span></p>
+              {/* Health: what the rollup above cannot tell you — a broken
+                  channel, documents that failed to index, and whether anyone is
+                  actually using the tenant at all. */}
+              {detail.health && (
+                <div className="space-y-1.5 rounded border border-border p-2 text-[11px]">
+                  <p className="font-medium text-muted-foreground">{t("po.health.title")}</p>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span>{t("po.health.channels")}:</span>
+                    {detail.health.channels.length === 0
+                      ? <span className="text-muted-foreground">{t("po.health.noChannels")}</span>
+                      : detail.health.channels.map((c) => (
+                        <Badge
+                          key={c.config_id}
+                          variant={c.status === "connected" ? "success" : "secondary"}
+                          className="h-4 px-1 text-[10px] font-normal"
+                          title={c.checked_at ?? undefined}
+                        >
+                          {c.platform}
+                          {c.outbox_failed > 0 ? ` · ✗${c.outbox_failed}` : ""}
+                          {c.outbox_pending > 0 ? ` · ⧗${c.outbox_pending}` : ""}
+                        </Badge>
+                      ))}
+                  </div>
+                  <div className="flex flex-wrap gap-x-3 gap-y-1 text-muted-foreground">
+                    <span>
+                      {t("po.health.knowledge")}: <b className="text-foreground">{fmtInt(detail.health.knowledge.documents)}</b> {t("po.health.docs")}
+                      {" · "}<b className="text-foreground">{fmtInt(detail.health.knowledge.chunks)}</b> {t("po.health.chunks")}
+                    </span>
+                    <span>
+                      {t("po.health.indexStates")}:{" "}
+                      {Object.entries(detail.health.knowledge.index_states ?? {}).map(([state, n], i) => (
+                        <span key={state}>{i > 0 ? " · " : ""}{state} <b className="text-foreground">{n}</b></span>
+                      ))}
+                    </span>
+                    <span>{t("po.health.lastUpload")}: {detail.health.knowledge.last_upload_at ? fmtDateTime(detail.health.knowledge.last_upload_at) : t("po.health.never")}</span>
+                    <span>{t("po.health.seats")}: <b className="text-foreground">{fmtInt(detail.health.seats.active)}</b></span>
+                    <span>{t("po.health.gaps")}: <b className="text-foreground">{fmtInt(detail.health.gaps)}</b></span>
+                    {/* Dormancy signal: a tenant that paid and stopped sending is
+                        the one that churns without saying anything. */}
+                    <span>
+                      {t("po.health.activity")}: <b className="text-foreground">{fmtInt(detail.health.activity.sessions_7d)}</b> {tf("po.health.sessions7", { days: 7 })}
+                      {" · "}<b className="text-foreground">{fmtInt(detail.health.activity.messages_7d)}</b> {tf("po.health.messages7", { days: 7 })}
+                    </span>
+                    <span>
+                      {t("po.health.lastMessage")}:{" "}
+                      {detail.health.activity.last_message_at ? fmtDateTime(detail.health.activity.last_message_at) : t("po.health.never")}
+                    </span>
+                  </div>
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-1.5 text-center">
                 {(["total_sessions", "total_messages", "total_documents", "messages_used"] as const).map((k) => (
                   <div key={k} className="rounded bg-muted/40 py-1.5">
