@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -45,12 +46,20 @@ const (
 	paymentLapseDays = 14
 )
 
-// platformTodo — the "what needs me today" summary.
-func (a *App) platformTodo(w http.ResponseWriter, r *http.Request) (any, error) {
-	var (
-		supportOpen, channelErrors, outboxFailed, outboxBacklog int64
-		expiringPaid, quotaPressure                             int64
-	)
+// todoCounts — the six numbers behind both the console's "what needs me today"
+// card and the operator's daily digest. One query, one meaning: a digest that
+// disagreed with the card the operator opens would be worse than no digest.
+type todoCounts struct {
+	SupportOpen   int64
+	ChannelErrors int64
+	OutboxFailed  int64
+	OutboxBacklog int64
+	ExpiringPaid  int64
+	QuotaPressure int64
+}
+
+func (a *App) todoCounts(ctx context.Context) (todoCounts, error) {
+	var c todoCounts
 	// One round trip: the six numbers are read together so they describe the
 	// same instant.
 	//
@@ -60,7 +69,7 @@ func (a *App) platformTodo(w http.ResponseWriter, r *http.Request) (any, error) 
 	// as text and pgx then refuses the Go int ("cannot find encode plan"). That
 	// shape is fine there only because the caller passes strconv.FormatInt — a
 	// string. The int-safe form is this one (analytics_handlers.go uses it too).
-	err := a.DB.QueryRow(r.Context(), `SELECT
+	err := a.DB.QueryRow(ctx, `SELECT
 			(SELECT count(*) FROM platform_support_messages WHERE replied_at IS NULL),
 			(SELECT count(*) FROM platform_configs c
 				LEFT JOIN platform_connection_health h ON h.config_id = c.config_id
@@ -72,18 +81,58 @@ func (a *App) platformTodo(w http.ResponseWriter, r *http.Request) (any, error) 
 			(SELECT count(*) FROM tenant_billing
 				WHERE monthly_message_quota > 0 AND messages_used::float / monthly_message_quota > 0.8)`,
 		paymentLapseDays).
-		Scan(&supportOpen, &channelErrors, &outboxFailed, &outboxBacklog, &expiringPaid, &quotaPressure)
+		Scan(&c.SupportOpen, &c.ChannelErrors, &c.OutboxFailed, &c.OutboxBacklog, &c.ExpiringPaid, &c.QuotaPressure)
+	return c, err
+}
+
+// needsAttention reports whether any counter would make an operator act. A digest
+// that fires every day with six zeroes trains the operator to ignore it — and the
+// queued-sends count alone is not worth a page (it drains on its own).
+func (c todoCounts) needsAttention() bool {
+	return c.SupportOpen+c.ChannelErrors+c.OutboxFailed+c.ExpiringPaid+c.QuotaPressure > 0
+}
+
+// formatDigest renders the operator's daily summary. Pure, so the thresholds and
+// the wording are testable without a database or a Telegram chat.
+func formatDigest(c todoCounts) (title, detail string, send bool) {
+	if !c.needsAttention() {
+		return "", "", false
+	}
+	lines := make([]string, 0, 5)
+	if c.SupportOpen > 0 {
+		lines = append(lines, fmt.Sprintf("• 商家消息待回复：%d", c.SupportOpen))
+	}
+	if c.ChannelErrors > 0 {
+		lines = append(lines, fmt.Sprintf("• 渠道异常：%d", c.ChannelErrors))
+	}
+	if c.OutboxFailed > 0 {
+		lines = append(lines, fmt.Sprintf("• 发送失败（重试已耗尽）：%d", c.OutboxFailed))
+	}
+	if c.ExpiringPaid > 0 {
+		lines = append(lines, fmt.Sprintf("• 付费即将/已过期（%d 天内）：%d", paymentLapseDays, c.ExpiringPaid))
+	}
+	if c.QuotaPressure > 0 {
+		lines = append(lines, fmt.Sprintf("• 额度已用 >80%%：%d", c.QuotaPressure))
+	}
+	detail = strings.Join(lines, "\n") +
+		"\n\n打开平台台（总览 → 今天要处理）看明细；渠道页可一键重试失败的发送。"
+	return "平台今日待处理", detail, true
+}
+
+// platformTodo — the "what needs me today" summary card.
+func (a *App) platformTodo(w http.ResponseWriter, r *http.Request) (any, error) {
+	counts, err := a.todoCounts(r.Context())
 	if err != nil {
 		a.Logger.Error("platform todo query failed", "error", err.Error())
 		return nil, ErrInternal("查询失败")
 	}
 	return map[string]any{
-		"support_open":   supportOpen,
-		"channel_errors": channelErrors,
-		"outbox_failed":  outboxFailed,
-		"outbox_backlog": outboxBacklog,
-		"expiring_paid":  expiringPaid,
-		"quota_pressure": quotaPressure,
+		"support_open":   counts.SupportOpen,
+		"channel_errors": counts.ChannelErrors,
+		"outbox_failed":  counts.OutboxFailed,
+		"outbox_backlog": counts.OutboxBacklog,
+		"expiring_paid":  counts.ExpiringPaid,
+		"quota_pressure": counts.QuotaPressure,
 		"lapse_days":     paymentLapseDays,
 	}, nil
 }

@@ -166,6 +166,42 @@ func (a *App) sendDueDigests(ctx context.Context) {
 		}
 		a.Pipe.SendDailyDigest(ctx, id)
 	}
+
+	a.sendOperatorDigest(ctx, day)
+}
+
+// sendOperatorDigest pushes the console's "what needs me today" card to the
+// operator's alert chat, once a day.
+//
+// Until this existed the card only helped an operator who happened to open the
+// console: a merchant message waiting for a reply, a channel in error, a payment
+// about to lapse and a tenant at 90% of its quota all sat there silently.
+//
+// It shares the tenant digests' slot (08:00 Phnom Penh) and their Redis guard, so
+// a deploy that restarts the process inside that hour neither sends it twice nor
+// swallows the day's. The counts come from the same query the card uses, so the
+// push cannot disagree with what the operator sees after opening it.
+func (a *App) sendOperatorDigest(ctx context.Context, day string) {
+	counts, err := a.todoCounts(ctx)
+	if err != nil {
+		// Auxiliary path: a failed read must not consume the day's guard, so a
+		// later tick inside the same hour can still send it.
+		a.Logger.Warn("operator digest counts failed", "error", err.Error())
+		return
+	}
+	if !counts.needsAttention() {
+		return
+	}
+	flag := "platform-digest:" + day
+	ok, err := a.Redis.IncrWindow(ctx, flag, 1, 26*time.Hour)
+	if err != nil || !ok {
+		return
+	}
+	title, detail, send := formatDigest(counts)
+	if !send {
+		return
+	}
+	a.Pipe.PlatformAlert(ctx, "platform-digest-"+day, title, detail)
 }
 
 func (a *App) loop(ctx context.Context, every time.Duration, fn func(context.Context)) {
