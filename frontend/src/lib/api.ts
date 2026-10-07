@@ -1421,6 +1421,126 @@ export interface PlatformTokens {
 export function getPlatformTokens(days = 30) {
   return apiFetch<PlatformTokens>(`/platform/tokens?days=${days}`);
 }
+
+// --- Platform operations surfaces (support / revenue / channels / todo) ---
+
+export interface PlatformTodo {
+  support_open: number;
+  channel_errors: number;
+  outbox_failed: number;
+  outbox_backlog: number;
+  expiring_paid: number;
+  quota_pressure: number;
+  lapse_days: number;
+}
+
+export interface PlatformSpend {
+  window_minutes: number;
+  spent_usd: number;
+  limit_usd: number;
+  used_ratio: number;
+  gate_ratio: number;
+  over_gate: boolean;
+}
+
+export interface SupportMessage {
+  message_id: number;
+  user_id: number;
+  tenant_username: string;
+  display_name: string;
+  telegram_username: string;
+  plan: string;
+  body: string;
+  replied_at: string | null;
+  replied_by: string;
+  created_at: string;
+  telegram_user_id: string;
+}
+
+export interface PlatformSupport {
+  open: number;
+  total: number;
+  data: SupportMessage[];
+}
+
+export interface RevenueTenant {
+  user_id: number;
+  username: string;
+  plan: string;
+  paid_until: string | null;
+  messages_used: number;
+  message_quota: number;
+  /** overdue | expiring | active | no_clock — classified by the API. */
+  state: string;
+}
+
+export interface RevenuePayment {
+  payment_id: number;
+  user_id: number;
+  username: string;
+  plan: string;
+  amount: number;
+  currency: string;
+  status: string;
+  created_at: string;
+}
+
+export interface PlatformRevenue {
+  captured_payments: number;
+  gross_usd: number;
+  paid_tenants: number;
+  pending_payments: number;
+  mrr_estimate_usd: number;
+  prices: Record<string, number>;
+  expiring_soon: number;
+  overdue: number;
+  lapse_days: number;
+  tenants: RevenueTenant[];
+  recent: RevenuePayment[];
+}
+
+export interface PlatformChannel {
+  config_id: number;
+  user_id: number;
+  username: string;
+  platform: string;
+  is_active: boolean;
+  status: string;
+  detail: string;
+  account_name: string;
+  checked_at: string | null;
+  outbox_pending: number;
+  outbox_failed: number;
+  last_error: string;
+  last_error_at: string | null;
+}
+
+export interface PlatformChannels {
+  data: PlatformChannel[];
+  errors: number;
+  outbox_pending: number;
+  outbox_failed: number;
+}
+
+export function getPlatformTodo() {
+  return apiFetch<PlatformTodo>("/platform/todo");
+}
+
+export function getPlatformSpend() {
+  return apiFetch<PlatformSpend>("/platform/spend");
+}
+
+export function getPlatformSupport(status: "open" | "all" = "open") {
+  return apiFetch<PlatformSupport>(`/platform/support-messages?status=${status}`);
+}
+
+export function getPlatformRevenue() {
+  return apiFetch<PlatformRevenue>("/platform/revenue");
+}
+
+export function getPlatformChannels() {
+  return apiFetch<PlatformChannels>("/platform/channels");
+}
 export function createTenant(input: { username: string; email: string; password: string; plan?: string }) {
   return apiFetch<{ user_id: number; message: string }>("/platform/tenants", { method: "POST", body: JSON.stringify(input) });
 }

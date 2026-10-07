@@ -16,12 +16,13 @@ import { EmptyState } from "@/components/empty-state";
 import { PageHeader } from "@/components/page-header";
 import {
   Building2, Search, Power, ShieldCheck, Loader2, Plus, Users, MessageSquare, FileText,
-  Coins, BarChart3, Eye, ScrollText, ChevronLeft, ChevronRight, Cpu, Zap,
+  Coins, BarChart3, Eye, ScrollText, ChevronLeft, ChevronRight, Cpu, Zap, Headset, CreditCard, Activity,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useI18n } from "@/lib/i18n";
 import { fmtDateTime, fmtInt, fmtMoney } from "@/lib/format";
 import { PlatformTokensPanel } from "@/components/admin/platform-tokens-panel";
+import { ChannelsPanel, RevenuePanel, SupportPanel, TodoCard } from "@/components/admin/platform-ops-panels";
 
 /**
  * Platform super-admin console: cross-tenant management.
@@ -53,6 +54,10 @@ export default function PlatformAdminPage() {
               { key: "overview", labelKey: "pa.overview", icon: BarChart3 },
               { key: "tenants", labelKey: "pa.tenants", icon: Building2 },
               { key: "create", labelKey: "pa.createTenant", icon: Plus },
+              // Operations: who is waiting on us, who owes us, what is broken.
+              { key: "support", labelKey: "po.support.title", icon: Headset },
+              { key: "revenue", labelKey: "po.revenue.title", icon: CreditCard },
+              { key: "channels", labelKey: "po.channels.title", icon: Activity },
               // Model config and its metering live here: both are
               // platformAdminOnly APIs, so the console that owns the platform
               // owns them (they used to be tenant-area pages that answered 403).
@@ -65,9 +70,12 @@ export default function PlatformAdminPage() {
               </Button>
             ))}
           </div>
-          {section === "overview" && <OverviewPanel />}
+          {section === "overview" && <OverviewPanel onNavigate={setSection} />}
           {section === "tenants" && <TenantsPanel />}
           {section === "create" && <CreateTenantPanel />}
+          {section === "support" && <SupportPanel />}
+          {section === "revenue" && <RevenuePanel />}
+          {section === "channels" && <ChannelsPanel />}
           {section === "models" && <ModelsAdminPage />}
           {section === "tokens" && <PlatformTokensPanel />}
           {section === "audit" && <AuditLogsPanel />}
@@ -77,7 +85,7 @@ export default function PlatformAdminPage() {
   );
 }
 
-function OverviewPanel() {
+function OverviewPanel({ onNavigate }: { onNavigate: (s: "support" | "revenue" | "channels") => void }) {
   const { t, tf } = useI18n();
   const { data } = useSWR<PlatformAnalytics>("platform-analytics", getPlatformAnalytics);
   if (!data) return <EmptyState icon={BarChart3} title={t("pa.loadingStats")} />;
@@ -94,7 +102,10 @@ function OverviewPanel() {
   const window14 = data.daily_messages.slice(-14);
   const maxMessages = Math.max(...window14.map((x) => x.messages), 1);
   return (
-    <Card>
+    <div className="space-y-4">
+      {/* First thing on this page: what needs the operator today. */}
+      <TodoCard onNavigate={onNavigate} />
+      <Card>
       <CardHeader className="pb-2">
         <CardTitle className="text-sm flex items-center gap-2"><BarChart3 className="size-4 text-primary" /> {t("pa.overviewTitle")}</CardTitle>
       </CardHeader>
@@ -145,6 +156,7 @@ function OverviewPanel() {
         </div>
       </CardContent>
     </Card>
+    </div>
   );
 }
 
