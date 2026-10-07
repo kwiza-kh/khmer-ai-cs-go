@@ -56,7 +56,15 @@ const KNOWN_EVENTS = new Set(["inbox.message", "inbox.session", "inbox.notificat
  * every successful (re)connect dispatches a synthetic `inbox.session` to make
  * subscribers refetch once, immediately, instead of waiting out the fallback
  * poll.
+ *
+ * Reconnects are BOUNDED. The browser tells a page nothing about why a WebSocket
+ * handshake failed, so a rejected token looks exactly like a network blip — and
+ * production showed what unlimited retries cost: one client reconnecting every
+ * ~30s for hours, 214 of 240 handshakes answered 401. After quickRetryLimit tries
+ * the provider gives up and stays disconnected, which tightens the fallback polls
+ * to their fast cadence; a reload or a fresh session starts a new budget.
  */
+const quickRetryLimit = 6
 export function RealtimeProvider({ token, children }: { token: string | null; children: React.ReactNode }) {
   const [connected, setConnected] = React.useState(false);
   const listeners = React.useRef(new Set<RealtimeListener>());
@@ -104,8 +112,14 @@ export function RealtimeProvider({ token, children }: { token: string | null; ch
       s.onclose = () => {
         setConnected(false);
         if (stopped) return;
-        const delay = Math.min(1000 * 2 ** reconnectAttempts, 30000);
         reconnectAttempts += 1;
+        if (reconnectAttempts > quickRetryLimit) {
+          // Given up: the polls carry the UI from here (they tighten to their
+          // fast cadence while disconnected), and a reload or a new session
+          // starts a fresh budget.
+          return;
+        }
+        const delay = Math.min(1000 * 2 ** (reconnectAttempts - 1), 60_000);
         reconnectTimer = setTimeout(connect, delay);
       };
     };
