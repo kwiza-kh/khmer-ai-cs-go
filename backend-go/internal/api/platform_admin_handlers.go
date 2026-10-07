@@ -168,7 +168,7 @@ func (a *App) tenantDetail(w http.ResponseWriter, r *http.Request, userID int32)
 			return nil, ErrInternal("查询失败")
 		}
 	}
-	return map[string]any{"tenant": tenant, "sessions": sessions}, nil
+	return map[string]any{"tenant": tenant, "sessions": sessions, "health": a.tenantHealth(r.Context(), userID)}, nil
 }
 
 // setTenantStatus — enable/disable a tenant (never platform admins).

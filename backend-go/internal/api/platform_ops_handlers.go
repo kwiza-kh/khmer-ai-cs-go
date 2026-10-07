@@ -358,6 +358,196 @@ type execer interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
+// ============================================
+// Tenant health + cross-tenant knowledge gaps
+// ============================================
+
+// gapWindowDays bounds the unanswered-question window used by both the tenant
+// health card and the cross-tenant report.
+const gapWindowDays = 30
+
+// tenantHealth answers "what is the state of this tenant" in one object: its
+// channels (with backlog), its knowledge base (with index state), its seats, and
+// whether anything moved recently. Every number is read, none is inferred.
+//
+// The detail pane used to show session rollups only: the operator could see that
+// a tenant existed, but not that its channel was broken, its documents failed to
+// index, or nobody had logged in for a month.
+func (a *App) tenantHealth(ctx context.Context, userID int32) map[string]any {
+	health := map[string]any{}
+
+	// Channels + backlog. A config without a health row reports 'unknown', the
+	// same way the fleet-wide channels view does.
+	channels := make([]map[string]any, 0)
+	if crows, err := a.DB.Query(ctx, `SELECT c.config_id, c.platform::text, COALESCE(h.status,'unknown'),
+			COALESCE(h.account_name,''), h.checked_at,
+			(SELECT count(*) FROM platform_outbox o WHERE o.config_id = c.config_id AND `+sqlOutboxBacklogPredicate+`),
+			(SELECT count(*) FROM platform_outbox o WHERE o.config_id = c.config_id AND `+sqlOutboxFailedPredicate+`)
+		FROM platform_configs c
+		LEFT JOIN platform_connection_health h ON h.config_id = c.config_id
+		WHERE c.user_id = $1 AND c.is_active
+		ORDER BY c.config_id`, userID); err == nil {
+		for crows.Next() {
+			var (
+				configID        int32
+				platform, state string
+				accountName     string
+				checkedAt       *time.Time
+				pending, failed int64
+			)
+			if crows.Scan(&configID, &platform, &state, &accountName, &checkedAt, &pending, &failed) == nil {
+				channels = append(channels, map[string]any{
+					"config_id": configID, "platform": platform, "status": state,
+					"account_name": accountName, "checked_at": checkedAt,
+					"outbox_pending": pending, "outbox_failed": failed,
+				})
+			}
+		}
+		crows.Close()
+	}
+	health["channels"] = channels
+
+	// Knowledge base: how much, and in what index state. The state breakdown comes
+	// back grouped and uninterpreted — the vocabulary lives in the ingest path, so
+	// a new state must appear here without a second code change.
+	var docs, chunks int64
+	var lastUpload *time.Time
+	_ = a.DB.QueryRow(ctx, `SELECT count(*), COALESCE(SUM(chunk_count),0), MAX(created_at)
+		FROM knowledge_documents WHERE uploaded_by = $1`, userID).Scan(&docs, &chunks, &lastUpload)
+	indexStates := map[string]int64{}
+	if srows, err := a.DB.Query(ctx, `SELECT COALESCE(index_status,'unknown'), count(*)
+		FROM knowledge_documents WHERE uploaded_by = $1 GROUP BY 1`, userID); err == nil {
+		for srows.Next() {
+			var state string
+			var n int64
+			if srows.Scan(&state, &n) == nil {
+				indexStates[state] = n
+			}
+		}
+		srows.Close()
+	}
+	health["knowledge"] = map[string]any{
+		"documents": docs, "chunks": chunks, "last_upload_at": lastUpload, "index_states": indexStates,
+	}
+
+	// Seats: the owner is implicit, agent_teams rows are the invited members.
+	var seats, invites int64
+	_ = a.DB.QueryRow(ctx, "SELECT count(*) FROM agent_teams WHERE owner_user_id = $1 AND is_active", userID).Scan(&seats)
+	_ = a.DB.QueryRow(ctx, "SELECT count(*) FROM team_invites WHERE owner_user_id = $1", userID).Scan(&invites)
+	health["seats"] = map[string]any{"active": seats, "invites": invites}
+
+	// Activity: is this tenant alive? Counts for the last week plus the newest of
+	// each, because "0 sessions in 7 days" and "never had a session" are
+	// different conversations.
+	var sessions7, messages7 int64
+	var lastSession, lastMessage *time.Time
+	_ = a.DB.QueryRow(ctx, `SELECT count(*) FROM sessions
+		WHERE user_id = $1 AND is_test = FALSE AND created_at > NOW() - INTERVAL '7 days'`, userID).Scan(&sessions7)
+	_ = a.DB.QueryRow(ctx, `SELECT count(*) FROM chat_messages cm JOIN sessions s ON s.session_id = cm.session_id
+		WHERE s.user_id = $1 AND s.is_test = FALSE AND cm.created_at > NOW() - INTERVAL '7 days'`, userID).Scan(&messages7)
+	_ = a.DB.QueryRow(ctx, "SELECT MAX(created_at) FROM sessions WHERE user_id = $1 AND is_test = FALSE", userID).Scan(&lastSession)
+	_ = a.DB.QueryRow(ctx, `SELECT MAX(cm.created_at) FROM chat_messages cm JOIN sessions s ON s.session_id = cm.session_id
+		WHERE s.user_id = $1 AND s.is_test = FALSE`, userID).Scan(&lastMessage)
+	health["activity"] = map[string]any{
+		"sessions_7d": sessions7, "messages_7d": messages7,
+		"last_session_at": lastSession, "last_message_at": lastMessage,
+	}
+
+	// Unanswered questions in the window — the same predicate the cross-tenant
+	// report uses, so the card's number matches the list it links to.
+	var gaps int64
+	_ = a.DB.QueryRow(ctx, `SELECT count(*) FROM rag_query_logs
+		WHERE user_id = $1 AND NOT used_in_reply AND created_at > NOW() - make_interval(days => $2)`, userID, gapWindowDays).Scan(&gaps)
+	health["gaps"] = gaps
+
+	return health
+}
+
+// platformKnowledgeGaps — per tenant, the questions the knowledge base could not
+// answer. This is the operator's advisory material: "add these two documents and
+// most of this traffic is covered" is a conversation the console can start.
+func (a *App) platformKnowledgeGaps(_ http.ResponseWriter, r *http.Request) (any, error) {
+	days := daysParam(r, gapWindowDays)
+	perTenant := parseIntOr(r.URL.Query().Get("per_tenant"), 3)
+	if perTenant < 1 {
+		perTenant = 1
+	}
+	if perTenant > 20 {
+		perTenant = 20
+	}
+
+	// One query, ranked per tenant: a query per tenant is the N+1 shape this
+	// console already had to collapse once.
+	rows, err := a.DB.Query(r.Context(), `WITH gaps AS (
+			SELECT l.user_id, l.query, COUNT(*) AS hits, MAX(l.created_at) AS last_seen
+			FROM rag_query_logs l
+			WHERE NOT l.used_in_reply AND l.created_at > NOW() - make_interval(days => $1)
+			GROUP BY l.user_id, lower(l.query), l.query
+		), ranked AS (
+			SELECT g.*, ROW_NUMBER() OVER (PARTITION BY g.user_id ORDER BY g.hits DESC, g.last_seen DESC) AS rn,
+			       COUNT(*) OVER (PARTITION BY g.user_id) AS total
+			FROM gaps g
+		)
+		SELECT r.user_id, u.username, COALESCE(b.plan,'free'), r.total, r.query, r.hits, r.last_seen
+		FROM ranked r
+		JOIN users u ON u.user_id = r.user_id
+		LEFT JOIN tenant_billing b ON b.user_id = r.user_id
+		WHERE r.rn <= $2
+		ORDER BY r.total DESC, r.hits DESC`, days, perTenant)
+	if err != nil {
+		a.Logger.Error("knowledge gaps query failed", "error", err.Error())
+		return nil, ErrInternal("查询失败")
+	}
+	defer rows.Close()
+
+	type tenantGaps struct {
+		row       map[string]any
+		questions []map[string]any
+		total     int64
+	}
+	grouped := make([]tenantGaps, 0)
+	byUser := map[int32]int{}
+	var totalGaps int64
+	for rows.Next() {
+		var (
+			uid                   int32
+			username, plan, query string
+			total, hits           int64
+			lastSeen              time.Time
+		)
+		if rows.Scan(&uid, &username, &plan, &total, &query, &hits, &lastSeen) != nil {
+			continue
+		}
+		idx, ok := byUser[uid]
+		if !ok {
+			grouped = append(grouped, tenantGaps{
+				row:   map[string]any{"user_id": uid, "username": username, "plan": plan},
+				total: total,
+			})
+			idx = len(grouped) - 1
+			byUser[uid] = idx
+			totalGaps += total
+		}
+		grouped[idx].questions = append(grouped[idx].questions, map[string]any{
+			"query": query, "hits": hits, "last_seen": lastSeen,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, ErrInternal("查询失败")
+	}
+
+	tenants := make([]map[string]any, 0, len(grouped))
+	for _, g := range grouped {
+		g.row["gap_total"] = g.total
+		g.row["questions"] = g.questions
+		tenants = append(tenants, g.row)
+	}
+	return map[string]any{
+		"days": days, "per_tenant": perTenant,
+		"tenants": tenants, "tenants_with_gaps": len(tenants), "total_gaps": totalGaps,
+	}, nil
+}
+
 // retryFailedDeliveries puts every failed outbound delivery of one channel back
 // in the queue, with a clean attempt budget.
 //

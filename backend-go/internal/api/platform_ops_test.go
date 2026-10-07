@@ -19,7 +19,7 @@ import (
 
 // opsCall runs one of the platform ops handlers as a platform admin and decodes
 // the JSON into out.
-func opsCall(t *testing.T, app *App, handler func(http.ResponseWriter, *http.Request) (any, error), path string, out any) {
+func opsCall(t *testing.T, handler func(http.ResponseWriter, *http.Request) (any, error), path string, out any) {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, path, nil)
 	req = req.WithContext(context.WithValue(req.Context(), userKey,
@@ -50,6 +50,7 @@ type todoShape struct {
 type channelsShape struct {
 	Data []struct {
 		ConfigID      int32  `json:"config_id"`
+		UserID        int32  `json:"user_id"`
 		Status        string `json:"status"`
 		OutboxPending int64  `json:"outbox_pending"`
 		OutboxFailed  int64  `json:"outbox_failed"`
@@ -114,7 +115,7 @@ func TestPlatformOpsViewsReconcile(t *testing.T) {
 	}
 
 	var todo todoShape
-	opsCall(t, app, app.platformTodo, "/api/v1/platform/todo", &todo)
+	opsCall(t, app.platformTodo, "/api/v1/platform/todo", &todo)
 	for name, v := range map[string]int64{
 		"support_open": todo.SupportOpen, "channel_errors": todo.ChannelErrors,
 		"outbox_failed": todo.OutboxFailed, "outbox_backlog": todo.OutboxBacklog,
@@ -127,7 +128,7 @@ func TestPlatformOpsViewsReconcile(t *testing.T) {
 
 	// --- channels: summary == rows it summarises ---
 	var ch channelsShape
-	opsCall(t, app, app.platformChannels, "/api/v1/platform/channels", &ch)
+	opsCall(t, app.platformChannels, "/api/v1/platform/channels", &ch)
 	seen := map[int32]bool{}
 	var rowsErrors, rowsPending, rowsFailed int64
 	for _, row := range ch.Data {
@@ -163,8 +164,8 @@ func TestPlatformOpsViewsReconcile(t *testing.T) {
 
 	// --- support: the filter really filters, and the count matches ---
 	var open, all supportShape
-	opsCall(t, app, app.platformSupport, "/api/v1/platform/support-messages?status=open", &open)
-	opsCall(t, app, app.platformSupport, "/api/v1/platform/support-messages?status=all", &all)
+	opsCall(t, app.platformSupport, "/api/v1/platform/support-messages?status=open", &open)
+	opsCall(t, app.platformSupport, "/api/v1/platform/support-messages?status=all", &all)
 	if open.Open != all.Open || open.Total != all.Total {
 		t.Errorf("open/total differ between filters: %+v vs %+v", open, all)
 	}
@@ -189,7 +190,7 @@ func TestPlatformOpsViewsReconcile(t *testing.T) {
 	// --- revenue: per-row state must match the counts, and the todo tile counts
 	// everything due inside the window (overdue included) ---
 	var rev revenueShape
-	opsCall(t, app, app.platformRevenue, "/api/v1/platform/revenue", &rev)
+	opsCall(t, app.platformRevenue, "/api/v1/platform/revenue", &rev)
 	var byState, expiring, overdue int64
 	for _, row := range rev.Tenants {
 		switch row.State {
@@ -240,5 +241,158 @@ func TestPlatformOpsViewsReconcile(t *testing.T) {
 	}
 	if math.Abs(wantMRR-rev.MRR) > 0.001 {
 		t.Errorf("mrr_estimate_usd %v != price×non-lapsed (%v)", rev.MRR, wantMRR)
+	}
+}
+
+// The tenant card is the operator's one-screen state check, so its numbers have
+// to agree with the views they summarise — a card saying "3 channels" while the
+// fleet view lists 2 for that tenant is worse than no card.
+//
+// Read-only against the live schema; gated on DATABASE_URL.
+func TestTenantDetailHealthReconciles(t *testing.T) {
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		t.Skip("DATABASE_URL not set — this test needs a real migrated database")
+	}
+	pool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		t.Skipf("DATABASE_URL unparseable, skipping: %v", err)
+	}
+	defer pool.Close()
+	app := &App{DB: pool, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Cfg: &config.Config{}}
+
+	// A tenant that actually has rows to look at.
+	var uid int32
+	if err := pool.QueryRow(context.Background(), `SELECT user_id FROM tenant_overview
+		WHERE role <> 'platform_admin' AND total_documents > 0 ORDER BY user_id LIMIT 1`).Scan(&uid); err != nil {
+		t.Skipf("no tenant with documents to exercise: %v", err)
+	}
+
+	var detail struct {
+		Tenant struct {
+			TotalDocuments int64 `json:"total_documents"`
+		} `json:"tenant"`
+		Health struct {
+			Channels []struct {
+				ConfigID int32 `json:"config_id"`
+			} `json:"channels"`
+			Knowledge struct {
+				Documents   int64            `json:"documents"`
+				Chunks      int64            `json:"chunks"`
+				IndexStates map[string]int64 `json:"index_states"`
+			} `json:"knowledge"`
+			Gaps int64 `json:"gaps"`
+		} `json:"health"`
+	}
+	opsCall(t, func(w http.ResponseWriter, r *http.Request) (any, error) {
+		return app.tenantDetail(w, r, uid)
+	}, "/api/v1/platform/tenants/detail", &detail)
+
+	if detail.Health.Knowledge.Documents != detail.Tenant.TotalDocuments {
+		t.Errorf("knowledge.documents %d != overview total_documents %d",
+			detail.Health.Knowledge.Documents, detail.Tenant.TotalDocuments)
+	}
+	if detail.Health.Knowledge.Chunks < 0 || detail.Health.Gaps < 0 {
+		t.Errorf("negative counter in health card: %+v", detail.Health)
+	}
+	// The index-state breakdown partitions the document count.
+	var states int64
+	for _, n := range detail.Health.Knowledge.IndexStates {
+		states += n
+	}
+	if states != detail.Health.Knowledge.Documents {
+		t.Errorf("index_states sum to %d but there are %d documents", states, detail.Health.Knowledge.Documents)
+	}
+
+	// Channels must match the fleet-wide view for this tenant.
+	var ch channelsShape
+	opsCall(t, app.platformChannels, "/api/v1/platform/channels", &ch)
+	fleet := map[int32]bool{}
+	for _, row := range ch.Data {
+		if row.UserID == uid {
+			fleet[row.ConfigID] = true
+		}
+	}
+	if len(fleet) != len(detail.Health.Channels) {
+		t.Errorf("health lists %d channels, the fleet view has %d for tenant %d",
+			len(detail.Health.Channels), len(fleet), uid)
+	}
+	for _, c := range detail.Health.Channels {
+		if !fleet[c.ConfigID] {
+			t.Errorf("health lists config %d which the fleet view does not", c.ConfigID)
+		}
+	}
+}
+
+// The gaps report drives advice to merchants ("add these documents"), so the
+// per-tenant rows and the totals have to describe the same set.
+//
+// Read-only; gated on DATABASE_URL.
+func TestPlatformKnowledgeGapsConsistency(t *testing.T) {
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		t.Skip("DATABASE_URL not set — this test needs a real migrated database")
+	}
+	pool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		t.Skipf("DATABASE_URL unparseable, skipping: %v", err)
+	}
+	defer pool.Close()
+	app := &App{DB: pool, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Cfg: &config.Config{}}
+
+	var gaps struct {
+		Days      int   `json:"days"`
+		PerTenant int   `json:"per_tenant"`
+		TotalGaps int64 `json:"total_gaps"`
+		Tenants   []struct {
+			UserID    int32  `json:"user_id"`
+			Username  string `json:"username"`
+			GapTotal  int64  `json:"gap_total"`
+			Questions []struct {
+				Query string `json:"query"`
+				Hits  int64  `json:"hits"`
+			} `json:"questions"`
+		} `json:"tenants"`
+		TenantsWithGaps int `json:"tenants_with_gaps"`
+	}
+	opsCall(t, app.platformKnowledgeGaps, "/api/v1/platform/knowledge-gaps?days=30&per_tenant=3", &gaps)
+
+	if gaps.Days != 30 || gaps.PerTenant != 3 {
+		t.Errorf("echoed window = %d days / %d per tenant, want 30/3", gaps.Days, gaps.PerTenant)
+	}
+	if gaps.TenantsWithGaps != len(gaps.Tenants) {
+		t.Errorf("tenants_with_gaps %d != %d rows", gaps.TenantsWithGaps, len(gaps.Tenants))
+	}
+	seen := map[int32]bool{}
+	var sum int64
+	for _, row := range gaps.Tenants {
+		if seen[row.UserID] {
+			t.Errorf("tenant %d appears twice", row.UserID)
+		}
+		seen[row.UserID] = true
+		if row.Username == "" {
+			t.Errorf("tenant %d has no username", row.UserID)
+		}
+		if int64(len(row.Questions)) > int64(gaps.PerTenant) {
+			t.Errorf("tenant %d returned %d questions, cap is %d", row.UserID, len(row.Questions), gaps.PerTenant)
+		}
+		if row.GapTotal < int64(len(row.Questions)) {
+			t.Errorf("tenant %d: total %d < shown %d", row.UserID, row.GapTotal, len(row.Questions))
+		}
+		// Ranked by hits: the operator reads the list top-down.
+		for i := 1; i < len(row.Questions); i++ {
+			if row.Questions[i-1].Hits < row.Questions[i].Hits {
+				t.Errorf("tenant %d questions are not ranked by hits", row.UserID)
+			}
+		}
+		for _, q := range row.Questions {
+			if q.Hits < 1 || q.Query == "" {
+				t.Errorf("tenant %d has an empty question or zero hits: %+v", row.UserID, q)
+			}
+		}
+		sum += row.GapTotal
+	}
+	if sum != gaps.TotalGaps {
+		t.Errorf("per-tenant totals sum to %d but total_gaps is %d", sum, gaps.TotalGaps)
 	}
 }

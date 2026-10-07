@@ -1335,9 +1335,12 @@ export interface TenantSessionRow {
 export interface TenantDetail {
   tenant: TenantItem;
   sessions: TenantSessionRow[];
+  /** Channels / knowledge / seats / activity / unanswered questions. */
+  health: TenantHealth;
 }
 
-export interface PlatformAnalytics {  total_tenants: number;
+export interface PlatformAnalytics {
+  total_tenants: number;
   active_tenants: number;
   total_sessions: number;
   total_messages: number;
@@ -1548,6 +1551,59 @@ export function getPlatformChannels() {
  */
 export function retryPlatformChannelFailed(configId: number) {
   return apiFetch<{ requeued: number }>(`/platform/channels/${configId}/retry-failed`, { method: "POST" });
+}
+
+// --- Tenant health card (inside the tenant detail pane) ---
+
+export interface TenantChannelHealth {
+  config_id: number;
+  platform: string;
+  status: string;
+  account_name: string;
+  checked_at: string | null;
+  outbox_pending: number;
+  outbox_failed: number;
+}
+
+export interface TenantHealth {
+  channels: TenantChannelHealth[];
+  knowledge: {
+    documents: number;
+    chunks: number;
+    last_upload_at: string | null;
+    /** Keyed by the ingest path's own vocabulary (indexed/pending/failed/...). */
+    index_states: Record<string, number>;
+  };
+  seats: { active: number; invites: number };
+  activity: {
+    sessions_7d: number;
+    messages_7d: number;
+    last_session_at: string | null;
+    last_message_at: string | null;
+  };
+  gaps: number;
+}
+
+// --- Cross-tenant knowledge gaps ---
+
+export interface KnowledgeGapTenant {
+  user_id: number;
+  username: string;
+  plan: string;
+  gap_total: number;
+  questions: { query: string; hits: number; last_seen: string }[];
+}
+
+export interface PlatformKnowledgeGaps {
+  days: number;
+  per_tenant: number;
+  tenants: KnowledgeGapTenant[];
+  tenants_with_gaps: number;
+  total_gaps: number;
+}
+
+export function getPlatformKnowledgeGaps(days = 30, perTenant = 3) {
+  return apiFetch<PlatformKnowledgeGaps>(`/platform/knowledge-gaps?days=${days}&per_tenant=${perTenant}`);
 }
 export function createTenant(input: { username: string; email: string; password: string; plan?: string }) {
   return apiFetch<{ user_id: number; message: string }>("/platform/tenants", { method: "POST", body: JSON.stringify(input) });

@@ -3,23 +3,23 @@
 import * as React from "react";
 import useSWR from "swr";
 import {
-  getPlatformChannels, getPlatformRevenue, getPlatformSpend, getPlatformSupport, getPlatformTodo,
+  getPlatformChannels, getPlatformKnowledgeGaps, getPlatformRevenue, getPlatformSpend, getPlatformSupport, getPlatformTodo,
   retryPlatformChannelFailed,
-  type PlatformChannel, type RevenuePayment, type RevenueTenant, type SupportMessage,
+  type KnowledgeGapTenant, type PlatformChannel, type RevenuePayment, type RevenueTenant, type SupportMessage,
 } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState } from "@/components/empty-state";
 import {
-  AlertTriangle, Building2, Coins, CreditCard, Headset, Loader2, RefreshCw, RotateCcw, Zap,
+  AlertTriangle, Building2, Coins, CreditCard, Headset, Loader2, MessageSquare, RefreshCw, RotateCcw, Zap,
 } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { fmtDateTime, fmtInt } from "@/lib/format";
 import { toast } from "sonner";
 
 /** Section keys the todo card can jump to. */
-export type PlatformSection = "support" | "revenue" | "channels";
+export type PlatformSection = "support" | "revenue" | "channels" | "gaps";
 
 function Tile({
   label, value, tone = "muted", onClick, hint,
@@ -404,6 +404,75 @@ export function ChannelsPanel() {
           )}
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+/** Per-tenant unanswered questions — the operator's coaching material. */
+export function KnowledgeGapsPanel() {
+  const { t, tf } = useI18n();
+  const [days, setDays] = React.useState(30);
+  const { data, isLoading, mutate } = useSWR(["platform-gaps", days], () => getPlatformKnowledgeGaps(days, 3));
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h3 className="text-sm font-semibold text-foreground">{t("po.gaps.title")}</h3>
+          <p className="text-[11px] text-muted-foreground">{t("po.gaps.hint")}</p>
+        </div>
+        <div className="flex items-center gap-2">
+          {data && (
+            <Badge variant={data.total_gaps > 0 ? "warning" : "outline"} className="h-6 px-2 text-[11px] font-normal">
+              {tf("po.gaps.summary", { tenants: data.tenants_with_gaps, gaps: data.total_gaps })}
+            </Badge>
+          )}
+          {[7, 30, 90].map((d) => (
+            <Button key={d} size="sm" variant={days === d ? "default" : "outline"} className="h-7 px-2 text-[11px]" onClick={() => setDays(d)}>
+              {d}d
+            </Button>
+          ))}
+          <Button size="sm" variant="outline" className="h-7 gap-1 px-2 text-[11px]" onClick={() => void mutate()} disabled={isLoading}>
+            <RefreshCw className={isLoading ? "size-3 animate-spin" : "size-3"} />
+          </Button>
+        </div>
+      </div>
+
+      {!data || data.tenants.length === 0 ? (
+        <Card>
+          <CardContent className="pt-4">
+            <EmptyState icon={MessageSquare} title={t("po.gaps.empty")} />
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {data.tenants.map((row: KnowledgeGapTenant) => (
+            <Card key={row.user_id}>
+              <CardHeader className="pb-2">
+                <CardTitle className="flex items-center gap-2 text-sm">
+                  {row.username}
+                  <Badge variant="outline" className="h-5 px-1.5 text-[10px] font-normal">{row.plan}</Badge>
+                  <span className="ml-auto text-[11px] font-normal text-muted-foreground">
+                    {tf("po.gaps.tenantTotal", { n: row.gap_total })}
+                  </span>
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <ol className="space-y-1.5">
+                  {row.questions.map((q, i) => (
+                    <li key={i} className="flex items-start gap-2 text-xs">
+                      <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-accent text-[10px] font-semibold">{i + 1}</span>
+                      <span className="min-w-0 flex-1 break-words text-foreground">{q.query}</span>
+                      <span className="shrink-0 tabular-nums text-muted-foreground">×{q.hits}</span>
+                    </li>
+                  ))}
+                </ol>
+                <p className="mt-2 text-[10px] text-muted-foreground">{t("po.gaps.howto")}</p>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
