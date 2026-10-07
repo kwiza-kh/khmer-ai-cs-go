@@ -11,6 +11,7 @@ import { Bell, CheckCheck, MessageSquare, Headset, AlertTriangle, Coins, Info } 
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
 import { fmtDateTime } from "@/lib/format";
+import { useRealtimeConnected } from "@/lib/realtime";
 
 const KIND_ICON: Record<string, typeof Bell> = {
   session: MessageSquare,
@@ -21,21 +22,35 @@ const KIND_ICON: Record<string, typeof Bell> = {
 };
 
 /**
- * Notification bell for the sidebar. Polls unread count every 30s; the
- * realtime WS hub also triggers a refresh via useInboxRealtime in pages.
+ * Notification bell for the sidebar.
+ *
+ * Both feeds are driven by the shared realtime socket (the layout refreshes them
+ * on every notification event), so the intervals below are a safety net rather
+ * than the mechanism: slow while the socket is up, fast when it is down.
  */
 export function NotificationBell() {
   const { t } = useI18n();
   const [open, setOpen] = React.useState(false);
+  const realtimeConnected = useRealtimeConnected();
   const { data: unread, mutate: mutateUnread } = useSWR("notif-unread", notificationsUnread, {
-    refreshInterval: 30000,
+    refreshInterval: realtimeConnected ? 60_000 : 15_000,
   });
-  const { data: items, mutate: mutateItems } = useSWR("notif-list", () => listNotifications(30), {
-    refreshInterval: 60000,
-  });
+  // The list is only read while the panel is open. Polling it closed cost a
+  // request a minute per tab for rows nobody was looking at; reopening the panel
+  // revalidates anyway (SWR revalidates a key that becomes active again).
+  const { data: items, mutate: mutateItems } = useSWR(
+    open ? "notif-list" : null,
+    () => listNotifications(30),
+    { refreshInterval: realtimeConnected ? 120_000 : 30_000 },
+  );
 
-  // Expose a global refresh (pages call this after WS notification events).
+  // Expose a global refresh (the layout's realtime subscriber calls this on
+  // every notification event, so the bell follows the socket rather than its
+  // own timer).
   React.useEffect(() => {
+    // SAFETY: `window` carries no declaration for this global, so the cast is
+    // the only way to name it. The assignment IS the invariant — the layout's
+    // optional call treats a bell that never mounted as a no-op.
     (window as unknown as { __refreshNotifs?: () => void }).__refreshNotifs = () => {
       void mutateUnread();
       void mutateItems();
