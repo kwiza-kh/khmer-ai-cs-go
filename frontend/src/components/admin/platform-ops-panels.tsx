@@ -4,6 +4,7 @@ import * as React from "react";
 import useSWR from "swr";
 import {
   getPlatformChannels, getPlatformRevenue, getPlatformSpend, getPlatformSupport, getPlatformTodo,
+  retryPlatformChannelFailed,
   type PlatformChannel, type RevenuePayment, type RevenueTenant, type SupportMessage,
 } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
@@ -11,10 +12,11 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState } from "@/components/empty-state";
 import {
-  AlertTriangle, Building2, Coins, CreditCard, Headset, Loader2, RefreshCw, Zap,
+  AlertTriangle, Building2, Coins, CreditCard, Headset, Loader2, RefreshCw, RotateCcw, Zap,
 } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { fmtDateTime, fmtInt } from "@/lib/format";
+import { toast } from "sonner";
 
 /** Section keys the todo card can jump to. */
 export type PlatformSection = "support" | "revenue" | "channels";
@@ -302,8 +304,25 @@ export function RevenuePanel() {
 
 /** Every tenant's channel state plus its outbound backlog. */
 export function ChannelsPanel() {
-  const { t } = useI18n();
+  const { t, tf } = useI18n();
   const { data, isLoading, mutate } = useSWR("platform-channels", getPlatformChannels);
+  const [busy, setBusy] = React.useState<number | null>(null);
+
+  // Requeue this channel's failed sends. The operator reaches for this after
+  // fixing the cause — the tenant-side retry button cannot be used on someone
+  // else's tenant.
+  const retryFailed = async (configID: number) => {
+    setBusy(configID);
+    try {
+      const res = await retryPlatformChannelFailed(configID);
+      toast.success(res.requeued > 0 ? tf("po.channels.retried", { n: res.requeued }) : t("po.channels.nothingToRetry"));
+      void mutate();
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
 
   return (
     <div className="space-y-4">
@@ -357,7 +376,23 @@ export function ChannelsPanel() {
                         {c.checked_at ? fmtDateTime(c.checked_at) : t("po.channels.never")}
                       </td>
                       <td className="py-1.5 pr-3 text-right tabular-nums text-muted-foreground">{fmtInt(c.outbox_pending)}</td>
-                      <td className={`py-1.5 pr-3 text-right tabular-nums ${c.outbox_failed > 0 ? "text-danger" : "text-muted-foreground"}`}>{fmtInt(c.outbox_failed)}</td>
+                      <td className={`py-1.5 pr-3 text-right tabular-nums ${c.outbox_failed > 0 ? "text-danger" : "text-muted-foreground"}`}>
+                        {c.outbox_failed > 0 ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-6 gap-1 px-1.5 text-[10px] text-danger"
+                            disabled={busy !== null}
+                            onClick={() => void retryFailed(c.config_id)}
+                            title={c.last_error}
+                          >
+                            {busy === c.config_id ? <Loader2 className="size-3 animate-spin" /> : <RotateCcw className="size-3" />}
+                            {fmtInt(c.outbox_failed)} · {t("po.channels.retryFailed")}
+                          </Button>
+                        ) : (
+                          fmtInt(c.outbox_failed)
+                        )}
+                      </td>
                       <td className="py-1.5 max-w-[280px] truncate text-[11px] text-muted-foreground" title={c.last_error}>
                         {c.last_error || "—"}
                       </td>

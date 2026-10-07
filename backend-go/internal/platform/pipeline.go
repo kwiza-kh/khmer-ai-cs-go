@@ -1613,7 +1613,11 @@ func (p *Pipeline) deliver(ctx context.Context, d *outboundDelivery) {
 	}
 	p.Logger.Warn("delivery failed", "delivery_id", d.DeliveryID, "error", err.Error())
 	msg := textutil.TruncateRunes(err.Error(), 1000)
-	if _, ok := err.(*PolicyError); ok || d.Attempts >= maxAttempts {
+	// Terminal classes: a policy refusal, a tag Meta has not approved for this
+	// app (config, not weather — five attempts over hours cannot fix it), or an
+	// exhausted budget. Everything else gets another try with backoff.
+	_, policyErr := err.(*PolicyError)
+	if policyErr || errors.Is(err, ErrHumanTagNotApproved) || d.Attempts >= maxAttempts {
 		_, _ = p.DB.Exec(ctx, "UPDATE platform_outbox SET status='failed', next_attempt_at=$1, locked_at=NULL, last_error=$2, updated_at=NOW() WHERE delivery_id=$3", time.Now(), msg, d.DeliveryID)
 		p.alertOutboundFailures(ctx, d.Platform, msg)
 	} else {

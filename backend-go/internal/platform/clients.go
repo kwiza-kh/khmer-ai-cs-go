@@ -282,12 +282,37 @@ func downloadBytes(ctx context.Context, u string) ([]byte, string, error) {
 }
 
 // SendMessage sends one (already-chunked) message. Returns provider id.
+// ErrHumanTagNotApproved — Meta refused the HUMAN_AGENT tag because the app has
+// not been approved for it. Nothing about this is transient: the fix is an App
+// Review approval (or a reply inside the 24h window), so the sender classifies
+// it as terminal instead of burning the retry budget on it. Seen in production
+// on 2026-10-06: two Meta deliveries exhausted 5 attempts over hours with
+// `(#100) Cannot tag messages with "HUMAN_AGENT" without prior approval`.
+var ErrHumanTagNotApproved = errors.New("meta: HUMAN_AGENT tag is not approved for this app")
+
+// humanTagNotApproved reports whether this Meta 400 is the "tag needs approval"
+// refusal. Only meaningful when a tag was actually attached: the same status
+// text from a tagless send is a different problem and must stay retryable.
+func humanTagNotApproved(reqTag, errText string) bool {
+	return reqTag != "" && strings.Contains(errText, "Cannot tag messages")
+}
+
+// classifyMetaSendError decides whether a failed Meta send is the tag refusal
+// (terminal — see ErrHumanTagNotApproved) or something worth retrying, and wraps
+// the former in the sentinel the pipeline classifies by.
+func classifyMetaSendError(reqTag string, err error) error {
+	if humanTagNotApproved(reqTag, err.Error()) {
+		return fmt.Errorf("%w: %v", ErrHumanTagNotApproved, err)
+	}
+	return err
+}
+
 func (m *MetaClient) SendMessage(ctx context.Context, req *SendRequest) (string, error) {
 	account := m.accountID(req.Platform)
 	body := buildMetaMessageBody(req)
 	v, err := m.post(ctx, "/"+account+"/messages", body)
 	if err != nil {
-		return "", err
+		return "", classifyMetaSendError(req.Tag, err)
 	}
 	if id, ok := v["message_id"].(string); ok {
 		return id, nil

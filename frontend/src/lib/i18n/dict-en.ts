@@ -1299,6 +1299,9 @@ export const en: Dict = {
   "po.channels.checked": "Last check",
   "po.channels.never": "never",
   "po.channels.lastError": "Last error",
+  "po.channels.retryFailed": "retry",
+  "po.channels.retried": "requeued {n} sends",
+  "po.channels.nothingToRetry": "nothing to retry",
 
   // Two-factor on login
   "login.totp": "Verification code",

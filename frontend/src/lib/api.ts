@@ -1541,6 +1541,14 @@ export function getPlatformRevenue() {
 export function getPlatformChannels() {
   return apiFetch<PlatformChannels>("/platform/channels");
 }
+
+/**
+ * Requeue one channel's failed sends — the action after fixing the cause
+ * (Meta approved the HUMAN_AGENT tag, a credential was rotated).
+ */
+export function retryPlatformChannelFailed(configId: number) {
+  return apiFetch<{ requeued: number }>(`/platform/channels/${configId}/retry-failed`, { method: "POST" });
+}
 export function createTenant(input: { username: string; email: string; password: string; plan?: string }) {
   return apiFetch<{ user_id: number; message: string }>("/platform/tenants", { method: "POST", body: JSON.stringify(input) });
 }

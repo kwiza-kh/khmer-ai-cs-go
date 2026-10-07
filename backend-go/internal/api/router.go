@@ -339,6 +339,10 @@ func (a *App) Router() http.Handler {
 	authed.Handle("GET /api/v1/platform/support-messages", a.platformAdminOnly(a.handle(a.platformSupport)))
 	authed.Handle("GET /api/v1/platform/revenue", a.platformAdminOnly(a.handle(a.platformRevenue)))
 	authed.Handle("GET /api/v1/platform/channels", a.platformAdminOnly(a.handle(a.platformChannels)))
+	// Requeue one channel's failed sends: the action that follows fixing the
+	// cause (Meta tag approval, rotated credential). It writes to a tenant's
+	// queue, hence platformAdminOnly + the audit middleware.
+	authed.Handle("POST /api/v1/platform/channels/{id}/retry-failed", a.platformAdminOnly(a.handleDoc(a.platformRetryChannel)))
 	authed.Handle("GET /api/v1/platform/todo", a.platformAdminOnly(a.handle(a.platformTodo)))
 	authed.Handle("GET /api/v1/platform/audit-logs", a.platformAdminOnly(a.handle(a.listAuditLogs)))
 
