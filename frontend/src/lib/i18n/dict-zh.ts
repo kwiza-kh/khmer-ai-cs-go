@@ -1272,6 +1272,9 @@ export const zh: Dict = {
   "po.channels.checked": "最近检查",
   "po.channels.never": "从未",
   "po.channels.lastError": "最近错误",
+  "po.channels.retryFailed": "重试",
+  "po.channels.retried": "已重新排队 {n} 条",
+  "po.channels.nothingToRetry": "没有可重试的失败项",
 
   // 登录两步验证
   "login.totp": "验证码",

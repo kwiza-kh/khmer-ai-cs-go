@@ -1,10 +1,13 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // ============================================
@@ -347,4 +350,39 @@ func (a *App) platformChannels(w http.ResponseWriter, r *http.Request) (any, err
 	return map[string]any{
 		"data": out, "errors": errors, "outbox_pending": backlog, "outbox_failed": failed,
 	}, nil
+}
+
+// execer is the slice of pgxpool.Pool / pgx.Tx these flips need, so a test can
+// drive them inside a transaction that never commits.
+type execer interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+// retryFailedDeliveries puts every failed outbound delivery of one channel back
+// in the queue, with a clean attempt budget.
+//
+// A failed row is otherwise dead forever: the retry endpoint is tenant-scoped, so
+// the operator who just fixed the cause (Meta approved the tag, a credential was
+// rotated) cannot act on someone else's tenant. Seen in production on
+// 2026-10-06: two Meta sends stuck on the HUMAN_AGENT tag, visible in this
+// console and fixable nowhere.
+func retryFailedDeliveries(ctx context.Context, db execer, configID int32) (int64, error) {
+	tag, err := db.Exec(ctx,
+		"UPDATE platform_outbox SET status='pending', attempts=0, next_attempt_at=NOW(), locked_at=NULL, sent_at=NULL, last_error='', updated_at=NOW() "+
+			"WHERE config_id = $1 AND status = 'failed'", configID)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
+// platformRetryChannel — requeue this channel's failed sends (platformAdminOnly,
+// and therefore audited: it writes to a tenant's queue).
+func (a *App) platformRetryChannel(_ http.ResponseWriter, r *http.Request, configID int32) (any, error) {
+	n, err := retryFailedDeliveries(r.Context(), a.DB, configID)
+	if err != nil {
+		a.Logger.Error("retry failed deliveries failed", "config_id", configID, "error", err.Error())
+		return nil, ErrInternal("重试失败")
+	}
+	return map[string]any{"requeued": n}, nil
 }

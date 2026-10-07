@@ -1271,6 +1271,9 @@ export const km: Dict = {
   "po.channels.checked": "ពិនិត្យចុងក្រោយ",
   "po.channels.never": "មិនធ្លាប់",
   "po.channels.lastError": "កំហុសចុងក្រោយ",
+  "po.channels.retryFailed": "ព្យាយាមម្តងទៀត",
+  "po.channels.retried": "បានដាក់ជួរឡើងវិញ {n}",
+  "po.channels.nothingToRetry": "គ្មានអ្វីត្រូវព្យាយាមម្តងទៀត",
 
   // ការបញ្ជាក់ពីរជាន់ពេលចូល
   "login.totp": "លេខកូដផ្ទៀងផ្ទាត់",
