@@ -231,8 +231,14 @@ func (a *App) platformRevenue(w http.ResponseWriter, r *http.Request) (any, erro
 	}
 
 	// Recurring revenue from the configured price list — an estimate by
-	// construction (the operator sees the same numbers the checkout charges),
-	// and empty when a tier is not for sale.
+	// construction (the operator sees the same numbers the checkout charges), and
+	// empty when a tier is not for sale.
+	//
+	// Only tenants with time left on the clock count: a hand-granted plan
+	// (no paid_until) never paid and an already-lapsed one is not recurring
+	// revenue in force. The first production run summed a granted tenant and
+	// inflated the figure by a third — the tile is read as "money coming in",
+	// not as "plan list price".
 	prices := map[string]float64{}
 	if v := a.priceOf("pro"); v > 0 {
 		prices["pro"] = v
@@ -242,6 +248,9 @@ func (a *App) platformRevenue(w http.ResponseWriter, r *http.Request) (any, erro
 	}
 	var mrr float64
 	for _, row := range expiring {
+		if state, _ := row["state"].(string); state != "active" && state != "expiring" {
+			continue
+		}
 		plan, _ := row["plan"].(string)
 		if p, ok := prices[plan]; ok {
 			mrr += p
