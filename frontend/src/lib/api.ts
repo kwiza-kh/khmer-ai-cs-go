@@ -1313,6 +1313,12 @@ export interface TenantItem {
   total_sessions: number;
   total_messages: number;
   total_documents: number;
+  /** Telegram display name; empty for password/Google signups. */
+  display_name?: string | null;
+  /** Telegram-verified phone, when the account came through Telegram. */
+  phone?: string | null;
+  /** How this account can sign in: "password" | "google" | "telegram". */
+  auth_methods?: string[];
 }
 
 export interface TenantSessionRow {
@@ -1351,9 +1357,11 @@ export interface PaginatedTenants {
   page_size: number;
 }
 
-export function listTenants(params?: { q?: string; page?: number; pageSize?: number }) {
+export function listTenants(params?: { q?: string; page?: number; pageSize?: number; auth?: string }) {
   const qs = new URLSearchParams();
   if (params?.q) qs.set("q", params.q);
+  // auth=telegram|google|password narrows the list to one sign-in method.
+  if (params?.auth) qs.set("auth", params.auth);
   qs.set("page", String(params?.page ?? 1));
   qs.set("page_size", String(params?.pageSize ?? 50));
   return apiFetch<PaginatedTenants>(`/platform/tenants?${qs}`);
