@@ -40,7 +40,7 @@ import VoiceMessageBubble from "@/components/ui/voice-message-bubble";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { useAuth } from "@/lib/auth-client";
-import { useInboxRealtime } from "@/lib/realtime";
+import { useRealtimeConnected, useRealtimeEvent } from "@/lib/realtime";
 import { Markdown } from "@/components/markdown";
 import { useI18n } from "@/lib/i18n";
 import {
@@ -294,7 +294,10 @@ export default function InboxPage() {
     refreshTimerRef.current = setTimeout(() => { mutateInboxRef.current(); }, 150);
   }, [selectedSessionID]);
 
-  const wsConnected = useInboxRealtime(token, handleRealtimeEvent);
+  // The socket lives in the layout's RealtimeProvider (one per tab); this page
+  // only subscribes. `wsConnected` decides the fallback poll's pace.
+  const wsConnected = useRealtimeConnected();
+  useRealtimeEvent(handleRealtimeEvent);
 
   // Debounced copy of the search box for the SERVER query: typing stays
   // instant against the loaded page (below), while the server search catches
@@ -2026,7 +2029,14 @@ function InboundPlatformMediaPreview({ messageID, media }: { messageID: number; 
         // Inline player — no new tab, no forced download.
         setAudioURL(response.url);
       } else {
-        window.open(response.url, "_blank", "noopener,noreferrer");
+        // The URL comes from our own API (a signed object-store link), never
+        // from user input — but a scheme check costs nothing and refuses to
+        // open `javascript:`/`data:` if that source ever changes.
+        if (/^https:\/\//i.test(response.url)) {
+          window.open(response.url, "_blank", "noopener,noreferrer");
+        } else {
+          toast.error(t("inbox.couldNotOpenAttachment"));
+        }
       }
     } catch (err) {
       toast.error((err as Error).message || t("inbox.couldNotOpenAttachment"));

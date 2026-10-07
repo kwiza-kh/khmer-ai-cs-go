@@ -10,8 +10,7 @@ import {
   createHumanHandoffRequest, HumanHandoffPriority, HumanHandoffRequest, HumanHandoffRequestStatus,
   InboxItem, listHumanHandoffRequests, listInbox, takeoverSession, updateSessionStatus,
 } from "@/lib/api";
-import { useAuth } from "@/lib/auth-client";
-import { useInboxRealtime } from "@/lib/realtime";
+import { useRealtimeEvent } from "@/lib/realtime";
 import { useI18n } from "@/lib/i18n";
 import { fmtDateTime } from "@/lib/format";
 import { PageHeader } from "@/components/page-header";
@@ -49,19 +48,18 @@ const STATUS_KEYS: Record<HumanHandoffRequestStatus, string> = {
 };
 
 /**
+/**
  * Nudge the sidebar badge (layout exposes this global after its SWR mounts).
- *
- * SAFETY: window.__refreshHandoffBadge is assigned by the layout's own module
- * at runtime, so TypeScript cannot see it on Window. The cast only narrows the
- * lookup; the optional call keeps a layout that never mounted harmless.
  */
 function refreshHandoffBadge() {
+  // SAFETY: window.__refreshHandoffBadge is assigned by the layout at runtime,
+  // so TypeScript cannot see it on Window. The cast only narrows the lookup; the
+  // optional call keeps a layout that never mounted harmless.
   (window as unknown as { __refreshHandoffBadge?: () => void }).__refreshHandoffBadge?.();
 }
 
 export default function HandoffRequestsPage() {
   const router = useRouter();
-  const { token } = useAuth();
   const { t, tf } = useI18n();
   const [filter, setFilter] = React.useState<RequestFilter>("pending");
   const [workingID, setWorkingID] = React.useState<string | null>(null);
@@ -78,7 +76,9 @@ export default function HandoffRequestsPage() {
     if (error) toast.error((error as Error).message);
   }, [error]);
 
-  useInboxRealtime(token, React.useCallback(() => { void mutate(); refreshHandoffBadge(); }, [mutate]));
+  // Shared socket (layout's provider): refetch the queue on any session change.
+  // The sidebar badge refresh happens in the layout's own subscriber.
+  useRealtimeEvent(React.useCallback(() => { void mutate(); }, [mutate]));
 
   const customerName = (request: HumanHandoffRequest) =>
     request.user_display_name || request.session_title || request.platform_user_id || t("handoff.customer");

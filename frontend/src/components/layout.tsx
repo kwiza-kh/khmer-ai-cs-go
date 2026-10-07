@@ -22,7 +22,7 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { NotificationBell } from "@/components/notification-bell";
 import { LanguageSwitcher } from "@/components/language-switcher";
 import { useI18n } from "@/lib/i18n";
-import { useInboxRealtime } from "@/lib/realtime";
+import { RealtimeProvider, useRealtimeConnected, useRealtimeEvent } from "@/lib/realtime";
 
 /**
  * Sidebar nav row. Borrows nav-list-card's spring micro-interaction from the
@@ -130,7 +130,21 @@ function Brand({ iconOnly = false }: { iconOnly?: boolean }) {
 }
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
+  const { token } = useAuth();
+  // The socket sits ABOVE every consumer: the shell's badge/bell intervals read
+  // its state and pages subscribe to it, so a provider mounted inside the shell
+  // would sit below the very hooks that need it. AuthProvider is above both, and
+  // the shell calls useAuth() itself rather than taking props.
+  return (
+    <RealtimeProvider token={token}>
+      <AppLayoutShell>{children}</AppLayoutShell>
+    </RealtimeProvider>
+  );
+}
+
+function AppLayoutShell({ children }: { children: React.ReactNode }) {
   const { user, token, logout } = useAuth();
+  const realtimeConnected = useRealtimeConnected();
   const { t } = useI18n();
   const pathname = usePathname();
   const router = useRouter();
@@ -245,7 +259,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const { data: handoffPending, mutate: mutateHandoffPending } = useSWR(
     token ? "sidebar-handoff-pending" : null,
     () => listHumanHandoffRequests({ status: "pending", pageSize: 1 }),
-    { refreshInterval: 20_000 },
+    // Live when the socket is up (events drive it), slow otherwise — the fallback
+    // poll is the only thing keeping the badge honest without realtime, so it
+    // tightens when the connection is down instead of staying at one fixed rate.
+    { refreshInterval: realtimeConnected ? 60_000 : 15_000 },
   );
   // Expose a global refresh (the handoff-requests page calls this after
   // takeover/resolve/create so the badge updates without waiting for the WS).
@@ -257,10 +274,15 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     badgeGlobal.__refreshHandoffBadge = () => { void mutateHandoffPending(); };
     return () => { delete badgeGlobal.__refreshHandoffBadge; };
   }, [mutateHandoffPending]);
-  useInboxRealtime(token, React.useCallback((event) => {
+  // The socket itself lives in RealtimeProvider (one per tab, shared with every
+  // page); this component subscribes to it and refreshes the sidebar's badge and
+  // the bell. It is rendered INSIDE the provider below, which is why the
+  // subscription is not in this component body.
+  // Subscribed through the shared socket the provider owns (one per tab).
+  useRealtimeEvent(React.useCallback((event) => {
     if (event.type === "inbox.notification") {
-      // SAFETY: the same undeclared global; the optional call turns "the
-      // notification bell is not mounted" into a no-op instead of a TypeError.
+      // SAFETY: the bell owns its own SWR hooks and exposes this global; the
+      // optional call turns "the bell is not mounted" into a no-op.
       (window as unknown as { __refreshNotifs?: () => void }).__refreshNotifs?.();
     }
     if (event.type === "inbox.session") void mutateHandoffPending();
