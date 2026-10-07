@@ -27,6 +27,14 @@ import { PlatformTokensPanel } from "@/components/admin/platform-tokens-panel";
  * Platform super-admin console: cross-tenant management.
  * Only users with role = platform_admin can access (backend enforces).
  */
+
+// How an account can sign in, shown as badges on each tenant row. Same labels
+// the tenant-area user list uses.
+const AUTH_LABEL: Record<string, string> = {
+  password: "admin.authPassword",
+  google: "admin.authGoogle",
+  telegram: "admin.authTelegram",
+};
 export default function PlatformAdminPage() {
   const { t } = useI18n();
   const [section, setSection] = React.useState("overview");
@@ -143,7 +151,8 @@ function OverviewPanel() {
 function TenantsPanel() {
   const { t, tf } = useI18n();
   const [q, setQ] = React.useState("");
-  const { data, mutate } = useSWR(`platform-tenants-${q}`, () => listTenants({ q: q || undefined, pageSize: 100 }));
+  const [auth, setAuth] = React.useState("");
+  const { data, mutate } = useSWR(`platform-tenants-${q}-${auth}`, () => listTenants({ q: q || undefined, auth: auth || undefined, pageSize: 100 }));
   const [detail, setDetail] = React.useState<TenantDetail | null>(null);
 
   const toggle = async (tenant: TenantItem) => {
@@ -197,6 +206,26 @@ function TenantsPanel() {
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
             <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder={t("pa.searchTenantPh")} className="h-8 pl-8 text-xs" />
           </div>
+          {/* Sign-in method filter: "who registered through Telegram" is a
+              question the operator asks with a merchant on the phone. */}
+          <div className="flex flex-wrap gap-1.5">
+            {[
+              { key: "", labelKey: "pa.filterAll" },
+              { key: "telegram", labelKey: "admin.authTelegram" },
+              { key: "google", labelKey: "admin.authGoogle" },
+              { key: "password", labelKey: "admin.authPassword" },
+            ].map((f) => (
+              <Button
+                key={f.key || "all"}
+                size="sm"
+                variant={auth === f.key ? "default" : "outline"}
+                className="h-6 px-2 text-[11px]"
+                onClick={() => setAuth(f.key)}
+              >
+                {t(f.labelKey)}
+              </Button>
+            ))}
+          </div>
           {!data || data.data.length === 0 ? (
             <EmptyState icon={Building2} title={t("pa.noTenants")} />
           ) : (
@@ -205,7 +234,22 @@ function TenantsPanel() {
                 <div key={tenant.user_id} className="rounded-md border border-border p-2.5 space-y-1.5">
                   <div className="flex items-center gap-2">
                     <div className="flex-1 min-w-0">
-                      <p className="text-xs font-medium truncate">{tenant.username} <span className="text-muted-foreground font-normal">· {tenant.email}</span></p>
+                      {/* A Telegram signup has NO e-mail; rendering "· " next to
+                          the name is how two accounts end up looking alike.
+                          Show the identity, the phone and the sign-in methods. */}
+                      <p className="flex flex-wrap items-center gap-1.5 text-xs font-medium">
+                        <span className="truncate">{tenant.username}</span>
+                        {(tenant.auth_methods ?? []).map((m) => (
+                          <Badge key={m} variant="outline" className="h-4 shrink-0 px-1.5 text-[10px] font-normal text-muted-foreground">
+                            {AUTH_LABEL[m] ? t(AUTH_LABEL[m]) : m}
+                          </Badge>
+                        ))}
+                      </p>
+                      {(tenant.display_name || tenant.phone || tenant.email) && (
+                        <p className="truncate text-[11px] text-muted-foreground">
+                          {[tenant.display_name, tenant.phone, tenant.email].filter(Boolean).join(" · ")}
+                        </p>
+                      )}
                     </div>
                     <Badge variant={tenant.is_active ? "success" : "destructive"} className="h-4 px-1.5 text-[11px]">{tenant.is_active ? t("pa.badgeActive") : t("pa.badgeDisabled")}</Badge>
                   </div>

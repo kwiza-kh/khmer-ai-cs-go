@@ -7,8 +7,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"khmer-ai-cs-go/internal/auth"
 	"khmer-ai-cs-go/internal/usage"
 )
@@ -33,35 +31,59 @@ func (a *App) listTenants(w http.ResponseWriter, r *http.Request) (any, error) {
 	}
 	offset := (page - 1) * size
 
-	var total int64
-	var rows []map[string]any
-	if q == "" {
-		_ = a.DB.QueryRow(r.Context(), "SELECT COUNT(*) FROM users WHERE role <> 'platform_admin'").Scan(&total)
-		rows = a.queryTenantOverview(r, "", size, offset)
-	} else {
-		pattern := "%" + q + "%"
-		_ = a.DB.QueryRow(r.Context(), "SELECT COUNT(*) FROM users WHERE role <> 'platform_admin' AND (username ILIKE $1 OR email ILIKE $1)", pattern).Scan(&total)
-		rows = a.queryTenantOverview(r, pattern, size, offset)
+	// The search covers identity, not just the login name: a Telegram signup has
+	// NO e-mail and its username is either the Telegram @handle or "tg_<id>"
+	// when the account has no handle at all — asking an operator to type that is
+	// asking them not to find the person. display_name, phone and the Telegram
+	// subject are searchable for the same reason. auth= narrows to one sign-in
+	// method (telegram | google | password).
+	auth := r.URL.Query().Get("auth")
+	pattern := "%"
+	if q != "" {
+		pattern = "%" + q + "%"
 	}
+
+	var total int64
+	if err := a.DB.QueryRow(r.Context(), tenantCountQuery, q, pattern, auth).Scan(&total); err != nil {
+		return nil, ErrInternal("查询失败")
+	}
+	rows := a.queryTenantOverview(r, q, pattern, auth, size, offset)
 	return map[string]any{"data": rows, "total": total, "page": page, "page_size": size}, nil
 }
 
-func (a *App) queryTenantOverview(r *http.Request, pattern string, size, offset int) []map[string]any {
+// tenantListWhere is shared by the tenant list and its count, so a page's total
+// can never disagree with the rows it returns. Both queries are constant
+// strings — every user-supplied value is a bound parameter ($1 = "the search is
+// empty" marker, $2 = the LIKE pattern, $3 = the auth filter) — so no request
+// input is ever concatenated into SQL. The list joins the users table for the
+// identity columns (the view carries aggregates only); the count does not need
+// it, because tenant_billing is 1:1 with users.
+const tenantListWhere = `u.role <> 'platform_admin'
+		AND ($1 = '' OR u.username ILIKE $2 OR COALESCE(u.email,'') ILIKE $2
+			OR COALESCE(u.display_name,'') ILIKE $2 OR COALESCE(u.phone,'') ILIKE $2
+			OR COALESCE(u.telegram_sub,'') ILIKE $2)
+		AND ($3 = '' OR ($3 = 'telegram' AND u.telegram_sub IS NOT NULL)
+			OR ($3 = 'google' AND u.google_sub IS NOT NULL)
+			OR ($3 = 'password' AND COALESCE(u.password_hash,'') <> ''))`
+
+const tenantCountQuery = "SELECT COUNT(*) FROM users u WHERE " + tenantListWhere
+
+const tenantListQuery = `SELECT t.user_id, t.username, COALESCE(t.email,''), t.role, t.is_active, t.created_at,
+			t.plan, t.messages_used, t.message_quota, t.docs_used, t.doc_quota,
+			t.total_sessions, t.total_messages, t.total_documents,
+			COALESCE(u.display_name,''), COALESCE(u.phone,''),
+			u.telegram_sub IS NOT NULL, u.google_sub IS NOT NULL, COALESCE(u.password_hash,'') <> ''
+		FROM tenant_overview t JOIN users u ON u.user_id = t.user_id
+		WHERE ` + tenantListWhere + `
+		ORDER BY t.created_at DESC LIMIT $4 OFFSET $5`
+
+func (a *App) queryTenantOverview(r *http.Request, q, pattern, auth string, size, offset int) []map[string]any {
 	rows := make([]map[string]any, 0)
-	var query string
-	if pattern == "" {
-		query = "SELECT user_id, username, COALESCE(email,''), role, is_active, created_at, plan, messages_used, message_quota, docs_used, doc_quota, total_sessions, total_messages, total_documents FROM tenant_overview WHERE role <> 'platform_admin' ORDER BY created_at DESC LIMIT $1 OFFSET $2"
-	} else {
-		query = "SELECT user_id, username, COALESCE(email,''), role, is_active, created_at, plan, messages_used, message_quota, docs_used, doc_quota, total_sessions, total_messages, total_documents FROM tenant_overview WHERE role <> 'platform_admin' AND (username ILIKE $3 OR email ILIKE $3) ORDER BY created_at DESC LIMIT $1 OFFSET $2"
-	}
-	var rws pgx.Rows
-	var qerr error
-	if pattern == "" {
-		rws, qerr = a.DB.Query(r.Context(), query, size, offset)
-	} else {
-		rws, qerr = a.DB.Query(r.Context(), query, size, offset, pattern)
-	}
+	rws, qerr := a.DB.Query(r.Context(), tenantListQuery, q, pattern, auth, size, offset)
 	if qerr != nil {
+		// The caller renders whatever comes back; an empty page would look like
+		// "no tenants match" instead of "the query failed".
+		a.Logger.Error("tenant overview query failed", "error", qerr.Error())
 		return rows
 	}
 	defer rws.Close()
@@ -71,14 +93,27 @@ func (a *App) queryTenantOverview(r *http.Request, pattern string, size, offset 
 		var isActive bool
 		var createdAt time.Time
 		var messagesUsed, messageQuota, docsUsed, docQuota, totalSessions, totalMessages, totalDocuments int64
-		if err := rws.Scan(&userID, &username, &email, &role, &isActive, &createdAt, &plan, &messagesUsed, &messageQuota, &docsUsed, &docQuota, &totalSessions, &totalMessages, &totalDocuments); err != nil {
+		var displayName, phone string
+		var hasTelegram, hasGoogle, hasPassword bool
+		if err := rws.Scan(&userID, &username, &email, &role, &isActive, &createdAt, &plan, &messagesUsed, &messageQuota, &docsUsed, &docQuota, &totalSessions, &totalMessages, &totalDocuments, &displayName, &phone, &hasTelegram, &hasGoogle, &hasPassword); err != nil {
 			continue
+		}
+		authMethods := make([]string, 0, 3)
+		if hasPassword {
+			authMethods = append(authMethods, "password")
+		}
+		if hasGoogle {
+			authMethods = append(authMethods, "google")
+		}
+		if hasTelegram {
+			authMethods = append(authMethods, "telegram")
 		}
 		rows = append(rows, map[string]any{
 			"user_id": userID, "username": username, "email": email, "role": role, "is_active": isActive,
 			"created_at": createdAt, "plan": plan, "messages_used": messagesUsed, "message_quota": messageQuota,
 			"docs_used": docsUsed, "doc_quota": docQuota, "total_sessions": totalSessions,
 			"total_messages": totalMessages, "total_documents": totalDocuments,
+			"display_name": displayName, "phone": phone, "auth_methods": authMethods,
 		})
 	}
 	if err := rws.Err(); err != nil {
