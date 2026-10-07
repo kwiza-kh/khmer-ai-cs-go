@@ -33,7 +33,7 @@ func daysParam(r *http.Request, def int) int {
 //
 // Model spend and token counters are deliberately NOT here: what a tenant is
 // billed is model-metered data, and the operator surface that owns it is
-// platformAdminOnly (/admin/tokens/stats, /platform/*). A tenant owner sees
+// platformAdminOnly (/platform/tokens, /platform/*). A tenant owner sees
 // conversation outcomes, not the platform's cost basis.
 func (a *App) analyticsOverview(w http.ResponseWriter, r *http.Request) (any, error) {
 	user, _ := UserFrom(r)
@@ -220,54 +220,6 @@ func (a *App) languageBreakdown(w http.ResponseWriter, r *http.Request) (any, er
 }
 
 // ============================================
-// Token stats
-// ============================================
-
-// tokenStats — totals + daily series for /admin/tokens.
-func (a *App) tokenStats(w http.ResponseWriter, r *http.Request) (any, error) {
-	user, _ := UserFrom(r)
-	days := daysParam(r, 30)
-	since := time.Now().AddDate(0, 0, -days)
-
-	var totalTokens int64
-	var totalCost, cacheHit float64
-	err := a.DB.QueryRow(r.Context(), `SELECT COALESCE(SUM(total_tokens),0), COALESCE(SUM(cost_estimate),0),
-			CASE WHEN COALESCE(SUM(prompt_tokens),0) = 0 THEN 0
-				ELSE COALESCE(SUM(cached_tokens),0)::float8 / SUM(prompt_tokens)::float8 * 100.0 END
-		FROM token_usage WHERE user_id=$1 AND created_at>=$2`, user.UserID, since).
-		Scan(&totalTokens, &totalCost, &cacheHit)
-	if err != nil {
-		return nil, ErrInternal("查询失败")
-	}
-	rows, err := a.DB.Query(r.Context(), `SELECT to_char(created_at::date,'YYYY-MM-DD'), COALESCE(SUM(total_tokens),0), COALESCE(SUM(cost_estimate),0)
-		FROM token_usage WHERE user_id=$1 AND created_at>=$2 GROUP BY 1 ORDER BY 1`, user.UserID, since)
-	if err != nil {
-		return nil, ErrInternal("查询失败")
-	}
-	defer rows.Close()
-	daily := make([]map[string]any, 0)
-	for rows.Next() {
-		var d string
-		var t int64
-		var c float64
-		if rows.Scan(&d, &t, &c) == nil {
-			daily = append(daily, map[string]any{"date": d, "tokens": t, "cost": c})
-		}
-	}
-	// The totals above come from their own aggregate query, so a truncated day
-	// list would contradict them without saying why.
-	if err := rows.Err(); err != nil {
-		return nil, ErrInternal("查询失败")
-	}
-	return map[string]any{
-		"total_tokens":   totalTokens,
-		"total_cost":     totalCost,
-		"cache_hit_rate": cacheHit,
-		"daily_usage":    daily,
-	}, nil
-}
-
-// ============================================
 // Feedback list
 // ============================================
 
@@ -436,7 +388,7 @@ func (a *App) reportCSV(w http.ResponseWriter, r *http.Request) {
 	user, _ := UserFrom(r)
 	kind := r.PathValue("kind")
 	// The token export is the platform's cost basis: platformAdminOnly, like
-	// /admin/tokens/stats. The conversation exports stay tenant-visible.
+	// /platform/tokens. The conversation exports stay tenant-visible.
 	if kind == "tokens" && !user.IsPlatformAdmin() {
 		WriteJSON(w, http.StatusForbidden, map[string]string{"error": "需要平台管理员权限"})
 		return
