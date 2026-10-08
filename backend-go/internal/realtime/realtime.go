@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -92,6 +93,12 @@ type Hub struct {
 	mu    sync.Mutex
 	conns map[int32]map[*conn]struct{}
 
+	// authFailures counts rejected handshakes, so a storm is diagnosable from
+	// the server side. Measured 2026-10-08: 214 of 240 handshakes were rejected
+	// with 401 and the log said nothing about why; the client's retry loop was
+	// the only evidence the operator had.
+	authFailures atomic.Int64
+
 	upgrader websocket.Upgrader
 }
 
@@ -131,8 +138,9 @@ func (h *Hub) Start(ctx context.Context) {
 // ServeHTTP upgrades an authenticated request to a WebSocket connection.
 // It implements http.Handler so it can be mounted directly on the router.
 func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	userID, ok := h.authenticate(r)
-	if !ok {
+	userID, reason := h.authenticate(r)
+	if reason != "" {
+		h.noteAuthFailure(reason, r)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":"令牌无效或已过期"}`))
@@ -154,10 +162,29 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	go c.readPump()
 }
 
+// noteAuthFailure records why a handshake was rejected, at a bounded rate: the
+// first rejection and then every fiftieth. Enough to tell "the client has no
+// token" from "its token is stale" from "it was revoked", quiet enough to
+// survive a client that is looping — the shape this signal arrived in.
+func (h *Hub) noteAuthFailure(reason string, r *http.Request) {
+	n := h.authFailures.Add(1)
+	if n != 1 && n%50 != 0 {
+		return
+	}
+	if h.Logger != nil {
+		h.Logger.Warn("websocket handshake rejected", "reason", reason,
+			"origin", r.Header.Get("Origin"), "rejected_total", n)
+	}
+}
+
 // authenticate extracts the JWT. Browsers cannot set the Authorization header
 // on a WebSocket handshake, so the token travels as the subprotocol after
 // "khmer-ai-cs"; the header form stays as a fallback for non-browser clients.
-func (h *Hub) authenticate(r *http.Request) (int32, bool) {
+//
+// It returns "" when the token is good, or the reason it was not: "no_token",
+// "bad_token" or "revoked". The reason is what makes a rejection storm readable
+// (see noteAuthFailure).
+func (h *Hub) authenticate(r *http.Request) (int32, string) {
 	token := ""
 	protos := websocket.Subprotocols(r)
 	for i, p := range protos {
@@ -172,11 +199,11 @@ func (h *Hub) authenticate(r *http.Request) (int32, bool) {
 		}
 	}
 	if token == "" {
-		return 0, false
+		return 0, "no_token"
 	}
 	claims, err := h.JWT.ParseToken(token)
 	if err != nil {
-		return 0, false
+		return 0, "bad_token"
 	}
 	if h.IsActive != nil {
 		active, tokenVersion := h.IsActive(r.Context(), claims.UserID)
@@ -184,10 +211,10 @@ func (h *Hub) authenticate(r *http.Request) (int32, bool) {
 			// Same revocation predicate as authMiddleware: a token whose tv no
 			// longer matches users.token_version is invalidated for new
 			// handshakes exactly as it is for every REST call.
-			return 0, false
+			return 0, "revoked"
 		}
 	}
-	return claims.UserID, true
+	return claims.UserID, ""
 }
 
 func (h *Hub) register(c *conn) bool {

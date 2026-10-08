@@ -137,7 +137,6 @@ func TestInboundStageListIsStable(t *testing.T) {
 		"prepare-grounding",
 		"route-inbound",
 		"notify-owner",
-		"cache-lookup",
 		"generate",
 		"guard-reply",
 		"screen-reply",

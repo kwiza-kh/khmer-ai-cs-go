@@ -122,9 +122,9 @@ func (a *App) chatHistory(ctx context.Context, sessionID string, reqHistory []ge
 // context after the client hangs up; that combined helper had no callers left
 // and was deleted — going through it would have stored the customer message
 // twice on the widget path, which persists the visitor row itself.
-// modelName overrides the stamped model_name — cache hits pass
-// "reply-cache" so replays stay distinguishable from real generations; ""
-// stamps the live Gemini model.
+// modelName overrides the stamped model_name — a canned reply passes
+// "smalltalk-template" so the console can tell it from a paid generation; ""
+// stamps the live model.
 func (a *App) persistModelReply(ctx context.Context, userID int32, sessionID string, result gemini.ChatResult, reply string, groundCtx *rag.GroundingContext, language string, now time.Time, modelName string) {
 	if language != "" {
 		_, _ = a.DB.Exec(ctx, "UPDATE sessions SET language = $2 WHERE session_id = $1 AND (language = '' OR language IS NULL)", sessionID, language)
@@ -236,20 +236,6 @@ func (a *App) chatPlain(w http.ResponseWriter, r *http.Request) (any, error) {
 		}, nil
 	}
 
-	// Semantic reply cache: an identical ask was already generated, guarded and
-	// stored for this tenant, so it answers without retrieval and without
-	// generation — one embedding plus one indexed search. The tenant's cache is
-	// dropped whenever its knowledge base changes (rag.Service.KBChanged).
-	if a.Cache != nil && a.Cache.Enabled() {
-		if cached, hit := a.Cache.Lookup(r.Context(), user.UserID, req.Message, language); hit {
-			a.persistModelReply(r.Context(), user.UserID, sessionID, gemini.ChatResult{}, cached, &rag.GroundingContext{}, language, time.Now(), "reply-cache")
-			return map[string]any{
-				"reply": cached, "session_id": sessionID, "tokens_used": 0, "cached_tokens": 0,
-				"used_mock": false, "cached": true,
-			}, nil
-		}
-	}
-
 	// Spend gate (see usage.Budget): when the rolling Gemini window is nearly
 	// full, this turn fails in milliseconds instead of paying for retrieval plus
 	// generation and then returning Google's 429. The operator gets the number,
@@ -289,17 +275,6 @@ func (a *App) chatPlain(w http.ResponseWriter, r *http.Request) (any, error) {
 		reply = gemini.SanitizeReply(reply)
 	}
 	a.persistModelReply(r.Context(), user.UserID, sessionID, result, reply, &groundCtx, language, time.Now(), "")
-
-	// Store the finished answer for future identical asks, after any editing and
-	// never for mock replies. Detached from the request: a client hangup must
-	// not cancel a store that is already paid for.
-	if !result.UsedMock && a.Cache != nil && a.Cache.Enabled() {
-		ownerID, cachedQuery, cachedLang, cachedReply := user.UserID, req.Message, language, reply
-		storeCtx := context.WithoutCancel(r.Context())
-		platform.SpawnClassifier(func() {
-			a.Cache.Store(storeCtx, ownerID, cachedQuery, cachedLang, cachedReply, a.serving().ModelName())
-		})
-	}
 
 	resp := map[string]any{
 		"reply":         reply,
@@ -393,20 +368,6 @@ func (a *App) chatStream(w http.ResponseWriter, r *http.Request) {
 	_, _ = a.DB.Exec(r.Context(), "UPDATE sessions SET user_message_count = user_message_count + 1 WHERE session_id = $1", sessionID)
 	a.publishMessageEvent(r.Context(), user.UserID, sessionID, userMsgID, "user")
 
-	// Semantic reply cache (see chatPlain): the hit is delivered as one token so
-	// the client's wire protocol stays identical to a streamed answer.
-	if a.Cache != nil && a.Cache.Enabled() {
-		if cached, hit := a.Cache.Lookup(r.Context(), user.UserID, req.Message, language); hit {
-			a.persistModelReply(r.Context(), user.UserID, sessionID, gemini.ChatResult{}, cached, &rag.GroundingContext{}, language, time.Now(), "reply-cache")
-			sendEvent("token", map[string]string{"text": cached})
-			sendEvent("done", map[string]any{
-				"reply": cached, "tokens_used": 0, "cached_tokens": 0,
-				"used_mock": false, "cached": true,
-			})
-			return
-		}
-	}
-
 	// Spend gate (see usage.Budget): refuse before paying for retrieval and
 	// generation only to collect Google's 429.
 	if spent, limit, over := usage.Budget(r.Context(), a.DB, a.Redis); over {
@@ -453,15 +414,6 @@ func (a *App) chatStream(w http.ResponseWriter, r *http.Request) {
 		reply = gemini.SanitizeReply(reply)
 	}
 	a.persistModelReply(persistCtx, user.UserID, sessionID, result, reply, &groundCtx, language, time.Now(), "")
-
-	// Store the finished answer for future identical asks (never a mock). The
-	// stream already reached the client, so this is purely for the next ask.
-	if !result.UsedMock && a.Cache != nil && a.Cache.Enabled() {
-		ownerID, cachedQuery, cachedLang, cachedReply := user.UserID, req.Message, language, reply
-		platform.SpawnClassifier(func() {
-			a.Cache.Store(persistCtx, ownerID, cachedQuery, cachedLang, cachedReply, a.serving().ModelName())
-		})
-	}
 
 	sendEvent("done", map[string]any{
 		"reply":         reply,
@@ -525,23 +477,23 @@ func (a *App) listSessions(w http.ResponseWriter, r *http.Request) (any, error) 
 	offset := (page - 1) * pageSize
 	search := strings.TrimSpace(q.Get("q"))
 
-	where := "WHERE user_id = $1 AND is_test = FALSE"
-	args := []any{user.UserID}
-	if search != "" {
-		where += " AND (title ILIKE $" + strconv.Itoa(len(args)+1) + " OR platform_user_id ILIKE $" + strconv.Itoa(len(args)+2) + ")"
-		args = append(args, "%"+search+"%", "%"+search+"%")
-	}
+	// Static WHERE, values bound: $1 the owner, $2 the ?q= term ('' = no filter).
+	// The clause used to be concatenated with the placeholder numbers computed
+	// from len(args), which is what made it read (to a person and to a scanner)
+	// like user input could reach the SQL text. It could not — and now the string
+	// is a constant, so there is nothing to re-derive.
+	where := "WHERE user_id = $1 AND is_test = FALSE" +
+		" AND ($2::text = '' OR title ILIKE '%'||$2||'%' OR COALESCE(platform_user_id,'') ILIKE '%'||$2||'%')"
 	var total int64
 	if err := a.DB.QueryRow(r.Context(),
-		"SELECT COUNT(*) FROM sessions "+where, args...).Scan(&total); err != nil {
+		"SELECT COUNT(*) FROM sessions "+where, user.UserID, search).Scan(&total); err != nil {
 		return nil, ErrInternal("查询失败")
 	}
-	args = append(args, pageSize, offset)
 	rows, err := a.DB.Query(r.Context(),
 		"SELECT session_id, user_id, platform::text, platform_user_id, status::text, language, title, "+
 			"user_message_count, model_message_count, created_at FROM sessions "+where+
-			" ORDER BY created_at DESC LIMIT $"+strconv.Itoa(len(args)-1)+" OFFSET $"+strconv.Itoa(len(args)),
-		args...)
+			" ORDER BY created_at DESC LIMIT $3 OFFSET $4",
+		user.UserID, search, pageSize, offset)
 	if err != nil {
 		return nil, ErrInternal("查询失败")
 	}

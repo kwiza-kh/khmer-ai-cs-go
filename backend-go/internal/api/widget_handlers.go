@@ -522,60 +522,18 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Semantic reply cache: a hit answers before the speculative retrieval
-	// finishes, skipping both the retrieval wait and generation. Small talk
-	// skips the cache — conversational replies depend on history.
-	cacheHit := false
-	replyText := ""
-	if !skipGround && a.Cache != nil && a.Cache.Enabled() {
-		if cached, hit := a.Cache.Lookup(ctx, t.ownerID, req.Message, language); hit {
-			cacheHit = true
-			replyText = cached
-			a.Logger.Info("reply cache hit", "session_id", sid)
-		}
-	}
-
 	var groundCtx rag.GroundingContext
 	var result gemini.ChatResult
-	if !cacheHit {
-		if skipGround {
-			// Small talk: Jev decided retrieval is unnecessary, so drop the
-			// speculative result. The buffered channel lets the worker finish
-			// without blocking; one unused retrieval on chit-chat is cheaper than
-			// making every real question wait for the routing call.
-		} else {
-			select {
-			case groundCtx = <-groundCh:
-			case <-ctx.Done():
-				return
-			}
+	if !skipGround {
+		select {
+		case groundCtx = <-groundCh:
+		case <-ctx.Done():
+			return
 		}
 	}
 	// Reply persistence must survive a visitor hangup: r.Context() dies with
 	// the connection, and a lost model row erases the answer from every later
 	// turn's context and from the agent inbox.
-	// Cache hit: the stored answer was generated, guarded and persisted for
-	// this tenant before — deliver it as one token, skipping generation and
-	// the guard (re-judging every replay would erase the latency win).
-	// The owner still gets the new-message ping: a cache hit is a real
-	// visitor turn, and skipping the ping would make the owner blind to
-	// exactly the turns the bot answered fastest.
-	if cacheHit {
-		a.persistModelReply(persistCtx, t.ownerID, sid, gemini.ChatResult{}, replyText, &rag.GroundingContext{}, language, time.Now(), "reply-cache")
-		if a.Pipe != nil {
-			ownerID, sessID, visitorMsg := t.ownerID, sid, req.Message
-			platform.SpawnCritical(func() {
-				a.Pipe.NotifyNewCustomerMessage(persistCtx, ownerID, sessID, "web", "", visitorMsg)
-			})
-		}
-		sendEvent("token", map[string]string{"text": replyText})
-		sendEvent("done", map[string]any{
-			"reply": replyText, "tokens_used": 0, "cached_tokens": 0,
-			"used_mock": false, "cached": true,
-		})
-		return
-	}
-
 	// Small talk: Jev was confident the message carries no request, so the
 	// visitor gets the fixed template instead of a paid generation (see
 	// platform.SmallTalkReply) — chit-chat is the most repeated turn type there
@@ -670,14 +628,6 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 					"Jev 标记该回复的事实性断言没有命中知识库原文（可能是幻觉），请核对后回复客户。")
 			}
 		}
-	}
-	// Store the post-stream answer for future identical asks (mock replies are
-	// never cached). persistCtx: the visitor may hang up before the store.
-	if !skipGround && !result.UsedMock && a.Cache != nil && a.Cache.Enabled() {
-		ownerID, cachedQuery, cachedLang, cachedReply := t.ownerID, req.Message, language, reply
-		platform.SpawnClassifier(func() {
-			a.Cache.Store(persistCtx, ownerID, cachedQuery, cachedLang, cachedReply, a.serving().ModelName())
-		})
 	}
 	usage.Record(persistCtx, a.DB, t.ownerID, &sid, a.serving().ModelName(), result.PromptTokens, result.OutputTokens, result.CachedTokens)
 	// The visitor row was persisted above, so persist only the model turn.

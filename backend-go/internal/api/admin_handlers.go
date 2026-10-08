@@ -3,9 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -399,26 +397,6 @@ func (a *App) servingRegion() string {
 // Users + analytics (admin)
 // ============================================
 
-// tenantUserScope builds the WHERE fragment restricting a `users u` query to
-// the caller's tenant, i.e. the caller plus the agents they own through
-// agent_teams. Returns the SQL, the args it consumes (appended to args) and
-// the next free placeholder number.
-//
-// A platform_admin is the cross-tenant role and keeps an unrestricted view.
-// Every other admin is confined to their own tenant — without this, any
-// tenant's admin could enumerate the whole platform's user list (usernames,
-// e-mails, token spend) through the admin users page.
-func tenantUserScope(caller *CurrentUser, args []any) (string, []any) {
-	if caller == nil || caller.IsPlatformAdmin() {
-		return "", args
-	}
-	args = append(args, caller.UserID)
-	n := len(args)
-	return fmt.Sprintf(
-		"(u.user_id = $%d OR u.user_id IN (SELECT agent_user_id FROM agent_teams WHERE owner_user_id = $%d))",
-		n, n), args
-}
-
 // listUsers — the caller's tenant's users, paginated with the same
 // {data,total,...} envelope every other list endpoint uses; the admin users
 // page reads .data/.total, so a bare array rendered the whole list (Google
@@ -440,25 +418,32 @@ func (a *App) listUsers(w http.ResponseWriter, r *http.Request) (any, error) {
 	offset := (page - 1) * pageSize
 	search := strings.TrimSpace(r.URL.Query().Get("search"))
 
-	conds := []string{}
-	args := []any{}
-	if scope, scopedArgs := tenantUserScope(caller, args); scope != "" {
-		conds = append(conds, scope)
-		args = scopedArgs
+	// One static WHERE for every caller, with every value bound:
+	//
+	//   $1 — the tenant scope: the caller's own user id, or NULL for a
+	//        platform_admin, whose view is unrestricted. The IS NULL guard makes
+	//        the scope transparent for that role and keeps ONE qualifier for both
+	//        readers. Without the restriction, any tenant's admin could enumerate
+	//        the whole platform's users (usernames, e-mails, token spend) through
+	//        this page.
+	//   $2 — the ?search= term, '' when absent.
+	//
+	// The clause used to be assembled with Sprintf from a fragment list. Nothing
+	// user-controlled ever reached the SQL text (the term travelled in args), but
+	// the placeholder numbers came from len(args) — a length derived from input —
+	// so every scanner and every reader had to re-derive that it was safe. A
+	// constant string with bound values is the same query without the argument.
+	var scopeID any
+	if !caller.IsPlatformAdmin() {
+		scopeID = caller.UserID
 	}
-	if search != "" {
-		args = append(args, "%"+search+"%")
-		n := len(args)
-		conds = append(conds, fmt.Sprintf("(u.username ILIKE $%d OR COALESCE(u.email,'') ILIKE $%d)", n, n))
-	}
-	whereClause := ""
-	if len(conds) > 0 {
-		whereClause = " WHERE " + strings.Join(conds, " AND ")
-	}
+	where := " WHERE ($1::int4 IS NULL OR u.user_id = $1 OR u.user_id IN " +
+		"(SELECT agent_user_id FROM agent_teams WHERE owner_user_id = $1))" +
+		" AND ($2::text = '' OR u.username ILIKE '%'||$2||'%' OR COALESCE(u.email,'') ILIKE '%'||$2||'%')"
+	args := []any{scopeID, search}
 
 	var total int64
-	// nosemgrep: 每个调用方参数都在 args 里绑定；这里拼进 SQL 的只有常量片段（片段自带 $n 占位符）。
-	if err := a.DB.QueryRow(r.Context(), "SELECT COUNT(*) FROM users u"+whereClause, args...).Scan(&total); err != nil {
+	if err := a.DB.QueryRow(r.Context(), "SELECT COUNT(*) FROM users u"+where, args...).Scan(&total); err != nil {
 		return nil, ErrInternal("查询失败")
 	}
 
@@ -469,26 +454,23 @@ func (a *App) listUsers(w http.ResponseWriter, r *http.Request) (any, error) {
 		NewWeek int64
 		Admins  int64
 	}
-	// nosemgrep: 每个调用方参数都在 args 里绑定；这里拼进 SQL 的只有常量片段（片段自带 $n 占位符）。
 	if err := a.DB.QueryRow(r.Context(),
 		"SELECT COUNT(*), COUNT(*) FILTER (WHERE u.is_active), "+
 			"COUNT(*) FILTER (WHERE u.created_at >= NOW() - INTERVAL '7 days'), "+
-			"COUNT(*) FILTER (WHERE u.role IN ('admin','platform_admin')) FROM users u"+whereClause,
+			"COUNT(*) FILTER (WHERE u.role IN ('admin','platform_admin')) FROM users u"+where,
 		args...).
 		Scan(&stats.Total, &stats.Active, &stats.NewWeek, &stats.Admins); err != nil {
 		return nil, ErrInternal("查询失败")
 	}
 
-	selArgs := append(append([]any{}, args...), pageSize, offset)
 	// No token/cost columns: model spend is operator-metered data and this list
 	// is served to tenant owners (tenantAdminOnly).
-	// nosemgrep: 每个调用方参数都在 args 里绑定；这里拼进 SQL 的只有常量片段（片段自带 $n 占位符）。
 	rows, err := a.DB.Query(r.Context(),
 		"SELECT u.user_id, u.username, COALESCE(u.email,''), u.role::text, u.is_active, u.created_at, "+
 			"u.google_sub IS NOT NULL, u.telegram_sub IS NOT NULL, COALESCE(u.password_hash,'') <> '' "+
 			"FROM users u"+
-			whereClause+" ORDER BY u.user_id LIMIT $"+strconv.Itoa(len(selArgs)-1)+" OFFSET $"+strconv.Itoa(len(selArgs)),
-		selArgs...)
+			where+" ORDER BY u.user_id LIMIT $3 OFFSET $4",
+		scopeID, search, pageSize, offset)
 	if err != nil {
 		return nil, ErrInternal("查询失败")
 	}

@@ -26,7 +26,6 @@ import (
 	"khmer-ai-cs-go/internal/rag"
 	"khmer-ai-cs-go/internal/realtime"
 	"khmer-ai-cs-go/internal/redisstore"
-	"khmer-ai-cs-go/internal/replycache"
 	"khmer-ai-cs-go/internal/security"
 	"khmer-ai-cs-go/internal/storager2"
 	"khmer-ai-cs-go/internal/textutil"
@@ -173,9 +172,6 @@ type Pipeline struct {
 	// classification, routing, guardrails). nil = disabled: every site
 	// falls back to its previous logic.
 	Jev *typesafe.Client
-	// Cache is the semantic reply cache (nil = disabled: every turn takes the
-	// full retrieval+generation path).
-	Cache *replycache.Service
 	// T2I renders long replies to an image (see t2i.go). nil = build the HTTP
 	// renderer from the environment; tests inject a fake.
 	T2I T2IRenderer
@@ -574,6 +570,38 @@ func (p *Pipeline) storeTelegramAvatar(ctx context.Context, cfg *configCred, pla
 // prepareMedia downloads media, transcribes voice, describes images, stores
 // the file in R2, and folds the extracted text into the message content.
 // Returns (content, storageKey, platformMedia).
+// extractMediaText reads one media payload the model can use: a voice note becomes
+// its transcript, an image becomes a description. The second return names the step
+// that failed when the payload could not be read ("describe_failed",
+// "transcribe_failed", "transcribe_empty"), so the caller can record a
+// customer-visible failure instead of leaving it in a log line — AGENTS.md: a
+// failure a customer would feel must be either retried or recorded. The turn
+// itself still runs: the customer's image or note arrives as empty content.
+func (p *Pipeline) extractMediaText(ctx context.Context, ev *InboundEvent, isImage bool, data []byte, mime string) (string, string) {
+	if isImage {
+		desc, derr := p.Gemini.DescribeImage(ctx, data, mime)
+		if derr != nil || strings.TrimSpace(desc) == "" {
+			p.Logger.Warn("image description failed", "event_id", ev.EventID, "error", fmt.Sprint(derr))
+			return "", "describe_failed"
+		}
+		return desc, ""
+	}
+	// Pass no language hint: the merchant's UI language says nothing about what
+	// the customer spoke. Pinning it made Gemini render Khmer speech in the wrong
+	// script (e.g. Amharic) — let the model detect it, and the script guard inside
+	// TranscribeAudio retries as Khmer if it mis-decodes.
+	transcript, terr := transcribeAudio(ctx, p, data, mime, "")
+	switch {
+	case terr != nil:
+		p.Logger.Warn("voice transcription failed", "event_id", ev.EventID, "error", fmt.Sprint(terr))
+		return "", "transcribe_failed"
+	case transcript == "":
+		p.Logger.Warn("voice transcription returned empty transcript", "event_id", ev.EventID)
+		return "", "transcribe_empty"
+	}
+	return transcript, ""
+}
+
 func (p *Pipeline) prepareMedia(ctx context.Context, ev *InboundEvent, cfg *configCred, content string) (string, string, map[string]any) {
 	// Worker contexts carry no HTTP request, so tag the tenant here for the
 	// transcription / image-description spend below.
@@ -612,28 +640,12 @@ func (p *Pipeline) prepareMedia(ctx context.Context, ev *InboundEvent, cfg *conf
 	// Voice/audio → transcribe into the message content.
 	// Image    → Gemini vision description so the AI can actually answer.
 	extracted := ""
-	if !isImage && (kind == "audio" || kind == "voice") {
-		// Pass no language hint: the merchant's UI language says nothing about
-		// what the customer spoke. Pinning it made Gemini render Khmer speech in
-		// the wrong script (e.g. Amharic) — let the model detect it, and the
-		// script guard in TranscribeAudio retries as Khmer if it mis-decodes.
-		transcript, terr := transcribeAudio(ctx, p, data, mime, "")
-		switch {
-		case terr != nil:
-			p.Logger.Warn("voice transcription failed", "event_id", ev.EventID, "error", fmt.Sprint(terr))
-		case transcript != "":
-			content = transcript
-			extracted = transcript
-		default:
-			p.Logger.Warn("voice transcription returned empty transcript", "event_id", ev.EventID)
-		}
-	} else if isImage {
-		desc, derr := p.Gemini.DescribeImage(ctx, data, mime)
-		if derr == nil && strings.TrimSpace(desc) != "" {
-			content = desc
-			extracted = desc
-		} else {
-			p.Logger.Warn("image description failed", "error", fmt.Sprint(derr))
+	extractFailed := ""
+	if isImage || kind == "audio" || kind == "voice" {
+		var text string
+		text, extractFailed = p.extractMediaText(ctx, ev, isImage, data, mime)
+		if text != "" {
+			content, extracted = text, text
 		}
 	}
 
@@ -649,6 +661,9 @@ func (p *Pipeline) prepareMedia(ctx context.Context, ev *InboundEvent, cfg *conf
 		cancel()
 	}
 	pm := map[string]any{"kind": kind, "filename": filename, "mime_type": mime}
+	if extractFailed != "" {
+		pm["extract_failed"] = extractFailed
+	}
 	if storageKey != "" {
 		pm["processing_status"] = "stored"
 	} else {
