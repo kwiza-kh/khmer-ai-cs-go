@@ -1,0 +1,7 @@
+[Unit]
+Description=Probe the RelayChat backend /ready and alert on failure
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/khmer-ai-cs/ops/readiness-check.sh

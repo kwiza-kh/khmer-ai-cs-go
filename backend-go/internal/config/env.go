@@ -14,7 +14,7 @@ import (
 // *_CLIENT_SECRET), so it returns values VERBATIM — silently trimming padding off
 // a secret would invalidate every token signed with it. The readers below trim,
 // which is what the rest of this tree wants and what the five near-identical
-// copies they replace (db, replycache, rag, platform, gemini) already did, except
+// copies they replace (db, rag, platform, gemini) already did, except
 // for platform's envFloat/envMillis: those skipped the trim, so a knob written as
 // " 0.70" fell back to the default instead of being honoured. Trimming fixes that.
 //

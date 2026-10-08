@@ -1,0 +1,16 @@
+# khmer-alert@.service — "unit %i failed", delivered to the operator's chat.
+#
+# Instantiated from OnFailure= (see the drop-in for khmer-ai-cs-go.service). A
+# oneshot: it sends one message and exits, and it holds no state of its own, so a
+# crashing unit can call it as often as it crashes.
+[Unit]
+Description=Operator alert for %i (Telegram)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/khmer-ai-cs/ops/notify.sh "单元失败：%i 已停止（systemctl status %i 查看）"
+# The alert is best-effort by construction: a failed notification must not itself
+# become a failed unit that OnFailure then tries to report.
+SuccessExitStatus=0 1 2

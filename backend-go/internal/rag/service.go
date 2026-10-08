@@ -108,11 +108,12 @@ type Service struct {
 	// Jev optionally replaces the LLM reranker with typed Score judgments.
 	// nil = disabled: reranking keeps the Gemini path.
 	Jev *typesafe.Client
-	// KBChanged, when set, fires after a tenant's grounded content changes —
-	// a document finished indexing (upload/update/URL refresh/compile all
-	// funnel through the index worker) or was deleted. The reply cache uses
-	// it to drop that tenant's cached answers; nil = no callback.
-	KBChanged func(ctx context.Context, userID int32)
+	// DenseUnavailable, when set, fires when the vector leg produced nothing —
+	// the query embedding failed or the dense search errored. Retrieval then
+	// falls back to lexical/trigram only, which is exactly the silent quality
+	// drop of the 2026-10-05 embedding-quota storm (DEVELOPMENT.md §十二): the
+	// customer felt it, and nothing but a log line said so. nil = no callback.
+	DenseUnavailable func(ctx context.Context, userID int32, reason string)
 }
 
 func isCJK(c rune) bool {
@@ -265,15 +266,16 @@ func (s *Service) indexNextPending(ctx context.Context) bool {
 	if err != nil {
 		return false
 	}
+	// Tag the uploader so a document's embedding spend is billed to the tenant it
+	// belongs to (see gemini.AuxUsageObserver). Ingestion is where the embedding
+	// quota actually goes — one document is a batch of hundreds of chunks — and
+	// untagged spend is invisible: the 429 storm of 2026-10-05 left NOTHING in
+	// token_usage for gemini-embedding-001.
+	ctx = usage.WithUser(ctx, userID)
 	if err := s.indexDocument(ctx, docID, content); err != nil {
 		s.Logger.Warn("knowledge document indexing failed", "error", err.Error())
 		s.markDocumentFailed(ctx, docID, err.Error())
 		return true
-	}
-	// The tenant's grounded content just changed — drop its reply cache so no
-	// stale answer survives the update.
-	if s.KBChanged != nil {
-		s.KBChanged(ctx, userID)
 	}
 	// Ingest-time compile (llm-wiki pattern): distill the freshly indexed
 	// source into an FAQ/summary child document and flag contradictions with
@@ -666,6 +668,15 @@ func (s *Service) findSimilarDocs(ctx context.Context, userID int32, sample stri
 
 // Search — hybrid retrieval with RRF fusion, relative-similarity gating and
 // LLM rerank; every enhancement degrades gracefully to plain RRF.
+// denseUnavailable tells the operator that retrieval lost its vector leg. Cheap
+// and non-blocking by construction: the callback posts an alert, and a nil one is
+// the ordinary case in tests.
+func (s *Service) denseUnavailable(ctx context.Context, userID int32, reason string) {
+	if s.DenseUnavailable != nil {
+		s.DenseUnavailable(ctx, userID, reason)
+	}
+}
+
 func (s *Service) Search(ctx context.Context, userID int32, query string, topK int64) ([]Source, error) {
 	query = NormalizeText(query)
 	if topK <= 0 {
@@ -682,10 +693,12 @@ func (s *Service) Search(ctx context.Context, userID int32, query string, topK i
 	var denseErr error
 	if embErr != nil {
 		s.Logger.Warn("vector knowledge search failed; retaining lexical results", "error", embErr.Error())
+		s.denseUnavailable(ctx, userID, "embed: "+embErr.Error())
 	} else {
 		dense, denseErr = s.searchDense(ctx, userID, gemini.FormatVector(queryEmbedding), candidateLimit)
 		if denseErr != nil {
 			s.Logger.Warn("dense search failed", "error", denseErr.Error())
+			s.denseUnavailable(ctx, userID, "dense: "+denseErr.Error())
 		}
 	}
 	var lexical []SearchChunk
@@ -1719,9 +1732,6 @@ func (s *Service) DeleteDocument(ctx context.Context, userID int32, docID int32)
 	}
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("document not found")
-	}
-	if s.KBChanged != nil {
-		s.KBChanged(ctx, userID)
 	}
 	return nil
 }

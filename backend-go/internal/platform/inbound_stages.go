@@ -73,9 +73,8 @@ type inboundTurn struct {
 	Urgency string
 
 	// --- set by cache-lookup / generate / guard-reply / after-hours ---
-	Reply     string
-	FromCache bool
-	Canned    bool
+	Reply  string
+	Canned bool
 	// CannedLabel is the model_name recorded for a canned reply (empty means
 	// "smalltalk-template"), so the console can tell a quota notice from small talk.
 	CannedLabel string
@@ -116,7 +115,6 @@ func (p *Pipeline) inboundStages() []inboundStage {
 		{Name: "prepare-grounding", Run: p.stagePrepareGrounding},
 		{Name: "route-inbound", Run: p.stageRouteInbound},
 		{Name: "notify-owner", Run: p.stageNotifyOwner},
-		{Name: "cache-lookup", Run: p.stageCacheLookup},
 		{Name: "generate", Run: p.stageGenerate},
 		{Name: "guard-reply", Run: p.stageGuardReply},
 		{Name: "screen-reply", Run: p.stageScreenReply},
@@ -426,28 +424,8 @@ func (p *Pipeline) stageNotifyOwner(ctx context.Context, t *inboundTurn) (bool, 
 	return true, nil
 }
 
-// cache-lookup — a hit means the answer was already generated, guarded and
-// stored for this tenant, so both the retrieval wait and generation are skipped.
-// Small talk skips the cache: conversational replies depend on history.
-func (p *Pipeline) stageCacheLookup(ctx context.Context, t *inboundTurn) (bool, error) {
-	// A persona turn skips the cache entirely — see resolve-persona. A canned
-	// turn is already answered (small talk, junk silence, the quota notice), so a
-	// cache hit must not overwrite it.
-	if t.SkipGround || t.Canned || !p.Cache.Enabled() || t.Persona != nil {
-		return true, nil
-	}
-	if cached, hit := p.Cache.Lookup(ctx, t.Config.UserID, t.Content, t.ReplyLang); hit {
-		t.Reply, t.FromCache = cached, true
-		p.Logger.Info("reply cache hit", "session_id", t.SessionID)
-	}
-	return true, nil
-}
-
 // generate — collect the grounding, apply the spend gate, call the model.
 func (p *Pipeline) stageGenerate(ctx context.Context, t *inboundTurn) (bool, error) {
-	if t.FromCache {
-		return true, nil
-	}
 	if t.SkipGround {
 		// Small talk: Jev was confident the message carries no request, so answer
 		// from the fixed template and skip generation entirely. The speculative
@@ -522,11 +500,10 @@ func (p *Pipeline) stageGenerate(ctx context.Context, t *inboundTurn) (bool, err
 // the citation check against the grounding passages. Delivery is not enqueued
 // yet, so this stage can still edit the reply.
 //
-// Cache hits skip it: the cached answer was guarded before it was stored and
-// re-judging every replay would erase the latency win. Canned small talk is our
-// own fixed text, so there is nothing to audit either.
+// Canned small talk skips it: that is our own fixed text, so there is nothing
+// to audit.
 func (p *Pipeline) stageGuardReply(ctx context.Context, t *inboundTurn) (bool, error) {
-	if t.FromCache || t.Canned {
+	if t.Canned {
 		return true, nil
 	}
 	srcTexts := make([]string, 0, len(t.GroundCtx.Sources))
@@ -549,19 +526,6 @@ func (p *Pipeline) stageGuardReply(ctx context.Context, t *inboundTurn) (bool, e
 	}
 	// Store the guarded answer for future identical asks — after the guard (the
 	// cache must never serve what the guard would have edited) and before the
-	// after-hours preamble (which is per-delivery, not part of the answer). Mock
-	// replies are never cached. Droppable lane: losing a store only costs the next
-	// identical ask a cache miss.
-	//
-	// guarded is read NOW: the store runs in a background lane, and capturing the
-	// field would let the after-hours preamble below leak into the cached answer.
-	if !t.SkipGround && !t.Result.UsedMock && p.Cache.Enabled() && t.Persona == nil {
-		guarded := t.Reply
-		userID, content, lang, model := t.Config.UserID, t.Content, t.ReplyLang, p.serving().ModelName()
-		SpawnClassifier(func() {
-			p.Cache.Store(ctx, userID, content, lang, guarded, model)
-		})
-	}
 	return true, nil
 }
 
@@ -579,9 +543,6 @@ func (p *Pipeline) stageAfterHours(ctx context.Context, t *inboundTurn) (bool, e
 func (p *Pipeline) stagePersistAndDeliver(ctx context.Context, t *inboundTurn) (bool, error) {
 	tokensUsed := t.Result.PromptTokens + t.Result.OutputTokens
 	modelName := p.serving().ModelName()
-	if t.FromCache {
-		tokensUsed, modelName = 0, "reply-cache"
-	}
 	if t.Canned {
 		tokensUsed, modelName = 0, "smalltalk-template"
 		if t.CannedLabel != "" {
@@ -627,10 +588,7 @@ func (p *Pipeline) stagePostDelivery(ctx context.Context, t *inboundTurn) (bool,
 		p.escalateToHuman(ctx, nil, t.Config, t.SessionID, "ai_decision", reason, t.Urgency)
 		return false, nil
 	}
-	// A cached answer WAS grounded in the tenant's knowledge base when it was
-	// first generated — reporting hasMatch=false on hits would feed the "no
-	// knowledge base" handoff trigger a lie and mislabel analytics.
-	grounded := t.FromCache || t.GroundCtx.HasMatch
+	grounded := t.GroundCtx.HasMatch
 	p.classifyTurnAsync(t.Config.UserID, t.SessionID, t.Content, t.Reply, grounded)
 	return true, nil
 }

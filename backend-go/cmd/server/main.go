@@ -25,7 +25,6 @@ import (
 	"khmer-ai-cs-go/internal/rag"
 	"khmer-ai-cs-go/internal/realtime"
 	"khmer-ai-cs-go/internal/redisstore"
-	"khmer-ai-cs-go/internal/replycache"
 	"khmer-ai-cs-go/internal/security"
 	"khmer-ai-cs-go/internal/storager2"
 	"khmer-ai-cs-go/internal/typesafe"
@@ -218,12 +217,7 @@ func main() {
 	// without TYPESAFE_API_KEY, and every site then keeps its previous path.
 	jev := typesafe.NewFromEnv(logger)
 
-	// Semantic reply cache: identical asks skip retrieval+generation entirely.
-	// Any knowledge-base change drops the tenant's cache via KBChanged below.
-	replyCache := &replycache.Service{DB: pool, Gemini: gem, Logger: logger, Serving: func() string { return router.Model().ModelName() }}
-
 	ragService := &rag.Service{DB: pool, Gemini: gem, Redis: redisClient, Logger: logger, Jev: jev, LLM: router}
-	ragService.KBChanged = replyCache.InvalidateTenant
 
 	// Attribute auxiliary model spend to whichever tenant tagged the context.
 	// Previously only the four main chat paths recorded usage, so the
@@ -246,7 +240,7 @@ func main() {
 	media := storager2.New(cfg.R2.AccountID, cfg.R2.AccessKey, cfg.R2.SecretKey, cfg.R2.Bucket, cfg.R2.PublicURL)
 
 	// Platform pipeline (inbound AI replies + outbound delivery).
-	pipe := &platform.Pipeline{DB: pool, Redis: redisClient, Cfg: cfg, Gemini: gem, RAG: ragService, Sealer: sealer, Media: media, Logger: logger, Jev: jev, Cache: replyCache, LLM: router}
+	pipe := &platform.Pipeline{DB: pool, Redis: redisClient, Cfg: cfg, Gemini: gem, RAG: ragService, Sealer: sealer, Media: media, Logger: logger, Jev: jev, LLM: router}
 	// Make a Jev outage audible. Every Jev call site degrades to a slower, less
 	// accurate path when it fails, so without this the product changes
 	// behaviour and only journalctl knows (2026-09-22: a 6-hour episode).
@@ -256,6 +250,20 @@ func main() {
 	// probe — the one that establishes the hot connection — writing into an
 	// observer field that was still being assigned.
 	platform.InstallJevHealth(pipe)
+
+	// A retrieval that lost its vector leg is a customer-visible quality drop that
+	// used to leave nothing behind but a log line (the embedding-quota storm of
+	// 2026-10-05, DEVELOPMENT.md §十二). PlatformAlert drops repeats of one key for
+	// 15 minutes, so a broken embedding provider cannot flood the operator's chat.
+	ragService.DenseUnavailable = func(ctx context.Context, userID int32, reason string) {
+		if len(reason) > 200 {
+			reason = reason[:200]
+		}
+		pipe.PlatformAlert(ctx, "rag-dense-unavailable-"+strconv.Itoa(int(userID)),
+			"检索降级：向量腿不可用",
+			"租户 "+strconv.Itoa(int(userID))+" 的检索只剩词法兜底（语义召回已丢）。\n原因："+reason+
+				"\n检查 embedding 配额与 GEMINI_API_KEY / Vertex SA。")
+	}
 
 	// Production traffic is a handful of messages a day, so every turn would
 	// otherwise meet a cold connection and pay a 0.4-3.6s TLS handshake. That
@@ -278,7 +286,6 @@ func main() {
 		Sealer: sealer,
 		Media:  media,
 		Pipe:   pipe,
-		Cache:  replyCache,
 		// The platform's own PayPal business account. Left unconfigured (no
 		// credentials) the billing endpoints answer "not configured" and nothing
 		// in the console offers a purchase, which is the correct state for a

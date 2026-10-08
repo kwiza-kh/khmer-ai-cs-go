@@ -761,21 +761,29 @@ session/doc 作用域的。注意 VOLATILE 谓词默认并行不安全：这两�
   （`handoffPriority()`，schema 只有 normal|high）。v1 不落 session 列——
   只作用于当轮升级；后台轮次分类触发的升级（无路由上下文）传空串走静态表。
 
-### reply_cache：语义缓存秒回（迁移 062）
+### reply_cache：语义缓存已移除（表保留）
 
-- 表：`reply_cache`（tenant + language + query_embedding(768) + answer + hit_count），
-  HNSW 与 chunks 同形。**只缓存守卫后、非 mock 的最终回答**（守卫后落库前写入，
-  after-hours 前缀是投递期文案不入缓存）。
-- 命中路径：检索投机并行中先查缓存（1 次 embedding + 1 次 HNSW），**未命中零
-  额外墙钟时间，命中亚秒返回**，零 token 计费，`model_name='reply-cache'` 可辨认。
-  命中跳过守卫（存的就是守卫后的），`ReplyClaimsHandoff` 正则照跑。
-- 失效：`rag.Service.KBChanged` 钩子——文档索引成功（上传/更新/URL 刷新/编译子文档
-  全走索引 worker）或删除时，**整租户缓存全删**。宁滥勿缺：缓存的是旧 grounding。
-- 门槛：`REPLY_CACHE_MIN_SIM=0.92`（余弦，防"那第二种呢"这类追问串答）、
-  `REPLY_CACHE_MIN_RUNES=12`（短查询永不读也不写）、TTL 72h、每租户 500 条 LRU。
-  `REPLY_CACHE_ENABLED=false` 一键关。
-- 嵌入在写入侧多付一次（丢进 SpawnClassifier 可丢车道）；读取侧在检索并行窗内，
-  不加墙钟。**embedding 换代（Phase 4）时此表与 chunks 一样要重建。**
+2026-10-08 删除。生产库实测（30 天窗口）：
+
+| 指标 | 值 |
+|---|---|
+| 表内条目 | 7 行（全部写于 10-04） |
+| 累计命中 | **3 次** |
+| 同期消息量 | 148 条 / 14 天（≈10 条/天） |
+
+代价是**每个入站消息一次 embedding 调用** —— embedding 正是 10-05 那次 429 事故里
+最先耗尽、恢复最慢的配额 —— 外加一条与 Gemini 的强耦合：embedding 一挂，缓存既查
+不到也写不进（§十二 的 `reply cache store skipped: embedding failed` 就是这条）。
+收益上限是省下重复问题的生成 token，而这台机子上限本身就是每天几条消息。
+
+**测量有一个混淆，值得写下来**：条目的 `model_name` 参与匹配，10-04 前后服务商从
+Gemini 切到 Claude，旧条目因此永不再命中 —— 所以「3 次」是下限而不是终值。结论仍
+按代价侧成立：省下的是几分钱，付出的是稀缺配额和一条依赖。
+
+删除范围：`internal/replycache/` 整包、平台管道与两条聊天路径的读写点、
+`rag.Service.KBChanged` 钩子（唯一订阅者就是缓存）、`inboundTurn.FromCache` 与
+`cache-lookup` 阶段。**`reply_cache` 表与 7 行历史数据保留**（不做回滚迁移；表在，
+无人读写），历史行的 `model_name='reply-cache'` 在收件箱照旧原样显示。
 
 ### API 变更
 
@@ -788,12 +796,11 @@ pipeline、widget、jeveval live 已全部跟进）；`RouteDecision` 返回三�
 
 - 单测：路由解析/分档/旋钮/junk 门槛/优先级合并（纯单测，无 DB）；
   replycache 机制（hit/miss/阈值/TTL/失效/nil 安全，stub 嵌入 + 真库，DSN 门控）。
-- 发布前照旧：`DATABASE_URL=... go test ./internal/migrations/ ./internal/replycache/ ./internal/sqlcheck/`。
+- 发布前照旧：`DATABASE_URL=... go test ./internal/migrations/ ./internal/sqlcheck/`。
 
 ### 未做（下轮候选）
 
-urgency 不落 session/分析面；缓存命中率没有运维指标（看日志 `reply cache hit`）；
-widget `ignored` 事件前端未特殊渲染（显示致谢行已足够）。
+urgency 不落 session/分析面；widget `ignored` 事件前端未特殊渲染（显示致谢行已足够）。
 
 #### 评审修复（2026-09-23，OCR 委托模式全量评审后）
 
@@ -1161,7 +1168,7 @@ FAQ 的 `ស9`（5 条产品线）在 chunk 2 里的偏移：枚举句起点 695
 |---|---|
 | 入站管线 | 21 个命名阶段（load-config … post-delivery），顺序有测试钉住（`TestInboundStageListIsStable`） |
 | 消息路由 | Jev 决策中间层：small_talk / 垃圾 / 问句；问句不被 small_talk、垃圾、无 KB 短路，也不因 small_talk 被豁免转人工（c80bcc2） |
-| 回复生成 | ReplyGuard 质量告警、确定性出站清理、语义回复缓存、small talk 模板、人格 persona（最具体绑定优先，迁移 067） |
+| 回复生成 | ReplyGuard 质量告警、确定性出站清理、small talk 模板、人格 persona（最具体绑定优先，迁移 067） |
 | 语言 | **回复语言跟随客户实际所写**（组件/控制台此前拿界面语言当回复语言：中文提问被整条链路按柬语处理，e520838）；三语文案 km/en/zh |
 | 多模态 | 语音转写（Gemini ASR，mime 规范化；渠道语音留言会被计费）、翻译（单条/批量） |
 | 内容安全 | 两段 gate（screen-inbound / screen-reply），KeywordStrategy + ModelStrategy；**默认关闭**，开关见 `.env`（6 个键尚未写入 `.env.example`） |
@@ -1825,7 +1832,6 @@ Gemini，看不到 partner model，所以必须另建探针；它同时钉住了
 | Gemini 行 | Gemini 客户端始终按 Gemini 行配置（`llm.LoadGemini`：默认行是 Gemini 行则取它，否则取最早的 Gemini 行）。embedding、检索、重排、改写、图片与语音、TTS、回合判定仍只走 Gemini。 |
 | 客户端 | `internal/anthropic`：与 `internal/gemini` 相同的生成方法与 DTO。修正并钉住的行为：`anthropic-version` 走请求头、模型名走请求体、key 走 `x-api-key`（直连的固定形状）；空系统提示词回退到内置默认；人工客服轮保留标记；相邻同角色轮合并；辅助调用不带系统提示词；Haiku 5.5 显式 `thinking: disabled`（思考计入 `max_tokens` 且按输出价计费）；不发送 `temperature`（Haiku 5.5 对非默认值返回 400）；用量口径为 prompt 含缓存部分，与 Gemini 一致。 |
 | 计费 | `usage.EstimateCostFor`：`claude-` 前缀按 Haiku 5.5 价目计费（≤100k tokens：入 $0.10 / 出 $0.50；>100k：入 $0.50 / 出 $2.50；缓存读取为入价的 10%）。 |
-| 回复缓存 | `replycache.Lookup` 只命中当前服务商写入的答案（`Serving` 取自路由器）。切换服务商后，上一个模型的缓存答案不会再被返回；没有服务商在用时不查缓存。缓存条目的 `model_name` 即写入它的模型。 |
 | 用量闸门 | AI Studio 的 Tier 上限（`GEMINI_SPEND_LIMIT_USD` 为 10/50/200）只约束 Gemini 调用。服务商是 Claude 时，同一数值按自定预算处理；遗留的 Tier 数字在启动校验时被拒绝，与 vertex 规则相同。 |
 | 控制台 | 每行一个服务商下拉框。Claude 行：显示 API Key 输入框，模型只能选目录内的 `claude-haiku-5-5`，不接受 `vertex_region`（直连没有区域概念，提交即 400）；「测试」按该行的服务商调用。Gemini 行的界面不变。 |
 | 目录 | `internal/anthropic/catalog.go`：只收录已核实的模型。新增模型须同时补充采样与思考标记，以及计费价目。 |
@@ -1851,4 +1857,35 @@ go vet ./... && go test ./...                              # DB 相关测试需�
 SQLCHECK_REQUIRED=1 go test -count=1 ./internal/sqlcheck/  # 在已迁移的库上检查新增 SQL
 DATABASE_URL=<已迁移的库> go test -count=1 ./internal/llm/  # 行选择规则，在回滚事务中执行
 cd ../frontend && npx tsc --noEmit && npx eslint src/components/admin/admin-pages.tsx src/lib/api.ts
+```
+
+---
+
+## 二十一、运维可见性修复（2026-10-08）
+
+触发：对线上做了一次「钱花在哪、失败藏在哪」的盘点（30 天 326 次模型调用 / $0.33 /
+148 条消息，≈10 条/天）。结论是**成本与性能没有优化空间**，真问题是几处「客户能感觉到、
+运维看不见」的失败。以下都已上线。
+
+| 修复 | 之前 | 现在 |
+|---|---|---|
+| 索引期 embedding 记账 | 记账钩子（`gemini.AuxUsageObserver`）要求 ctx 带租户，而索引 worker 没打标——**整个索引期的 embedding 用量不进账本**（30 天 `token_usage` 里 `gemini-embedding-001` 只有 2 行，而 §十二 的 429 事故是 26 小时内 17 次） | 索引 worker 领到文档后 `usage.WithUser(ctx, uploaded_by)`，一行；下次配额事故在账本上可见 |
+| 检索降级告警 | 向量腿挂掉只剩词法兜底，**只有一行日志**（§十二 语义召回全丢时就是这个状态） | `rag.Service.DenseUnavailable` → `PlatformAlert`（按租户去重 15 分钟，Telegram 直报） |
+| 媒体识别失败 | 图片/语音识别失败只写 WARN，内容留空进提示词，**库里没有痕迹** | `metadata.platform_media.extract_failed` = `describe_failed` / `transcribe_failed` / `transcribe_empty` |
+| 回复缓存 | 每个入站消息一次 embedding + 一张表 + 一条 Gemini 依赖，30 天命中 3 次 | 已删除（见「reply_cache 已移除」） |
+| WS 握手 401 | 生产上 240 次握手 214 次被拒，**服务端一个字都没说为什么** | 拒绝原因分 `no_token` / `bad_token` / `revoked`，首次与每 50 次各记一行 |
+| 用户/会话列表 SQL | WHERE 由 Sprintf 拼片段、占位符编号取自 `len(args)`（值其实全绑定，但每次扫描与阅读都要重新论证一遍） | 单一静态 WHERE：租户范围用 `$1::int4 IS NULL` 守卫（platform_admin 透明），搜索词 `$2` 绑定；两条真库测试钉住范围与统计一致 |
+
+**有意不做**：图片直接交给 Claude 看（要给 `apiMessage.Content` 加 content block，而 30 天
+只有 8 条媒体）；embedding 与 Gemini 配额解耦（先要有账本，即上表第一行）。`bl.feature.*`
+的 12 条文案**不是**死键——计费页用 API 下发的 `included` 动态渲染，`plans_test.go` 的
+字典一致性测试就是为它写的。
+
+### 验证
+
+```bash
+cd backend-go
+go build ./... && go vet ./... && go test ./...
+DATABASE_URL=<生产隧道> go test -count=1 ./internal/api/ -run 'TestUserListIsScoped|TestSessionListFilter' -v
+DATABASE_URL=<生产隧道> go test -count=1 ./internal/sqlcheck/   # 或 SQLCHECK_REQUIRED=1
 ```

@@ -114,38 +114,45 @@ func TestAuthenticateSubprotocolToken(t *testing.T) {
 
 	r := httptest.NewRequest("GET", "/api/v1/realtime/inbox", nil)
 	r.Header.Set("Sec-WebSocket-Protocol", ProtocolName+", "+token)
-	if uid, ok := h.authenticate(r); !ok || uid != 11 {
-		t.Fatalf("subprotocol auth failed: uid=%d ok=%v", uid, ok)
+	if uid, reason := h.authenticate(r); reason != "" || uid != 11 {
+		t.Fatalf("subprotocol auth failed: uid=%d reason=%q", uid, reason)
 	}
 
 	// Header fallback for non-browser clients.
 	r2 := httptest.NewRequest("GET", "/api/v1/realtime/inbox", nil)
 	r2.Header.Set("Authorization", "Bearer "+token)
-	if uid, ok := h.authenticate(r2); !ok || uid != 11 {
-		t.Fatalf("header auth failed: uid=%d ok=%v", uid, ok)
+	if uid, reason := h.authenticate(r2); reason != "" || uid != 11 {
+		t.Fatalf("header auth failed: uid=%d reason=%q", uid, reason)
 	}
 
-	// Bad token rejected.
+	// The reasons are the point of the return value: a rejection storm is only
+	// readable if "the client sent nothing" reads differently from "its token is
+	// stale" (2026-10-08: 214 of 240 handshakes rejected, cause unknown).
 	r3 := httptest.NewRequest("GET", "/api/v1/realtime/inbox", nil)
-	r3.Header.Set("Sec-WebSocket-Protocol", ProtocolName+", garbage.token.here")
-	if _, ok := h.authenticate(r3); ok {
-		t.Fatal("invalid token must be rejected")
+	if _, reason := h.authenticate(r3); reason != "no_token" {
+		t.Fatalf("a handshake with no token must read as no_token, got %q", reason)
+	}
+
+	r4 := httptest.NewRequest("GET", "/api/v1/realtime/inbox", nil)
+	r4.Header.Set("Sec-WebSocket-Protocol", ProtocolName+", garbage.token.here")
+	if _, reason := h.authenticate(r4); reason != "bad_token" {
+		t.Fatalf("an unparseable token must read as bad_token, got %q", reason)
 	}
 
 	// Inactive tenant rejected even with a valid token.
 	h.IsActive = func(context.Context, int32) (bool, int) { return false, 0 }
-	r4 := httptest.NewRequest("GET", "/api/v1/realtime/inbox", nil)
-	r4.Header.Set("Authorization", "Bearer "+token)
-	if _, ok := h.authenticate(r4); ok {
-		t.Fatal("inactive user must be rejected")
+	r5 := httptest.NewRequest("GET", "/api/v1/realtime/inbox", nil)
+	r5.Header.Set("Authorization", "Bearer "+token)
+	if _, reason := h.authenticate(r5); reason != "revoked" {
+		t.Fatalf("an inactive account must read as revoked, got %q", reason)
 	}
 
 	// A token whose tv claim no longer matches the account's token_version is
 	// rejected — the same revocation predicate the HTTP chain enforces.
 	h.IsActive = func(context.Context, int32) (bool, int) { return true, 999 }
-	r5 := httptest.NewRequest("GET", "/api/v1/realtime/inbox", nil)
-	r5.Header.Set("Authorization", "Bearer "+token)
-	if _, ok := h.authenticate(r5); ok {
-		t.Fatal("stale token_version must be rejected")
+	r6 := httptest.NewRequest("GET", "/api/v1/realtime/inbox", nil)
+	r6.Header.Set("Authorization", "Bearer "+token)
+	if _, reason := h.authenticate(r6); reason != "revoked" {
+		t.Fatalf("a stale token_version must read as revoked, got %q", reason)
 	}
 }
