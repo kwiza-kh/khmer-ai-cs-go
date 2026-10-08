@@ -149,6 +149,8 @@ func main() {
 	regions := flag.String("regions", "global", "comma-separated locations to probe")
 	timeout := flag.Duration("timeout", 60*time.Second, "per-request timeout")
 	skipStream := flag.Bool("skip-stream", false, "skip the :streamRawPredict check")
+	quotasFlag := flag.Bool("quotas", false, "only read the project's aiplatform quota limits (no inference)")
+	quotaFilter := flag.String("quota-filter", "anthropic", "case-insensitive substring matched against a quota's id/metric/display name/dimensions")
 	flag.Parse()
 
 	if *saPath == "" {
@@ -176,6 +178,14 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Printf("✓ oauth token minted (client=%s project=%s)\n", sa.ClientEmail, *project)
+
+	if *quotasFlag {
+		if err := printQuotas(ctx, httpClient, token, *project, *quotaFilter); err != nil {
+			fmt.Printf("✗ quota read: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	body := map[string]any{
 		"anthropic_version": "vertex-2023-10-16",
@@ -248,4 +258,77 @@ func main() {
 	if ok == 0 {
 		os.Exit(1)
 	}
+}
+
+// printQuotas reads the project's aiplatform quota limits from the Cloud Quotas
+// API. The 429 a Claude call returns names the metric and the base model but not
+// the limit; this answers "is it 0, and can it be raised from here?" — exactly
+// what a quota request needs. It needs cloudquotas.quotas.get: a 403 below means
+// this key cannot read quotas, not that the quota is fine.
+func printQuotas(ctx context.Context, httpClient *http.Client, token, project, filter string) error {
+	filter = strings.ToLower(filter)
+	pageToken := ""
+	printed := 0
+	for page := 0; page < 10; page++ {
+		u := fmt.Sprintf("https://cloudquotas.googleapis.com/v1/projects/%s/locations/global/services/aiplatform.googleapis.com/quotaInfos?pageSize=200", project)
+		if pageToken != "" {
+			u += "&pageToken=" + url.QueryEscape(pageToken)
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		res, err := httpClient.Do(req)
+		if err != nil {
+			return err
+		}
+		body, _ := io.ReadAll(io.LimitReader(res.Body, 8<<20))
+		res.Body.Close()
+		if res.StatusCode != http.StatusOK {
+			return fmt.Errorf("cloudquotas HTTP %d: %s", res.StatusCode, truncate(body, 300))
+		}
+		var parsed struct {
+			QuotaInfos []struct {
+				QuotaID     string         `json:"quotaId"`
+				Metric      string         `json:"metric"`
+				DisplayName string         `json:"quotaDisplayName"`
+				Dimensions  map[string]any `json:"dimensions"`
+				Details     struct {
+					Value string `json:"value"`
+				} `json:"details"`
+				IsPrecise                bool `json:"isPrecise"`
+				QuotaIncreaseEligibility struct {
+					IsEligible          bool   `json:"isEligible"`
+					IneligibilityReason string `json:"ineligibilityReason"`
+				} `json:"quotaIncreaseEligibility"`
+			} `json:"quotaInfos"`
+			NextPageToken string `json:"nextPageToken"`
+		}
+		if err := json.Unmarshal(body, &parsed); err != nil {
+			return fmt.Errorf("parse cloudquotas response: %w", err)
+		}
+		for _, q := range parsed.QuotaInfos {
+			dims, _ := json.Marshal(q.Dimensions)
+			hay := strings.ToLower(q.QuotaID + " " + q.Metric + " " + q.DisplayName + " " + string(dims))
+			if filter != "" && !strings.Contains(hay, filter) {
+				continue
+			}
+			printed++
+			fmt.Printf("• %s\n    metric: %s\n    limit: %s (precise=%v, adjustable=%v)\n    dimensions: %s\n",
+				q.QuotaID, q.Metric, q.Details.Value, q.IsPrecise, q.QuotaIncreaseEligibility.IsEligible, string(dims))
+			if printed >= 25 {
+				fmt.Println("(truncated at 25 matching quotas)")
+				return nil
+			}
+		}
+		if parsed.NextPageToken == "" {
+			break
+		}
+		pageToken = parsed.NextPageToken
+	}
+	if printed == 0 {
+		fmt.Printf("no quota matched %q (the service may expose them under a different location)\n", filter)
+	}
+	return nil
 }
