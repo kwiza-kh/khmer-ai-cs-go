@@ -38,6 +38,8 @@ npm run build            # NEXT_PUBLIC_API_URL must be set: it is baked into the
 |---|---|
 | `backend-go/internal/platform` | channels: `capabilities.go` (what a channel *is*), `channel*.go` (what it *does*), `inbound_stages.go` (one stage per decision), `webhooks.go` + `webhook_routes.go` |
 | `backend-go/internal/gemini` | the model client: provider failover, call budgets, history shape |
+| `backend-go/internal/llm` | generation provider router: the default row's `provider` decides Gemini or Claude (§二十) |
+| `backend-go/internal/anthropic` | the Claude client (Anthropic API and Vertex) and its verified model catalog |
 | `backend-go/internal/scheduler` | DB-backed jobs (migration 066) |
 | `backend-go/internal/persona` | persona resolution, most specific binding wins |
 | `backend-go/internal/api/member_permissions.go` | seat permissions: the owner→member grant matrix, the `CurrentUser.Tenant()/Can()` resolution, and its owner-only write endpoint |

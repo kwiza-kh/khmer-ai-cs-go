@@ -2595,7 +2595,7 @@ func ExtractTextFromValue(v map[string]any) string {
 	return b.String()
 }
 
-// LoadDefaultConfig reads the default model config row from the DB:
+// LoadDefaultConfig reads the Gemini model config row from the DB: the default row when it is a Gemini row, else the oldest Gemini row (see llm.LoadGemini).
 // (api_key, model_name, system_prompt, max_tokens, vertex_region, temperature).
 //
 // The first return value is the STUDIO credential (see CredentialSourceOf), and
@@ -2621,7 +2621,7 @@ func LoadDefaultConfig(ctx context.Context, pool *pgxpool.Pool) (string, string,
 	err := pool.QueryRow(ctx,
 		"SELECT api_key, model_name, COALESCE(system_prompt, ''), COALESCE(max_tokens, 2048), "+
 			"COALESCE(vertex_region, ''), temperature "+
-			"FROM model_configs WHERE is_default = true ORDER BY config_id LIMIT 1",
+			"FROM model_configs WHERE provider NOT IN ('anthropic', 'anthropic-vertex') ORDER BY is_default DESC, config_id LIMIT 1",
 	).Scan(&apiKey, &modelName, &systemPrompt, &maxTokens, &region, &temperature)
 	if err != nil {
 		return "", "", "", 0, "", nil, false

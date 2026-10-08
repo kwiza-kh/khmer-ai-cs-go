@@ -10,7 +10,7 @@ package api
 // ONE of the two transports and asserts what actually leaves the process, with
 // the literals spelled out rather than re-derived from the code under test.
 //
-// The two package-level seams in admin_handlers.go (studioAPIKeyFromDB,
+// The two package-level seams in admin_handlers.go and model_config.go (studioAPIKeyFromDB,
 // defaultModelConfigFromDB) are the routes' only database reads. Replacing them
 // is what lets these run with no database AND report which credential the
 // handler thought it needed: a vertex test that swaps one for a function which
@@ -38,6 +38,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"khmer-ai-cs-go/internal/gemini"
+	"khmer-ai-cs-go/internal/llm"
 	"khmer-ai-cs-go/internal/security"
 )
 
@@ -404,6 +405,11 @@ func TestListAvailableModelsStudioWithoutAKeyStillRefuses(t *testing.T) {
 // body below carries a model_name as well, so a guard placed after the other
 // fields would touch the (nil) pool here and fail this test.
 func TestUpdateModelConfigVertexRefusesAKeyWrite(t *testing.T) {
+	originalRow := modelRowFromDB
+	modelRowFromDB = func(ctx context.Context, db *pgxpool.Pool, configID int32) (modelRow, error) {
+		return modelRow{provider: llm.ProviderGemini}, nil
+	}
+	t.Cleanup(func() { modelRowFromDB = originalRow })
 	t.Setenv("GEMINI_PROVIDER", "vertex")
 	t.Setenv("GEMINI_VERTEX_SA_FILE", "")
 
@@ -444,12 +450,12 @@ func TestReloadGeminiFromDBVertexAppliesEditsWithoutAKey(t *testing.T) {
 	}
 
 	original := defaultModelConfigFromDB
-	defaultModelConfigFromDB = func(ctx context.Context, db *pgxpool.Pool) (string, string, string, int, string, *float64, bool) {
-		return "", "gemini-3.5-flash", "", 512, "", nil, true
+	defaultModelConfigFromDB = func(ctx context.Context, db *pgxpool.Pool) (llm.Row, bool) {
+		return llm.Row{Provider: llm.ProviderGemini, ModelName: "gemini-3.5-flash", MaxTokens: 512}, true
 	}
 	t.Cleanup(func() { defaultModelConfigFromDB = original })
 
-	(&App{Gemini: serving}).reloadGeminiFromDB(context.Background())
+	(&App{Gemini: serving}).reloadServingFromDB(context.Background())
 	if got := serving.ModelName(); got != "gemini-3.5-flash" {
 		t.Fatalf("model after reload = %q, want gemini-3.5-flash — the empty DB key must not cancel the reload", got)
 	}
@@ -476,10 +482,10 @@ func TestReloadGeminiFromDBStudioIsUnchanged(t *testing.T) {
 	t.Cleanup(func() { defaultModelConfigFromDB = original })
 
 	// (a) empty stored key → nothing is pushed.
-	defaultModelConfigFromDB = func(ctx context.Context, db *pgxpool.Pool) (string, string, string, int, string, *float64, bool) {
-		return "", "gemini-3.5-flash", "", 512, "", nil, true
+	defaultModelConfigFromDB = func(ctx context.Context, db *pgxpool.Pool) (llm.Row, bool) {
+		return llm.Row{Provider: llm.ProviderGemini, ModelName: "gemini-3.5-flash", MaxTokens: 512}, true
 	}
-	app.reloadGeminiFromDB(context.Background())
+	app.reloadServingFromDB(context.Background())
 	if got := serving.ModelName(); got != "gemini-2.0-flash" {
 		t.Fatalf("model after an empty-key reload = %q, want the boot model gemini-2.0-flash", got)
 	}
@@ -489,10 +495,10 @@ func TestReloadGeminiFromDBStudioIsUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defaultModelConfigFromDB = func(ctx context.Context, db *pgxpool.Pool) (string, string, string, int, string, *float64, bool) {
-		return sealed, "gemini-3.5-flash", "", 512, "", nil, true
+	defaultModelConfigFromDB = func(ctx context.Context, db *pgxpool.Pool) (llm.Row, bool) {
+		return llm.Row{Provider: llm.ProviderGemini, APIKey: sealed, ModelName: "gemini-3.5-flash", MaxTokens: 512}, true
 	}
-	app.reloadGeminiFromDB(context.Background())
+	app.reloadServingFromDB(context.Background())
 	if got := serving.ModelName(); got != "gemini-3.5-flash" {
 		t.Fatalf("model after reload = %q, want gemini-3.5-flash", got)
 	}
@@ -777,20 +783,20 @@ func TestReloadGeminiFromDBAppliesTheStoredTemperature(t *testing.T) {
 	t.Cleanup(func() { defaultModelConfigFromDB = original })
 
 	third := 0.3
-	defaultModelConfigFromDB = func(ctx context.Context, db *pgxpool.Pool) (string, string, string, int, string, *float64, bool) {
-		return "", "gemini-3.8-flash", "", 128, "", &third, true
+	defaultModelConfigFromDB = func(ctx context.Context, db *pgxpool.Pool) (llm.Row, bool) {
+		return llm.Row{Provider: llm.ProviderGemini, ModelName: "gemini-3.8-flash", MaxTokens: 128, Temperature: &third}, true
 	}
-	app.reloadGeminiFromDB(context.Background())
+	app.reloadServingFromDB(context.Background())
 	if got := serving.Temperature(); got == nil || *got != 0.3 {
 		t.Fatalf("temperature after reload = %v, want 0.3", got)
 	}
 
 	// The console erases the field: the reply path must go back to the platform
 	// default, not keep sampling with whatever was last stored.
-	defaultModelConfigFromDB = func(ctx context.Context, db *pgxpool.Pool) (string, string, string, int, string, *float64, bool) {
-		return "", "gemini-3.8-flash", "", 128, "", nil, true
+	defaultModelConfigFromDB = func(ctx context.Context, db *pgxpool.Pool) (llm.Row, bool) {
+		return llm.Row{Provider: llm.ProviderGemini, ModelName: "gemini-3.8-flash", MaxTokens: 128}, true
 	}
-	app.reloadGeminiFromDB(context.Background())
+	app.reloadServingFromDB(context.Background())
 	if got := serving.Temperature(); got != nil {
 		t.Fatalf("a NULL column must clear the temperature, still %v", *got)
 	}

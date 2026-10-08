@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -149,7 +150,7 @@ type resolvedLimit struct {
 func resolveSpendLimit() resolvedLimit {
 	raw := strings.TrimSpace(os.Getenv(spendLimitEnv))
 
-	if !providerIsVertex() {
+	if studioWallApplies() {
 		// studio: byte-for-byte the historical resolution, including its
 		// leniency. An unparseable value falls back to the Tier 1 default
 		// rather than failing — production has always behaved that way and the
@@ -163,7 +164,8 @@ func resolveSpendLimit() resolvedLimit {
 		return resolvedLimit{limit: limit, basis: BasisStudioTierCeiling}
 	}
 
-	// vertex: no upstream wall, so nothing may be inherited by default.
+	// No AI Studio wall applies (Vertex, or a Claude provider): nothing may be
+	// inherited by default.
 	if raw == "" {
 		return resolvedLimit{limit: float64(vertexDefaultLimitUSD), basis: BasisVertexNoBudget}
 	}
@@ -172,10 +174,10 @@ func resolveSpendLimit() resolvedLimit {
 		return resolvedLimit{
 			limit: 0,
 			basis: BasisVertexInvalidRefused,
-			fault: fmt.Errorf("%s=%q is not a number while %s=vertex: no budget would be armed, "+
-				"yet the operator has been told one is — and Vertex has no upstream spend limit to catch "+
+			fault: fmt.Errorf("%s=%q is not a number while %s: no budget would be armed, "+
+				"yet the operator has been told one is — and no upstream spend limit exists under this regime to catch "+
 				"what that missing guardrail was supposed to catch. Set a number, or unset %s",
-				spendLimitEnv, raw, providerEnv, spendLimitEnv),
+				spendLimitEnv, raw, regimeName(), spendLimitEnv),
 		}
 	}
 	if isStudioTierCeilingUSD(f) {
@@ -183,11 +185,11 @@ func resolveSpendLimit() resolvedLimit {
 			limit: 0,
 			basis: BasisVertexLegacyRefused,
 			fault: fmt.Errorf("%s=%s is one of AI Studio's spend-based rate limits "+
-				"(Tier 1 $10 / Tier 2 $50 / Tier 3 $200 per 10 minutes) while %s=vertex: Vertex enforces "+
+				"(Tier 1 $10 / Tier 2 $50 / Tier 3 $200 per 10 minutes) while %s: that regime enforces "+
 				"no such limit, so this value would shed customer turns at a threshold that protects "+
-				"nothing. Either unset %s (vertex then runs with no budget, the honest default) or set it "+
+				"nothing. Either unset %s (no budget, the honest default) or set it "+
 				"to a value that is not one of 10/50/200 to declare a deliberate self-imposed budget",
-				spendLimitEnv, raw, providerEnv, spendLimitEnv),
+				spendLimitEnv, raw, regimeName(), spendLimitEnv),
 		}
 	}
 	if f <= 0 {
@@ -209,6 +211,41 @@ func resolveSpendLimit() resolvedLimit {
 // this should call it instead.
 func providerIsVertex() bool {
 	return strings.EqualFold(strings.TrimSpace(os.Getenv(providerEnv)), vertexName)
+}
+
+// studioWallApplies reports whether AI Studio's tier ceiling is the wall in force:
+// the studio transport is configured AND the Gemini client serves generation. The
+// tier numbers are Google's limits on Gemini calls. A Claude provider has no such
+// wall, so the same number is then a budget question, answered by the vertex branch.
+func studioWallApplies() bool {
+	return !providerIsVertex() && servingIsGemini()
+}
+
+// servingProvider is the generation provider in force, published by internal/llm
+// on every reload. The reply path reads it per call, so it is an atomic value.
+var servingProvider atomic.Value
+
+// SetServingProvider records the generation provider in force. Empty means the
+// default, Gemini, which is what every deployment serves until it switches.
+func SetServingProvider(provider string) {
+	servingProvider.Store(provider)
+}
+
+// servingIsGemini mirrors internal/llm.IsClaude: a value this package does not
+// recognise is Gemini, the reading every model_configs row has always had.
+func servingIsGemini() bool {
+	p, _ := servingProvider.Load().(string)
+	return p != "anthropic" && p != "anthropic-vertex"
+}
+
+// regimeName names the spend regime the vertex branch applies, for the operator
+// who reads a refusal.
+func regimeName() string {
+	if !servingIsGemini() {
+		p, _ := servingProvider.Load().(string)
+		return "the serving provider (" + p + ")"
+	}
+	return providerEnv + "=vertex"
 }
 
 // isStudioTierCeilingUSD reports whether f is one of AI Studio's tier ceilings.

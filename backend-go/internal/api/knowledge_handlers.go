@@ -374,7 +374,7 @@ func (a *App) ragQuery(w http.ResponseWriter, r *http.Request) (any, error) {
 	augmented := ctx.ContextStr + "\n---\n📝 User question: " + req.Query +
 		"\n\nAnswer based ONLY on the knowledge base above. If the answer is not contained there, " +
 		"say you don't know and offer to escalate to a human agent. Reply in the user's language."
-	result, err := a.Gemini.Chat(r.Context(), augmented, nil, language)
+	result, err := a.serving().Chat(r.Context(), augmented, nil, language)
 	if err != nil {
 		a.Logger.Error("rag query generation failed", "tenant_id", user.Tenant(), "actor_user_id", user.UserID, "error", err.Error())
 		return nil, ErrInternal("生成回答失败")
@@ -487,7 +487,7 @@ func (a *App) knowledgeGapDraft(w http.ResponseWriter, r *http.Request) (any, er
 		"\"# <short title>\", followed by the article body. State facts only — never invent prices, " +
 		"policies or deadlines; where a fact is unknown write a placeholder like [待确认]. Max 200 words.\n\n" +
 		"Customer question: " + query
-	draft, ok := a.Gemini.GenerateFast(r.Context(), prompt, 20*time.Second)
+	draft, ok := a.serving().GenerateFast(r.Context(), prompt, 20*time.Second)
 	if !ok || strings.TrimSpace(draft) == "" {
 		return nil, &ApiError{http.StatusBadGateway, "草稿生成失败，请稍后重试"}
 	}

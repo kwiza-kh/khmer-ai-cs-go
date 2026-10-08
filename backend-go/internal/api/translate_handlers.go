@@ -73,7 +73,7 @@ func (a *App) translateOneText(ctx context.Context, text, target string) (string
 	if cached, err := a.Redis.GetString(ctx, key); err == nil && cached != "" {
 		return cached, nil
 	}
-	out, ok := a.Gemini.GenerateFast(ctx, translatePrompt(text, target), 15*time.Second)
+	out, ok := a.serving().GenerateFast(ctx, translatePrompt(text, target), 15*time.Second)
 	if !ok {
 		return "", errTranslateFailed
 	}
@@ -177,7 +177,7 @@ func (a *App) translateBatch(w http.ResponseWriter, r *http.Request) (any, error
 			b.WriteString(t)
 			b.WriteString("\n")
 		}
-		reply, ok := a.Gemini.GenerateFast(ctx, b.String(), 25*time.Second)
+		reply, ok := a.serving().GenerateFast(ctx, b.String(), 25*time.Second)
 		if !ok {
 			return nil, &ApiError{http.StatusBadGateway, "翻译失败，请稍后重试"}
 		}

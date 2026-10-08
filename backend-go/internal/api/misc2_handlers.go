@@ -807,7 +807,7 @@ func (a *App) copilotSuggest(w http.ResponseWriter, r *http.Request, sessionID s
 		return map[string]any{"suggestions": []string{"感谢咨询，请稍等，我为您查询。"}, "grounded": false}, nil
 	}
 	prompt := "Suggest one concise customer-service reply (same language as the customer):\n\n" + groundCtx.ContextStr + "\nCustomer: " + latest
-	result, err := a.Gemini.Chat(r.Context(), prompt, nil, "km")
+	result, err := a.serving().Chat(r.Context(), prompt, nil, "km")
 	if err != nil {
 		return map[string]any{"suggestions": []string{}, "grounded": groundCtx.HasMatch}, nil
 	}

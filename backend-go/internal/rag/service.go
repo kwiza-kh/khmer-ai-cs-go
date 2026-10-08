@@ -20,6 +20,7 @@ import (
 
 	"khmer-ai-cs-go/internal/config"
 	"khmer-ai-cs-go/internal/gemini"
+	"khmer-ai-cs-go/internal/llm"
 	"khmer-ai-cs-go/internal/redisstore"
 	"khmer-ai-cs-go/internal/textutil"
 	"khmer-ai-cs-go/internal/typesafe"
@@ -99,6 +100,9 @@ type GroundingContext struct {
 type Service struct {
 	DB     *pgxpool.Pool
 	Gemini *gemini.Service
+	// LLM routes text generation to the provider the default row selects. Retrieval
+	// (embeddings, reranking, query rewriting) stays on Gemini.
+	LLM    *llm.Router
 	Redis  *redisstore.Client
 	Logger *slog.Logger
 	// Jev optionally replaces the LLM reranker with typed Score judgments.
@@ -493,7 +497,7 @@ func (s *Service) compileDocument(ctx context.Context, docID, userID int32, titl
 		"Reply with ONLY a JSON object: {\"faq_markdown\": string, \"contradictions\": [...]}"
 	// 4096 output tokens: the FAQ + contradictions JSON overflows the 2048
 	// default and a truncated payload fails to parse.
-	reply, ok := s.Gemini.GenerateFastMax(ctx, prompt, 60*time.Second, 4096)
+	reply, ok := s.serving().GenerateFastMax(ctx, prompt, 60*time.Second, 4096)
 	if !ok {
 		return fmt.Errorf("compile LLM call failed")
 	}

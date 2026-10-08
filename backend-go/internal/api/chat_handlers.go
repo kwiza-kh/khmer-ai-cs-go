@@ -130,7 +130,7 @@ func (a *App) persistModelReply(ctx context.Context, userID int32, sessionID str
 		_, _ = a.DB.Exec(ctx, "UPDATE sessions SET language = $2 WHERE session_id = $1 AND (language = '' OR language IS NULL)", sessionID, language)
 	}
 	if modelName == "" {
-		modelName = a.Gemini.ModelName()
+		modelName = a.serving().ModelName()
 	}
 
 	var sourcesJSONArg any
@@ -268,7 +268,7 @@ func (a *App) chatPlain(w http.ResponseWriter, r *http.Request) (any, error) {
 	if groundCtx.HasMatch {
 		message = rag.AugmentMessage(req.Message, &groundCtx)
 	}
-	result, err := a.Gemini.Chat(r.Context(), message, history, language)
+	result, err := a.serving().Chat(r.Context(), message, history, language)
 	if err != nil {
 		// The upstream reason (quota 429, 5xx, transport) is the only thing that
 		// makes this actionable, and returning a bare 500 threw it away: a load
@@ -283,7 +283,7 @@ func (a *App) chatPlain(w http.ResponseWriter, r *http.Request) (any, error) {
 		}
 		return nil, ErrInternal("生成回答失败")
 	}
-	usage.Record(r.Context(), a.DB, user.UserID, &sid, a.Gemini.ModelName(), result.PromptTokens, result.OutputTokens, result.CachedTokens)
+	usage.Record(r.Context(), a.DB, user.UserID, &sid, a.serving().ModelName(), result.PromptTokens, result.OutputTokens, result.CachedTokens)
 	reply := result.Reply
 	if !result.UsedMock {
 		reply = gemini.StripSourceMarkers(reply)
@@ -297,7 +297,7 @@ func (a *App) chatPlain(w http.ResponseWriter, r *http.Request) (any, error) {
 		ownerID, cachedQuery, cachedLang, cachedReply := user.UserID, req.Message, language, reply
 		storeCtx := context.WithoutCancel(r.Context())
 		platform.SpawnClassifier(func() {
-			a.Cache.Store(storeCtx, ownerID, cachedQuery, cachedLang, cachedReply, a.Gemini.ModelName())
+			a.Cache.Store(storeCtx, ownerID, cachedQuery, cachedLang, cachedReply, a.serving().ModelName())
 		})
 	}
 
@@ -431,7 +431,7 @@ func (a *App) chatStream(w http.ResponseWriter, r *http.Request) {
 	// from every later turn's context and from the agent inbox.
 	persistCtx := context.WithoutCancel(r.Context())
 	var streamed strings.Builder
-	result, err := a.Gemini.ChatStream(r.Context(), message, history, language, func(chunk string) {
+	result, err := a.serving().ChatStream(r.Context(), message, history, language, func(chunk string) {
 		streamed.WriteString(chunk)
 		sendEvent("token", map[string]string{"text": chunk})
 	})
@@ -447,7 +447,7 @@ func (a *App) chatStream(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	usage.Record(persistCtx, a.DB, user.UserID, &sid, a.Gemini.ModelName(), result.PromptTokens, result.OutputTokens, result.CachedTokens)
+	usage.Record(persistCtx, a.DB, user.UserID, &sid, a.serving().ModelName(), result.PromptTokens, result.OutputTokens, result.CachedTokens)
 	reply := result.Reply
 	if !result.UsedMock {
 		reply = gemini.StripSourceMarkers(reply)
@@ -459,7 +459,7 @@ func (a *App) chatStream(w http.ResponseWriter, r *http.Request) {
 	if !result.UsedMock && a.Cache != nil && a.Cache.Enabled() {
 		ownerID, cachedQuery, cachedLang, cachedReply := user.UserID, req.Message, language, reply
 		platform.SpawnClassifier(func() {
-			a.Cache.Store(persistCtx, ownerID, cachedQuery, cachedLang, cachedReply, a.Gemini.ModelName())
+			a.Cache.Store(persistCtx, ownerID, cachedQuery, cachedLang, cachedReply, a.serving().ModelName())
 		})
 	}
 

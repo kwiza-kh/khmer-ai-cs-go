@@ -35,7 +35,49 @@ func EstimateCostFor(model string, prompt, completion, cached int) float64 {
 		}
 		return float64(prompt) / 1e6 * embeddingPer1M
 	}
+	if isClaude(model) {
+		return estimateClaude(prompt, completion, cached)
+	}
 	return EstimateCost(prompt, completion, cached)
+}
+
+// Claude list prices (USD per 1M tokens) for claude-haiku-5-5, the one model the
+// anthropic catalog offers: a prompt of up to claudeLongPromptTokens bills at the
+// short rate, and a longer prompt bills every token at the long rate. Cache reads
+// bill at a tenth of the input rate. A Claude model added to the catalog needs its
+// own rate card here before the console offers it.
+const (
+	claudeLongPromptTokens = 100_000
+	claudeCacheReadFactor  = 0.10
+)
+
+type rateCard struct{ in, out float64 }
+
+var (
+	claudeShortRates = rateCard{in: 0.10, out: 0.50}
+	claudeLongRates  = rateCard{in: 0.50, out: 2.50}
+)
+
+// isClaude matches the Claude family by name, as isEmbeddingModel does for the
+// embedding family.
+func isClaude(model string) bool {
+	return strings.HasPrefix(strings.ToLower(model), "claude-")
+}
+
+// estimateClaude prices one Claude call. The prompt count includes the cached part,
+// as the Gemini accounting does, so the uncached part is what is left after it.
+func estimateClaude(prompt, completion, cached int) float64 {
+	rates := claudeShortRates
+	if prompt > claudeLongPromptTokens {
+		rates = claudeLongRates
+	}
+	uncached := prompt - cached
+	if uncached < 0 {
+		uncached = 0
+	}
+	return float64(uncached)/1e6*rates.in +
+		float64(cached)/1e6*rates.in*claudeCacheReadFactor +
+		float64(completion)/1e6*rates.out
 }
 
 // isEmbeddingModel matches the embedding family by name. Both the chat path and

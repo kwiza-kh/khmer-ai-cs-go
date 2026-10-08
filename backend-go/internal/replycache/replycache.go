@@ -37,6 +37,11 @@ type Service struct {
 	DB     *pgxpool.Pool
 	Gemini *gemini.Service
 	Logger *slog.Logger
+	// Serving names the model that answers customers right now. A cached answer is served
+	// only when the model that wrote it is the one in force: an answer from the previous
+	// provider is not what this deployment says now. nil = no model filter (tests). An
+	// empty name means no model is in force, and nothing is served.
+	Serving func() string
 	// Embed overrides the embedding source (tests inject a deterministic
 	// stub). nil = use the configured Gemini embedding model.
 	Embed func(ctx context.Context, text string) ([]float32, error)
@@ -75,6 +80,12 @@ func (s *Service) Lookup(ctx context.Context, userID int32, query, language stri
 	if !s.Enabled() || len([]rune(query)) < minQueryRunes() {
 		return "", false
 	}
+	model := ""
+	if s.Serving != nil {
+		if model = s.Serving(); model == "" {
+			return "", false
+		}
+	}
 	// Same normalization the retrieval side applies (rag.NormalizeText): NFC,
 	// Khmer digits → ASCII, ZWSP/ZWNJ/NBSP → space. Without it, two renders
 	// of the same Khmer question embed as two entries and hits drift.
@@ -90,8 +101,9 @@ func (s *Service) Lookup(ctx context.Context, userID int32, query, language stri
 			"WHERE user_id = $1 AND language = $2 "+
 			"AND created_at > NOW() - make_interval(hours => $3) "+
 			"AND query_embedding <=> $4::vector < $5 "+
+			"AND ($6 = '' OR model_name = $6) "+
 			"ORDER BY query_embedding <=> $4::vector LIMIT 1",
-		userID, language, ttlHours(), gemini.FormatVector(vec), 1-minSimilarity()).
+		userID, language, ttlHours(), gemini.FormatVector(vec), 1-minSimilarity(), model).
 		Scan(&cacheID, &answer)
 	if err != nil {
 		return "", false

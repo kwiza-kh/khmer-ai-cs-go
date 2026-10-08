@@ -487,7 +487,7 @@ func (a *App) sessionSummary(w http.ResponseWriter, r *http.Request, sessionID s
 		}
 	}
 
-	result, err := a.Gemini.Chat(r.Context(), summaryPrompt(transcript.String(), language), nil, language)
+	result, err := a.serving().Chat(r.Context(), summaryPrompt(transcript.String(), language), nil, language)
 	if err != nil {
 		return nil, ErrInternal("生成摘要失败")
 	}

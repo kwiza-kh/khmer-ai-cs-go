@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import useSWR from "swr";
 import Link from "next/link";
-import { listUsers, updateUserRole, listModelConfigs, listAvailableModels, listVertexRegions, testModelConfig, updateModelConfig, getDefaultSystemPrompt, listPromptVersions, restorePromptVersion, listPersonas, createPersona, updatePersona, deletePersona, putPersonaBinding, deletePersonaBinding, type AvailableModel, type ModelItem, type PaginatedResponse, type PersonaBinding, type PersonaItem, type PersonasResponse, listTeam, removeAgent, updateTeamMemberPermissions, listTeamInvites, listTeamInviteHistory, createTeamInvite, revokeTeamInvite, type AgentMember, type InviteHistoryEntry, type UserItem, type UsersStats } from "@/lib/api";
+import { listUsers, updateUserRole, listModelConfigs, listAvailableModels, listVertexRegions, testModelConfig, updateModelConfig, getDefaultSystemPrompt, listPromptVersions, restorePromptVersion, listPersonas, createPersona, updatePersona, deletePersona, putPersonaBinding, deletePersonaBinding, type AvailableModel, type ModelItem, type ModelProvider, type PaginatedResponse, type PersonaBinding, type PersonaItem, type PersonasResponse, listTeam, removeAgent, updateTeamMemberPermissions, listTeamInvites, listTeamInviteHistory, createTeamInvite, revokeTeamInvite, type AgentMember, type InviteHistoryEntry, type UserItem, type UsersStats } from "@/lib/api";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -1225,6 +1225,23 @@ function usesServiceAccountCredential(model: ModelItem): boolean {
   return model.credential_source === "service_account";
 }
 
+// The providers a model config can name. The server accepts the same three values
+// (internal/llm); anything else is refused on save.
+const MODEL_PROVIDERS: ModelProvider[] = ["gemini", "anthropic", "anthropic-vertex"];
+
+// providerLabelKey maps a stored provider to its label. An unknown value reads as Gemini,
+// the same reading the server gives it.
+function providerLabelKey(provider: string): string {
+  if (provider === "anthropic") return "admin.providerClaudeApi";
+  if (provider === "anthropic-vertex") return "admin.providerClaudeVertex";
+  return "admin.providerGemini";
+}
+
+// claudeRegionLabel is the label of a Claude location, falling back to its id.
+function claudeRegionLabel(region: string, regions: { id: string; label: string }[]): string {
+  return regions.find((entry) => entry.id === region)?.label || region || "global";
+}
+
 // Launch stages are an API enum, not prose: only the two values an operator has
 // to recognise get a translated label, anything else is shown verbatim rather
 // than flattened into a vague one.
@@ -1349,11 +1366,21 @@ export function ModelsAdminPage() {
   // before regions existed, with no region parameter at all.
   const regionsResolved = !hasVertexModel || regionsData !== undefined || regionsError !== undefined;
 
+  // Claude on Vertex has its own fixed list of locations. It is requested only when a row
+  // uses it, so a deployment without Claude makes no extra request.
+  const hasClaudeVertex = models.some((model) => model.provider === "anthropic-vertex");
+  const { data: claudeRegionsData } = useSWR(
+    hasClaudeVertex ? "admin-claude-regions" : null,
+    () => withDeadline(listVertexRegions("anthropic-vertex"), 8000, t("admin.regionListUnavailable")),
+  );
+  const claudeRegions = claudeRegionsData?.regions ?? [];
+
   // The region in force for one card: the operator's pick, else the region the
   // server is configured with, else one a newer backend may report per config.
   // A pick is never empty, hence `||` — `currentRegion` is "" when unknown, and
   // `??` would stop there instead of falling through.
   const regionFor = (model: ModelItem) => {
+    if (model.provider === "anthropic-vertex") return regionByConfig[model.config_id] || model.region || "global";
     if (!usesServiceAccountCredential(model)) return "";
     return regionByConfig[model.config_id] || currentRegion || model.region || "";
   };
@@ -1450,11 +1477,30 @@ export function ModelsAdminPage() {
     }
   };
 
+  // Changing the provider changes the form, not the server: the credential fields follow the
+  // new provider, and the save enforces the credential rules. The model list is cleared rather
+  // than guessed, because it can only come from the server once the row names the new provider.
+  const handleProviderChange = (model: ModelItem, provider: ModelProvider) => {
+    const current = modelDrafts[model.config_id] ?? model;
+    const claudeNow = provider === "anthropic" || provider === "anthropic-vertex";
+    const patch: Partial<ModelItem> = { provider };
+    if (claudeNow && !(current.model_name ?? "").startsWith("claude-")) patch.model_name = "claude-haiku-5-5";
+    if (!claudeNow && (current.model_name ?? "").startsWith("claude-")) patch.model_name = "";
+    if (provider === "anthropic-vertex" && !current.region) patch.region = "global";
+    updateModelDraft(model, patch);
+    setAvailableModels((previous) => {
+      const next = { ...previous };
+      delete next[model.config_id];
+      return next;
+    });
+  };
+
   const handleSaveModel = async (model: ModelItem) => {
     const draft = modelDrafts[model.config_id] ?? model;
     const apiKey = apiKeys[model.config_id]?.trim();
     try {
       await updateModelConfig(model.config_id, {
+        provider: draft.provider,
         name: draft.name,
         model_name: draft.model_name,
         system_prompt: draft.system_prompt,
@@ -1465,7 +1511,10 @@ export function ModelsAdminPage() {
         // The key is only sent where it is a credential. Under Vertex the
         // backend refuses it outright (nothing would read it), so sending an
         // empty/leftover value would turn a settings save into a 400.
-        ...(apiKey && !usesServiceAccountCredential(model) ? { api_key: apiKey } : {}),
+        // A key is sent only to a provider that authenticates with one. Claude on Vertex has
+        // none, and a Gemini row on Vertex has none either.
+        ...(apiKey && (draft.provider === "anthropic" || (draft.provider === "gemini" && !usesServiceAccountCredential(model))) ? { api_key: apiKey } : {}),
+        ...(draft.provider === "anthropic-vertex" ? { vertex_region: draft.region || "global" } : {}),
       });
       setModelDrafts((previous) => {
         const next = { ...previous };
@@ -1481,8 +1530,8 @@ export function ModelsAdminPage() {
       // Verify against the region this card is set to, so the toast counts the
       // models the operator can actually choose from.
       const available = await loadAvailableModels(
-        { ...model, has_api_key: Boolean(apiKey) || model.has_api_key },
-        regionFor(model) || undefined,
+        { ...model, provider: draft.provider, region: draft.region, has_api_key: Boolean(apiKey) || model.has_api_key },
+        (draft.provider === "anthropic-vertex" ? draft.region || "global" : regionFor(model)) || undefined,
       );
       if (available) {
         toast.success(tf("admin.geminiConnectedToast", { n: available.length }));
@@ -1538,9 +1587,11 @@ export function ModelsAdminPage() {
     data.forEach((model) => {
       if (!model.has_api_key && !usesServiceAccountCredential(model)) return;
       const picked = regionByConfig[model.config_id];
-      const region = usesServiceAccountCredential(model)
-        ? picked || currentRegion || model.region || ""
-        : "";
+      const region = model.provider === "anthropic-vertex"
+        ? picked || model.region || "global"
+        : usesServiceAccountCredential(model)
+          ? picked || currentRegion || model.region || ""
+          : "";
       void loadAvailableModels(model, region || undefined);
     });
   }, [data, loadAvailableModels, regionsResolved, regionByConfig, currentRegion]);
@@ -1585,7 +1636,13 @@ export function ModelsAdminPage() {
             // server (Vertex) or the key stored in this config (AI Studio). The
             // difference decides whether "no stored key" means "needs setup" or
             // "nothing to do here".
-            const serviceAccount = usesServiceAccountCredential(model);
+            // Which form and which credential the card shows follows the provider the draft
+            // names, so changing the provider changes the form before the save.
+            const draftProvider = draft.provider;
+            const claudeDirect = draftProvider === "anthropic";
+            const claudeVertex = draftProvider === "anthropic-vertex";
+            const isClaude = claudeDirect || claudeVertex;
+            const serviceAccount = claudeVertex || (!isClaude && usesServiceAccountCredential(model));
             const credentialReady = serviceAccount || model.has_api_key;
             const isConnected = credentialReady && modelOptions.length > 0 && !modelListError;
             // A Vertex card's list is not even requested until the region list
@@ -1615,7 +1672,7 @@ export function ModelsAdminPage() {
                     {model.is_default && <Badge variant="success" className="h-4 px-1.5 text-xs">{t("admin.defaultBadge")}</Badge>}
                   </CardTitle>
                   <CardDescription className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-                    <span className="font-medium text-foreground">{model.provider}</span>
+                    <span className="font-medium text-foreground">{t(providerLabelKey(draft.provider))}</span>
                     <span aria-hidden className="text-muted-foreground">·</span>
                     <span className="font-mono text-muted-foreground">{draft.model_name || t("admin.modelNotSet")}</span>
                     {serviceAccount && (
@@ -1642,11 +1699,26 @@ export function ModelsAdminPage() {
                     <div className="grid gap-3 sm:grid-cols-2">
                       <div>
                         <label className="mb-1 block text-xs text-muted-foreground">{t("admin.provider")}</label>
-                        <Input value={serviceAccount ? "Vertex AI" : "Gemini API"} disabled className="h-8 text-xs" />
+                        <Select value={draftProvider} onValueChange={(value) => { if (value) handleProviderChange(model, String(value) as ModelProvider); }}>
+                          <SelectTrigger className="h-8 w-full text-xs">
+                            <SelectValue>{() => t(providerLabelKey(draftProvider))}</SelectValue>
+                          </SelectTrigger>
+                          <SelectContent>
+                            {MODEL_PROVIDERS.map((option) => (
+                              <SelectItem key={option} value={option} label={t(providerLabelKey(option))}>
+                                {t(providerLabelKey(option))}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <p className="mt-1 text-xs text-muted-foreground">{t("admin.providerScopeNote")}</p>
+                        {draft.provider !== model.provider && (
+                          <p className="mt-1 flex items-start gap-1.5 text-xs text-warning"><AlertTriangle className="mt-0.5 size-3.5 shrink-0" />{t("admin.providerSwitchNote")}</p>
+                        )}
                       </div>
                       <div className={cn(serviceAccount && "sm:col-span-2")}>
                         <label className="mb-1 block text-xs text-muted-foreground">
-                          {serviceAccount ? t("admin.geminiCredential") : t("admin.geminiApiKey")}
+                          {claudeDirect ? t("admin.claudeApiKey") : serviceAccount ? t("admin.geminiCredential") : t("admin.geminiApiKey")}
                         </label>
                         {serviceAccount ? (
                           // No input at all under Vertex. An API-key box here is
@@ -1655,7 +1727,7 @@ export function ModelsAdminPage() {
                           // column on this transport), which reads as "the
                           // credential was rotated" when nothing changed.
                           <p className="rounded-md border border-border bg-muted/40 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
-                            {t("admin.saCredentialHint")}
+                            {claudeVertex ? t("admin.claudeSaHint") : t("admin.saCredentialHint")}
                           </p>
                         ) : (
                           <>
@@ -1676,7 +1748,28 @@ export function ModelsAdminPage() {
 
                   <ModelConfigSection icon={Cpu} title={t("admin.sectionModelRegion")}>
                     <div className={cn("grid gap-3", serviceAccount && "lg:grid-cols-2")}>
-                      {serviceAccount && (
+                      {claudeVertex && (
+                        <div>
+                          <label className="mb-1 block text-xs text-muted-foreground">{t("admin.claudeRegion")}</label>
+                          <Select
+                            value={region}
+                            onValueChange={(value) => { if (value) updateModelDraft(model, { region: String(value) }); }}
+                          >
+                            <SelectTrigger className="h-8 w-full text-xs">
+                              <SelectValue>{() => claudeRegionLabel(region, claudeRegions)}</SelectValue>
+                            </SelectTrigger>
+                            <SelectContent>
+                              {claudeRegions.map((entry) => (
+                                <SelectItem key={entry.id} value={entry.id} label={entry.label || entry.id}>
+                                  {entry.label || entry.id}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <p className="mt-1 text-xs text-muted-foreground">{t("admin.claudeRegionHint")}</p>
+                        </div>
+                      )}
+                      {serviceAccount && !isClaude && (
                         <div>
                           <label className="mb-1 block text-xs text-muted-foreground">{t("admin.region")}</label>
                           {regions.length > 0 ? (
@@ -1799,13 +1892,13 @@ export function ModelsAdminPage() {
                           {modelsPending
                             ? region
                               ? tf("admin.loadingModelsForRegion", { region })
-                              : t("admin.checkingGemini")
+                              : t(isClaude ? "admin.checkingClaude" : "admin.checkingGemini")
                             : isConnected
                               ? region
-                                ? tf("admin.connectedGeminiRegion", { n: chatModels.length, region })
-                                : tf("admin.connectedGemini", { n: chatModels.length })
+                                ? tf(isClaude ? "admin.connectedClaude" : "admin.connectedGeminiRegion", { n: chatModels.length, region })
+                                : tf(isClaude ? "admin.connectedClaude" : "admin.connectedGemini", { n: chatModels.length })
                               : credentialReady
-                                ? t("admin.geminiNeedsVerify")
+                                ? t(isClaude ? "admin.claudeNeedsVerify" : "admin.geminiNeedsVerify")
                                 : t("admin.saveKeyToLoad")}
                         </p>
                         {selectedUnavailable && (
@@ -1835,13 +1928,14 @@ export function ModelsAdminPage() {
                       <div>
                         <label className="mb-1 block text-xs text-muted-foreground">{t("admin.temperature")}</label>
                         <Input type="number" step="0.1" min="0" max="2" value={draft.temperature} onChange={(event) => updateModelDraft(model, { temperature: Number(event.target.value) })} className="h-8 text-xs" />
+                        {isClaude && <p className="mt-1 text-xs text-muted-foreground">{t("admin.claudeSamplingNote")}</p>}
                       </div>
                       <div>
                         <label className="mb-1 block text-xs text-muted-foreground">{t("admin.maxTokens")}</label>
                         <Input type="number" min="1" value={draft.max_tokens} onChange={(event) => updateModelDraft(model, { max_tokens: Number(event.target.value) })} className="h-8 text-xs" />
                       </div>
                       <div>
-                        <label className="mb-1 block text-xs text-muted-foreground">{t("admin.cacheTtl")}</label>
+                        <label className="mb-1 block text-xs text-muted-foreground">{isClaude ? t("admin.cacheTtlGeminiOnly") : t("admin.cacheTtl")}</label>
                         <Input type="number" min="0" value={draft.context_cache_ttl} onChange={(event) => updateModelDraft(model, { context_cache_ttl: Number(event.target.value) })} className="h-8 text-xs" />
                       </div>
                     </div>

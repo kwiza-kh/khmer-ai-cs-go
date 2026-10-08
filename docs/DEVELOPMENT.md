@@ -1268,7 +1268,7 @@ FAQ 的 `ស9`（5 条产品线）在 chunk 2 里的偏移：枚举句起点 695
 | RLS 兜底 | 迁移 061 已建策略，但生产代码未设 `app.user_id` GUC → 策略 fail-open，属于未接线脚手架（见第十节） |
 | 交付卫生 | 前端构建若在含未提交文件的工作树上执行，产物会带未入库代码——本次用按路径 `git stash` 把他人 WIP 排除在构建之外 |
 | 单点 | 平台 Telegram bot token 泄漏影响所有商家 |
-| Claude 接入（可选） | Vertex 已上架 `claude-haiku-5-5`且现有 SA 可达，但**项目配额为 0**（429，见 §十九）：要么申请 `global_online_prediction_requests_per_base_model` 配额，要么走直连 Anthropic + 密封 key |
+| Claude 接入（可选） | **已接入（§二十）**：控制台按行选择服务商，Claude 可直连 Anthropic 或走 Vertex。Vertex 上的 `claude-haiku-5-5` 仍需申请**项目配额**（429，见 §十九）；直连需要 Anthropic API Key。
 
 #### 技术债 / 低成本项（不影响成交，但记着）
 
@@ -1805,3 +1805,46 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/claudeprobe ./cmd/claudep
 注：探针会真发一次 16 token 的 "ping"（每题最多几百 token 花费，不写库）；
 `cmd/claudeprobe/main_test.go` 钉住了 host 规则（`global` 不带区域前缀、多区域走
 `aiplatform.{us,eu}.rep.googleapis.com`）——这正是早期 `vertexprobe` 假红过的坑。
+
+---
+
+## 二十、Claude 接入：按行选择模型服务商（2026-10-08）
+
+### 现状
+
+| 层 | 已完成 |
+|---|---|
+| 数据 | `model_configs.provider` 接受 `gemini`（默认）、`anthropic`（直连 Anthropic API，key 密封存于 `api_key`）、`anthropic-vertex`（Vertex 上的 Claude，凭据为 `GEMINI_VERTEX_SA_FILE`，区域存于 `vertex_region`，仅 `global` / `us` / `eu`）。**无迁移**：列在 001 与 065 中已存在。 |
+| 路由 | `internal/llm`：默认行（`is_default`）的 provider 决定**生成**由谁负责，包括对话回复（网页、收件箱、平台渠道）、收件箱摘要、翻译、知识缺口草稿、知识编译等文本生成。Claude 未配置时直接报错，**绝不静默回退到 Gemini**。 |
+| Gemini 行 | Gemini 客户端始终按 Gemini 行配置（`llm.LoadGemini`：默认行是 Gemini 行则取它，否则取最早的 Gemini 行）。embedding、检索、重排、改写、图片与语音、TTS、回合判定仍只走 Gemini。 |
+| 客户端 | `internal/anthropic`：与 `internal/gemini` 相同的生成方法与 DTO。修正并钉住的行为：Vertex 路径（主机规则与 `cmd/claudeprobe` 一致，无重复的 `/v1`）；空系统提示词回退到内置默认；人工客服轮保留标记；相邻同角色轮合并；辅助调用不带系统提示词；Haiku 5.5 显式 `thinking: disabled`（思考计入 `max_tokens` 且按输出价计费）；不发送 `temperature`（Haiku 5.5 对非默认值返回 400）；用量口径为 prompt 含缓存部分，与 Gemini 一致。 |
+| 计费 | `usage.EstimateCostFor`：`claude-` 前缀按 Haiku 5.5 价目计费（≤100k tokens：入 $0.10 / 出 $0.50；>100k：入 $0.50 / 出 $2.50；缓存读取为入价的 10%）。 |
+| 回复缓存 | `replycache.Lookup` 只命中当前服务商写入的答案（`Serving` 取自路由器）。切换服务商后，上一个模型的缓存答案不会再被返回；没有服务商在用时不查缓存。缓存条目的 `model_name` 即写入它的模型。 |
+| 用量闸门 | AI Studio 的 Tier 上限（`GEMINI_SPEND_LIMIT_USD` 为 10/50/200）只约束 Gemini 调用。服务商是 Claude 时，同一数值按自定预算处理；遗留的 Tier 数字在启动校验时被拒绝，与 vertex 规则相同。 |
+| 控制台 | 每行一个服务商下拉框。Claude 行：直连显示 API Key 输入框；Vertex 显示服务账号说明和区域（global / us / eu）；模型只能选目录内的 `claude-haiku-5-5`；「测试」按该行的服务商调用。Gemini 行的界面不变。 |
+| 目录 | `internal/anthropic/catalog.go`：只收录已核实的模型。新增模型须同时补充采样与思考标记，以及计费价目。 |
+
+### 切换步骤（运维）
+
+1. **直连 Anthropic**：控制台 → 模型 → 该行服务商选 `Claude (Anthropic API)` → 填入 API Key → 保存 → 点「测试」→ 设为默认。
+2. **Vertex**：该行服务商选 `Claude (Vertex AI)` → 选择区域 → 保存。**前置条件是项目配额**（见 §十九）。
+3. **回滚**：把默认行改回 Gemini 行并保存。Gemini 行的凭据与设置不受影响。切换不需要重启。
+
+### 尚未完成 / 注意
+
+- **Vertex 上的 Claude 配额仍为 0**（§十九）。在申请到配额前，`anthropic-vertex` 会返回 429。
+- 直连需要 Anthropic API Key。key 不会从 Gemini 行沿用；切换服务商时必须同时提交新 key。
+- 检索与多模态（embedding、重排、查询改写、图片、语音、TTS、回合判定）仍只走 Gemini。Claude 没有对应能力，或这些提示是 Gemini 专用的。
+- `km` 字典尚未补充新文案，显示为英文回退，待母语者校对。
+- 本节涉及的 Claude 行为由 stub 服务器和本地数据库测试覆盖；**未对真实的 Anthropic 或 Vertex 端点做过实际调用**（没有 key，且 Vertex 配额为 0）。
+- 线上（`/ready` 版本 57f7640）尚未包含本次改动。发布前按 §十八 的对账流程核对。
+
+### 验证
+
+```bash
+cd backend-go
+go vet ./... && go test ./...                              # DB 相关测试需要 DATABASE_URL
+SQLCHECK_REQUIRED=1 go test -count=1 ./internal/sqlcheck/  # 在已迁移的库上检查新增 SQL
+DATABASE_URL=<已迁移的库> go test -count=1 ./internal/llm/  # 行选择规则，在回滚事务中执行
+cd ../frontend && npx tsc --noEmit && npx eslint src/components/admin/admin-pages.tsx src/lib/api.ts
+```

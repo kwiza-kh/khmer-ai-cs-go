@@ -478,7 +478,7 @@ func (p *Pipeline) stageGenerate(ctx context.Context, t *inboundTurn) (bool, err
 	if spent, limit, over := usage.Budget(ctx, p.DB, p.Redis); over {
 		p.AlertSpendGate(ctx, spent, limit)
 		p.escalateToHuman(ctx, t.Event, t.Config, t.SessionID, "ai_decision",
-			"Gemini 消费速率接近上限，AI 主动让路给人工", t.Urgency)
+			"AI 消费速率接近上限，AI 主动让路给人工", t.Urgency)
 		return false, nil
 	}
 
@@ -491,7 +491,7 @@ func (p *Pipeline) stageGenerate(ctx context.Context, t *inboundTurn) (bool, err
 		history = append(personaHistory(t.Persona.BeginDialogs), t.History...)
 		systemPrompt = t.Persona.SystemPrompt
 	}
-	result, err := p.Gemini.ChatAs(ctx, message, history, t.ReplyLang, systemPrompt)
+	result, err := p.serving().ChatAs(ctx, message, history, t.ReplyLang, systemPrompt)
 	if err != nil {
 		if IsQuotaExhausted(err) {
 			// An exhausted quota or a drained balance is not a transient failure:
@@ -502,14 +502,14 @@ func (p *Pipeline) stageGenerate(ctx context.Context, t *inboundTurn) (bool, err
 			// complete.
 			p.AlertQuotaExhausted(ctx, err)
 			p.escalateToHuman(ctx, t.Event, t.Config, t.SessionID, "ai_decision",
-				"Gemini 配额/余额耗尽，AI 无法生成回复", t.Urgency)
+				"AI 配额/余额耗尽，AI 无法生成回复", t.Urgency)
 			return false, nil
 		}
 		return false, fmt.Errorf("AI 响应失败: %w", err)
 	}
 	t.Result = result
 	sid := t.SessionID
-	usage.Record(ctx, p.DB, t.Config.UserID, &sid, p.Gemini.ModelName(), result.PromptTokens, result.OutputTokens, result.CachedTokens)
+	usage.Record(ctx, p.DB, t.Config.UserID, &sid, p.serving().ModelName(), result.PromptTokens, result.OutputTokens, result.CachedTokens)
 	t.Reply = result.Reply
 	if !result.UsedMock {
 		t.Reply = gemini.StripSourceMarkers(t.Reply)
@@ -557,7 +557,7 @@ func (p *Pipeline) stageGuardReply(ctx context.Context, t *inboundTurn) (bool, e
 	// field would let the after-hours preamble below leak into the cached answer.
 	if !t.SkipGround && !t.Result.UsedMock && p.Cache.Enabled() && t.Persona == nil {
 		guarded := t.Reply
-		userID, content, lang, model := t.Config.UserID, t.Content, t.ReplyLang, p.Gemini.ModelName()
+		userID, content, lang, model := t.Config.UserID, t.Content, t.ReplyLang, p.serving().ModelName()
 		SpawnClassifier(func() {
 			p.Cache.Store(ctx, userID, content, lang, guarded, model)
 		})
@@ -578,7 +578,7 @@ func (p *Pipeline) stageAfterHours(ctx context.Context, t *inboundTurn) (bool, e
 // with zero token cost, and model_name says so.
 func (p *Pipeline) stagePersistAndDeliver(ctx context.Context, t *inboundTurn) (bool, error) {
 	tokensUsed := t.Result.PromptTokens + t.Result.OutputTokens
-	modelName := p.Gemini.ModelName()
+	modelName := p.serving().ModelName()
 	if t.FromCache {
 		tokensUsed, modelName = 0, "reply-cache"
 	}

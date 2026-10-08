@@ -44,6 +44,9 @@ func newStub(t *testing.T) *stub {
 		s.lastAuth = r.Header.Get("Authorization")
 		s.lastKey = r.Header.Get("x-api-key")
 		s.lastVer = r.Header.Get("anthropic-version")
+		// Decode into a fresh map: decoding into the previous request's map keeps
+		// the keys that request set, and a test would read them as this one's.
+		s.lastBody = nil
 		_ = json.NewDecoder(r.Body).Decode(&s.lastBody)
 		w.Header().Set("Content-Type", "application/json")
 		if s.stream != "" {
@@ -122,8 +125,10 @@ func TestChatMapsOurTurnOntoTheMessagesAPI(t *testing.T) {
 	if got, _ := st.lastBody["max_tokens"].(float64); int(got) != 512 {
 		t.Errorf("max_tokens = %v, want 512", st.lastBody["max_tokens"])
 	}
-	if got, _ := st.lastBody["temperature"].(float64); got != 0.7 {
-		t.Errorf("temperature = %v, want 0.7", st.lastBody["temperature"])
+	// Haiku 5.5 answers 400 to a non-default temperature on every call, so the
+	// configured 0.7 stays in the row and is never sent to this model.
+	if _, sent := st.lastBody["temperature"]; sent {
+		t.Errorf("temperature sent to a model that does not take sampling parameters: %v", st.lastBody["temperature"])
 	}
 	system := st.text(t, "system")
 	if !strings.Contains(system, "shop assistant") {
@@ -147,8 +152,10 @@ func TestChatMapsOurTurnOntoTheMessagesAPI(t *testing.T) {
 	if res.Reply != "សូស្តី!" {
 		t.Errorf("reply = %q", res.Reply)
 	}
-	if res.PromptTokens != 120 || res.OutputTokens != 7 || res.CachedTokens != 40 {
-		t.Errorf("usage = %d/%d/%d, want 120/7/40", res.PromptTokens, res.OutputTokens, res.CachedTokens)
+	// The API reports 120 uncached input tokens and 40 read from the cache. The
+	// prompt count includes the cached part, as it does for Gemini: 160.
+	if res.PromptTokens != 160 || res.OutputTokens != 7 || res.CachedTokens != 40 {
+		t.Errorf("usage = %d/%d/%d, want 160/7/40", res.PromptTokens, res.OutputTokens, res.CachedTokens)
 	}
 }
 
@@ -181,8 +188,9 @@ func TestChatStreamEmitsDeltasThenUsage(t *testing.T) {
 	if strings.Join(got, "") != "Hello" || res.Reply != "Hello" {
 		t.Errorf("deltas = %v, reply = %q", got, res.Reply)
 	}
-	if res.PromptTokens != 88 || res.OutputTokens != 5 || res.CachedTokens != 12 {
-		t.Errorf("usage = %d/%d/%d, want 88/5/12", res.PromptTokens, res.OutputTokens, res.CachedTokens)
+	// 88 uncached + 12 cached: the prompt count includes the cached part.
+	if res.PromptTokens != 100 || res.OutputTokens != 5 || res.CachedTokens != 12 {
+		t.Errorf("usage = %d/%d/%d, want 100/5/12", res.PromptTokens, res.OutputTokens, res.CachedTokens)
 	}
 	if stream, _ := st.lastBody["stream"].(bool); !stream {
 		t.Error("direct transport must ask for stream:true")

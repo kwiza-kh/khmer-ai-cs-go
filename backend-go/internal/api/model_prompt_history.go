@@ -174,7 +174,7 @@ func (a *App) restorePromptVersion(ctx context.Context, configID int32, versionI
 
 	// Same hot-reload the normal edit path does, so the restored prompt is live
 	// immediately rather than at the next restart.
-	a.reloadGeminiFromDB(ctx)
+	a.reloadServingFromDB(ctx)
 
 	return map[string]any{
 		"message": "已回滚",

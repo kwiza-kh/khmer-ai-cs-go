@@ -19,6 +19,7 @@ import (
 	"khmer-ai-cs-go/internal/config"
 	"khmer-ai-cs-go/internal/db"
 	"khmer-ai-cs-go/internal/gemini"
+	"khmer-ai-cs-go/internal/llm"
 	"khmer-ai-cs-go/internal/paypal"
 	"khmer-ai-cs-go/internal/platform"
 	"khmer-ai-cs-go/internal/rag"
@@ -101,10 +102,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Gemini service — prefer the DB default model config (admin Models page is
-	// the source of truth once a key is saved), fall back to env.
+	// Gemini service — prefer the GEMINI row of the model config (the console is the
+	// source of truth once a key is saved); fall back to env. See llm.LoadGemini: generation
+	// may be served by Claude, while embeddings and retrieval always stay on Gemini.
 	var gem *gemini.Service
-	if apiKey, modelName, systemPrompt, maxTokens, region, temperature, ok := gemini.LoadDefaultConfig(ctx, pool); ok {
+	if geminiRow, ok := llm.LoadGemini(ctx, pool); ok {
+		apiKey, modelName, systemPrompt, maxTokens, region, temperature := geminiRow.APIKey, geminiRow.ModelName, geminiRow.SystemPrompt, geminiRow.MaxTokens, geminiRow.Region, geminiRow.Temperature
 		gem = gemini.FromPartsFull(sealer.DecryptOrKeep(apiKey), modelName, systemPrompt, maxTokens)
 		// Sampling temperature, from the same row the console edits. A NULL column
 		// stays NULL: the request then carries no temperature at all and the
@@ -153,6 +156,27 @@ func main() {
 		logger.Warn("Gemini not configured — running in mock mode")
 	}
 
+	// The generation router. The default row names the provider in force. A Claude
+	// default gets its own client, built from that row with its key unsealed here; the
+	// Gemini client above keeps serving embeddings and retrieval whichever provider
+	// generates. SetProvider runs before the spend check below, which reads the provider.
+	servingRow, haveServingRow := llm.LoadDefault(ctx, pool)
+	router := llm.NewRouter(gem)
+	if haveServingRow {
+		if llm.IsClaude(servingRow.Provider) {
+			router.InstallClaude(servingRow, sealer.DecryptOrKeep(servingRow.APIKey))
+		}
+		router.SetProvider(servingRow.Provider)
+	}
+	logger.Info("generation provider in force", "provider", router.Provider())
+	if llm.IsClaude(router.Provider()) && !router.Model().IsConfigured() {
+		// The Gemini client warns above when it falls back to mock mode; a Claude provider has
+		// no mock. Without this line the first customer turn is the one that discovers an
+		// unreadable key or service-account file.
+		logger.Error("the serving provider is not configured — customer replies will fail",
+			"provider", router.Provider())
+	}
+
 	// Fail the boot, not every turn, on a GEMINI_PROVIDER=vertex deployment
 	// that cannot work (missing service-account file, no project). Without
 	// this the process starts healthy and the first customer turn is the one
@@ -196,9 +220,9 @@ func main() {
 
 	// Semantic reply cache: identical asks skip retrieval+generation entirely.
 	// Any knowledge-base change drops the tenant's cache via KBChanged below.
-	replyCache := &replycache.Service{DB: pool, Gemini: gem, Logger: logger}
+	replyCache := &replycache.Service{DB: pool, Gemini: gem, Logger: logger, Serving: func() string { return router.Model().ModelName() }}
 
-	ragService := &rag.Service{DB: pool, Gemini: gem, Redis: redisClient, Logger: logger, Jev: jev}
+	ragService := &rag.Service{DB: pool, Gemini: gem, Redis: redisClient, Logger: logger, Jev: jev, LLM: router}
 	ragService.KBChanged = replyCache.InvalidateTenant
 
 	// Attribute auxiliary model spend to whichever tenant tagged the context.
@@ -222,7 +246,7 @@ func main() {
 	media := storager2.New(cfg.R2.AccountID, cfg.R2.AccessKey, cfg.R2.SecretKey, cfg.R2.Bucket, cfg.R2.PublicURL)
 
 	// Platform pipeline (inbound AI replies + outbound delivery).
-	pipe := &platform.Pipeline{DB: pool, Redis: redisClient, Cfg: cfg, Gemini: gem, RAG: ragService, Sealer: sealer, Media: media, Logger: logger, Jev: jev, Cache: replyCache}
+	pipe := &platform.Pipeline{DB: pool, Redis: redisClient, Cfg: cfg, Gemini: gem, RAG: ragService, Sealer: sealer, Media: media, Logger: logger, Jev: jev, Cache: replyCache, LLM: router}
 	// Make a Jev outage audible. Every Jev call site degrades to a slower, less
 	// accurate path when it fails, so without this the product changes
 	// behaviour and only journalctl knows (2026-09-22: a 6-hour episode).
@@ -248,6 +272,7 @@ func main() {
 		Redis:  redisClient,
 		JWT:    auth.NewJWT(cfg.JWT.Secret, cfg.JWT.ExpireHour),
 		Gemini: gem,
+		LLM:    router,
 		RAG:    ragService,
 		Logger: logger,
 		Sealer: sealer,

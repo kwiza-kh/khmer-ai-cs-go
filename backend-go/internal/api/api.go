@@ -14,6 +14,7 @@ import (
 	"khmer-ai-cs-go/internal/auth"
 	"khmer-ai-cs-go/internal/config"
 	"khmer-ai-cs-go/internal/gemini"
+	"khmer-ai-cs-go/internal/llm"
 	"khmer-ai-cs-go/internal/paypal"
 	"khmer-ai-cs-go/internal/platform"
 	"khmer-ai-cs-go/internal/rag"
@@ -32,6 +33,9 @@ type App struct {
 	Redis  *redisstore.Client
 	JWT    *auth.JWT
 	Gemini *gemini.Service
+	// LLM routes generation calls to the provider the default row selects. Gemini-only
+	// capabilities (embeddings, retrieval, OCR, vision, speech) keep using Gemini directly.
+	LLM    *llm.Router
 	RAG    *rag.Service
 	Logger *slog.Logger
 	Sealer *security.Sealer

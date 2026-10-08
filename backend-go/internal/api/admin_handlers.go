@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"khmer-ai-cs-go/internal/gemini"
+	"khmer-ai-cs-go/internal/llm"
 	"khmer-ai-cs-go/internal/platform"
 )
 
@@ -199,95 +200,15 @@ func (a *App) deleteCannedResponse(w http.ResponseWriter, r *http.Request, id in
 var studioAPIKeyFromDB = func(ctx context.Context, db *pgxpool.Pool, configID int32) string {
 	var apiKey string
 	if err := db.QueryRow(ctx, "SELECT api_key FROM model_configs WHERE config_id = $1", configID).Scan(&apiKey); err != nil || apiKey == "" {
-		// Fall back to the default config's key.
-		_ = db.QueryRow(ctx, "SELECT api_key FROM model_configs WHERE is_default = true ORDER BY config_id LIMIT 1").Scan(&apiKey)
+		// Fall back to the deployment's Gemini key — NOT the default row: after a provider
+		// switch the default row can be a Claude row, and an Anthropic key is not an AI Studio
+		// credential. Sending it to Gemini answers 401, which reads as "the region is broken".
+		// Only rows that hold a key qualify, so the fallback cannot blank out a good one.
+		_ = db.QueryRow(ctx,
+			"SELECT api_key FROM model_configs WHERE provider NOT IN ('anthropic', 'anthropic-vertex') AND api_key <> '' "+
+				"ORDER BY is_default DESC, config_id LIMIT 1").Scan(&apiKey)
 	}
 	return apiKey
-}
-
-// defaultModelConfigFromDB reads the default config row the hot-reload pushes
-// into the serving service: (api_key, model_name, system_prompt, max_tokens,
-// vertex_region), with ok=false when there is no default row. Same seam, same
-// reason: the hot-reload's behaviour under vertex (empty key must still reload)
-// is only observable if the row can be supplied without a database.
-//
-// vertex_region is the location the console last switched to, empty when it
-// never switched. Both the boot path and the hot-reload need it: without it a
-// restart would quietly move serving back to the region in `.env-go` while the
-// console still showed the switched one.
-var defaultModelConfigFromDB = func(ctx context.Context, db *pgxpool.Pool) (apiKey, modelName, systemPrompt string, maxTokens int, region string, temperature *float64, ok bool) {
-	err := db.QueryRow(ctx,
-		"SELECT api_key, model_name, COALESCE(system_prompt,''), COALESCE(max_tokens,2048), "+
-			"COALESCE(vertex_region,''), temperature FROM model_configs WHERE is_default = true ORDER BY config_id LIMIT 1").
-		Scan(&apiKey, &modelName, &systemPrompt, &maxTokens, &region, &temperature)
-	if err != nil {
-		return "", "", "", 0, "", nil, false
-	}
-	return apiKey, modelName, systemPrompt, maxTokens, gemini.NormalizeRegion(region), temperature, true
-}
-
-// The model-config routes below were written when there was only AI Studio, so
-// they treated an empty model_configs.api_key as "no credential configured" and
-// refused. The transport decides that, not the column: under vertex the
-// credential is the service-account file (GEMINI_VERTEX_SA_FILE) and the private
-// key deliberately never enters the database (see gemini.CredentialSource), so
-// an empty column is the NORMAL state there and the old refusal told the
-// operator to paste a key that could never be used. Every branch on
-// gemini.CredentialSourceOf().IsAPIKey() below is about that difference; the
-// studio branch of each is the expression it had before.
-
-// listModelConfigs — all model configs.
-func (a *App) listModelConfigs(w http.ResponseWriter, r *http.Request) (any, error) {
-	rows, err := a.DB.Query(r.Context(),
-		"SELECT config_id, name, provider, model_name, temperature, max_tokens, context_cache_ttl, is_default, "+
-			"COALESCE(system_prompt,''), (api_key IS NOT NULL AND api_key <> '') AS has_api_key FROM model_configs ORDER BY config_id")
-	if err != nil {
-		return nil, ErrInternal("查询失败")
-	}
-	defer rows.Close()
-	// Reported per config so the console can render the truth about
-	// credentials: which secret is in force, and that the api_key column is or
-	// is not a credential. Without it the page has only has_api_key and paints
-	// a vertex deployment as "needs an API key" with an input box that would
-	// mislead whoever filled it in.
-	credentialSource := string(gemini.CredentialSourceOf())
-	out := make([]map[string]any, 0)
-	for rows.Next() {
-		var configID, maxTokens, cacheTTL int
-		var name, provider, modelName, systemPrompt string
-		var temperature *float64
-		var isDefault, hasKey bool
-		if err := rows.Scan(&configID, &name, &provider, &modelName, &temperature, &maxTokens, &cacheTTL, &isDefault, &systemPrompt, &hasKey); err != nil {
-			continue
-		}
-		out = append(out, map[string]any{
-			"config_id": configID, "name": name, "provider": provider, "model_name": modelName,
-			"temperature": temperature, "max_tokens": maxTokens, "context_cache_ttl": cacheTTL,
-			"is_default": isDefault, "has_api_key": hasKey, "system_prompt": systemPrompt,
-			"credential_source": credentialSource,
-		})
-	}
-	if err := rows.Err(); err != nil {
-		return nil, ErrInternal("查询失败")
-	}
-	return out, nil
-}
-
-type updateModelRequest struct {
-	Name         *string  `json:"name"`
-	ModelName    *string  `json:"model_name"`
-	SystemPrompt *string  `json:"system_prompt"`
-	Temperature  *float64 `json:"temperature"`
-	MaxTokens    *int     `json:"max_tokens"`
-	ContextCache *int     `json:"context_cache_ttl"`
-	IsDefault    *bool    `json:"is_default"`
-	APIKey       *string  `json:"api_key"`
-	// VertexRegion is the SERVING location (model_configs.vertex_region), not
-	// the one the model list is browsed in: browsing a catalog stays free and
-	// has no effect on where calls go. Absent means "do not touch it" — the
-	// difference between that and an empty string is what keeps a settings save
-	// from silently relocating serving back to the environment's default.
-	VertexRegion *string `json:"vertex_region"`
 }
 
 // defaultSystemPrompt — the built-in prompt a config falls back to when its own
@@ -303,195 +224,11 @@ func (a *App) defaultSystemPrompt(w http.ResponseWriter, r *http.Request) (any, 
 	return map[string]any{"system_prompt": gemini.DefaultSystemPrompt}, nil
 }
 
-// updateModelConfig — update one model config (platform admin only; the
-// resource is platform-global with no tenant column, so a tenant admin must
-// never reach it even if a route gate is misconfigured elsewhere).
-func (a *App) updateModelConfig(w http.ResponseWriter, r *http.Request, configID int32) (any, error) {
-	caller, ok := UserFrom(r)
-	if !ok || !caller.IsPlatformAdmin() {
-		return nil, ErrForbidden("模型配置仅平台管理员可修改")
-	}
-	callerID := caller.UserID
-	var req updateModelRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-		return nil, ErrBadRequest("请求格式错误")
-	}
-	hasAny := req.Name != nil || req.ModelName != nil || req.SystemPrompt != nil || req.Temperature != nil ||
-		req.MaxTokens != nil || req.ContextCache != nil || req.IsDefault != nil || req.VertexRegion != nil ||
-		(req.APIKey != nil && *req.APIKey != "")
-	if !hasAny {
-		return nil, ErrBadRequest("无更新字段")
-	}
-	// A key is the STUDIO credential, checked BEFORE the first write: under
-	// vertex it is not a credential at all (the service-account file on the
-	// server is), so accepting one would store a billable AI Studio key in a
-	// column nothing reads while the operator reasonably believes they just
-	// rotated the credential. Rejecting up front also means the request cannot
-	// half-apply — the other fields in the same body are not written either.
-	if req.APIKey != nil && *req.APIKey != "" && !gemini.CredentialSourceOf().IsAPIKey() {
-		return nil, ErrBadRequest("Vertex 模式下凭据来自服务器上的服务账号文件（GEMINI_VERTEX_SA_FILE），" +
-			"API Key 不是聊天凭据，此接口不接受写入")
-	}
-	// Temperature is now sent with every chat request, so a value outside the
-	// platform's range stops being a cosmetic typo and becomes a 400 on EVERY
-	// reply of this config. Reject it before the first write, like the key above.
-	if req.Temperature != nil {
-		if *req.Temperature < 0 || *req.Temperature > 2 {
-			return nil, ErrBadRequest(fmt.Sprintf(
-				"temperature %.2f 超出平台范围 [0, 2]：该值会随每次对话请求发给模型，越界会让这个配置的每一次回复都失败。本次未写入任何改动。",
-				*req.Temperature))
-		}
-	}
-	// Two writes below can take customer chat down, and both are guarded the same
-	// way: only a NOT_FOUND from a real call vetoes. Quota, permission and network
-	// failures are indeterminate and must not block a legitimate save.
-	//
-	// (a) Switching the SERVING region. The console's picker browses catalogs, and
-	// a listing is NOT callability (see gemini.ModelCatalog): a region can list the
-	// serving model and still 404 every call. Probed with the model this
-	// deployment actually answers customers with, because that pair is the one
-	// that has to keep working.
-	if req.VertexRegion != nil {
-		if gemini.CredentialSourceOf().IsAPIKey() {
-			return nil, ErrBadRequest("region 只在 Vertex（服务账号）传输下有意义：" +
-				"AI Studio 只有一个全局端点，写入后不会被任何请求读取")
-		}
-		target := gemini.NormalizeRegion(*req.VertexRegion)
-		if !gemini.ValidVertexRegion(target) {
-			return nil, ErrBadRequest("无效的 region: " + target)
-		}
-		if serving := a.servingRegion(); target != serving {
-			if model := a.servingModelName(); model != "" &&
-				gemini.ProbeModel(r.Context(), target, model) == gemini.ProbeNotServed {
-				return nil, ErrBadRequest(fmt.Sprintf(
-					"在 %s 区域测试在用的模型 %s 时返回 NOT_FOUND：切过去之后每一次调用都会 404。"+
-						"Vertex 只在部分区域提供该模型（例如 gemini-3.8-flash 仅 global / us / eu 可用）。"+
-						"请先保存一个在 %s 可用的模型，或改选区域。本次未写入任何改动。",
-					target, model, target))
-			}
-		}
-	}
-	// (b) Saving a model this deployment cannot serve, which the console makes easy
-	// to reach by accident: selecting `global` (the only region serving
-	// gemini-3.8-flash) and then that model reads as "switch to 3.8". Every call
-	// then 404s — the admin Test button surfaces it only as a generic 502
-	// (measured 2026-09-25) — and on the default config that is a production
-	// outage rather than a failed experiment. Probed against the SERVING region,
-	// never the browsed one.
-	if req.ModelName != nil && strings.TrimSpace(*req.ModelName) != "" {
-		serving := a.servingRegion()
-		candidate := gemini.NormalizeModelName(strings.TrimSpace(*req.ModelName))
-		if gemini.ProbeModel(r.Context(), serving, candidate) == gemini.ProbeNotServed {
-			return nil, ErrBadRequest(fmt.Sprintf(
-				"模型 %s 在本部署的服务区域（%s）不存在，保存后每次调用都会 404。"+
-					"Vertex 只在部分区域提供该模型（例如 gemini-3.8-flash 仅 global / us / eu 可用）。"+
-					"要用它，请在上方「区域」里切到 global / us / eu 之一并应用，再保存模型；"+
-					"否则请改选在 %s 可用的模型（如 gemini-3.5-flash）。本次未写入任何改动。",
-				candidate, serving, serving))
-		}
-	}
-	if req.IsDefault != nil && *req.IsDefault {
-		_, _ = a.DB.Exec(r.Context(), "UPDATE model_configs SET is_default = false WHERE config_id <> $1", configID)
-	}
-	if req.Name != nil {
-		_, _ = a.DB.Exec(r.Context(), "UPDATE model_configs SET name = $1 WHERE config_id = $2", *req.Name, configID)
-	}
-	if req.ModelName != nil {
-		_, _ = a.DB.Exec(r.Context(), "UPDATE model_configs SET model_name = $1 WHERE config_id = $2", *req.ModelName, configID)
-	}
-	if req.SystemPrompt != nil {
-		// Read the current value first. The admin UI submits every field on
-		// every save, so recording unconditionally would fill the history with
-		// identical rows and bury the one change that actually happened.
-		var before *string
-		_ = a.DB.QueryRow(r.Context(),
-			"SELECT system_prompt FROM model_configs WHERE config_id = $1", configID).Scan(&before)
-		if _, err := a.DB.Exec(r.Context(),
-			"UPDATE model_configs SET system_prompt = $1 WHERE config_id = $2", *req.SystemPrompt, configID); err != nil {
-			return nil, ErrInternal("更新系统提示词失败")
-		}
-		if promptValue(before) != *req.SystemPrompt {
-			a.ensurePromptBaseline(r.Context(), configID, before)
-			a.recordPromptVersion(r.Context(), configID, *req.SystemPrompt, &callerID, promptSourceAdminEdit, "")
-		}
-	}
-	if req.Temperature != nil {
-		_, _ = a.DB.Exec(r.Context(), "UPDATE model_configs SET temperature = $1 WHERE config_id = $2", *req.Temperature, configID)
-	}
-	if req.MaxTokens != nil {
-		_, _ = a.DB.Exec(r.Context(), "UPDATE model_configs SET max_tokens = $1 WHERE config_id = $2", *req.MaxTokens, configID)
-	}
-	if req.ContextCache != nil {
-		_, _ = a.DB.Exec(r.Context(), "UPDATE model_configs SET context_cache_ttl = $1 WHERE config_id = $2", *req.ContextCache, configID)
-	}
-	if req.IsDefault != nil {
-		_, _ = a.DB.Exec(r.Context(), "UPDATE model_configs SET is_default = $1 WHERE config_id = $2", *req.IsDefault, configID)
-	}
-	if req.APIKey != nil && *req.APIKey != "" {
-		// Studio only — the vertex case was rejected before the first write
-		// above. Stored sealed, like every other credential column: the platform
-		// key is a billable bearer credential, so a database read (backup,
-		// replica, query log) must not hand over a working key.
-		sealed, err := a.Sealer.Encrypt(*req.APIKey)
-		if err != nil {
-			return nil, ErrInternal("加密失败")
-		}
-		_, _ = a.DB.Exec(r.Context(), "UPDATE model_configs SET api_key = $1 WHERE config_id = $2", sealed, configID)
-	}
-	if req.VertexRegion != nil {
-		// Written raw and normalized: the value becomes part of a request HOST,
-		// so what is stored has to be exactly what was validated above.
-		_, _ = a.DB.Exec(r.Context(), "UPDATE model_configs SET vertex_region = $1 WHERE config_id = $2",
-			gemini.NormalizeRegion(*req.VertexRegion), configID)
-	}
-	// Hot-reload the serving Gemini service so edits take effect without restart.
-	a.reloadGeminiFromDB(r.Context())
-	return map[string]string{"message": "已更新"}, nil
-}
-
-// reloadGeminiFromDB rebuilds the serving Gemini service from the default DB
-// model config, so admin edits apply without a process restart.
-func (a *App) reloadGeminiFromDB(ctx context.Context) {
-	apiKey, modelName, systemPrompt, maxTokens, region, temperature, ok := defaultModelConfigFromDB(ctx, a.DB)
-	if !ok {
-		return
-	}
-	if gemini.CredentialSourceOf().IsAPIKey() {
-		// Studio: with no stored key the serving client must keep whatever
-		// credential it booted with (env, or mock), so there is nothing to push.
-		if apiKey == "" {
-			return
-		}
-		apiKey = a.Sealer.DecryptOrKeep(apiKey)
-	} else {
-		// Vertex: the column is not a credential (the service account is), and an
-		// empty one must NOT cancel the reload — that early return was this bug:
-		// on a vertex deployment an edited model / prompt / max_tokens was stored
-		// and answered "已更新", but never applied until the next restart. Passing
-		// "" keeps it that way in both directions: the reload carries only the
-		// settings, never a key, so it cannot look like the credential rotation
-		// it is not (HotReload ignores the key on this path regardless).
-		apiKey = ""
-	}
-	a.Gemini.HotReload(apiKey, modelName, systemPrompt, maxTokens)
-	// The region is a property of the TRANSPORT, not of the config HotReload
-	// swaps, so it is applied separately — and idempotently: re-saving anything
-	// else on the page re-applies the region that is already in force. On the
-	// studio transport this is a no-op, and on a vertex deployment the value can
-	// only be one the API validated, so a failure here means the row was edited
-	// by hand and is reported rather than silently ignored.
-	if err := a.Gemini.SetVertexRegion(region); err != nil {
-		a.Logger.Warn("could not apply the stored vertex region", "region", region, "error", err.Error())
-	}
-
-	// Sampling temperature. nil (a NULL column) is a real setting — "send none,
-	// use the platform default" — so it is applied as-is rather than defaulted;
-	// before 2026-09-29 this column was written by the console and read by nothing.
-	a.Gemini.SetTemperature(temperature)
-}
-
 // testModelConfig — run a test prompt against one model config.
 func (a *App) testModelConfig(w http.ResponseWriter, r *http.Request, configID int32) (any, error) {
+	if row, ok := a.claudeRow(r.Context(), configID); ok {
+		return a.testClaudeConfig(r.Context(), row)
+	}
 	var apiKey, modelName, systemPrompt string
 	var maxTokens int
 	err := a.DB.QueryRow(r.Context(),
@@ -549,6 +286,9 @@ const modelListWarningHeader = "X-Model-List-Warning"
 // open on a region the deployment has left. It never selects what serves
 // traffic — that is the same Service.Region, set by the console or by boot.
 func (a *App) listAvailableModels(w http.ResponseWriter, r *http.Request, configID int32) (any, error) {
+	if row, ok := a.claudeRow(r.Context(), configID); ok {
+		return claudeAvailableModels(row, r.URL.Query().Get("region"))
+	}
 	// Validated before it can reach a URL: the region becomes part of the
 	// request HOST on the vertex path, and that request carries a bearer token.
 	region := gemini.NormalizeRegion(r.URL.Query().Get("region"))
@@ -627,6 +367,9 @@ func truncateForHeader(msg string) string {
 // contact Google: a selector that needs the network to render is a selector that
 // breaks exactly when the network does.
 func (a *App) vertexRegions(w http.ResponseWriter, r *http.Request) (any, error) {
+	if r.URL.Query().Get("provider") == llm.ProviderAnthropicVertex {
+		return claudeVertexRegions(), nil
+	}
 	regions, current := gemini.VertexRegions(a.servingRegion())
 	out := make([]map[string]any, 0, len(regions))
 	for _, reg := range regions {

@@ -617,7 +617,7 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 		sendEvent("sources", groundCtx.Sources)
 	}
 	var streamed strings.Builder
-	result, cerr := a.Gemini.ChatStream(ctx, message, history, language, func(chunk string) {
+	result, cerr := a.serving().ChatStream(ctx, message, history, language, func(chunk string) {
 		streamed.WriteString(chunk)
 		sendEvent("token", map[string]string{"text": chunk})
 	})
@@ -676,10 +676,10 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 	if !skipGround && !result.UsedMock && a.Cache != nil && a.Cache.Enabled() {
 		ownerID, cachedQuery, cachedLang, cachedReply := t.ownerID, req.Message, language, reply
 		platform.SpawnClassifier(func() {
-			a.Cache.Store(persistCtx, ownerID, cachedQuery, cachedLang, cachedReply, a.Gemini.ModelName())
+			a.Cache.Store(persistCtx, ownerID, cachedQuery, cachedLang, cachedReply, a.serving().ModelName())
 		})
 	}
-	usage.Record(persistCtx, a.DB, t.ownerID, &sid, a.Gemini.ModelName(), result.PromptTokens, result.OutputTokens, result.CachedTokens)
+	usage.Record(persistCtx, a.DB, t.ownerID, &sid, a.serving().ModelName(), result.PromptTokens, result.OutputTokens, result.CachedTokens)
 	// The visitor row was persisted above, so persist only the model turn.
 	// (The combined user+model helper was deleted as dead code: calling it here
 	// would store the visitor's message a second time and double-count it.)

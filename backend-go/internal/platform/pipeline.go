@@ -22,6 +22,7 @@ import (
 
 	"khmer-ai-cs-go/internal/config"
 	"khmer-ai-cs-go/internal/gemini"
+	"khmer-ai-cs-go/internal/llm"
 	"khmer-ai-cs-go/internal/rag"
 	"khmer-ai-cs-go/internal/realtime"
 	"khmer-ai-cs-go/internal/redisstore"
@@ -161,6 +162,9 @@ type Pipeline struct {
 	Redis  *redisstore.Client
 	Cfg    *config.Config
 	Gemini *gemini.Service
+	// LLM routes generation calls to the provider the default row selects. Nil in
+	// tests, where serving() answers with the Gemini client alone.
+	LLM    *llm.Router
 	RAG    *rag.Service
 	Sealer *security.Sealer
 	Media  *storager2.Client
