@@ -22,7 +22,7 @@ type Model struct {
 }
 
 // catalog is ordered for display. claude-haiku-5-5 is the only model the console
-// offers today: it is the model the platform's Vertex quota request covers.
+// offers today.
 var catalog = []Model{
 	{ID: "claude-haiku-5-5", DisplayName: "Claude Haiku 5.5", LaunchStage: "GA", Sampling: false, ThinkingOff: true},
 }
@@ -41,15 +41,4 @@ func Lookup(id string) (Model, bool) {
 		}
 	}
 	return Model{}, false
-}
-
-// SupportsRegion reports whether Claude on Vertex AI is served from a location.
-// Claude is a partner model with multi-region and global endpoints only; the
-// single-datacentre locations that serve Gemini answer 404 for it.
-func SupportsRegion(region string) bool {
-	switch region {
-	case "global", "us", "eu":
-		return true
-	}
-	return false
 }

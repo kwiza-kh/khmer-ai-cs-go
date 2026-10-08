@@ -78,11 +78,11 @@ func TestAStudioTierCeilingGuardsGeminiOnly(t *testing.T) {
 func TestATierNumberIsRefusedWhenClaudeServes(t *testing.T) {
 	// A leftover AI Studio tier number must not become a Claude budget that sheds
 	// customer turns at a threshold Google never set. The boot check refuses it.
-	r := spendWallFor(t, "studio", "10", "anthropic-vertex")
+	r := spendWallFor(t, "studio", "10", "anthropic")
 	if r.fault == nil {
 		t.Fatal("a Tier 1 number under a Claude provider must fail the boot check")
 	}
-	if !strings.Contains(r.fault.Error(), "anthropic-vertex") {
+	if !strings.Contains(r.fault.Error(), "anthropic") {
 		t.Errorf("the refusal must name the serving provider, got: %v", r.fault)
 	}
 	if r.basis != BasisVertexLegacyRefused {

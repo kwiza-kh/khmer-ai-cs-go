@@ -55,7 +55,7 @@ func oldestGeminiRow(t *testing.T, tx pgx.Tx) int32 {
 	t.Helper()
 	var id int32
 	if err := tx.QueryRow(context.Background(),
-		"SELECT min(config_id) FROM model_configs WHERE provider NOT IN ('anthropic', 'anthropic-vertex')").Scan(&id); err != nil {
+		"SELECT min(config_id) FROM model_configs WHERE provider <> 'anthropic'").Scan(&id); err != nil {
 		t.Fatalf("oldest gemini row: %v", err)
 	}
 	return id
@@ -102,13 +102,13 @@ func TestGeminiPrefersItsDefaultRowThenTheOldest(t *testing.T) {
 func TestGeminiNeverReadsAClaudeRow(t *testing.T) {
 	tx := openRolledBackTx(t)
 	ctx := context.Background()
-	insertTestRow(t, tx, "vertex claude", ProviderAnthropicVertex, true)
-	insertTestRow(t, tx, "api claude", ProviderAnthropic, false)
+	insertTestRow(t, tx, "claude default", ProviderAnthropic, true)
+	insertTestRow(t, tx, "claude second", ProviderAnthropic, false)
 
 	if g, ok := LoadGemini(ctx, tx); ok && IsClaude(g.Provider) {
 		t.Fatalf("LoadGemini returned a Claude row (%s): Claude's key would become the Gemini credential", g.Provider)
 	}
-	if def, ok := LoadDefault(ctx, tx); !ok || def.Provider != ProviderAnthropicVertex {
-		t.Fatalf("LoadDefault = %+v, %v; want the Claude-on-Vertex row", def, ok)
+	if def, ok := LoadDefault(ctx, tx); !ok || def.Provider != ProviderAnthropic {
+		t.Fatalf("LoadDefault = %+v, %v; want the default Claude row", def, ok)
 	}
 }

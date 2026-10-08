@@ -81,12 +81,6 @@ func TestSwitchingToClaudeNeedsItsOwnKey(t *testing.T) {
 	providerTestWantRefusal(t, err, "需要同时填写 Anthropic API Key")
 }
 
-func TestClaudeOnVertexRefusesAKeyAndAnUnservedRegion(t *testing.T) {
-	providerTestStubRow(t, modelRow{provider: llm.ProviderAnthropicVertex, region: "global"})
-	providerTestWantRefusal(t, providerTestUpdate(t, &App{}, 1, `{"api_key":"sk-ant-pasted"}`), "服务账号")
-	providerTestWantRefusal(t, providerTestUpdate(t, &App{}, 1, `{"vertex_region":"asia-southeast1"}`), "global / us / eu")
-}
-
 func TestClaudeRowsTakeOnlyCatalogModels(t *testing.T) {
 	providerTestStubRow(t, modelRow{provider: llm.ProviderAnthropic, apiKey: "sealed"})
 	providerTestWantRefusal(t, providerTestUpdate(t, &App{}, 1, `{"model_name":"claude-sonnet-5-5"}`), "未知的 Claude 模型")
@@ -94,7 +88,7 @@ func TestClaudeRowsTakeOnlyCatalogModels(t *testing.T) {
 
 func TestTheDirectTransportTakesNoRegion(t *testing.T) {
 	providerTestStubRow(t, modelRow{provider: llm.ProviderAnthropic, apiKey: "sealed"})
-	providerTestWantRefusal(t, providerTestUpdate(t, &App{}, 1, `{"vertex_region":"us"}`), "直连 Anthropic 没有区域")
+	providerTestWantRefusal(t, providerTestUpdate(t, &App{}, 1, `{"vertex_region":"us"}`), "Claude 直连没有区域")
 }
 
 func TestAnUnknownProviderIsRefused(t *testing.T) {
@@ -106,8 +100,9 @@ func TestLeavingTheOnlyStudioKeyRowIsRefused(t *testing.T) {
 	t.Setenv("GEMINI_PROVIDER", "studio")
 	providerTestStubRow(t, modelRow{provider: llm.ProviderGemini, apiKey: "sealed-studio-key"})
 	providerTestStubGeminiKeyElsewhere(t, false)
-	err := providerTestUpdate(t, &App{}, 1, `{"provider":"anthropic-vertex"}`)
+	err := providerTestUpdate(t, &App{}, 1, `{"provider":"anthropic","api_key":"sk-ant-pasted"}`)
 	// Embeddings and retrieval read that key: it may not leave while nothing else holds one.
+	// (A key comes with the switch, or the earlier key check would answer first.)
 	providerTestWantRefusal(t, err, "唯一的 Gemini 凭据")
 }
 
@@ -167,51 +162,26 @@ func TestServingFollowsTheRouterAndFallsBackToGemini(t *testing.T) {
 		t.Error("with no router wired, generation must use the Gemini client")
 	}
 	router := llm.NewRouter(g)
-	router.SetClaude(anthropic.New(anthropic.Config{Transport: anthropic.TransportAPI, APIKey: "k", Model: "claude-haiku-5-5"}))
+	router.SetClaude(anthropic.New(anthropic.Config{APIKey: "k", Model: "claude-haiku-5-5"}))
 	router.SetProvider(llm.ProviderAnthropic)
 	if _, ok := (&App{Gemini: g, LLM: router}).serving().(*anthropic.Service); !ok {
 		t.Error("with anthropic in force, generation must use the Claude client")
 	}
 }
 
-func TestClaudeModelListIsTheCatalogAndFollowsTheRegion(t *testing.T) {
-	// A Vertex row outside global / us / eu is refused, because Claude answers 404 there.
-	_, err := claudeAvailableModels(llm.Row{Provider: llm.ProviderAnthropicVertex, Region: "asia-southeast1"}, "")
-	providerTestWantRefusal(t, err, "global / us / eu")
-
-	out, err := claudeAvailableModels(llm.Row{Provider: llm.ProviderAnthropicVertex, Region: "us"}, "")
+func TestClaudeModelListIsTheCatalogAndAllAvailable(t *testing.T) {
+	out, err := claudeAvailableModels(llm.Row{Provider: llm.ProviderAnthropic, Region: "asia-southeast1"}, "")
 	if err != nil {
-		t.Fatalf("claudeAvailableModels(us): %v", err)
+		t.Fatalf("claudeAvailableModels: %v", err)
 	}
 	models := out.([]map[string]any)
 	if len(models) != len(anthropic.Catalog()) {
 		t.Fatalf("listed %d models, want the %d in the catalog", len(models), len(anthropic.Catalog()))
 	}
 	for _, m := range models {
+		// Claude is served straight from Anthropic: no location can be missing a model.
 		if m["available"] != true {
-			t.Errorf("%v must be available in us", m["name"])
-		}
-	}
-
-	// The direct transport has no region, so every catalog model is available.
-	out, err = claudeAvailableModels(llm.Row{Provider: llm.ProviderAnthropic}, "")
-	if err != nil {
-		t.Fatalf("claudeAvailableModels(direct): %v", err)
-	}
-	if out.([]map[string]any)[0]["available"] != true {
-		t.Error("the direct transport must list the catalog as available")
-	}
-}
-
-func TestClaudeVertexRegionsAreTheServedOnes(t *testing.T) {
-	regions := claudeVertexRegions()["regions"].([]map[string]any)
-	want := []string{"global", "us", "eu"}
-	if len(regions) != len(want) {
-		t.Fatalf("regions = %v, want %v", regions, want)
-	}
-	for i, id := range want {
-		if regions[i]["id"] != id {
-			t.Errorf("region %d = %v, want %s", i, regions[i]["id"], id)
+			t.Errorf("%v must be available", m["name"])
 		}
 	}
 }
@@ -221,7 +191,7 @@ func TestTestingAClaudeRowNeedsItsKeyFirst(t *testing.T) {
 	providerTestWantRefusal(t, err, "未设置 API Key")
 }
 
-func TestClaudeKeyIsUnsealedOnlyOnTheDirectTransport(t *testing.T) {
+func TestClaudeKeyIsUnsealed(t *testing.T) {
 	sealer := newTestSealer(t)
 	sealed, err := sealer.Encrypt("sk-ant")
 	if err != nil {
@@ -230,8 +200,5 @@ func TestClaudeKeyIsUnsealedOnlyOnTheDirectTransport(t *testing.T) {
 	app := &App{Sealer: sealer}
 	if got := app.claudeKey(llm.Row{Provider: llm.ProviderAnthropic, APIKey: sealed}); got != "sk-ant" {
 		t.Errorf("direct key = %q, want the unsealed key", got)
-	}
-	if got := app.claudeKey(llm.Row{Provider: llm.ProviderAnthropicVertex, APIKey: sealed}); got != "" {
-		t.Errorf("the Vertex transport must not carry a key, got %q", got)
 	}
 }

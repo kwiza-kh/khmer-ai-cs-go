@@ -21,7 +21,7 @@ func TestDefaultRouterServesGemini(t *testing.T) {
 }
 
 func TestClaudeProviderServesClaude(t *testing.T) {
-	c := anthropic.New(anthropic.Config{Transport: anthropic.TransportAPI, APIKey: "k", Model: "claude-haiku-5-5"})
+	c := anthropic.New(anthropic.Config{APIKey: "k", Model: "claude-haiku-5-5"})
 	r := NewRouter(gemini.New("", "m", 128))
 	r.SetClaude(c)
 	r.SetProvider(ProviderAnthropic)
@@ -54,7 +54,7 @@ func TestAClaudeProviderWithoutAClientFailsLoudlyNeverGemini(t *testing.T) {
 }
 
 func TestAnUnconfiguredClaudeClientFailsTheCall(t *testing.T) {
-	c := anthropic.New(anthropic.Config{Transport: anthropic.TransportAPI, Model: "claude-haiku-5-5"}) // no key
+	c := anthropic.New(anthropic.Config{Model: "claude-haiku-5-5"}) // no key
 	r := NewRouter(gemini.New("", "m", 128))
 	r.SetClaude(c)
 	r.SetProvider(ProviderAnthropic)
@@ -80,7 +80,7 @@ func TestUnknownProviderServesGemini(t *testing.T) {
 
 func TestSwitchingProvidersTakesEffectOnTheNextCall(t *testing.T) {
 	g := gemini.New("", "m", 128)
-	c := anthropic.New(anthropic.Config{Transport: anthropic.TransportAPI, APIKey: "k", Model: "claude-haiku-5-5"})
+	c := anthropic.New(anthropic.Config{APIKey: "k", Model: "claude-haiku-5-5"})
 	r := NewRouter(g)
 	r.SetClaude(c)
 
@@ -112,27 +112,16 @@ func TestInstallClaudeBuildsThenReconfigures(t *testing.T) {
 }
 
 func TestClaudeConfigMapsTheRow(t *testing.T) {
-	t.Setenv("GEMINI_VERTEX_SA_FILE", "/secret/sa.json")
-	t.Setenv("GEMINI_VERTEX_PROJECT", " proj-9 ")
 	temp := 0.7
-	vertexRow := Row{Provider: ProviderAnthropicVertex, ModelName: "claude-haiku-5-5", SystemPrompt: "p", MaxTokens: 900, Region: "us", Temperature: &temp}
-	cfg := ClaudeConfig(vertexRow, "ignored-on-vertex")
-	if cfg.Transport != anthropic.TransportVertex || cfg.Region != "us" || cfg.SAFile != "/secret/sa.json" || cfg.Project != "proj-9" {
-		t.Errorf("vertex config = %+v, want the row's region and the environment's service account and project", cfg)
-	}
-	if cfg.APIKey != "" {
-		t.Error("a key must never reach the Vertex transport")
+	cfg := ClaudeConfig(Row{Provider: ProviderAnthropic, ModelName: "claude-haiku-5-5", SystemPrompt: "p", MaxTokens: 900, Region: "us", Temperature: &temp}, "sk-ant")
+	if cfg.APIKey != "sk-ant" || cfg.Model != "claude-haiku-5-5" || cfg.SystemPrompt != "p" {
+		t.Errorf("config = %+v, want the row's key, model and prompt", cfg)
 	}
 	if cfg.MaxTokens != 900 || cfg.Temperature == nil || *cfg.Temperature != 0.7 {
 		t.Errorf("generation settings lost in the mapping: %+v", cfg)
 	}
-
-	direct := ClaudeConfig(Row{Provider: ProviderAnthropic, ModelName: "claude-haiku-5-5", Region: "us"}, "sk-ant")
-	if direct.Transport != anthropic.TransportAPI || direct.APIKey != "sk-ant" {
-		t.Errorf("direct config = %+v, want the API transport with the key", direct)
-	}
-	if direct.Region != "" || direct.SAFile != "" {
-		t.Error("the direct transport must not inherit a region or a service account")
+	if cfg.BaseURL != "" {
+		t.Errorf("BaseURL comes from the caller, not the row: %+v", cfg)
 	}
 }
 
@@ -140,9 +129,6 @@ func TestCredentialSourceNamesTheSecretPerProvider(t *testing.T) {
 	t.Setenv("GEMINI_PROVIDER", "vertex")
 	if got := CredentialSource(ProviderAnthropic); got != "api_key" {
 		t.Errorf("anthropic = %q, want api_key", got)
-	}
-	if got := CredentialSource(ProviderAnthropicVertex); got != "service_account" {
-		t.Errorf("anthropic-vertex = %q, want service_account", got)
 	}
 	if got := CredentialSource(ProviderGemini); got != "service_account" {
 		t.Errorf("gemini on vertex = %q, want service_account", got)
@@ -154,7 +140,7 @@ func TestCredentialSourceNamesTheSecretPerProvider(t *testing.T) {
 }
 
 func TestProviderVocabulary(t *testing.T) {
-	for _, p := range []string{ProviderGemini, ProviderAnthropic, ProviderAnthropicVertex} {
+	for _, p := range []string{ProviderGemini, ProviderAnthropic} {
 		if !Valid(p) {
 			t.Errorf("%q must be a storable provider", p)
 		}
@@ -164,7 +150,7 @@ func TestProviderVocabulary(t *testing.T) {
 			t.Errorf("%q must not be storable", p)
 		}
 	}
-	if !IsClaude(ProviderAnthropic) || !IsClaude(ProviderAnthropicVertex) || IsClaude(ProviderGemini) || IsClaude("") {
-		t.Error("IsClaude must select exactly the two Claude providers")
+	if !IsClaude(ProviderAnthropic) || IsClaude(ProviderGemini) || IsClaude("") {
+		t.Error("IsClaude must select exactly the Claude provider")
 	}
 }

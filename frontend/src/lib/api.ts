@@ -95,7 +95,7 @@ export interface UsersStats {
   admins: number;
 }
 
-export type ModelProvider = "gemini" | "anthropic" | "anthropic-vertex";
+export type ModelProvider = "gemini" | "anthropic";
 
 export interface ModelItem {
   config_id: number;
@@ -774,9 +774,8 @@ export async function listAvailableModels(
 // The Vertex locations the backend can serve from, plus the one it is
 // configured with. Only meaningful for configs on the service-account
 // transport; the AI Studio path ignores regions.
-export async function listVertexRegions(provider?: ModelProvider) {
-  const query = provider ? '?provider=' + encodeURIComponent(provider) : "";
-  return apiFetch<VertexRegionsResponse>("/admin/models/vertex-regions" + query);
+export async function listVertexRegions() {
+  return apiFetch<VertexRegionsResponse>("/admin/models/vertex-regions");
 }
 
 // ============================================

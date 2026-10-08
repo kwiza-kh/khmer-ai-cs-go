@@ -26,9 +26,9 @@ import (
 	"khmer-ai-cs-go/internal/llm"
 )
 
-// vertexKeyRefusal is the answer to a key sent to a provider whose credential is the
-// service-account file. The key would be stored and never read, which reads as a
-// rotation that did not happen.
+// vertexKeyRefusal is the answer to a key sent to Gemini while its transport is
+// Vertex: the credential is then the service-account file, and the key would be
+// stored and never read — which reads as a rotation that did not happen.
 const vertexKeyRefusal = "Vertex 模式下凭据来自服务器上的服务账号文件（GEMINI_VERTEX_SA_FILE），API Key 不是聊天凭据，此接口不接受写入"
 
 // The database reads of this file are package variables, so the tests can answer
@@ -171,17 +171,13 @@ func (a *App) updateModelConfig(w http.ResponseWriter, r *http.Request, configID
 		}
 	case llm.ProviderAnthropic:
 		if req.VertexRegion != nil {
-			return nil, ErrBadRequest("region 只用于 Claude on Vertex（服务账号）：直连 Anthropic 没有区域")
+			return nil, ErrBadRequest("region 只用于 Gemini 行（Vertex 区域）：Claude 直连没有区域")
 		}
 		if switching && !keyGiven {
 			return nil, ErrBadRequest("切换到 Claude API 需要同时填写 Anthropic API Key：旧服务商的 key 不会沿用")
 		}
 		if !keyGiven && (current.apiKey == "" || switching) {
 			return nil, ErrBadRequest("Claude API 需要 API Key")
-		}
-	case llm.ProviderAnthropicVertex:
-		if keyGiven {
-			return nil, ErrBadRequest(vertexKeyRefusal)
 		}
 	}
 
@@ -192,13 +188,6 @@ func (a *App) updateModelConfig(w http.ResponseWriter, r *http.Request, configID
 			return nil, ErrBadRequest("未知的 Claude 模型: " + strings.TrimSpace(*req.ModelName) + "（可选：" + claudeModelIDs() + "）")
 		}
 	}
-	if nextProvider == llm.ProviderAnthropicVertex && req.VertexRegion != nil {
-		region := gemini.NormalizeRegion(*req.VertexRegion)
-		if !anthropic.SupportsRegion(region) {
-			return nil, ErrBadRequest("Claude on Vertex 只在 global / us / eu 提供，无效的 region: " + region)
-		}
-	}
-
 	// Leaving the AI Studio credential row takes the only Gemini key with it when no
 	// other Gemini row holds one, and embeddings and retrieval read that key.
 	if !llm.IsClaude(current.provider) && nextProvider != llm.ProviderGemini &&
@@ -237,15 +226,10 @@ func (a *App) updateModelConfig(w http.ResponseWriter, r *http.Request, configID
 			// The stored key belongs to the old provider. It does not follow the row.
 			_, _ = a.DB.Exec(r.Context(), "UPDATE model_configs SET api_key = '' WHERE config_id = $1", configID)
 		}
-		// The region column means a different thing per provider, so it is reset on a
-		// change: Claude on Vertex starts at global, and every other provider starts empty
-		// unless the request names a region.
+		// The region column is the Gemini transport's location, so a provider switch
+		// clears it unless the request names one.
 		if req.VertexRegion == nil {
-			region := any(nil)
-			if nextProvider == llm.ProviderAnthropicVertex {
-				region = "global"
-			}
-			_, _ = a.DB.Exec(r.Context(), "UPDATE model_configs SET vertex_region = $1 WHERE config_id = $2", region, configID)
+			_, _ = a.DB.Exec(r.Context(), "UPDATE model_configs SET vertex_region = NULL WHERE config_id = $1", configID)
 		}
 	}
 	if req.Name != nil {
@@ -351,7 +335,7 @@ func (a *App) checkGeminiEdit(r *http.Request, req updateModelRequest) error {
 var otherGeminiRowHasKeyFromDB = func(ctx context.Context, db *pgxpool.Pool, configID int32) bool {
 	var has bool
 	err := db.QueryRow(ctx,
-		"SELECT EXISTS (SELECT 1 FROM model_configs WHERE config_id <> $1 AND provider NOT IN ('anthropic', 'anthropic-vertex') AND api_key <> '')",
+		"SELECT EXISTS (SELECT 1 FROM model_configs WHERE config_id <> $1 AND provider <> 'anthropic' AND api_key <> '')",
 		configID).Scan(&has)
 	return err == nil && has
 }
@@ -456,42 +440,17 @@ func (a *App) testClaudeConfig(ctx context.Context, row llm.Row) (any, error) {
 }
 
 // claudeAvailableModels lists the catalog for a Claude row. It needs no network: the
-// catalog is the platform's verified list, since Claude on Vertex has no models API.
-// available is false on a Vertex location Claude is not served from.
-func claudeAvailableModels(row llm.Row, queryRegion string) (any, error) {
-	region := gemini.NormalizeRegion(queryRegion)
-	if region == "" {
-		region = row.Region
-	}
-	if row.Provider == llm.ProviderAnthropicVertex {
-		if region == "" {
-			region = "global"
-		}
-		if !anthropic.SupportsRegion(region) {
-			return nil, ErrBadRequest("Claude on Vertex 只在 global / us / eu 提供，无效的 region: " + region)
-		}
-	}
-	served := row.Provider == llm.ProviderAnthropic || anthropic.SupportsRegion(region)
+// catalog is the platform's verified list, and every entry is available — Claude is
+// served straight from Anthropic, so no location can be missing a model.
+func claudeAvailableModels(_ llm.Row, _ string) (any, error) {
 	out := make([]map[string]any, 0)
 	for _, m := range anthropic.Catalog() {
 		out = append(out, map[string]any{
 			"name": m.ID, "display_name": m.DisplayName, "launch_stage": m.LaunchStage,
-			"capability": "chat", "available": served,
+			"capability": "chat", "available": true,
 		})
 	}
 	return out, nil
-}
-
-// claudeVertexRegions are the locations Claude on Vertex AI is served from. Like the
-// Gemini list it is configuration-only (no network). current is empty: a Claude row's
-// location is a setting of that row, not the deployment's serving location.
-func claudeVertexRegions() map[string]any {
-	out := []map[string]any{
-		{"id": "global", "label": "global (multi-region)"},
-		{"id": "us", "label": "us (multi-region, +10% vs global)"},
-		{"id": "eu", "label": "eu (multi-region, +10% vs global)"},
-	}
-	return map[string]any{"regions": out, "current": ""}
 }
 
 // claudeRow returns the row when it names a Claude provider. Without a database there

@@ -745,12 +745,8 @@ export const km: Dict = {
   // គណនីសេវា, cache = ឃ្លាំង. Native review still owed (DEVELOPMENT.md §十六).
   "admin.providerGemini": "Gemini (Google AI)",
   "admin.providerClaudeApi": "Claude (Anthropic API)",
-  "admin.providerClaudeVertex": "Claude (Vertex AI)",
   "admin.providerScopeNote": "ទទួលបន្ទុកការឆ្លើយតបអតិថិជន និងការបង្កើតអត្ថបទ។ ការស្វែងរកវ៉ិចទ័រ រូបភាព និងសំឡេង នៅតែប្រើ Gemini។",
   "admin.claudeApiKey": "សោ API របស់ Anthropic",
-  "admin.claudeSaHint": "Claude នៅលើ Vertex ប្រើគណនីសេវានៅលើម៉ាស៊ីនបម្រើ (GEMINI_VERTEX_SA_FILE)។ មិនរក្សាទុកសោសម្រាប់វាទេ។",
-  "admin.claudeRegion": "តំបន់ Claude",
-  "admin.claudeRegionHint": "Claude នៅលើ Vertex AI មានតែនៅ global, us និង eu។ us និង eu ថ្លៃជាង global ប្រហែល 10%។",
   "admin.claudeSamplingNote": "Claude Haiku 5.5 មិនទទួលយកប៉ារ៉ាម៉ែត្រជ្រើសគំរូ ដូច្នេះ temperature មិនត្រូវបានផ្ញើទៅវាទេ។",
   "admin.cacheTtlGeminiOnly": "ឃ្លាំងបរិបទ (Gemini តែប៉ុណ្ណោះ)",
   "admin.checkingClaude": "កំពុងផ្ទុកម៉ូដែល Claude...",
