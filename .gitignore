@@ -43,3 +43,6 @@ frontend/scripts-i18n-scan.js
 *-sa.json
 vertex-sa.json
 service-account*.json
+# Agent harness tooling (impeccable design skill + its 17.7MB engine binary).
+# Re-create with: npx impeccable install -y --providers=pi --scope=project
+.pi/

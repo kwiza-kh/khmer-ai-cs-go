@@ -291,6 +291,7 @@ export const zh: Dict = {
   "inbox.voiceMessage": "语音消息",
   "inbox.voicePlay": "播放",
   "inbox.voicePause": "暂停",
+  "inbox.voiceSeek": "拖动播放进度",
   "inbox.attachment": "{kind}附件",
   "inbox.preview": "预览",
   "inbox.extractedText": "提取的文本",

@@ -326,6 +326,7 @@ export default function KnowledgePage() {
     }
   };
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- deepLinkOpenedRef makes this fire once per deep link, so the fresh-function dep is harmless (useCallback failed the React compiler)
   const handlePreview = async (doc: KnowledgeDocument) => {
     setPreviewOpen(true);
     setPreviewLoading(true);

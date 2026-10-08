@@ -14,6 +14,8 @@ interface VoiceMessageBubbleProps {
   className?: string
   playLabel?: string
   pauseLabel?: string
+  /** Screen-reader label for the seekable waveform. */
+  seekLabel?: string
 }
 
 // Deterministic pseudo-waveform: stable across SSR + re-renders (Math.random
@@ -39,10 +41,13 @@ export default function VoiceMessageBubble({
   className,
   playLabel = "Play",
   pauseLabel = "Pause",
+  seekLabel = "Seek",
 }: VoiceMessageBubbleProps) {
-  // Audio must be created client-side: `new Audio()` during render would
-  // crash the Next.js prerender of this "use client" component.
-  const [audio, setAudio] = React.useState<HTMLAudioElement | null>(null)
+  // Audio must be created client-side: `new Audio()` during render would crash
+  // the Next.js prerender of this "use client" component. The element lives in a
+  // ref: it is not render data, so keeping it in state only bought an extra
+  // render on mount plus a "value cannot be modified" error on every seek.
+  const audioRef = React.useRef<HTMLAudioElement | null>(null)
   const [isPlaying, setIsPlaying] = React.useState(false)
   const [progress, setProgress] = React.useState(0)
   const [realDuration, setRealDuration] = React.useState<number | null>(null)
@@ -67,7 +72,7 @@ export default function VoiceMessageBubble({
     el.addEventListener("play", handlePlay)
     el.addEventListener("pause", handlePause)
     el.addEventListener("ended", handleEnded)
-    setAudio(el)
+    audioRef.current = el
     return () => {
       el.removeEventListener("timeupdate", handleTimeUpdate)
       el.removeEventListener("loadedmetadata", handleLoaded)
@@ -76,14 +81,30 @@ export default function VoiceMessageBubble({
       el.removeEventListener("ended", handleEnded)
       el.pause()
       el.src = ""
-      setAudio(null)
+      audioRef.current = null
     }
   }, [audioSrc])
 
   const togglePlay = () => {
-    if (!audio) return
-    if (isPlaying) void audio.pause()
-    else void audio.play().catch(() => setIsPlaying(false))
+    const el = audioRef.current
+    if (!el) return
+    if (isPlaying) void el.pause()
+    else void el.play().catch(() => setIsPlaying(false))
+  }
+
+  // Seek by fraction of the track — shared by pointer and keyboard so the two
+  // cannot drift apart.
+  const seekToFraction = (track: HTMLElement, clientX: number) => {
+    const el = audioRef.current
+    if (!el || !(el.duration > 0)) return
+    const rect = track.getBoundingClientRect()
+    el.currentTime = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width)) * el.duration
+  }
+
+  const seekBy = (seconds: number) => {
+    const el = audioRef.current
+    if (!el || !(el.duration > 0)) return
+    el.currentTime = Math.min(el.duration, Math.max(0, el.currentTime + seconds))
   }
 
   const shownDuration = realDuration ?? duration ?? 0
@@ -106,15 +127,23 @@ export default function VoiceMessageBubble({
         {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
       </Button>
 
-      {/* Waveform */}
-      <div
-        className="flex-1 h-6 relative cursor-pointer"
-        onClick={(e) => {
-          const rect = e.currentTarget.getBoundingClientRect()
-          const clickX = e.clientX - rect.left
-          if (audio && audio.duration > 0) {
-            audio.currentTime = Math.min(1, Math.max(0, clickX / rect.width)) * audio.duration
-          }
+      {/* Waveform — a button, not a div: seeking used to be pointer-only, so
+          keyboard and screen-reader users could not move through the recording
+          at all (the play button was the only accessible control). */}
+      <button
+        type="button"
+        role="slider"
+        className="flex-1 h-6 relative cursor-pointer appearance-none border-0 bg-transparent p-0"
+        aria-label={seekLabel}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={Math.round(progress)}
+        onClick={(e) => seekToFraction(e.currentTarget, e.clientX)}
+        onKeyDown={(e) => {
+          if (e.key === "ArrowRight") { e.preventDefault(); seekBy(5) }
+          else if (e.key === "ArrowLeft") { e.preventDefault(); seekBy(-5) }
+          else if (e.key === "Home") { e.preventDefault(); seekBy(-Infinity) }
+          else if (e.key === "End") { e.preventDefault(); seekBy(Infinity) }
         }}
       >
         <div className="absolute inset-0 flex justify-between items-center px-0.5">
@@ -136,7 +165,7 @@ export default function VoiceMessageBubble({
             opacity: 0.3,
           }}
         />
-      </div>
+      </button>
 
       {/* Duration */}
       <span className="text-sm font-mono" style={{ color: waveColor }}>

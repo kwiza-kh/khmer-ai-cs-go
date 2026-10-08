@@ -252,7 +252,8 @@
 .prose-chat ul { list-style: disc; }
 .prose-chat ol { list-style: decimal; }
 .prose-chat blockquote {
-  border-left: 3px solid var(--color-border);
+  /* A blockquote hairline in a neutral border colour, not a coloured card accent. */
+  border-left: 3px solid var(--color-border); /* impeccable-disable-line side-tab */
   padding-left: 0.9em;
   margin: 0.6em 0;
   color: var(--color-muted-foreground);

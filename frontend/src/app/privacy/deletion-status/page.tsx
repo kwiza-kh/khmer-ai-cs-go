@@ -59,16 +59,16 @@ function Row({ label, value }: { label: string; value: string }) {
 function DeletionStatusInner() {
   const params = useSearchParams();
   const code = (params.get("code") || "").trim();
-  const [state, setState] = useState<"loading" | "ok" | "notfound" | "error" | "nocode">("loading");
+  // The initial state is derived from the code we already have, so the effect
+  // never has to set state synchronously (which would cost an extra render).
+  const [state, setState] = useState<"loading" | "ok" | "notfound" | "error" | "nocode">(
+    code ? "loading" : "nocode",
+  );
   const [data, setData] = useState<DeletionStatus | null>(null);
 
   useEffect(() => {
-    if (!code) {
-      setState("nocode");
-      return;
-    }
+    if (!code) return;
     let alive = true;
-    setState("loading");
     fetch(`${API_BASE}/privacy/deletion-status?code=${encodeURIComponent(code)}`)
       .then(async (res) => {
         if (!alive) return;
