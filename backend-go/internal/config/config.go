@@ -275,10 +275,15 @@ func Load() (*Config, error) {
 			PublicBotUsername: env("PLATFORM_TELEGRAM_BOT_USERNAME", ""),
 		},
 		SSO: SSOConfig{
-			Enabled:           envBool("SSO_ENABLED", false),
-			Provider:          env("SSO_PROVIDER", ""),
-			OIDCIssuer:        env("SSO_OIDC_ISSUER", ""),
-			OIDCClientID:      env("SSO_OIDC_CLIENT_ID", ""),
+			Enabled:      envBool("SSO_ENABLED", false),
+			Provider:     env("SSO_PROVIDER", ""),
+			OIDCIssuer:   env("SSO_OIDC_ISSUER", ""),
+			OIDCClientID: env("SSO_OIDC_CLIENT_ID", ""),
+			// NOT dead config: googleSSOEnabled() gates the login page's Google
+			// button on this field, and the token exchange sends it. Deleting the
+			// mapping (not just the field) turns Google sign-in off silently —
+			// which is exactly what happened on 2026-10-08.
+			OIDCClientSecret:  env("SSO_OIDC_CLIENT_SECRET", ""),
 			RedirectURL:       env("SSO_REDIRECT_URL", ""),
 			FrontendURL:       env("SSO_FRONTEND_URL", ""),
 			AllowSignup:       envBool("SSO_ALLOW_SIGNUP", true),
