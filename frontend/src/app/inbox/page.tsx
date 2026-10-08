@@ -228,7 +228,7 @@ function PlatformMark({ platform, mono = false, className }: { platform: Platfor
 }
 
 export default function InboxPage() {
-  const { user, token } = useAuth();
+  const { user } = useAuth();
   const { t, tf } = useI18n();
   const searchParams = useSearchParams();
   const [statusFilter, setStatusFilter] = React.useState<SessionStatus | "all">("all");
@@ -237,12 +237,17 @@ export default function InboxPage() {
   // working inbox stays clean, and can be reviewed/restored on demand.
   const [showArchived, setShowArchived] = React.useState(false);
   // 全局顶栏搜索跳转到 /inbox?q=... — 预填本地过滤词.
-  const [query, setQuery] = React.useState(() => searchParams.get("q") ?? "");
-  // Stay in sync when the top-bar search pushes a new ?q= while already here.
-  React.useEffect(() => {
-    const next = searchParams.get("q") ?? "";
-    setQuery((current) => (current === next ? current : next));
-  }, [searchParams]);
+  // The URL is the source of truth for a top-bar search: when ?q= changes, the
+  // local filter is adjusted DURING RENDER (React's documented way to derive
+  // state from props) instead of from an effect, which cost a second render on
+  // every navigation into this page. The guard keeps that to the change itself.
+  const urlQuery = searchParams.get("q") ?? "";
+  const [query, setQuery] = React.useState(urlQuery);
+  const [lastUrlQuery, setLastUrlQuery] = React.useState(urlQuery);
+  if (urlQuery !== lastUrlQuery) {
+    setLastUrlQuery(urlQuery);
+    setQuery(urlQuery);
+  }
   const [activeId, setActiveId] = React.useState<string | null>(null);
 	const [notes, setNotes] = React.useState("");
 	const [realtimeVersion, setRealtimeVersion] = React.useState(0);
@@ -378,6 +383,11 @@ export default function InboxPage() {
     if (adoptedSessionRef.current === deepLink) return;
     adoptedSessionRef.current = deepLink;
     if (!deepLink) return;
+    // Adopting a deep link is an action (it also marks the session seen and
+    // switches the mobile view), not derived state, so it belongs in an effect —
+    // and the ref guard above makes it fire once per URL change, so the
+    // cascading-render case this rule warns about cannot happen.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setActiveId(deepLink);
     setNotes("");
     setMobileView("chat");
@@ -956,20 +966,6 @@ function ConversationDetail({
   }, [autoTranslate]);
 
   // Translate one message on demand (the manual "translate this" path).
-  const translateOne = React.useCallback((messageID: number, content: string, target: TranslateTarget) => {
-    const key = `${messageID}:${target}`;
-    if (inflightRef.current.has(key)) return;
-    inflightRef.current.add(key);
-    void translateText(content, target)
-      .then((res) => {
-        const entry = { text: res.translation, target: res.target as TranslateTarget };
-        translationCache.set(messageID, entry);
-        setTranslations((prev) => ({ ...prev, [messageID]: entry }));
-      })
-      .catch(() => { /* silent — toggling the switch retries */ })
-      .finally(() => { inflightRef.current.delete(key); });
-  }, []);
-
   // Auto-translate every customer message in ONE batch request per pass.
   //
   // Sending one request per message made opening a busy conversation slow
@@ -994,14 +990,16 @@ function ConversationDetail({
         pending.push({ id: m.message_id, content: m.content });
       }
     }
-    // Show cache hits immediately (no model round trip).
-    if (Object.keys(fresh).length > 0) {
-      setTranslations((prev) => ({ ...prev, ...fresh }));
-    }
-    if (pending.length === 0) return;
+    if (pending.length === 0 && Object.keys(fresh).length === 0) return;
 
     batchInflightRef.current = true;
     void (async () => {
+      // Cache hits first, inside the async lane: the effect body itself must not
+      // call setState synchronously (that is the extra render this rule bans),
+      // and one tick earlier or later is imperceptible next to a batch request.
+      if (Object.keys(fresh).length > 0) {
+        setTranslations((prev) => ({ ...prev, ...fresh }));
+      }
       // Chunk to the endpoint's 50-item limit.
       for (let i = 0; i < pending.length; i += 50) {
         const slice = pending.slice(i, i + 50);
@@ -2073,6 +2071,7 @@ function InboundPlatformMediaPreview({ messageID, media }: { messageID: number; 
           waveColor="var(--color-primary-foreground)"
           playLabel={t("inbox.voicePlay")}
           pauseLabel={t("inbox.voicePause")}
+          seekLabel={t("inbox.voiceSeek")}
           className="rounded-b-none shadow-none"
         />
         {media.extracted_text && (

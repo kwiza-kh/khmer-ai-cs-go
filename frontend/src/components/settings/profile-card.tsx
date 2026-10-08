@@ -67,7 +67,8 @@ export function ProfileCard() {
   };
 
   const load = React.useCallback(() => {
-    setLoading(true);
+    // No setLoading(true) here: the state starts true, and calling it from the
+    // effect body was the cascading-render pattern (extra render on mount).
     getProfile()
       .then((p) => {
         setProfile(p);

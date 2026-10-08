@@ -59,7 +59,7 @@
 
     var host = document.createElement("div");
     host.id = "khmer-widget-root";
-    host.style.cssText = "position:fixed;right:20px;bottom:20px;z-index:2147483000;font-family:'Inter',system-ui,sans-serif;";
+    host.style.cssText = "position:fixed;right:20px;bottom:20px;z-index:2147483000;font-family:system-ui,-apple-system,'Segoe UI',sans-serif;";
 
     var frame = document.createElement("iframe");
     frame.id = "khmer-widget-frame";

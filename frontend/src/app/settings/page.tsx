@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { useAuth, adoptRefreshedToken } from "@/lib/auth-client";
+import { adoptRefreshedToken } from "@/lib/auth-client";
 import { apiFetch, ApiError, totpStatus, totpSetup, totpVerify, totpDisable } from "@/lib/api";
 import { PageHeader } from "@/components/page-header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -21,7 +21,6 @@ import { toast } from "sonner";
 import { useI18n, type Lang } from "@/lib/i18n";
 
 export default function SettingsPage() {
-  const { user } = useAuth();
   const { setLang: setUiLang, t } = useI18n();
   // AI language preference (persisted server-side; "auto" follows the customer).
   const [aiLang, setAiLang] = React.useState("auto");

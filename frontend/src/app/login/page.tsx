@@ -255,7 +255,7 @@ export default function LoginPage() {
                   {googleEnabled && (
                     <button
                       type="button"
-                      onClick={() => window.location.assign(`${API_BASE}/auth/google/start`)}
+                      onClick={() => { window.location.replace(`${API_BASE}/auth/google/start`); }}
                       disabled={loading}
                       className="inline-flex h-10 w-full items-center justify-center gap-2.5 rounded-lg border border-border bg-card text-sm text-foreground transition-colors hover:bg-muted/70 disabled:cursor-not-allowed disabled:opacity-60"
                     >
@@ -267,7 +267,7 @@ export default function LoginPage() {
                   {telegramEnabled && (
                     <button
                       type="button"
-                      onClick={() => window.location.assign(`${API_BASE}/auth/telegram/start`)}
+                      onClick={() => { window.location.replace(`${API_BASE}/auth/telegram/start`); }}
                       disabled={loading}
                       className="inline-flex h-10 w-full items-center justify-center gap-2.5 rounded-lg border border-border bg-card text-sm text-foreground transition-colors hover:bg-muted/70 disabled:cursor-not-allowed disabled:opacity-60"
                     >

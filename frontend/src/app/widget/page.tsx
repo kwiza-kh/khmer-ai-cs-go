@@ -61,11 +61,11 @@ const STR: Record<Lang, Record<string, string>> = {
 // entrance and the suggestion-chip hover. Inline styles can't animate.
 const WIDGET_CSS = `
 @keyframes kw-pulse { 0% { box-shadow: 0 0 0 0 rgba(74,222,128,.55); } 70% { box-shadow: 0 0 0 5px rgba(74,222,128,0); } 100% { box-shadow: 0 0 0 0 rgba(74,222,128,0); } }
-@keyframes kw-bounce { 0%, 80%, 100% { transform: translateY(0); opacity: .45; } 40% { transform: translateY(-3px); opacity: 1; } }
+@keyframes kw-dot-lift { 0%, 80%, 100% { transform: translateY(0); opacity: .45; } 40% { transform: translateY(-3px); opacity: 1; } }
 @keyframes kw-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
 .kw-msg { animation: kw-in .18s ease-out; }
 .kw-dot { width: 7px; height: 7px; border-radius: 50%; background: #4ade80; animation: kw-pulse 1.8s ease-out infinite; }
-.kw-typing span { width: 5px; height: 5px; border-radius: 50%; background: currentColor; display: inline-block; margin-right: 3px; animation: kw-bounce 1s infinite ease-in-out; }
+.kw-typing span { width: 5px; height: 5px; border-radius: 50%; background: currentColor; display: inline-block; margin-right: 3px; animation: kw-dot-lift 1s infinite ease-in-out; }
 .kw-typing span:nth-child(2) { animation-delay: .15s; }
 .kw-typing span:nth-child(3) { animation-delay: .3s; }
 .kw-chip { transition: border-color .12s ease, color .12s ease, background .12s ease; }
@@ -121,10 +121,29 @@ function WidgetInner() {
   const [draft, setDraft] = React.useState("");
   const [sessionId, setSessionId] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
-  const [dark, setDark] = React.useState(false);
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const nextId = React.useRef(0);
   const lastSeenDbId = React.useRef(0);
+  // Streaming reply accumulator. It is a ref, not state and not a captured `let`:
+  // it is not render data (only the messages we mirror into are), and a mutated
+  // closure variable is what the React compiler refuses.
+  const streamAccRef = React.useRef("");
+
+  // The theme is DERIVED, not synced. It used to be state written from an
+  // effect, which cost a second render whenever the config arrived. A media
+  // query is an external store — what useSyncExternalStore is for — and its
+  // server snapshot is a fixed false, so the prerender stays deterministic.
+  const systemDark = React.useSyncExternalStore(
+    React.useCallback((onChange: () => void) => {
+      const mq = window.matchMedia("(prefers-color-scheme: dark)");
+      mq.addEventListener("change", onChange);
+      return () => mq.removeEventListener("change", onChange);
+    }, []),
+    () => window.matchMedia("(prefers-color-scheme: dark)").matches,
+    () => false,
+  );
+  const widgetTheme = cfg?.theme ?? "light";
+  const dark = widgetTheme === "dark" || (widgetTheme === "auto" && systemDark);
 
   const accent = cfg?.primary_color || colorParam || "#4f46e5";
   const p = dark
@@ -151,16 +170,6 @@ function WidgetInner() {
     return () => { dead = true; };
   }, [apiBase, token]);
 
-  React.useEffect(() => {
-    const theme = cfg?.theme ?? "light";
-    if (theme === "dark") { setDark(true); return; }
-    if (theme !== "auto") { setDark(false); return; }
-    const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    setDark(mq.matches);
-    const onChange = (e: MediaQueryListEvent) => setDark(e.matches);
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
-  }, [cfg]);
 
   React.useEffect(() => {
     const el = scrollRef.current;
@@ -270,7 +279,7 @@ function WidgetInner() {
     setMessages((cur) => [...cur, { id: nextId.current++, role: "user", content }, { id: pendingId, role: "model", content: "", pending: true }]);
     setBusy(true);
 
-    let acc = "";
+    streamAccRef.current = "";
     let sid = sessionId;
     try {
       const res = await fetch(`${apiBase}/widget/chat`, {
@@ -303,11 +312,11 @@ function WidgetInner() {
             try { localStorage.setItem(`khmer-widget-sid:${token}`, sid); } catch { /* ignore */ }
             writeWidgetSidCookie(token, sid);
           } else if (evt.event === "token") {
-            acc += (evt.data as { text: string }).text;
-            setMessages((cur) => cur.map((m) => (m.id === pendingId ? { ...m, content: acc } : m)));
+            streamAccRef.current += (evt.data as { text: string }).text;
+            setMessages((cur) => cur.map((m) => (m.id === pendingId ? { ...m, content: streamAccRef.current } : m)));
           } else if (evt.event === "error") {
-            acc = (evt.data as { message: string }).message;
-            setMessages((cur) => cur.map((m) => (m.id === pendingId ? { ...m, content: acc, pending: false } : m)));
+            streamAccRef.current = (evt.data as { message: string }).message;
+            setMessages((cur) => cur.map((m) => (m.id === pendingId ? { ...m, content: streamAccRef.current, pending: false } : m)));
           }
         }
       }
