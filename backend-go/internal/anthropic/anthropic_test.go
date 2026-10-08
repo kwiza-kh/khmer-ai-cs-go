@@ -2,17 +2,10 @@ package anthropic
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
-	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -91,7 +84,6 @@ func TestChatMapsOurTurnOntoTheMessagesAPI(t *testing.T) {
 	st.body = responseJSON("សូស្តី!", 120, 7, 40)
 	temp := 0.7
 	svc := New(Config{
-		Transport:    TransportAPI,
 		APIKey:       "sk-ant-test",
 		Model:        "claude-haiku-5-5",
 		SystemPrompt: "You are a shop assistant.",
@@ -179,7 +171,7 @@ func TestChatStreamEmitsDeltasThenUsage(t *testing.T) {
 		``,
 	}, "\n")
 
-	svc := New(Config{Transport: TransportAPI, APIKey: "k", Model: "claude-haiku-5-5", BaseURL: st.server.URL})
+	svc := New(Config{APIKey: "k", Model: "claude-haiku-5-5", BaseURL: st.server.URL})
 	var got []string
 	res, err := svc.ChatStream(context.Background(), "hi", nil, "en", func(tok string) { got = append(got, tok) })
 	if err != nil {
@@ -205,63 +197,16 @@ func TestChatStreamEndingEarlyIsAnError(t *testing.T) {
 		`data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"trunc"}}`,
 		``,
 	}, "\n")
-	svc := New(Config{Transport: TransportAPI, APIKey: "k", Model: "m", BaseURL: st.server.URL})
+	svc := New(Config{APIKey: "k", Model: "m", BaseURL: st.server.URL})
 	if _, err := svc.ChatStream(context.Background(), "hi", nil, "en", nil); err == nil {
 		t.Fatal("a stream without message_stop must not look like a complete reply")
-	}
-}
-
-func TestVertexTransportUsesRawPredictWithTheServiceAccount(t *testing.T) {
-	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = r.ParseForm()
-		if !strings.Contains(r.Form.Get("assertion"), ".") {
-			t.Errorf("token exchange carried no JWT assertion")
-		}
-		_, _ = w.Write([]byte(`{"access_token":"tok-vertex","expires_in":3600}`))
-	}))
-	t.Cleanup(tokenSrv.Close)
-
-	saFile := writeTestServiceAccount(t, tokenSrv.URL)
-	st := newStub(t)
-	st.body = responseJSON("ok", 5, 1, 0)
-
-	svc := New(Config{
-		Transport: TransportVertex,
-		Model:     "claude-haiku-5-5",
-		Project:   "proj-1",
-		Region:    "global",
-		SAFile:    saFile,
-		BaseURLVX: st.server.URL,
-	})
-	if _, err := svc.Chat(context.Background(), "hi", nil, "en"); err != nil {
-		t.Fatalf("vertex Chat: %v", err)
-	}
-	wantPath := "/v1/projects/proj-1/locations/global/publishers/anthropic/models/claude-haiku-5-5:rawPredict"
-	if st.lastPath != wantPath {
-		t.Errorf("path = %q, want %q", st.lastPath, wantPath)
-	}
-	if st.lastAuth != "Bearer tok-vertex" {
-		t.Errorf("Authorization = %q", st.lastAuth)
-	}
-	if got, _ := st.lastBody["anthropic_version"].(string); got != vertexAnthropicVersion {
-		t.Errorf("anthropic_version = %v, want %q", st.lastBody["anthropic_version"], vertexAnthropicVersion)
-	}
-	if _, present := st.lastBody["model"]; present {
-		t.Error("Vertex carries the model in the URL; the body must not repeat it")
-	}
-
-	// Streaming swaps the URL verb, not a body flag.
-	st.stream = "data: {\"type\":\"message_stop\"}\n\n"
-	_, _ = svc.ChatStream(context.Background(), "hi", nil, "en", nil)
-	if !strings.HasSuffix(st.lastPath, ":streamRawPredict") {
-		t.Errorf("streaming path = %q, want :streamRawPredict", st.lastPath)
 	}
 }
 
 func TestGenerateFastReportsAuxUsage(t *testing.T) {
 	st := newStub(t)
 	st.body = responseJSON("  short answer  ", 30, 4, 0)
-	svc := New(Config{Transport: TransportAPI, APIKey: "k", Model: "claude-haiku-5-5", BaseURL: st.server.URL})
+	svc := New(Config{APIKey: "k", Model: "claude-haiku-5-5", BaseURL: st.server.URL})
 
 	var seenModel string
 	var seenIn, seenOut int
@@ -281,7 +226,7 @@ func TestGenerateFastReportsAuxUsage(t *testing.T) {
 }
 
 func TestUnconfiguredProviderFailsLoudly(t *testing.T) {
-	svc := New(Config{Transport: TransportAPI, Model: "claude-haiku-5-5"})
+	svc := New(Config{Model: "claude-haiku-5-5"})
 	if _, err := svc.Chat(context.Background(), "hi", nil, "en"); err == nil {
 		t.Fatal("an unconfigured provider returned a reply; it must fail loudly, never silently mock")
 	}
@@ -293,7 +238,7 @@ func TestUnconfiguredProviderFailsLoudly(t *testing.T) {
 func TestHotReloadSwapsModelAndKey(t *testing.T) {
 	st := newStub(t)
 	st.body = responseJSON("ok", 1, 1, 0)
-	svc := New(Config{Transport: TransportAPI, APIKey: "old", Model: "claude-haiku-5-5", BaseURL: st.server.URL})
+	svc := New(Config{APIKey: "old", Model: "claude-haiku-5-5", BaseURL: st.server.URL})
 	svc.HotReload("new-key", "claude-sonnet-5-5", "sys", 1234)
 	if _, err := svc.Chat(context.Background(), "hi", nil, "en"); err != nil {
 		t.Fatalf("Chat after reload: %v", err)
@@ -307,32 +252,4 @@ func TestHotReloadSwapsModelAndKey(t *testing.T) {
 	if got, _ := st.lastBody["max_tokens"].(float64); int(got) != 1234 {
 		t.Errorf("max_tokens = %v, want 1234", st.lastBody["max_tokens"])
 	}
-}
-
-// writeTestServiceAccount mirrors the API package's helper: a throwaway RSA key
-// in a temp file, pointing token minting at the stub.
-func writeTestServiceAccount(t *testing.T, tokenURL string) string {
-	t.Helper()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("generate key: %v", err)
-	}
-	der, err := x509.MarshalPKCS8PrivateKey(key)
-	if err != nil {
-		t.Fatalf("marshal key: %v", err)
-	}
-	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
-	sa := map[string]any{
-		"client_email": "probe@example.invalid",
-		"private_key":  string(pemBytes),
-		"token_uri":    tokenURL,
-		"project_id":   "proj-1",
-	}
-	raw, _ := json.Marshal(sa)
-	path := filepath.Join(t.TempDir(), "sa.json")
-	if err := os.WriteFile(path, raw, 0o600); err != nil {
-		t.Fatalf("write sa: %v", err)
-	}
-	_ = base64.StdEncoding // keep the helper self-contained if it grows
-	return path
 }

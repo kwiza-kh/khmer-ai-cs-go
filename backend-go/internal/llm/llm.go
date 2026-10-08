@@ -18,8 +18,6 @@ package llm
 import (
 	"context"
 	"fmt"
-	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -38,16 +36,15 @@ const (
 	// Vertex) is set by GEMINI_PROVIDER, as it always was.
 	ProviderGemini = "gemini"
 	// ProviderAnthropic serves Claude through the Anthropic API. The key is sealed in
-	// model_configs.api_key, like the Gemini studio key.
+	// model_configs.api_key, like the Gemini studio key. (A second Claude provider,
+	// "anthropic-vertex", used to reach Claude through Vertex AI with the platform
+	// service account; it was removed — see DEVELOPMENT.md §十九.)
 	ProviderAnthropic = "anthropic"
-	// ProviderAnthropicVertex serves Claude through Vertex AI, with the service
-	// account GEMINI_VERTEX_SA_FILE names. The row's vertex_region is the location.
-	ProviderAnthropicVertex = "anthropic-vertex"
 )
 
 // Providers lists every value the console may store.
 func Providers() []string {
-	return []string{ProviderGemini, ProviderAnthropic, ProviderAnthropicVertex}
+	return []string{ProviderGemini, ProviderAnthropic}
 }
 
 // Valid reports whether the console may store this provider.
@@ -64,19 +61,17 @@ func Valid(provider string) bool {
 // value, including one nothing recognises, serves through Gemini: that is the
 // reading every existing row has always had, and it fails in the known direction.
 func IsClaude(provider string) bool {
-	return provider == ProviderAnthropic || provider == ProviderAnthropicVertex
+	return provider == ProviderAnthropic
 }
 
 // CredentialSource names the secret a provider authenticates with, in the
 // vocabulary the console already uses for Gemini: "api_key" is a key stored in
 // model_configs.api_key, and "service_account" is the file GEMINI_VERTEX_SA_FILE
-// names. The key is never a credential on the Vertex transport, for either family.
+// names (which only the Gemini transport reads now).
 func CredentialSource(provider string) string {
 	switch provider {
 	case ProviderAnthropic:
 		return "api_key"
-	case ProviderAnthropicVertex:
-		return "service_account"
 	default:
 		return string(gemini.CredentialSourceOf())
 	}
@@ -256,7 +251,7 @@ func LoadDefault(ctx context.Context, db querier) (Row, bool) {
 func LoadGemini(ctx context.Context, db querier) (Row, bool) {
 	return scanRow(db.QueryRow(ctx,
 		"SELECT config_id, provider, api_key, model_name, COALESCE(system_prompt,''), COALESCE(max_tokens,2048), COALESCE(vertex_region,''), temperature "+
-			"FROM model_configs WHERE provider NOT IN ('anthropic', 'anthropic-vertex') "+
+			"FROM model_configs WHERE provider NOT IN ('anthropic') "+
 			"ORDER BY is_default DESC, config_id LIMIT 1"))
 }
 
@@ -279,31 +274,13 @@ func scanRow(row pgx.Row) (Row, bool) {
 }
 
 // ClaudeConfig builds the Claude client's configuration from a row. The key arrives
-// unsealed. The service-account file and the project come from the environment,
-// exactly as the Gemini vertex transport reads them.
+// unsealed.
 func ClaudeConfig(row Row, apiKey string) anthropic.Config {
-	cfg := anthropic.Config{
-		Transport:    transportOf(row.Provider),
+	return anthropic.Config{
+		APIKey:       apiKey,
 		Model:        row.ModelName,
 		SystemPrompt: row.SystemPrompt,
 		MaxTokens:    row.MaxTokens,
 		Temperature:  row.Temperature,
 	}
-	if cfg.Transport == anthropic.TransportVertex {
-		// The service-account file is the credential on Vertex. A key stored in the
-		// row belongs to the direct transport and is not carried over.
-		cfg.Region = row.Region
-		cfg.SAFile = strings.TrimSpace(os.Getenv("GEMINI_VERTEX_SA_FILE"))
-		cfg.Project = strings.TrimSpace(os.Getenv("GEMINI_VERTEX_PROJECT"))
-	} else {
-		cfg.APIKey = apiKey
-	}
-	return cfg
-}
-
-func transportOf(provider string) string {
-	if provider == ProviderAnthropicVertex {
-		return anthropic.TransportVertex
-	}
-	return anthropic.TransportAPI
 }

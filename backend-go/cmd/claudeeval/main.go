@@ -387,11 +387,7 @@ func runCaps(ctx context.Context, a arm, key, provider string, timeout time.Dura
 	// A model that does not exist must fail loudly. A silent mock answer here would
 	// make every model-config typo look like a working deployment.
 	check("unknown model id fails", func(cctx context.Context) (string, error) {
-		svc := anthropic.New(anthropic.Config{
-			Transport: llmTransport(provider), APIKey: key, Model: "claude-does-not-exist-9-9",
-			Region: os.Getenv("GEMINI_VERTEX_REGION"), SAFile: os.Getenv("GEMINI_VERTEX_SA_FILE"),
-			Project: os.Getenv("GEMINI_VERTEX_PROJECT"),
-		})
+		svc := anthropic.New(anthropic.Config{APIKey: key, Model: "claude-does-not-exist-9-9"})
 		res, err := svc.Chat(cctx, "ping", nil, "en")
 		if err == nil && strings.TrimSpace(res.Reply) != "" {
 			return "", errors.New("an unknown model id was answered instead of failing")
@@ -568,14 +564,6 @@ func newClaude(ctx context.Context, pool *pgxpool.Pool, model, keyFlag string) (
 		return nil, "", "", fmt.Errorf("the Claude client is not configured (provider=%s)", row.Provider)
 	}
 	return svc, row.Provider, key, nil
-}
-
-// llmTransport maps a provider name to the transport a probe client must use.
-func llmTransport(provider string) string {
-	if provider == llm.ProviderAnthropicVertex {
-		return anthropic.TransportVertex
-	}
-	return anthropic.TransportAPI
 }
 
 func promptSource(prompt string) string {

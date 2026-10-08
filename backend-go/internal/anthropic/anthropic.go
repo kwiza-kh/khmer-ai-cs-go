@@ -43,44 +43,29 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/rsa"
-	"crypto/x509"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
-	"os"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/golang-jwt/jwt/v5"
 
 	"khmer-ai-cs-go/internal/gemini"
 )
 
 const (
-	// TransportAPI talks to Anthropic directly; TransportVertex reaches Claude
-	// through the Google service account, as Vertex partner models do.
-	TransportAPI    = "api"
-	TransportVertex = "vertex"
+	// anthropicVersion is the direct-API header. (The Vertex partner-model path —
+	// publishers/anthropic + rawPredict + the vertex-2023-10-16 body version —
+	// was removed with the anthropic-vertex provider.)
+	anthropicVersion = "2023-06-01"
 
-	// anthropicVersion is the direct-API header. Vertex wants its version in the
-	// request body instead (vertexAnthropicVersion).
-	anthropicVersion       = "2023-06-01"
-	vertexAnthropicVersion = "vertex-2023-10-16"
-
-	defaultBaseURL    = "https://api.anthropic.com"
-	defaultModel      = "claude-haiku-5-5"
-	defaultMaxTokens  = 2048
-	defaultRegion     = "global"
-	requestTimeout    = 120 * time.Second
-	auxTimeout        = 20 * time.Second
-	cloudPlatformURL  = "https://www.googleapis.com/auth/cloud-platform"
-	defaultOAuthToken = "https://oauth2.googleapis.com/token"
+	defaultBaseURL   = "https://api.anthropic.com"
+	defaultModel     = "claude-haiku-5-5"
+	defaultMaxTokens = 2048
+	requestTimeout   = 120 * time.Second
+	auxTimeout       = 20 * time.Second
 
 	// humanAgentMarker must match the Gemini client's. A staff reply reaches the
 	// model as a user turn carrying this prefix, so the model can tell it from its
@@ -88,72 +73,46 @@ const (
 	humanAgentMarker = "[Human agent reply] "
 )
 
-// tokenHTTP performs the OAuth exchange. http.DefaultClient has no timeout, and a
-// hung token endpoint would hold a reply turn for as long as its caller waits.
-var tokenHTTP = &http.Client{Timeout: 30 * time.Second}
-
 // Config is one immutable snapshot of a model config row. Reconfigure swaps it
 // wholesale under the lock: a half-applied config (a new model with an old key)
 // is the kind of fault that only shows up in production.
 type Config struct {
-	Transport    string
 	APIKey       string
 	Model        string
 	SystemPrompt string
 	MaxTokens    int
 	Temperature  *float64
 
-	// Vertex transport. Project may be empty: the service-account file names one.
-	Project  string
-	Region   string
-	SAFile   string
-	TokenURI string
-
-	// BaseURL replaces the direct transport's root. BaseURLVX replaces the Vertex
-	// host root; the /v1 segment is added here, not in the value. Both exist for
-	// tests and relays. Empty means the transport's own host.
-	BaseURL   string
-	BaseURLVX string
+	// BaseURL replaces the API root; the /v1 segment is added here, not in the
+	// value. It exists for tests and relays. Empty means Anthropic's own host.
+	BaseURL string
 }
 
 // withDefaults fills the fields a half-filled row would leave empty, so a row
 // cannot call a model id of "" or send a zero max_tokens.
 func withDefaults(cfg Config) Config {
-	if cfg.Transport == "" {
-		cfg.Transport = TransportAPI
-	}
 	if cfg.Model == "" {
 		cfg.Model = defaultModel
 	}
 	if cfg.MaxTokens <= 0 {
 		cfg.MaxTokens = defaultMaxTokens
 	}
-	if cfg.Transport == TransportVertex && cfg.Region == "" {
-		cfg.Region = defaultRegion
-	}
 	return cfg
 }
 
 // Service is the Claude client. Safe for concurrent use.
 type Service struct {
-	mu  sync.RWMutex
-	cfg Config
-	// creds is the Vertex token source. It is nil on the direct transport, and on
-	// Vertex when the service-account file could not be read; credErr says why.
-	creds   *tokenSource
-	credErr error
-	http    *http.Client
+	mu   sync.RWMutex
+	cfg  Config
+	http *http.Client
 }
 
 // snapshot is one consistent view of the configuration, taken once per call.
 type snapshot struct {
-	cfg     Config
-	creds   *tokenSource
-	credErr error
+	cfg Config
 }
 
-// New builds a client. A Vertex config whose key file is broken is kept and fails
-// every call with the reason, rather than degrading to an unauthenticated request.
+// New builds a client.
 func New(cfg Config) *Service {
 	s := &Service{http: &http.Client{Timeout: requestTimeout}}
 	s.Reconfigure(cfg)
@@ -161,25 +120,17 @@ func New(cfg Config) *Service {
 }
 
 // Reconfigure replaces the configuration. The serving path calls it on every hot
-// reload, so a new model, key, region or service-account file takes effect on the
-// next call without a restart.
+// reload, so a new model, key or prompt takes effect on the next call without a
+// restart.
 func (s *Service) Reconfigure(cfg Config) {
 	cfg = withDefaults(cfg)
-	var creds *tokenSource
-	var credErr error
-	if cfg.Transport == TransportVertex && cfg.SAFile != "" {
-		creds, credErr = newTokenSource(cfg.SAFile, cfg.TokenURI)
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cfg = cfg
-	s.creds = creds
-	s.credErr = credErr
 }
 
 // HotReload swaps the key, model, prompt and output budget in place, with the
-// same shape as the Gemini client's. The key only applies on the direct transport;
-// on Vertex the credential is the service-account file.
+// same shape as the Gemini client's.
 func (s *Service) HotReload(apiKey, modelName, systemPrompt string, maxTokens int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -190,7 +141,7 @@ func (s *Service) HotReload(apiKey, modelName, systemPrompt string, maxTokens in
 	if maxTokens > 0 {
 		s.cfg.MaxTokens = maxTokens
 	}
-	if s.cfg.Transport == TransportAPI && apiKey != "" {
+	if apiKey != "" {
 		s.cfg.APIKey = apiKey
 	}
 }
@@ -206,17 +157,12 @@ func (s *Service) SetTemperature(t *float64) {
 func (s *Service) snapshot() snapshot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return snapshot{cfg: s.cfg, creds: s.creds, credErr: s.credErr}
+	return snapshot{cfg: s.cfg}
 }
 
 // ModelName is the model id in force.
 func (s *Service) ModelName() string {
 	return s.snapshot().cfg.Model
-}
-
-// Region is the Vertex location in force; empty on the direct transport.
-func (s *Service) Region() string {
-	return s.snapshot().cfg.Region
 }
 
 // IsConfigured reports whether this client can make a call.
@@ -225,21 +171,11 @@ func (s *Service) IsConfigured() bool {
 }
 
 func configured(sn snapshot) bool {
-	if sn.cfg.Transport == TransportVertex {
-		return sn.creds != nil
-	}
 	return strings.TrimSpace(sn.cfg.APIKey) != "" || sn.cfg.BaseURL != ""
 }
 
-// unconfiguredError names what is missing, so the operator reads the cause and not
-// a bare "not configured".
-func unconfiguredError(sn snapshot) error {
-	if sn.cfg.Transport == TransportVertex {
-		if sn.credErr != nil {
-			return fmt.Errorf("anthropic vertex transport: service account unreadable: %w", sn.credErr)
-		}
-		return errors.New("anthropic vertex transport has no service account (GEMINI_VERTEX_SA_FILE)")
-	}
+// unconfiguredError is the one reason a turn cannot start: no key on the row.
+func unconfiguredError() error {
 	return errors.New("anthropic provider has no API key configured")
 }
 
@@ -344,14 +280,13 @@ func auxCall(prompt string, maxOutputTokens int) call {
 
 // requestBody is one Messages API request, for either transport.
 type requestBody struct {
-	Model        string          `json:"model,omitempty"`             // direct transport only
-	AnthropicVer string          `json:"anthropic_version,omitempty"` // Vertex only: the version travels in the body there
-	MaxTokens    int             `json:"max_tokens"`
-	System       string          `json:"system,omitempty"`
-	Messages     []apiMessage    `json:"messages"`
-	Temperature  *float64        `json:"temperature,omitempty"`
-	Thinking     *thinkingConfig `json:"thinking,omitempty"`
-	Stream       bool            `json:"stream,omitempty"`
+	Model       string          `json:"model"` // the API takes the model in the body
+	MaxTokens   int             `json:"max_tokens"`
+	System      string          `json:"system,omitempty"`
+	Messages    []apiMessage    `json:"messages"`
+	Temperature *float64        `json:"temperature,omitempty"`
+	Thinking    *thinkingConfig `json:"thinking,omitempty"`
+	Stream      bool            `json:"stream,omitempty"`
 }
 
 type apiMessage struct {
@@ -363,18 +298,14 @@ type thinkingConfig struct {
 	Type string `json:"type"`
 }
 
-// buildBody shapes one call for the configured transport and model.
+// buildBody shapes one call for the configured model.
 func buildBody(cfg Config, c call) requestBody {
 	body := requestBody{
+		Model:     cfg.Model,
 		MaxTokens: c.maxTokens,
 		System:    c.system,
 		Messages:  buildMessages(c.message, c.history),
 		Stream:    c.stream,
-	}
-	if cfg.Transport == TransportVertex {
-		body.AnthropicVer = vertexAnthropicVersion
-	} else {
-		body.Model = cfg.Model
 	}
 	if m, ok := Lookup(cfg.Model); ok {
 		if m.Sampling {
@@ -427,7 +358,7 @@ func appendTurn(out []apiMessage, role, content string) []apiMessage {
 // so a caller can bill a call whose reply turned out empty.
 func (s *Service) send(ctx context.Context, sn snapshot, c call) (gemini.ChatResult, error) {
 	if !configured(sn) {
-		return gemini.ChatResult{}, unconfiguredError(sn)
+		return gemini.ChatResult{}, unconfiguredError()
 	}
 	body := buildBody(sn.cfg, c)
 	if len(body.Messages) == 0 {
@@ -474,62 +405,16 @@ func (s *Service) send(ctx context.Context, sn snapshot, c call) (gemini.ChatRes
 }
 
 // endpointFor resolves the URL and auth headers for one call.
-func endpointFor(ctx context.Context, sn snapshot, stream bool) (string, map[string]string, error) {
+func endpointFor(_ context.Context, sn snapshot, _ bool) (string, map[string]string, error) {
 	cfg := sn.cfg
-	if cfg.Transport != TransportVertex {
-		base := strings.TrimRight(cfg.BaseURL, "/")
-		if base == "" {
-			base = defaultBaseURL
-		}
-		return base + "/v1/messages", map[string]string{
-			"x-api-key":         cfg.APIKey,
-			"anthropic-version": anthropicVersion,
-		}, nil
+	base := strings.TrimRight(cfg.BaseURL, "/")
+	if base == "" {
+		base = defaultBaseURL
 	}
-	if !SupportsRegion(cfg.Region) {
-		return "", nil, fmt.Errorf("claude on vertex is served from global, us or eu, not %q", cfg.Region)
-	}
-	project := cfg.Project
-	if project == "" && sn.creds != nil {
-		project = sn.creds.project
-	}
-	if project == "" {
-		return "", nil, errors.New("anthropic vertex transport needs a project: set GEMINI_VERTEX_PROJECT or use a service-account file that names one")
-	}
-	token, err := sn.creds.accessToken(ctx)
-	if err != nil {
-		return "", nil, err
-	}
-	verb := "rawPredict"
-	if stream {
-		verb = "streamRawPredict"
-	}
-	root := strings.TrimRight(cfg.BaseURLVX, "/")
-	if root == "" {
-		root = vertexRoot(cfg.Region)
-	}
-	u := fmt.Sprintf("%s/v1/projects/%s/locations/%s/publishers/anthropic/models/%s:%s",
-		root, project, cfg.Region, cfg.Model, verb)
-	return u, map[string]string{"Authorization": "Bearer " + token}, nil
-}
-
-// vertexRoot is the host root for one location, without the /v1 segment.
-//
-// The host rule is the one cmd/claudeprobe measured and pins in its tests: global
-// has no region prefix, and the multi-region locations use the rep host. The Gemini
-// client's VertexHost does not cover us and eu, which is why Claude does not reuse
-// it. GEMINI_VERTEX_API_BASE still wins, as it does for Gemini, so a relay sees the
-// Claude traffic too.
-func vertexRoot(region string) string {
-	if v := strings.TrimSpace(os.Getenv("GEMINI_VERTEX_API_BASE")); v != "" {
-		return strings.TrimSuffix(strings.TrimRight(v, "/"), "/v1")
-	}
-	switch region {
-	case "us", "eu":
-		return "https://aiplatform." + region + ".rep.googleapis.com"
-	default:
-		return "https://aiplatform.googleapis.com"
-	}
+	return base + "/v1/messages", map[string]string{
+		"x-api-key":         cfg.APIKey,
+		"anthropic-version": anthropicVersion,
+	}, nil
 }
 
 // ── response parsing ─────────────────────────────────────────────────────────
@@ -662,114 +547,4 @@ func parseStream(r io.Reader, onToken func(string)) (gemini.ChatResult, error) {
 		return out, errors.New("anthropic: stream ended before any message")
 	}
 	return out, errors.New("anthropic: stream ended before completion")
-}
-
-// ── Vertex service-account token ─────────────────────────────────────────────
-
-// tokenSource mints OAuth tokens from a Vertex service account. Its shape matches
-// the Gemini client's (which is unexported); a copy here means the Claude transport
-// does not reach into the Gemini client for a credential.
-type tokenSource struct {
-	email    string
-	project  string
-	key      *rsa.PrivateKey
-	tokenURI string
-
-	mu     sync.Mutex
-	token  string
-	expiry time.Time
-}
-
-func newTokenSource(path, tokenURI string) (*tokenSource, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var sa struct {
-		ClientEmail string `json:"client_email"`
-		ProjectID   string `json:"project_id"`
-		PrivateKey  string `json:"private_key"`
-		TokenURI    string `json:"token_uri"`
-	}
-	if err := json.Unmarshal(raw, &sa); err != nil {
-		return nil, fmt.Errorf("parse service account: %w", err)
-	}
-	block, _ := pem.Decode([]byte(sa.PrivateKey))
-	if block == nil {
-		return nil, errors.New("service account private_key is not PEM")
-	}
-	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
-		rsaKey, rsaErr := x509.ParsePKCS1PrivateKey(block.Bytes)
-		if rsaErr != nil {
-			return nil, fmt.Errorf("parse service account key: %w", err)
-		}
-		parsed = rsaKey
-	}
-	key, ok := parsed.(*rsa.PrivateKey)
-	if !ok {
-		return nil, fmt.Errorf("service account key is %T, want RSA", parsed)
-	}
-	uri := tokenURI
-	if uri == "" {
-		uri = sa.TokenURI
-	}
-	if uri == "" {
-		uri = defaultOAuthToken
-	}
-	return &tokenSource{email: sa.ClientEmail, project: sa.ProjectID, key: key, tokenURI: uri}, nil
-}
-
-func (t *tokenSource) accessToken(ctx context.Context) (string, error) {
-	if t == nil {
-		return "", errors.New("anthropic vertex transport has no readable service account key")
-	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.token != "" && time.Until(t.expiry) > 2*time.Minute {
-		return t.token, nil
-	}
-	now := time.Now()
-	signed, err := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
-		"iss":   t.email,
-		"scope": cloudPlatformURL,
-		"aud":   t.tokenURI,
-		"iat":   now.Unix(),
-		"exp":   now.Add(time.Hour).Unix(),
-	}).SignedString(t.key)
-	if err != nil {
-		return "", fmt.Errorf("sign service account assertion: %w", err)
-	}
-	form := url.Values{
-		"grant_type": {"urn:ietf:params:oauth:grant-type:jwt-bearer"},
-		"assertion":  {signed},
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.tokenURI, strings.NewReader(form.Encode()))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	res, err := tokenHTTP.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer res.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(res.Body, 1<<16))
-	if res.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("oauth token exchange: HTTP %d: %s", res.StatusCode, strings.TrimSpace(string(raw)))
-	}
-	var parsed struct {
-		AccessToken string `json:"access_token"`
-		ExpiresIn   int    `json:"expires_in"`
-	}
-	if err := json.Unmarshal(raw, &parsed); err != nil || parsed.AccessToken == "" {
-		return "", errors.New("oauth token exchange: unparseable response")
-	}
-	ttl := parsed.ExpiresIn
-	if ttl <= 0 {
-		ttl = 3600
-	}
-	t.token = parsed.AccessToken
-	t.expiry = now.Add(time.Duration(ttl) * time.Second)
-	return t.token, nil
 }

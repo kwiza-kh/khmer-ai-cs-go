@@ -13,7 +13,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"khmer-ai-cs-go/internal/gemini"
-	"khmer-ai-cs-go/internal/llm"
 	"khmer-ai-cs-go/internal/platform"
 )
 
@@ -205,7 +204,7 @@ var studioAPIKeyFromDB = func(ctx context.Context, db *pgxpool.Pool, configID in
 		// credential. Sending it to Gemini answers 401, which reads as "the region is broken".
 		// Only rows that hold a key qualify, so the fallback cannot blank out a good one.
 		_ = db.QueryRow(ctx,
-			"SELECT api_key FROM model_configs WHERE provider NOT IN ('anthropic', 'anthropic-vertex') AND api_key <> '' "+
+			"SELECT api_key FROM model_configs WHERE provider <> 'anthropic' AND api_key <> '' "+
 				"ORDER BY is_default DESC, config_id LIMIT 1").Scan(&apiKey)
 	}
 	return apiKey
@@ -367,9 +366,6 @@ func truncateForHeader(msg string) string {
 // contact Google: a selector that needs the network to render is a selector that
 // breaks exactly when the network does.
 func (a *App) vertexRegions(w http.ResponseWriter, r *http.Request) (any, error) {
-	if r.URL.Query().Get("provider") == llm.ProviderAnthropicVertex {
-		return claudeVertexRegions(), nil
-	}
 	regions, current := gemini.VertexRegions(a.servingRegion())
 	out := make([]map[string]any, 0, len(regions))
 	for _, reg := range regions {
@@ -461,6 +457,7 @@ func (a *App) listUsers(w http.ResponseWriter, r *http.Request) (any, error) {
 	}
 
 	var total int64
+	// nosemgrep: 每个调用方参数都在 args 里绑定；这里拼进 SQL 的只有常量片段（片段自带 $n 占位符）。
 	if err := a.DB.QueryRow(r.Context(), "SELECT COUNT(*) FROM users u"+whereClause, args...).Scan(&total); err != nil {
 		return nil, ErrInternal("查询失败")
 	}
@@ -472,6 +469,7 @@ func (a *App) listUsers(w http.ResponseWriter, r *http.Request) (any, error) {
 		NewWeek int64
 		Admins  int64
 	}
+	// nosemgrep: 每个调用方参数都在 args 里绑定；这里拼进 SQL 的只有常量片段（片段自带 $n 占位符）。
 	if err := a.DB.QueryRow(r.Context(),
 		"SELECT COUNT(*), COUNT(*) FILTER (WHERE u.is_active), "+
 			"COUNT(*) FILTER (WHERE u.created_at >= NOW() - INTERVAL '7 days'), "+
@@ -484,6 +482,7 @@ func (a *App) listUsers(w http.ResponseWriter, r *http.Request) (any, error) {
 	selArgs := append(append([]any{}, args...), pageSize, offset)
 	// No token/cost columns: model spend is operator-metered data and this list
 	// is served to tenant owners (tenantAdminOnly).
+	// nosemgrep: 每个调用方参数都在 args 里绑定；这里拼进 SQL 的只有常量片段（片段自带 $n 占位符）。
 	rows, err := a.DB.Query(r.Context(),
 		"SELECT u.user_id, u.username, COALESCE(u.email,''), u.role::text, u.is_active, u.created_at, "+
 			"u.google_sub IS NOT NULL, u.telegram_sub IS NOT NULL, COALESCE(u.password_hash,'') <> '' "+

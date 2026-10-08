@@ -235,7 +235,7 @@ func SetServingProvider(provider string) {
 // recognise is Gemini, the reading every model_configs row has always had.
 func servingIsGemini() bool {
 	p, _ := servingProvider.Load().(string)
-	return p != "anthropic" && p != "anthropic-vertex"
+	return p != "anthropic"
 }
 
 // regimeName names the spend regime the vertex branch applies, for the operator

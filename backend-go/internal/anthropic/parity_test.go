@@ -6,8 +6,6 @@ package anthropic
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -40,20 +38,10 @@ func suffixOf(s string, n int) string {
 	return s[len(s)-n:]
 }
 
-// tokenServer answers the OAuth exchange for the Vertex transport.
-func tokenServer(t *testing.T) *httptest.Server {
-	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"access_token":"tok-vertex","expires_in":3600}`))
-	}))
-	t.Cleanup(srv.Close)
-	return srv
-}
-
 func TestSystemPromptFallsBackToTheBuiltInDefault(t *testing.T) {
 	st := newStub(t)
 	st.body = responseJSON("ok", 1, 1, 0)
-	svc := New(Config{Transport: TransportAPI, APIKey: "k", BaseURL: st.server.URL}) // no SystemPrompt
+	svc := New(Config{APIKey: "k", BaseURL: st.server.URL}) // no SystemPrompt
 
 	if _, err := svc.Chat(context.Background(), "hi", nil, "en"); err != nil {
 		t.Fatalf("Chat: %v", err)
@@ -70,7 +58,7 @@ func TestSystemPromptFallsBackToTheBuiltInDefault(t *testing.T) {
 func TestPersonaOverrideReplacesTheConfiguredPrompt(t *testing.T) {
 	st := newStub(t)
 	st.body = responseJSON("ok", 1, 1, 0)
-	svc := New(Config{Transport: TransportAPI, APIKey: "k", SystemPrompt: "configured prompt", BaseURL: st.server.URL})
+	svc := New(Config{APIKey: "k", SystemPrompt: "configured prompt", BaseURL: st.server.URL})
 
 	if _, err := svc.ChatAs(context.Background(), "hi", nil, "en", "persona prompt"); err != nil {
 		t.Fatalf("ChatAs: %v", err)
@@ -84,7 +72,7 @@ func TestPersonaOverrideReplacesTheConfiguredPrompt(t *testing.T) {
 func TestAuxCallsSendNoSystemPromptAndNoSampling(t *testing.T) {
 	st := newStub(t)
 	st.body = responseJSON("42", 3, 1, 0)
-	svc := New(Config{Transport: TransportAPI, APIKey: "k", Model: "claude-haiku-5-5", SystemPrompt: "customer persona", BaseURL: st.server.URL})
+	svc := New(Config{APIKey: "k", Model: "claude-haiku-5-5", SystemPrompt: "customer persona", BaseURL: st.server.URL})
 
 	out, ok := svc.GenerateFast(context.Background(), "classify this", 5*time.Second)
 	if !ok || out != "42" {
@@ -106,7 +94,7 @@ func TestSamplingIsSentOnlyWhereTheCatalogAllowsIt(t *testing.T) {
 	withCatalog(t, Model{ID: "test-sampling", DisplayName: "test", Sampling: true})
 	st := newStub(t)
 	st.body = responseJSON("ok", 1, 1, 0)
-	svc := New(Config{Transport: TransportAPI, APIKey: "k", Model: "test-sampling", Temperature: floatPtr(0.4), BaseURL: st.server.URL})
+	svc := New(Config{APIKey: "k", Model: "test-sampling", Temperature: floatPtr(0.4), BaseURL: st.server.URL})
 
 	if _, err := svc.Chat(context.Background(), "hi", nil, "en"); err != nil {
 		t.Fatalf("Chat: %v", err)
@@ -126,7 +114,7 @@ func TestThinkingIsOffForCatalogModelsOnly(t *testing.T) {
 	st := newStub(t)
 	st.body = responseJSON("ok", 1, 1, 0)
 
-	svc := New(Config{Transport: TransportAPI, APIKey: "k", Model: "claude-haiku-5-5", BaseURL: st.server.URL})
+	svc := New(Config{APIKey: "k", Model: "claude-haiku-5-5", BaseURL: st.server.URL})
 	if _, err := svc.Chat(context.Background(), "hi", nil, "en"); err != nil {
 		t.Fatalf("Chat: %v", err)
 	}
@@ -137,7 +125,7 @@ func TestThinkingIsOffForCatalogModelsOnly(t *testing.T) {
 
 	// A model the catalog does not know gets the platform default, and no field
 	// at all: an explicit "disabled" on a model that rejects it is a 400.
-	unknown := New(Config{Transport: TransportAPI, APIKey: "k", Model: "claude-unknown-9-9", BaseURL: st.server.URL})
+	unknown := New(Config{APIKey: "k", Model: "claude-unknown-9-9", BaseURL: st.server.URL})
 	if _, err := unknown.Chat(context.Background(), "hi", nil, "en"); err != nil {
 		t.Fatalf("Chat (unknown model): %v", err)
 	}
@@ -149,7 +137,7 @@ func TestThinkingIsOffForCatalogModelsOnly(t *testing.T) {
 func TestHumanAgentTurnsKeepTheirMarkerAndConsecutiveTurnsJoin(t *testing.T) {
 	st := newStub(t)
 	st.body = responseJSON("ok", 1, 1, 0)
-	svc := New(Config{Transport: TransportAPI, APIKey: "k", BaseURL: st.server.URL})
+	svc := New(Config{APIKey: "k", BaseURL: st.server.URL})
 
 	history := []gemini.HistoryItem{
 		{Role: "user", Content: "is it in stock?"},
@@ -181,7 +169,7 @@ func TestHumanAgentTurnsKeepTheirMarkerAndConsecutiveTurnsJoin(t *testing.T) {
 
 func TestNothingToSendIsRefusedBeforeTheWire(t *testing.T) {
 	st := newStub(t)
-	svc := New(Config{Transport: TransportAPI, APIKey: "k", BaseURL: st.server.URL})
+	svc := New(Config{APIKey: "k", BaseURL: st.server.URL})
 
 	if _, err := svc.Chat(context.Background(), "   ", nil, "en"); err == nil {
 		t.Fatal("an empty turn must fail before any request")
@@ -194,7 +182,7 @@ func TestNothingToSendIsRefusedBeforeTheWire(t *testing.T) {
 func TestPromptCountsEveryCachedPart(t *testing.T) {
 	st := newStub(t)
 	st.body = `{"content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":10,"output_tokens":3,"cache_read_input_tokens":200,"cache_creation_input_tokens":50}}`
-	svc := New(Config{Transport: TransportAPI, APIKey: "k", BaseURL: st.server.URL})
+	svc := New(Config{APIKey: "k", BaseURL: st.server.URL})
 
 	res, err := svc.Chat(context.Background(), "hi", nil, "en")
 	if err != nil {
@@ -210,7 +198,7 @@ func TestPromptCountsEveryCachedPart(t *testing.T) {
 func TestThinkingBlocksAreNotReplyText(t *testing.T) {
 	st := newStub(t)
 	st.body = `{"content":[{"type":"thinking","thinking":"private reasoning"},{"type":"text","text":"the answer"}],"usage":{"input_tokens":5,"output_tokens":9}}`
-	svc := New(Config{Transport: TransportAPI, APIKey: "k", BaseURL: st.server.URL})
+	svc := New(Config{APIKey: "k", BaseURL: st.server.URL})
 
 	res, err := svc.Chat(context.Background(), "hi", nil, "en")
 	if err != nil {
@@ -218,95 +206,6 @@ func TestThinkingBlocksAreNotReplyText(t *testing.T) {
 	}
 	if res.Reply != "the answer" {
 		t.Errorf("reply = %q, want only the text block", res.Reply)
-	}
-}
-
-func TestVertexStreamingAsksForTheStreamInTheBody(t *testing.T) {
-	saFile := writeTestServiceAccount(t, tokenServer(t).URL)
-	st := newStub(t)
-	st.stream = strings.Join([]string{
-		`data: {"type":"message_start","message":{"usage":{"input_tokens":4}}}`,
-		``,
-		`data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}`,
-		``,
-		`data: {"type":"message_stop"}`,
-		``,
-	}, "\n")
-	svc := New(Config{Transport: TransportVertex, Model: "claude-haiku-5-5", Project: "proj-1", Region: "global", SAFile: saFile, BaseURLVX: st.server.URL})
-
-	res, err := svc.ChatStream(context.Background(), "hi", nil, "en", nil)
-	if err != nil {
-		t.Fatalf("vertex ChatStream: %v", err)
-	}
-	if res.Reply != "hi" {
-		t.Errorf("reply = %q", res.Reply)
-	}
-	// The streamRawPredict documentation sends stream:true in the body as well as
-	// in the URL verb; the body must not depend on the verb alone.
-	if stream, _ := st.lastBody["stream"].(bool); !stream {
-		t.Error("vertex streaming body must carry stream:true")
-	}
-	if _, has := st.lastBody["model"]; has {
-		t.Error("Vertex carries the model in the URL; the body must not repeat it")
-	}
-}
-
-func TestVertexRootFollowsTheProbedHostRule(t *testing.T) {
-	t.Setenv("GEMINI_VERTEX_API_BASE", "")
-	for region, want := range map[string]string{
-		"global": "https://aiplatform.googleapis.com",
-		"us":     "https://aiplatform.us.rep.googleapis.com",
-		"eu":     "https://aiplatform.eu.rep.googleapis.com",
-	} {
-		if got := vertexRoot(region); got != want {
-			t.Errorf("vertexRoot(%q) = %q, want %q", region, got, want)
-		}
-	}
-	// A relay override carries its own /v1; the root must not end up with it twice.
-	t.Setenv("GEMINI_VERTEX_API_BASE", "https://relay.example.test/v1/")
-	if got := vertexRoot("us"); got != "https://relay.example.test" {
-		t.Errorf("relay root = %q, want https://relay.example.test", got)
-	}
-}
-
-func TestSupportsRegionIsGlobalUsEuOnly(t *testing.T) {
-	for _, r := range []string{"global", "us", "eu"} {
-		if !SupportsRegion(r) {
-			t.Errorf("SupportsRegion(%q) = false, want true", r)
-		}
-	}
-	for _, r := range []string{"asia-southeast1", "us-central1", "", "GLOBAL"} {
-		if SupportsRegion(r) {
-			t.Errorf("SupportsRegion(%q) = true, want false: Claude answers 404 there", r)
-		}
-	}
-}
-
-func TestVertexRefusesARegionClaudeIsNotServedFrom(t *testing.T) {
-	saFile := writeTestServiceAccount(t, tokenServer(t).URL)
-	st := newStub(t)
-	svc := New(Config{Transport: TransportVertex, Model: "claude-haiku-5-5", Project: "proj-1", Region: "asia-southeast1", SAFile: saFile, BaseURLVX: st.server.URL})
-
-	_, err := svc.Chat(context.Background(), "hi", nil, "en")
-	if err == nil || !strings.Contains(err.Error(), "global, us or eu") {
-		t.Fatalf("err = %v, want the served-regions refusal", err)
-	}
-	if st.lastPath != "" {
-		t.Errorf("a refused region still reached the wire: %q", st.lastPath)
-	}
-}
-
-func TestVertexProjectComesFromTheServiceAccountWhenUnset(t *testing.T) {
-	saFile := writeTestServiceAccount(t, tokenServer(t).URL)
-	st := newStub(t)
-	st.body = responseJSON("ok", 1, 1, 0)
-	svc := New(Config{Transport: TransportVertex, Model: "claude-haiku-5-5", Region: "global", SAFile: saFile, BaseURLVX: st.server.URL})
-
-	if _, err := svc.Chat(context.Background(), "hi", nil, "en"); err != nil {
-		t.Fatalf("Chat: %v", err)
-	}
-	if !strings.Contains(st.lastPath, "/v1/projects/proj-1/locations/global/") {
-		t.Errorf("path = %q, want the project named in the service-account file", st.lastPath)
 	}
 }
 
@@ -331,9 +230,9 @@ func TestCatalogIsTheVerifiedModelList(t *testing.T) {
 func TestReconfigureSwapsTheWholeConfiguration(t *testing.T) {
 	st := newStub(t)
 	st.body = responseJSON("ok", 1, 1, 0)
-	svc := New(Config{Transport: TransportAPI, APIKey: "old", Model: "claude-haiku-5-5", BaseURL: st.server.URL})
+	svc := New(Config{APIKey: "old", Model: "claude-haiku-5-5", BaseURL: st.server.URL})
 
-	svc.Reconfigure(Config{Transport: TransportAPI, APIKey: "new", Model: "claude-haiku-5-5", SystemPrompt: "second prompt", MaxTokens: 77, BaseURL: st.server.URL})
+	svc.Reconfigure(Config{APIKey: "new", Model: "claude-haiku-5-5", SystemPrompt: "second prompt", MaxTokens: 77, BaseURL: st.server.URL})
 	if _, err := svc.Chat(context.Background(), "hi", nil, "en"); err != nil {
 		t.Fatalf("Chat after reconfigure: %v", err)
 	}
