@@ -3,17 +3,16 @@ package api
 import (
 	"bufio"
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
+	"khmer-ai-cs-go/internal/platform"
 	"khmer-ai-cs-go/internal/usage"
 )
 
@@ -23,7 +22,7 @@ func requestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rid := r.Header.Get("X-Request-ID")
 		if rid == "" {
-			rid = newUUID()
+			rid = platform.NewUUID()
 		}
 		r = r.WithContext(context.WithValue(r.Context(), ridKey, rid))
 		w.Header().Set("X-Request-ID", rid)
@@ -345,22 +344,4 @@ func (a *App) rateLimit(maxRPM uint32) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
-}
-
-func newUUID() string {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		return strconv.FormatInt(time.Now().UnixNano(), 36)
-	}
-	b[6] = (b[6] & 0x0f) | 0x40
-	b[8] = (b[8] & 0x3f) | 0x80
-	const hexChars = "0123456789abcdef"
-	out := make([]byte, 0, 36)
-	for i, c := range b {
-		if i == 4 || i == 6 || i == 8 || i == 10 {
-			out = append(out, '-')
-		}
-		out = append(out, hexChars[c>>4], hexChars[c&0x0f])
-	}
-	return string(out)
 }

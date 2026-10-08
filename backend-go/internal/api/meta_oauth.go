@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"khmer-ai-cs-go/internal/platform"
 	"net/http"
 	"net/url"
 	"strings"
@@ -168,7 +169,7 @@ func (a *App) metaOAuthStart(w http.ResponseWriter, r *http.Request) (any, error
 	oauthState := newOAuthState()
 	stateHash := sha256HexStr(oauthState)
 	now := time.Now()
-	sessionID := newUUID()
+	sessionID := platform.NewUUID()
 	if _, err := a.DB.Exec(r.Context(),
 		"INSERT INTO platform_oauth_sessions (session_id, user_id, state_hash, payload_json, expires_at, created_at) VALUES ($1,$2,$3,'[]',$4,$5)",
 		sessionID, user.UserID, stateHash, now.Add(metaOAuthSessionTTL), now); err != nil {

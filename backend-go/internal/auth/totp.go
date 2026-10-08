@@ -4,7 +4,6 @@ package auth
 
 import (
 	"crypto/hmac"
-	crand "crypto/rand"
 	"crypto/sha1"
 	"encoding/binary"
 	"strings"
@@ -12,23 +11,6 @@ import (
 )
 
 const base32Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
-
-func base32Encode(b []byte) string {
-	var out strings.Builder
-	buffer, bits := uint32(0), 0
-	for _, c := range b {
-		buffer = (buffer << 8) | uint32(c)
-		bits += 8
-		for bits >= 5 {
-			out.WriteByte(base32Alphabet[(buffer>>(bits-5))&0x1f])
-			bits -= 5
-		}
-	}
-	if bits > 0 {
-		out.WriteByte(base32Alphabet[(buffer<<(5-bits))&0x1f])
-	}
-	return out.String()
-}
 
 func base32Decode(s string) ([]byte, bool) {
 	var buffer uint32
@@ -93,13 +75,4 @@ func VerifyTOTP(secret, candidate string) bool {
 		}
 	}
 	return false
-}
-
-// GenerateTOTPSecret returns a fresh base32 secret (for 2FA setup).
-func GenerateTOTPSecret() string {
-	raw := make([]byte, 20)
-	if _, err := crand.Read(raw); err != nil {
-		return ""
-	}
-	return base32Encode(raw)
 }

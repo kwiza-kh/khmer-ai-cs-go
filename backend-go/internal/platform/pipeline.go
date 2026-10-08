@@ -1821,13 +1821,6 @@ func (p *Pipeline) deliverToProvider(ctx context.Context, d *outboundDelivery, i
 	return ch.Send(ctx, msg)
 }
 
-// PlatformTextLimit — per-platform outbound message length cap.
-func PlatformTextLimit(platform string) int {
-	// The number lives in the capability table (capabilities.go). Channels whose
-	// cap counts bytes must split through SplitChannelText, not this value.
-	return CapabilitiesFor(platform).TextLimit
-}
-
 // SplitPlatformText splits on rune boundaries, preferring a space near the cap.
 func SplitPlatformText(text string, limit int) []string {
 	runes := []rune(text)

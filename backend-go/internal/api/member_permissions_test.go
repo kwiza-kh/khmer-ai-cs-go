@@ -115,11 +115,20 @@ func (p *memberProbe) cleanup() {
 	_, _ = p.pool.Exec(c, "DELETE FROM users WHERE user_id = ANY($1::int[])", p.ids)
 }
 
-// as resolves a caller the way the auth middleware does (same helper, real rows).
+// as resolves a caller the way the auth middleware does: the same lookup, then the
+// same applyMembership call, against real rows.
 func (p *memberProbe) as(userID int32) *CurrentUser {
 	p.t.Helper()
 	user := &CurrentUser{UserID: userID, Username: "probe", Role: "user"}
-	p.app.resolveMembership(p.ctx, user)
+	var ownerID *int32
+	var rawPerms []byte
+	if err := p.pool.QueryRow(p.ctx,
+		"SELECT t.owner_user_id, t.permissions FROM users u LEFT JOIN agent_teams t "+
+			"  ON t.agent_user_id = u.user_id AND t.is_active = true WHERE u.user_id = $1",
+		userID).Scan(&ownerID, &rawPerms); err != nil {
+		p.t.Fatalf("membership lookup: %v", err)
+	}
+	applyMembership(user, ownerID, rawPerms)
 	return user
 }
 

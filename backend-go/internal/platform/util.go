@@ -6,8 +6,9 @@ import (
 	"fmt"
 )
 
-// newUUID returns a random RFC-4122 v4 UUID string.
-func newUUID() string {
+// NewUUID returns a random RFC-4122 v4 UUID string. It is the one generator in
+// the tree: internal/api used to carry its own copy.
+func NewUUID() string {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
 		return fmt.Sprintf("%d", randSeed())

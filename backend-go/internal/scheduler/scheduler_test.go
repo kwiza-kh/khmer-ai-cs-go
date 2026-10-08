@@ -170,7 +170,7 @@ func TestManagerRunsDueJobsAndAdvancesThem(t *testing.T) {
 		Job{ID: 2, Name: "later", Type: "digest", Schedule: "every:6h", Enabled: true, NextRun: now.Add(time.Hour)},
 	)
 	m := NewManager(store, time.UTC)
-	m.SetNow(func() time.Time { return now })
+	m.now = func() time.Time { return now }
 
 	var ran []int64
 	m.Register("digest", func(_ context.Context, job Job) error {
@@ -199,7 +199,7 @@ func TestManagerRecordsFailureAndDoesNotHotLoop(t *testing.T) {
 	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
 	store := newFakeStore(Job{ID: 3, Name: "boom", Type: "boom", Schedule: "every:30s", Enabled: true, NextRun: now})
 	m := NewManager(store, time.UTC)
-	m.SetNow(func() time.Time { return now })
+	m.now = func() time.Time { return now }
 	m.Register("boom", func(context.Context, Job) error { return errors.New("handler exploded") })
 
 	if got := m.RunDue(context.Background()); got != 1 {
@@ -219,7 +219,7 @@ func TestManagerSkipsUnknownJobTypes(t *testing.T) {
 	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
 	store := newFakeStore(Job{ID: 4, Name: "ghost", Type: "not-registered", Schedule: "every:1m", Enabled: true, NextRun: now})
 	m := NewManager(store, time.UTC)
-	m.SetNow(func() time.Time { return now })
+	m.now = func() time.Time { return now }
 
 	if got := m.RunDue(context.Background()); got != 1 {
 		t.Fatalf("ran %d", got)
@@ -239,7 +239,7 @@ func TestManagerRespectsALostClaim(t *testing.T) {
 	store := newFakeStore(Job{ID: 5, Name: "shared", Type: "shared", Schedule: "every:1m", Enabled: true, NextRun: now})
 	store.refuse[5] = true
 	m := NewManager(store, time.UTC)
-	m.SetNow(func() time.Time { return now })
+	m.now = func() time.Time { return now }
 
 	called := false
 	m.Register("shared", func(context.Context, Job) error { called = true; return nil })
@@ -251,70 +251,12 @@ func TestManagerRespectsALostClaim(t *testing.T) {
 	}
 }
 
-func TestManagerRunNowBypassesTheSchedule(t *testing.T) {
-	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
-	// Not due for another hour, and disabled: an operator asked for it anyway.
-	store := newFakeStore(Job{ID: 6, Name: "manual", Type: "manual", Schedule: "every:1h", Enabled: false, NextRun: now.Add(time.Hour)})
-	m := NewManager(store, time.UTC)
-	m.SetNow(func() time.Time { return now })
-	called := false
-	m.Register("manual", func(context.Context, Job) error { called = true; return nil })
-
-	if err := m.RunNow(context.Background(), 6); err != nil {
-		t.Fatalf("RunNow: %v", err)
-	}
-	if !called {
-		t.Fatal("RunNow must run the job")
-	}
-	if err := m.RunNow(context.Background(), 999); err == nil {
-		t.Fatal("an unknown job id must error")
-	}
-}
-
-func TestManagerAddValidates(t *testing.T) {
-	store := newFakeStore()
-	m := NewManager(store, time.UTC)
-	m.Register("digest", func(context.Context, Job) error { return nil })
-
-	if _, err := m.Add(context.Background(), Job{Name: "x", Type: "digest", Schedule: "nonsense"}); err == nil {
-		t.Fatal("a bad schedule must be refused")
-	}
-	if _, err := m.Add(context.Background(), Job{Name: "x", Type: "unknown-type", Schedule: "every:1h"}); err == nil {
-		t.Fatal("an unknown job type must be refused")
-	}
-	if _, err := m.Add(context.Background(), Job{Type: "digest", Schedule: "every:1h"}); err == nil {
-		t.Fatal("a job with no name must be refused")
-	}
-
-	id, err := m.Add(context.Background(), Job{Name: "digest", Type: "digest", Schedule: "every:24h"})
-	if err != nil {
-		t.Fatalf("Add: %v", err)
-	}
-	if id != 42 || store.inserted == nil {
-		t.Fatalf("inserted = %v id=%d", store.inserted, id)
-	}
-	// A new job runs at its NEXT occurrence, never immediately: "every:24h"
-	// saved at noon must not fire at once.
-	if !store.inserted.NextRun.After(m.now()) {
-		t.Fatalf("new job next run = %s, want in the future", store.inserted.NextRun)
-	}
-	if !store.inserted.Enabled {
-		t.Fatal("a new job is enabled")
-	}
-}
-
 func TestManagerWithoutStoreIsSafe(t *testing.T) {
 	var m *Manager
 	if got := m.RunDue(context.Background()); got != 0 {
 		t.Fatalf("nil manager ran %d jobs", got)
 	}
 	m.Register("x", func(context.Context, Job) error { return nil })
-	if _, err := m.Add(context.Background(), Job{Name: "x", Type: "x", Schedule: "every:1h"}); err == nil {
-		t.Fatal("a manager with no store must refuse to add")
-	}
-	if jobs, err := m.List(context.Background(), nil); err != nil || jobs != nil {
-		t.Fatalf("List = %v/%v", jobs, err)
-	}
 	if err := NewManager(nil, nil).RunDue(context.Background()); err != 0 {
 		t.Fatalf("a store-less manager must be a no-op, got %d", err)
 	}

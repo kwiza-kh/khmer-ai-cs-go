@@ -154,6 +154,8 @@ func ThrottleTelegramMessage(redis redisWindowLimiter, sessionID string) bool {
 }
 
 // redisWindowLimiter — the slice of redisstore.Client this file needs.
+// redisWindowLimiter is the one method the notifier needs from Redis: a seam so
+// the rate-limit window can be tested without a running Redis.
 type redisWindowLimiter interface {
 	IncrWindow(ctx context.Context, key string, max int64, ttl time.Duration) (bool, error)
 }

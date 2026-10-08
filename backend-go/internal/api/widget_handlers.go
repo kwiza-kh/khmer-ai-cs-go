@@ -370,7 +370,7 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 			WriteJSON(w, http.StatusTooManyRequests, map[string]string{"error": "会话创建过于频繁，请稍后再试"})
 			return
 		}
-		req.SessionID = newUUID()
+		req.SessionID = platform.NewUUID()
 		if _, err := a.DB.Exec(ctx,
 			"INSERT INTO sessions (session_id, user_id, platform, language, status, title, is_test, created_at) "+
 				"VALUES ($1,$2,'web'::platform_type,$3,'active','Website visitor',false,NOW())",

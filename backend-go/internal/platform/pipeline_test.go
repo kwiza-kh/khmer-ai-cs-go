@@ -27,15 +27,6 @@ func TestSplitPlatformTextLong(t *testing.T) {
 	}
 }
 
-func TestPlatformTextLimit(t *testing.T) {
-	if PlatformTextLimit("telegram") != 4096 {
-		t.Error("telegram limit wrong")
-	}
-	if PlatformTextLimit("whatsapp") != 1024 {
-		t.Error("whatsapp limit wrong")
-	}
-}
-
 func TestHandoffAcknowledgementLanguages(t *testing.T) {
 	if handoffAcknowledgement("en") == "" || handoffAcknowledgement("zh") == "" || handoffAcknowledgement("km") == "" {
 		t.Fatal("all language acks must be non-empty")

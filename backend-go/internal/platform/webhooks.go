@@ -5,9 +5,7 @@ package platform
 import (
 	"context"
 	"crypto/hmac"
-	"crypto/sha1"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -1054,12 +1052,4 @@ func VerifyTelegramSecret(secret, provided string) bool {
 		return false
 	}
 	return hmac.Equal([]byte(secret), []byte(provided))
-}
-
-// LineHMACSHA1 — LINE webhook signature helper (base64 HMAC-SHA256 is standard;
-// kept for parity with older LINE HMAC-SHA1 flows).
-func LineHMACSHA1(secret string, body []byte) string {
-	mac := hmac.New(sha1.New, []byte(secret))
-	mac.Write(body)
-	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
 }

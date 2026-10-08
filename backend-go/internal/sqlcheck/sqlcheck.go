@@ -34,8 +34,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"khmer-ai-cs-go/internal/textutil"
 )
 

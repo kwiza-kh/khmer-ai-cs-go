@@ -14,7 +14,7 @@ import (
 // WhatsApp config could be saved with the id blank and only fail later, at send
 // time.
 func TestMissingRequiredCredentialFollowsTheDeclaredList(t *testing.T) {
-	for _, plat := range KnownPlatforms() {
+	for plat := range capabilitiesTable {
 		caps := CapabilitiesFor(plat)
 		if len(caps.Credentials) == 0 {
 			continue
@@ -81,7 +81,7 @@ func TestIdentityRulesKeyOnEachChannelsOwnIdentity(t *testing.T) {
 		}
 	}
 	// No channel outside the Meta family may dedupe on page_id — that is the bug.
-	for _, plat := range KnownPlatforms() {
+	for plat := range capabilitiesTable {
 		if r := CapabilitiesFor(plat).Identity; r.Column == "page_id" && plat != "meta" {
 			t.Errorf("%s dedupes on page_id, which is the false-conflict bug", plat)
 		}
@@ -111,7 +111,7 @@ func TestIdentityRuleHashesBotTokensAndSkipsBlanks(t *testing.T) {
 // when the display name is missing. The bit that drives that used to be
 // `cfg.Platform == "telegram"` written twice in the orchestrator.
 func TestAvatarNeedsRehostIsTelegramOnly(t *testing.T) {
-	for _, plat := range KnownPlatforms() {
+	for plat := range capabilitiesTable {
 		want := plat == "telegram"
 		if got := CapabilitiesFor(plat).AvatarNeedsRehost; got != want {
 			t.Errorf("%s AvatarNeedsRehost = %v, want %v", plat, got, want)

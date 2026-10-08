@@ -207,15 +207,6 @@ var questionOpeners = []string{
 	"will", "would", "should", "have", "has", "any", "may",
 }
 
-func containsAny(hay string, needles []string) bool {
-	for _, n := range needles {
-		if strings.Contains(hay, n) {
-			return true
-		}
-	}
-	return false
-}
-
 // LooksLikeQuestion reports whether a customer message asks something.
 //
 // Deliberately over-inclusive, because it is only ever used as a VETO on the
@@ -228,7 +219,7 @@ func LooksLikeQuestion(text string) bool {
 		return false
 	}
 	lowered := strings.ToLower(trimmed)
-	if containsAny(lowered, questionSubstrings) {
+	if textutil.ContainsAny(lowered, questionSubstrings) {
 		return true
 	}
 	fields := strings.Fields(lowered)

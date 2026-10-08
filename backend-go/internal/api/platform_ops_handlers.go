@@ -403,6 +403,8 @@ func (a *App) platformChannels(w http.ResponseWriter, r *http.Request) (any, err
 
 // execer is the slice of pgxpool.Pool / pgx.Tx these flips need, so a test can
 // drive them inside a transaction that never commits.
+// execer is the one method the retry lane needs from the pool: a seam that lets the
+// retry accounting be tested without issuing writes against a live database.
 type execer interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }

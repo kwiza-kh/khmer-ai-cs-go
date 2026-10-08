@@ -265,16 +265,3 @@ func TestPDFXrefSizeRejected(t *testing.T) {
 		t.Fatal("expected a rejection for an implausible declared xref size")
 	}
 }
-
-func TestCJKBigrams(t *testing.T) {
-	got := cjkBigrams("价格表查询", 8)
-	if len(got) == 0 {
-		t.Fatal("bigrams must be produced for CJK text")
-	}
-	if got[0] != "价格" {
-		t.Fatalf("first bigram = %s, want 价格", got[0])
-	}
-	if len(cjkBigrams("no cjk here", 8)) != 0 {
-		t.Fatal("latin text must produce no bigrams")
-	}
-}

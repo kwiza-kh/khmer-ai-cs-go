@@ -141,13 +141,6 @@ func (s Schedule) Next(from time.Time, loc *time.Location) (time.Time, error) {
 	return next, nil
 }
 
-func (s Schedule) String() string {
-	if s.Every > 0 {
-		return "every:" + s.Every.String()
-	}
-	return "daily@" + s.Daily
-}
-
 // Manager runs due jobs through a registry of handlers.
 type Manager struct {
 	store    Store
@@ -183,23 +176,6 @@ func (m *Manager) Register(jobType string, h Handler) {
 	m.handlers[jobType] = h
 }
 
-// Handlers lists the registered job types, for an admin surface.
-func (m *Manager) Handlers() []string {
-	out := make([]string, 0, len(m.handlers))
-	for k := range m.handlers {
-		out = append(out, k)
-	}
-	return out
-}
-
-// SetNow overrides the clock (tests).
-func (m *Manager) SetNow(fn func() time.Time) {
-	if m != nil && fn != nil {
-		m.now = fn
-	}
-}
-
-// NextFor computes the following occurrence of a job's schedule.
 func (m *Manager) NextFor(job Job) time.Time {
 	s, err := ParseSchedule(job.Schedule)
 	if err != nil {
@@ -255,82 +231,4 @@ func (m *Manager) runOne(ctx context.Context, job Job, now time.Time) error {
 		return err
 	}
 	return nil
-}
-
-// RunNow executes one job immediately, whatever its schedule says — an operator
-// action. It returns the handler's error.
-func (m *Manager) RunNow(ctx context.Context, jobID int64) error {
-	if m == nil || m.store == nil {
-		return fmt.Errorf("scheduler: no store")
-	}
-	jobs, err := m.store.List(ctx, nil)
-	if err != nil {
-		return err
-	}
-	for _, job := range jobs {
-		if job.ID != jobID {
-			continue
-		}
-		h, ok := m.handlers[job.Type]
-		if !ok {
-			return fmt.Errorf("scheduler: no handler registered for type %s", job.Type)
-		}
-		runErr := h(ctx, job)
-		status, detail := "ok", ""
-		if runErr != nil {
-			status, detail = "error", runErr.Error()
-		}
-		_ = m.store.Finish(ctx, job, status, detail, m.NextFor(job))
-		return runErr
-	}
-	return fmt.Errorf("scheduler: job %d not found", jobID)
-}
-
-// Add validates a job and stores it. A brand-new job runs at its next
-// occurrence, never immediately: "every:24h" inserted at noon must not fire a
-// digest the moment it is saved.
-func (m *Manager) Add(ctx context.Context, job Job) (int64, error) {
-	if m == nil || m.store == nil {
-		return 0, fmt.Errorf("scheduler: no store")
-	}
-	if strings.TrimSpace(job.Name) == "" {
-		return 0, fmt.Errorf("scheduler: job name is required")
-	}
-	if _, ok := m.handlers[job.Type]; !ok {
-		return 0, fmt.Errorf("scheduler: unknown job type %q", job.Type)
-	}
-	if _, err := ParseSchedule(job.Schedule); err != nil {
-		return 0, err
-	}
-	job.Enabled = true
-	job.NextRun = m.NextFor(job)
-	return m.store.Insert(ctx, job)
-}
-
-// Update stores an edited job, recomputing its next occurrence.
-func (m *Manager) Update(ctx context.Context, job Job) error {
-	if m == nil || m.store == nil {
-		return fmt.Errorf("scheduler: no store")
-	}
-	if _, err := ParseSchedule(job.Schedule); err != nil {
-		return err
-	}
-	job.NextRun = m.NextFor(job)
-	return m.store.Update(ctx, job)
-}
-
-// Delete removes a job.
-func (m *Manager) Delete(ctx context.Context, jobID int64) error {
-	if m == nil || m.store == nil {
-		return fmt.Errorf("scheduler: no store")
-	}
-	return m.store.Delete(ctx, jobID)
-}
-
-// List returns the jobs a caller may see (userID nil = platform-level jobs).
-func (m *Manager) List(ctx context.Context, userID *int32) ([]Job, error) {
-	if m == nil || m.store == nil {
-		return nil, nil
-	}
-	return m.store.List(ctx, userID)
 }

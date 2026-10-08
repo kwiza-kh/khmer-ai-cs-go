@@ -131,12 +131,14 @@ func TestBcryptCompatAndRehashDetection(t *testing.T) {
 }
 
 func TestTOTPRoundtrip(t *testing.T) {
-	secret := GenerateTOTPSecret()
-	if secret == "" {
-		t.Fatal("empty secret")
+	// A fixed secret, the RFC 6238 test key: the generator that used to live in
+	// totp.go was never called by a login path (enrollment was never wired), so the
+	// test drives the code a client would produce against the verifier that IS live.
+	const secret = "JBSWY3DPEHPK3PXP"
+	key, ok := base32Decode(secret)
+	if !ok || len(key) == 0 {
+		t.Fatal("the RFC 6238 test secret must decode")
 	}
-	// Generate the code the same way a client would.
-	key, _ := base32Decode(secret)
 	step := uint64(time.Now().Unix()) / 30
 	code := hotp(key, step)
 	candidate := padCode(code)

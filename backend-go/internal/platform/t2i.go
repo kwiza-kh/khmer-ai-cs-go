@@ -117,6 +117,8 @@ type T2IRenderer interface {
 
 // MediaUploader is the slice of the object store T2I needs, so a render can be
 // tested without a bucket. *storager2.Client satisfies it.
+// MediaUploader is the one method the renderer needs from object storage: a seam so
+// the upload path can be tested without R2 credentials.
 type MediaUploader interface {
 	PutObject(ctx context.Context, key string, data []byte, contentType string) error
 	PublicOrPresigned(key string, ttl time.Duration) string

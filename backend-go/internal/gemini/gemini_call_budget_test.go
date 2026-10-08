@@ -16,17 +16,6 @@ import (
 // override, and — with a server that never answers — that the budget really ends
 // the call and really stops the retries.
 
-func TestRetryWorstCaseCoversEveryAttemptAndBackoff(t *testing.T) {
-	// 3 attempts x 60s, plus the 400ms and 800ms waits between them.
-	want := 3*60*time.Second + 1200*time.Millisecond
-	if got := retryWorstCase(); got != want {
-		t.Fatalf("retryWorstCase() = %s, want %s", got, want)
-	}
-	if postMaxAttempts < 2 {
-		t.Fatal("retryWorstCase only makes sense with retries")
-	}
-}
-
 func TestCallBudgetDefaultAndOverride(t *testing.T) {
 	// The default must be STRICTLY tighter than the retry worst case. Until
 	// 2026-10-04 it was retryWorstCase() itself — a budget set to the exact worst
@@ -36,9 +25,13 @@ func TestCallBudgetDefaultAndOverride(t *testing.T) {
 	if got := callBudget(); got != postAttemptTimeout {
 		t.Fatalf("default budget = %s, want one attempt (%s)", got, postAttemptTimeout)
 	}
-	if callBudget() >= retryWorstCase() {
+	// The retry worst case, spelled out here instead of in a helper nothing else
+	// read: postMaxAttempts attempts at postAttemptTimeout each, plus the 400ms and
+	// 800ms waits between them. The budget must stay strictly tighter.
+	worstCase := time.Duration(postMaxAttempts)*postAttemptTimeout + 1200*time.Millisecond
+	if callBudget() >= worstCase {
 		t.Fatalf("default budget %s must be tighter than the retry worst case %s",
-			callBudget(), retryWorstCase())
+			callBudget(), worstCase)
 	}
 	cases := []struct {
 		env  string
