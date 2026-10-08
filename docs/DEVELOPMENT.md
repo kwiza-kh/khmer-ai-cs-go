@@ -1435,8 +1435,8 @@ FAQ 的 `ស9`（5 条产品线）在 chunk 2 里的偏移：枚举句起点 695
 
 | 件 | 值 |
 |---|---|
-| 后端 | `0223f1a`（`/ready.version` 与 `strings server-go \| grep vcs.revision` 一致，`vcs.modified=false`；构建机 go1.26.5） |
-| 前端 | BUILD_ID `3919Ac0R2ie4s5UbB1rcS`（见 `/opt/khmer-ai-cs/frontend/.next/BUILD_ID`） |
+| 后端 | `57f7640`（`/ready.version` 与 `strings server-go \| grep vcs.revision` 一致，`vcs.modified=false`；由平台侧 PR #1–#11 部署） |
+| 前端 | BUILD_ID `tUsayNDtI6wNLIiF2OaC6`（构建产物的内容对账见 §十八：chunk 53/53 与 HEAD 同名） |
 | schema | `schema_migrations` = **72**（最新 `072_member_permissions`） |
 | 收款 | `PAYPAL_MODE=sandbox`、`PAYPAL_PRICE_PRO=29.00` / `_ENTERPRISE=199.00`、`PAYPAL_WEBHOOK_ID=7J2288704D8439049`（**应用锚定**；dashboard 里 account 锚定的 `9E4063638Y8280225` 应删） |
 | 套餐 | admin=pro（平台手工开通）、user 10=pro、user 11=pro（sandbox 两笔，`paid_until` **2026-12-05**） |
@@ -1470,6 +1470,7 @@ FAQ 的 `ស9`（5 条产品线）在 chunk 2 里的偏移：枚举句起点 695
 | `pg_dump` 权限错误 | 应用用户 `khmerai` 对遗留表无权限 → 用 **postgres 超级用户** dump |
 | 日志查不到旧事件 | journald 只保留有限窗口（2026-10-05 时仅能回溯到 10-01 16:45 左右） |
 | 二进制版本戳 `vcs.modified=true` | 构建时工作树里有未提交的**已跟踪**文件（哪怕只是别人改的前端文件）就这样；要干净戳得先确保 `git status` 干净（可用按路径 `git stash` 排除他人 WIP） |
+| 想确认「线上前端是不是这份代码」 | **别比 BUILD_ID**：Next 每次构建都生成新随机值（同一源码两次构建得到两个 ID，2026-10-07 据它误判过一次）。比 `.next/static/chunks` 的**文件名**（webpack 内容哈希），JS 全同名即同一源码；方法见 §十八 |
 | 线上 `vcs.revision` 不在 `git log main` 里 | GitHub **rebase 合并不是快进**：它按新 committer 时间重放提交，SHA 会变。2026-10-06 PR#1 就是如此 —— main `2c245ff`/`bfbed86` 与 `deploy/cef61b7`/`deploy/d75df26` **内容完全相同**（`git diff` 为空），但线上二进制烙的是旧 SHA。核对时用 `git cat-file -t <revision>`（tag 解析得到）而不是只看 `git log`；**下次发布直接从 main HEAD 构建**即可对齐 |
 | `mktoken` 打印 `JWT_SECRET missing` | 它需要环境变量 → `set -a; . /opt/khmer-ai-cs/.env-go; set +a` 之后再跑 |
 | SQL 引号被 shell 吃掉 | 复杂 SQL 一律 **base64 传参**：`echo <b64> \| base64 -d > /tmp/q.sql && psql -f /tmp/q.sql` |
@@ -1625,9 +1626,10 @@ NEXT_PUBLIC_API_URL=https://cs.wanfanginsulationmaterial.com/api/v1 npm run buil
 它就是生产的主模型+快模型（`model_configs.is_default`），所以真有人来消息，
 一轮回复会慢到不可用。当时 `token_usage` 最后一次成功调用在 ~23.5h 前
 （同期只有 1 条访客消息）——是**没流量**，不是回复失败；门禁先发现了。
-下一步：后台「模型」页把 `is_default` 切到健康档（建议 `gemini-3.6-flash`，
-区域仍 `global`，热生效），再跑一次 `vertexprobe` 确认转绿；本文档暂不改
-线上模型，需人工决定。
+**已恢复（2026-10-07）**：同一个 `vertexprobe`（默认 45s 预算）必需项全部通过、
+exit 0，context-cache 也正常——上游自行恢复，**未做任何配置改动**，主/快模型仍是
+`gemini-3.8-flash`。保留这段是因为它正好演示了门禁的价值：没有流量的时段，是门禁
+而不是客户先发现了退化。
 
 ---
 
@@ -1681,6 +1683,33 @@ AI 先答所有会话，但产品里「人」出现的位置是明确的：客�
    白名单加一键 + 端点加 `requirePermission` 即可。
 3. 成员侧导航按权限收敛（可选）：已接线的面按权限放行，未接线的入口点进去
    就是 403。
+
+---
+
+## 十八、部署对账：怎么确认「服务器跑的就是这份代码」（2026-10-07）
+
+先说结论：**BUILD_ID 不是版本指纹**。Next 每次构建都生成一个新的随机 BUILD_ID
+（同一份源码连续构建两次得到 `mawfCuX7…` 与 `wOoa5YSQ…`），所以「线上 BUILD_ID
+与本地不同」**不能**证明源码不同——本日据此误判过一次（差点做一次无意义的重复部署）。
+
+正确的四层对账：
+
+| 层 | 对什么 | 怎么做 |
+|---|---|---|
+| 后端 | 编译进二进制的提交 | `strings -a server-go \| grep -oE "vcs\\.(revision\|modified)=[^ ]*"`；`vcs.modified=false` = 干净树构建；再 `git merge-base --is-ancestor <rev> HEAD` 确认它在本地历史里 |
+| 后端源码 | 提交间的代码差异 | `git diff --name-only <线上rev>..HEAD -- backend-go`：空 = Go 源码一致，无需重新部署 |
+| 前端 | **构建产物内容** | 本地干净构建后与线上比 `.next/static/chunks` 的**文件名**（webpack 内容哈希）：`ls \| sort \| diff`，JS 全同名即同一源码；CSS 可能有 `lab()` 末位浮点差异，按规则块（`tr '}' '\n' \| sort -u`）比 |
+| 数据库 | 迁移是否补齐 | `select count(*), max(version) from schema_migrations` vs 仓库 `internal/migrations/migrations/*.sql`（两目录必须镜像一致） |
+
+配置面另外查一次：`git diff <线上rev>..HEAD -- 'backend-go/**/*.go' | grep -oE 'Getenv\("[A-Z0-9_]+"'`
+与服务器 `.env-go` 的键集对账（可选功能未开不算缺口）。
+
+**本次结果**：线上后端 `57f7640`（干净树）、前端 chunk **53/53** 与本地 HEAD 构建同名、
+DB 72/72、`57f7640..HEAD` 的后端差异为空 —— **服务器已经就是最新代码，无需部署**。
+
+另一个坑：pull 后本地首次构建报 `Cannot find module src/app/admin/models/page.js`，
+那是旧 `.next` 残留（该路由已在重构中删除），`rm -rf .next` 即可；部署脚本是干净
+构建，不受影响。
 
 ---
 
