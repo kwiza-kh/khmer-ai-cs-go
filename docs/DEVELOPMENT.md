@@ -1268,6 +1268,7 @@ FAQ 的 `ស9`（5 条产品线）在 chunk 2 里的偏移：枚举句起点 695
 | RLS 兜底 | 迁移 061 已建策略，但生产代码未设 `app.user_id` GUC → 策略 fail-open，属于未接线脚手架（见第十节） |
 | 交付卫生 | 前端构建若在含未提交文件的工作树上执行，产物会带未入库代码——本次用按路径 `git stash` 把他人 WIP 排除在构建之外 |
 | 单点 | 平台 Telegram bot token 泄漏影响所有商家 |
+| Claude 接入（可选） | Vertex 已上架 `claude-haiku-5-5`且现有 SA 可达，但**项目配额为 0**（429，见 §十九）：要么申请 `global_online_prediction_requests_per_base_model` 配额，要么走直连 Anthropic + 密封 key |
 
 #### 技术债 / 低成本项（不影响成交，但记着）
 
@@ -1745,3 +1746,48 @@ DB 72/72、`57f7640..HEAD` 的后端差异为空 —— **服务器已经就是�
 前端 BUILD_ID `3919Ac0R2ie4s5UbB1rcS`（后端 `0223f1a` 未动，无迁移）；回滚点
 `frontend-backup-20261006130035`；验证：域名首页与 `/join` 200、服务端 BUILD_ID
 一致、web 服务重启后无 ERROR。
+
+---
+
+## 十九、Vertex 上的 Claude：支持，但配额为 0（2026-10-07 实测）
+
+起因：Anthropic 2026-10-07 发布 **Claude Haiku 5.5**（`claude-haiku-5-5`；1M 上下文 /
+128K 输出；输入 $0.10、输出 $0.50 每 MTok，prompt >100k 时涨到 $0.50/$2.50；
+换用 4.7 之后的新分词器，**同一段文本比 Haiku 4.5 约多 30% token**，计费口径要跟上）。
+接入的第一个岔路口是凭据链路，而“Vertex 能不能直接用现有 SA”决定了要不要引入
+新凭据（甚至 WIF）。官方文档只说可用，所以用**生产 SA** 实测。
+
+为此新增 `cmd/claudeprobe`：`vertexprobe` 只讲 Gemini
+（`publishers/google/...:generateContent`），看不到 partner model；而且 partner
+model 不提供 Models API（下表的 list 行就是证据），可用性只能靠 `:rawPredict` 问。
+
+| 位置 | 结果 | 含义 |
+|---|---|---|
+| `global` | **429** `Quota exceeded for aiplatform.googleapis.com/global_online_prediction_requests_per_base_model`，base model `anthropic-claude-haiku` | 模型存在、SA 有权限（不存在会 404），卡在**配额为 0** |
+| `us` / `eu` 多区域 | **429**（同族配额，各区域维度） | 同上；且多区域端点比 global **贵 10%** |
+| `us-east5` 单区域 | **404** | 与文档一致：新模型只在 global / 多区域端点 |
+| `publishers/anthropic/models` 列表 | 404 | partner model 无 Models API（文档也写明不支持） |
+
+**结论**：Vertex 路线可行，前置动作是**申请配额**——GCP 控制台 → IAM 与管理 → 配额，
+搜 `global_online_prediction_requests_per_base_model`（base model
+`anthropic-claude-haiku`；多区域对应
+`{us,eu}_multi_region_online_prediction_requests_per_base_model`）。
+
+三条凭据链路：**C. Vertex 复用现有 SA**（零新凭据，配额是唯一门槛，推荐）→
+**A. 直连 Anthropic + 密封 key**（配额要不到时的退路；key 用
+`PLATFORM_CREDENTIAL_KEY` 加密入库，沿用现有凭据口径）→ **B. 直连 + Workload Identity
+Federation**（需要这台机器先有 OIDC 身份：迁 K8s/GCP/AWS 或自建 issuer；WIF 只是把
+信任转移给你的 IdP，不是自动加固，且 `ANTHROPIC_API_KEY` 会遮蔽 federation 路径）。
+
+复现（在应用主机上跑，SA 不离开机器）：
+
+```bash
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/claudeprobe ./cmd/claudeprobe
+# 上传后 chmod +x，再：
+/tmp/claudeprobe -sa /opt/khmer-ai-cs/vertex-sa.json \
+  -project gen-lang-client-0354228918 -model claude-haiku-5-5 -regions global,us,eu
+```
+
+注：探针会真发一次 16 token 的 "ping"（每题最多几百 token 花费，不写库）；
+`cmd/claudeprobe/main_test.go` 钉住了 host 规则（`global` 不带区域前缀、多区域走
+`aiplatform.{us,eu}.rep.googleapis.com`）——这正是早期 `vertexprobe` 假红过的坑。
