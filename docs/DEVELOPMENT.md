@@ -1768,10 +1768,24 @@ model 不提供 Models API（下表的 list 行就是证据），可用性只能
 | `us-east5` 单区域 | **404** | 与文档一致：新模型只在 global / 多区域端点 |
 | `publishers/anthropic/models` 列表 | 404 | partner model 无 Models API（文档也写明不支持） |
 
+**为什么「已经用了 Vertex」还要申请配额**：Vertex 的额度是
+**per metric × per base model × per location** 授的，不是「项目接入了 Vertex」就
+通用。我们的项目有 Gemini 那几族的额度（所以线上 `gemini-3.8-flash` 正常、
+`vertexprobe` 门禁常绿、计费也在跑），而 Anthropic 是 **partner model、独立配额池，
+默认 0** —— 第一次调用就 429，且报错会直接让你提交配额申请。区分问题的办法：
+**模型/区域不存在是 404**（`us-east5` 那次），**存在但没有额度才是 429**。这也是
+`vertexprobe` 绿着而 Claude 调不动的原因——它只认证 Gemini 那一族。
+
 **结论**：Vertex 路线可行，前置动作是**申请配额**——GCP 控制台 → IAM 与管理 → 配额，
 搜 `global_online_prediction_requests_per_base_model`（base model
 `anthropic-claude-haiku`；多区域对应
 `{us,eu}_multi_region_online_prediction_requests_per_base_model`）。
+
+**想读限额数值**：`claudeprobe -quotas -quota-filter anthropic` 会走 Cloud Quotas
+API 打印 `limit / precise / adjustable`。当前返回 **403** ——
+`cloudquotas.googleapis.com` 在该项目（`gen-lang-client-0354228918`，编号
+539033057104）**未启用**：先在控制台启用该 API 并给 SA `cloudquotas.quotas.get`，
+或者直接在 IAM 与管理 → 配额 里按上面的 metric 名查看。
 
 三条凭据链路：**C. Vertex 复用现有 SA**（零新凭据，配额是唯一门槛，推荐）→
 **A. 直连 Anthropic + 密封 key**（配额要不到时的退路；key 用
