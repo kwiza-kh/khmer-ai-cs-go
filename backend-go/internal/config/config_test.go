@@ -59,3 +59,39 @@ func TestValidateRejectsBadConfigs(t *testing.T) {
 		t.Fatal("non-postgres scheme must be rejected")
 	}
 }
+
+// TestSSOEnvMappingCoversEveryFieldTheGateReads pins the inputs googleSSOEnabled()
+// reads. A field whose env mapping is missing stays empty, the gate returns false,
+// and the console silently loses the Google button — not hypothetical: on
+// 2026-10-08 the OIDCClientSecret mapping was removed with a "dead config" sweep
+// and Google sign-in vanished from the login page for hours while every test
+// stayed green. The next sweep has to break this test instead.
+func TestSSOEnvMappingCoversEveryFieldTheGateReads(t *testing.T) {
+	t.Setenv("JWT_SECRET", "0123456789abcdef0123456789abcdef")
+	t.Setenv("DATABASE_URL", "postgres://u:p@localhost:5432/db")
+	t.Setenv("PLATFORM_CREDENTIAL_KEY", "Zm9v")
+	t.Setenv("ALLOWED_ORIGINS", "https://example.com")
+	t.Setenv("SSO_ENABLED", "true")
+	t.Setenv("SSO_PROVIDER", "google")
+	t.Setenv("SSO_OIDC_ISSUER", "https://accounts.google.com")
+	t.Setenv("SSO_OIDC_CLIENT_ID", "id.apps.googleusercontent.com")
+	t.Setenv("SSO_OIDC_CLIENT_SECRET", "secret-value")
+	t.Setenv("SSO_REDIRECT_URL", "https://example.com/api/v1/auth/google/callback")
+	t.Setenv("SSO_FRONTEND_URL", "https://example.com/login")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.SSO.Enabled {
+		t.Error("SSO_ENABLED=true must enable SSO")
+	}
+	if cfg.SSO.OIDCIssuer == "" {
+		t.Error("SSO_OIDC_ISSUER must reach the config: the docs list it as required")
+	}
+	if cfg.SSO.OIDCClientID == "" || cfg.SSO.OIDCClientSecret == "" ||
+		cfg.SSO.RedirectURL == "" || cfg.SSO.FrontendURL == "" {
+		t.Fatalf("the Google gate reads empty fields: id=%q secret=%q redirect=%q frontend=%q",
+			cfg.SSO.OIDCClientID, cfg.SSO.OIDCClientSecret, cfg.SSO.RedirectURL, cfg.SSO.FrontendURL)
+	}
+}
