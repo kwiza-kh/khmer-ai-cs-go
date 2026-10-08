@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"khmer-ai-cs-go/internal/replyscore"
+)
 
 // The reply gate's pass/fail rule, pinned.
 //
@@ -11,7 +15,7 @@ import "testing"
 // unscored case pass again fails here.
 func TestJudgeOffKeepsTheDeterministicGate(t *testing.T) {
 	mode := evalOptions{judge: false, gate: 8}
-	r := caseResult{c: replyCase{Category: "price"}}
+	r := caseResult{c: replyscore.Case{Category: "price"}}
 	if !r.ok(mode) {
 		t.Fatal("-judge=false must not fail a case for having no score")
 	}
@@ -26,7 +30,7 @@ func TestUnjudgedCaseFailsWhenJudgingIsOn(t *testing.T) {
 
 	// What judgeReply leaves behind when GenerateFast fails or its budget expires.
 	unavailable := caseResult{
-		c:       replyCase{Category: "ordering"},
+		c:       replyscore.Case{Category: "ordering"},
 		judged:  true,
 		verdict: judgeVerdict{Reason: "judge unavailable"},
 	}
@@ -36,7 +40,7 @@ func TestUnjudgedCaseFailsWhenJudgingIsOn(t *testing.T) {
 
 	// A judge that really did score everything zero is a bad reply, not a pass.
 	zeroed := caseResult{
-		c:       replyCase{Category: "ordering"},
+		c:       replyscore.Case{Category: "ordering"},
 		judged:  true,
 		verdict: judgeVerdict{Language: 0, Register: 0, Natural: 0, Format: 0, Reason: "unusable"},
 	}
@@ -56,7 +60,7 @@ func TestScoredCaseUsesTheGate(t *testing.T) {
 		{12, true}, // full marks
 	} {
 		r := caseResult{
-			c:       replyCase{Category: "price"},
+			c:       replyscore.Case{Category: "price"},
 			judged:  true,
 			verdict: judgeVerdict{ScoreTotal: tc.score, Reason: "scored"},
 		}
@@ -73,7 +77,7 @@ func TestGroundingMissStillFails(t *testing.T) {
 	mode := evalOptions{judge: true, gate: 8}
 	for _, category := range []string{"price", "product", "company", "ordering", "delivery", "payment"} {
 		r := caseResult{
-			c:       replyCase{Category: category},
+			c:       replyscore.Case{Category: category},
 			noKB:    true,
 			judged:  true,
 			verdict: judgeVerdict{ScoreTotal: 12, Reason: "would score full marks"},
@@ -85,7 +89,7 @@ func TestGroundingMissStillFails(t *testing.T) {
 	// handoff and trap are procedural: a miss there is normal (see requiresGrounding).
 	for _, category := range []string{"handoff", "trap"} {
 		r := caseResult{
-			c:       replyCase{Category: category},
+			c:       replyscore.Case{Category: category},
 			noKB:    true,
 			judged:  true,
 			verdict: judgeVerdict{ScoreTotal: 12},

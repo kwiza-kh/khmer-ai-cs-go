@@ -38,7 +38,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -46,38 +45,9 @@ import (
 	"khmer-ai-cs-go/internal/gemini"
 	"khmer-ai-cs-go/internal/platform"
 	"khmer-ai-cs-go/internal/rag"
+	"khmer-ai-cs-go/internal/replyscore"
 	"khmer-ai-cs-go/internal/security"
 )
-
-// replyCase is one question with the facts its answer must carry.
-type replyCase struct {
-	ID       string `json:"id"`
-	Category string `json:"category"`
-	Language string `json:"language"`
-	Question string `json:"question"`
-	// MustInclude: one entry per REQUIRED fact; "|" separates accepted
-	// spellings, so "$32.00|$32" is satisfied by either. Written as
-	// alternatives because a correct answer may quote a price with or without
-	// trailing zeros, and pinning one spelling measures the model's style
-	// rather than its facts.
-	MustInclude []string `json:"must_include"`
-	// MustNotContain: literals that must be absent — an invented figure, a
-	// citation marker, a leaked source title. Keep these to things that are
-	// WRONG in any correct answer.
-	MustNotContain []string `json:"must_not_contain"`
-	Notes          string   `json:"notes"`
-}
-
-type rubricLevel struct {
-	Score   int    `json:"score"`
-	Meaning string `json:"meaning"`
-}
-
-type replyEvalFile struct {
-	Corpus string        `json:"corpus"`
-	Rubric []rubricLevel `json:"rubric"`
-	Cases  []replyCase   `json:"cases"`
-}
 
 // judgeVerdict is what the judge model is asked to return, one JSON object.
 type judgeVerdict struct {
@@ -90,7 +60,7 @@ type judgeVerdict struct {
 }
 
 type caseResult struct {
-	c       replyCase
+	c       replyscore.Case
 	reply   string
 	context string
 	noKB    bool
@@ -155,7 +125,7 @@ func runReply(mode evalOptions) {
 		fmt.Fprintln(os.Stderr, "read eval file:", err)
 		os.Exit(1)
 	}
-	var file replyEvalFile
+	var file replyscore.File
 	if err := json.Unmarshal(raw, &file); err != nil {
 		fmt.Fprintln(os.Stderr, "parse eval file:", err)
 		os.Exit(1)
@@ -286,7 +256,7 @@ func requireIndexedKnowledge(ctx context.Context, pool *pgxpool.Pool, userID int
 		userID, tenants)
 }
 
-func runOneReplyCase(ctx context.Context, svc *rag.Service, c replyCase, mode evalOptions) caseResult {
+func runOneReplyCase(ctx context.Context, svc *rag.Service, c replyscore.Case, mode evalOptions) caseResult {
 	res := caseResult{c: c}
 	started := time.Now()
 
@@ -314,9 +284,9 @@ func runOneReplyCase(ctx context.Context, svc *rag.Service, c replyCase, mode ev
 		res.context = ground.ContextStr
 	}
 
-	res.missing = missingFacts(c, chat.Reply)
-	res.leaks = leaked(c, chat.Reply)
-	res.format = formatProblems(c, chat.Reply)
+	res.missing = replyscore.MissingFacts(c, chat.Reply)
+	res.leaks = replyscore.Leaked(c, chat.Reply)
+	res.format = replyscore.FormatProblems(c, chat.Reply)
 	// The handoff category is checked against the REAL detector, not a string
 	// proxy: a reply that promises an agent while platform.ReplyClaimsHandoff
 	// returns false is the failure mode the prompt's per-language sentence exists
@@ -332,119 +302,7 @@ func runOneReplyCase(ctx context.Context, svc *rag.Service, c replyCase, mode ev
 	return res
 }
 
-func missingFacts(c replyCase, reply string) []string {
-	var missing []string
-	for _, group := range c.MustInclude {
-		if !containsAny(reply, group) {
-			missing = append(missing, group)
-		}
-	}
-	return missing
-}
-
-func containsAny(reply, group string) bool {
-	for _, alt := range strings.Split(group, "|") {
-		alt = strings.TrimSpace(alt)
-		if alt != "" && strings.Contains(reply, alt) {
-			return true
-		}
-	}
-	return false
-}
-
-func leaked(c replyCase, reply string) []string {
-	var out []string
-	for _, lit := range c.MustNotContain {
-		for _, alt := range strings.Split(lit, "|") {
-			alt = strings.TrimSpace(alt)
-			if alt != "" && strings.Contains(strings.ToLower(reply), strings.ToLower(alt)) {
-				out = append(out, alt)
-			}
-		}
-	}
-	return out
-}
-
-// formatProblems are the invariants that hold for EVERY reply, so they live in
-// code rather than in every case's JSON: the prompt forbids them and the
-// sanitizer is supposed to make some of them impossible.
-func formatProblems(c replyCase, reply string) []string {
-	var out []string
-	if strings.TrimSpace(reply) == "" {
-		out = append(out, "empty reply")
-	}
-	for _, bad := range []string{"\u200b", "\u200c", "\u200d", "\ufeff", "\u00a0"} {
-		if strings.Contains(reply, bad) {
-			out = append(out, fmt.Sprintf("invisible character %q survived the sanitizer", bad))
-		}
-	}
-	for _, bad := range []string{"**", "##", "```", "| ---", "[Source", "(Source"} {
-		if strings.Contains(reply, bad) {
-			out = append(out, "markup/citation marker "+bad)
-		}
-	}
-	// The old prompt told every reply, whatever its language, to end a handoff
-	// with the Chinese sentence. A Khmer customer reading it is a failure this
-	// check is here to keep from coming back.
-	if c.Language == "km" && strings.Contains(reply, "已为您转接") {
-		out = append(out, "Chinese handoff sentence in a Khmer reply")
-	}
-	if khmerNumeralsIn(reply) {
-		out = append(out, "Khmer numerals in a reply (prices and quantities are recorded in ASCII digits)")
-	}
-	if c.Language == "km" {
-		// Deliberately a FLOOR, not a target. An answer about the company legitimately
-		// carries a Latin-heavy legal name and address ("WANFANG INSULATION
-		// PACKAGING MATERIAL CO., LTD, #777, Road No. 2, …"), and the first version
-		// of this check failed exactly that reply at a 50% threshold while the judge
-		// scored it 12/12. Two conditions, so it still catches what it is for — a
-		// reply that came back in English or Chinese: essentially no Khmer at all.
-		if n := khmerLetters(reply); n < 20 || khmerLetterRatio(reply) < 0.25 {
-			out = append(out, fmt.Sprintf("customer asked in Khmer but the reply has only %d Khmer letter(s)", n))
-		}
-	}
-	return out
-}
-
-// khmerLetters counts letters in the Khmer block (U+1780–U+17FF).
-func khmerLetters(s string) int {
-	n := 0
-	for _, r := range s {
-		if r >= 0x1780 && r <= 0x17FF && unicode.IsLetter(r) {
-			n++
-		}
-	}
-	return n
-}
-
-// khmerNumeralsIn — U+17E0–U+17E9. The reply sanitizer already maps these, so a
-// hit here means either the sanitizer was bypassed or the reply came from a path
-// that does not go through it; both are worth failing a run over.
-func khmerNumeralsIn(s string) bool {
-	return strings.ContainsFunc(s, func(r rune) bool { return r >= '០' && r <= '៩' })
-}
-
-// khmerLetterRatio is the share of Khmer code points among all letters. It
-// ignores digits, punctuation, spaces and the Latin brand names/units a correct
-// Khmer reply legitimately contains.
-func khmerLetterRatio(s string) float64 {
-	var khmer, letters int
-	for _, r := range s {
-		if !unicode.IsLetter(r) {
-			continue
-		}
-		letters++
-		if r >= 0x1780 && r <= 0x17FF {
-			khmer++
-		}
-	}
-	if letters == 0 {
-		return 0
-	}
-	return float64(khmer) / float64(letters)
-}
-
-func judgePrompt(c replyCase, reply string) string {
+func judgePrompt(c replyscore.Case, reply string) string {
 	return "You are auditing ONE customer-service reply from a Cambodian EPS/insulation supplier.\n" +
 		"The customer wrote in " + c.Language + ". The reply must be in " + c.Language + ".\n\n" +
 		"Question: " + c.Question + "\n" +
@@ -465,7 +323,7 @@ func judgePrompt(c replyCase, reply string) string {
 		"Answer with JSON only: {\"language\":n,\"register\":n,\"natural\":n,\"format\":n,\"reason\":\"<one short sentence>\"}"
 }
 
-func judgeReply(ctx context.Context, svc *rag.Service, c replyCase, reply string) judgeVerdict {
+func judgeReply(ctx context.Context, svc *rag.Service, c replyscore.Case, reply string) judgeVerdict {
 	text, ok := svc.Gemini.GenerateFast(ctx, judgePrompt(c, reply), 45*time.Second)
 	if !ok {
 		return judgeVerdict{Reason: "judge unavailable"}
@@ -483,7 +341,7 @@ func judgeReply(ctx context.Context, svc *rag.Service, c replyCase, reply string
 	return v
 }
 
-func printReplyReport(results []caseResult, file replyEvalFile, mode evalOptions, cold, temperature string) {
+func printReplyReport(results []caseResult, file replyscore.File, mode evalOptions, cold, temperature string) {
 	passed, judged, scoreSum := 0, 0, 0
 	for _, r := range results {
 		status := "ok  "
