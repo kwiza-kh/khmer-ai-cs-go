@@ -1,12 +1,8 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
-
-	"github.com/jackc/pgx/v5"
 )
 
 // Member permissions — what an invited seat may do inside the owner's tenant.
@@ -99,37 +95,9 @@ func applyMembership(user *CurrentUser, ownerID *int32, rawPerms []byte) {
 	user.Permissions = decodePermissions(rawPerms)
 }
 
-// resolveMembership does its own lookup; the auth middleware folds the same
+// The auth middleware folds the seat lookup into the users query it already runs.
 // lookup into the users query it already runs and calls applyMembership directly.
 //
-// A failed lookup keeps the caller on their own tenant (empty data, no tenant
-// grants) — the fail-closed direction. Handing a member the owner's data
-// because a read hiccuped is the one mistake this feature must never make.
-func (a *App) resolveMembership(ctx context.Context, user *CurrentUser) {
-	if user == nil {
-		return
-	}
-	applyMembership(user, nil, nil)
-	if user.IsPlatformAdmin() {
-		return
-	}
-	var ownerID int32
-	var raw []byte
-	err := a.DB.QueryRow(ctx,
-		"SELECT owner_user_id, permissions FROM agent_teams WHERE agent_user_id = $1 AND is_active = true",
-		user.UserID).Scan(&ownerID, &raw)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return
-	}
-	if err != nil {
-		if a.Logger != nil {
-			a.Logger.Warn("membership lookup failed; treating caller as an independent tenant",
-				"user_id", user.UserID, "error", err.Error())
-		}
-		return
-	}
-	applyMembership(user, &ownerID, raw)
-}
 
 // requirePermission is the handler-side gate. Owners and platform admins always
 // pass; a member needs the key granted (explicitly, or by default).

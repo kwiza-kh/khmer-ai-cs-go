@@ -58,7 +58,7 @@ func (a *App) resolveChatSession(ctx context.Context, userID int32, req *chatReq
 		_, _ = a.DB.Exec(ctx, "UPDATE sessions SET archived_at=NULL WHERE session_id=$1 AND archived_at IS NOT NULL", sid)
 		return sid, test, nil
 	}
-	sid := newUUID()
+	sid := platform.NewUUID()
 	platformVal := any(nil)
 	if !isTest {
 		platformVal = "web"
@@ -539,7 +539,7 @@ func (a *App) createSession(w http.ResponseWriter, r *http.Request) (any, error)
 	if language == "" {
 		language = "km"
 	}
-	sid := newUUID()
+	sid := platform.NewUUID()
 	platformVal := any(nil)
 	if !req.Test {
 		platformVal = "web"

@@ -104,3 +104,14 @@ func NullIfEmpty(s string) any {
 	}
 	return s
 }
+
+// ContainsAny reports whether hay contains any of the needles. One implementation,
+// so a case-folding or empty-needle fix lands once.
+func ContainsAny(hay string, needles []string) bool {
+	for _, n := range needles {
+		if n != "" && strings.Contains(hay, n) {
+			return true
+		}
+	}
+	return false
+}

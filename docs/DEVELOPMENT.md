@@ -961,8 +961,9 @@ URL 三处读同一个值，不会再出现「界面显示 global、实际发往
 **98 次尝试，`attempt=2/3` 出现 0 次**。所以 181.2s 是纯理论边界，不是正在发生的事；把
 `postMaxAttempts` 从 3 收到 2 买不到任何东西。
 
-但 `callBudget()` 的默认值**就是** `retryWorstCase()`（= 3×60s + backoff = 181.2s）—— 一个
-「兜住最坏值」的预算被设成了最坏值本身，等于没兜。已改为**一次尝试（`postAttemptTimeout`，60s）**：
+但 `callBudget()` 的默认值**曾**是重试最坏值（`postMaxAttempts` × `postAttemptTimeout` + backoff =
+3×60s + 1.2s = 181.2s）—— 一个「兜住最坏值」的预算被设成了最坏值本身，等于没兜。已改为
+**一次尝试（`postAttemptTimeout`，60s）**：
 单次慢响应仍能跑满 60s（不牺牲现状），而「慢的第一次之后再来一次慢的」被禁掉；重试本来是为
 **快速**传输失败存在的（握手丢包），那种失败几乎不消耗预算，所以照旧能重试。
 

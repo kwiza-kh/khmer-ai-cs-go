@@ -78,22 +78,6 @@ const (
 	postBackoffStep    = 400 * time.Millisecond
 )
 
-// retryWorstCase is the longest one postWithRetry call can take when every
-// attempt hangs until its own timeout: attempts x per-attempt timeout plus the
-// backoff between them. The customer-facing budget is derived from it, so the
-// two numbers cannot drift apart.
-// retryWorstCase is the TRANSPORT-level worst case: every attempt burning its
-// full postAttemptTimeout plus the backoff between them. It is not the reply
-// path's budget — callBudget deliberately sits well under it — but it stays
-// asserted in the tests as the ceiling the budget has to beat.
-func retryWorstCase() time.Duration {
-	var backoff time.Duration
-	for attempt := 1; attempt < postMaxAttempts; attempt++ {
-		backoff += postBackoffStep * time.Duration(attempt)
-	}
-	return postMaxAttempts*postAttemptTimeout + backoff
-}
-
 // callBudget bounds ONE customer-facing generation call *including its retries*.
 //
 // Before this the only ceiling was per attempt (the shared HTTP client's 60s), so
@@ -105,7 +89,7 @@ func retryWorstCase() time.Duration {
 // one attempt.
 //
 // The default is ONE attempt's ceiling, not the retry worst case. It used to be
-// retryWorstCase() — i.e. the budget was set to the exact worst case it exists to
+// the retry worst case (3x60s + backoff) — i.e. the budget was set to the exact value it exists to
 // bound, which made it a no-op: three attempts could each spend their full 60s
 // (181.2s total) while the customer waited. Retries are for FAST transient
 // failures (the path to Google drops handshakes; a retry usually gets through),
@@ -739,21 +723,6 @@ func ModelCatalog(ctx context.Context, apiKey, region, configuredModel string) (
 // callers and tests that only need names. The admin picker uses ModelCatalog,
 // which also carries the label, the launch stage and the capability.
 //
-// The apiKey argument is the STUDIO credential; on the vertex path it is
-// ignored and the request is authorised with a service-account token instead
-// (provider.authorize picks the header per transport), which is why a vertex
-// caller may — and the admin console does — pass "" without losing access.
-func ListModels(ctx context.Context, apiKey string) ([]string, error) {
-	models, _, err := ModelCatalog(ctx, apiKey, "", "")
-	if err != nil {
-		return nil, err
-	}
-	names := make([]string, 0, len(models))
-	for _, m := range models {
-		names = append(names, m.Name)
-	}
-	return names, nil
-}
 
 // publisherCatalog pages one region's publisher-model list.
 //

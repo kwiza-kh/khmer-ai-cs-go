@@ -64,30 +64,35 @@ func TestWebhookRoutesAreUniqueAndUnderTheBasePath(t *testing.T) {
 	}
 }
 
-// Every inbound platform must be a channel we know about, and every known
-// channel except the website widget must have an inbound callback. This is the
-// test that fails when a channel is added to one table and not the other.
+// Every inbound platform must be a channel we know about, and every known channel
+// except the website widget must have an inbound callback. This is the test that
+// fails when a channel is added to one table and not the other.
+//
+// The inbound set is read off Routes() — the live table the dispatcher installs —
+// rather than a second enumeration that could drift away from it.
 func TestInboundPlatformsMatchCapabilityTable(t *testing.T) {
-	wh := &Webhooks{}
-	inbound := wh.InboundPlatforms()
-
-	for _, p := range inbound {
-		if !CapabilitiesFor(p).Known {
-			t.Errorf("inbound platform %q has no capability row", p)
-		}
-	}
-	// Sorted, so the comparison below is stable.
-	for i := 1; i < len(inbound); i++ {
-		if inbound[i-1] > inbound[i] {
-			t.Fatalf("InboundPlatforms not sorted: %v", inbound)
-		}
-	}
-
 	inboundSet := map[string]bool{}
-	for _, p := range inbound {
-		inboundSet[p] = true
+	for _, rt := range (&Webhooks{}).Routes() {
+		if rt.Platform == "" {
+			continue // a sub-resource (e.g. meta/data-deletion), not a platform
+		}
+		if !CapabilitiesFor(rt.Platform).Known {
+			t.Errorf("inbound platform %q has no capability row", rt.Platform)
+		}
+		inboundSet[rt.Platform] = true
 	}
-	for _, p := range KnownPlatforms() {
+	// An alias is reachable too: the dispatcher resolves the segment through
+	// WebhookPlatformAliases before it looks for a handler (instagram arrives on
+	// the Meta app webhook), so it counts as having an inbound path.
+	for alias, target := range WebhookPlatformAliases {
+		if inboundSet[target] {
+			inboundSet[alias] = true
+		}
+	}
+	if len(inboundSet) == 0 {
+		t.Fatal("no inbound platforms at all")
+	}
+	for p := range capabilitiesTable {
 		if p == "web" {
 			// The website widget talks to its own SSE endpoint, not the webhook.
 			if inboundSet[p] {

@@ -22,7 +22,7 @@ func (p *Pipeline) ensureSession(ctx context.Context, ev *InboundEvent, cfg *con
 		"SELECT session_id FROM platform_user_sessions WHERE config_id = $1 AND platform_user_id = $2",
 		ev.ConfigID, ev.PlatformUserID).Scan(&sessionID)
 	if err != nil {
-		sessionID = newUUID()
+		sessionID = NewUUID()
 		title := textutil.TruncateRunes(content, 60)
 		tx, err := p.DB.Begin(ctx)
 		if err != nil {

@@ -60,25 +60,21 @@ type MetaConfig struct {
 type EmailConfig struct {
 	Enabled        bool
 	SMTPHost       string
-	SMTPPort       int
-	SMTPUsername   string
-	SMTPPassword   string
-	FromAddress    string
 	InboundDomains string
 }
 
 type VoiceConfig struct {
 	Enabled          bool
 	TwilioAccountSID string
-	TwilioAuthToken  string
 	FromNumber       string
 }
 
 type SSOConfig struct {
-	Enabled          bool
-	Provider         string
-	OIDCIssuer       string
-	OIDCClientID     string
+	Enabled      bool
+	Provider     string
+	OIDCIssuer   string
+	OIDCClientID string
+	// OIDCClientSecret is read by the Google token exchange (a confidential client).
 	OIDCClientSecret string
 	// RedirectURL — the public callback registered in the provider console
 	// (e.g. https://host/api/v1/auth/google/callback). FrontendURL receives
@@ -255,16 +251,11 @@ func Load() (*Config, error) {
 		Email: EmailConfig{
 			Enabled:        envBool("EMAIL_ENABLED", false),
 			SMTPHost:       env("SMTP_HOST", ""),
-			SMTPPort:       envInt("SMTP_PORT", 587),
-			SMTPUsername:   env("SMTP_USERNAME", ""),
-			SMTPPassword:   env("SMTP_PASSWORD", ""),
-			FromAddress:    env("SMTP_FROM", ""),
 			InboundDomains: env("EMAIL_INBOUND_DOMAINS", ""),
 		},
 		Voice: VoiceConfig{
 			Enabled:          envBool("VOICE_ENABLED", false),
 			TwilioAccountSID: env("TWILIO_ACCOUNT_SID", ""),
-			TwilioAuthToken:  env("TWILIO_AUTH_TOKEN", ""),
 			FromNumber:       env("TWILIO_FROM_NUMBER", ""),
 		},
 		TelegramLogin: TelegramLoginConfig{
@@ -288,7 +279,6 @@ func Load() (*Config, error) {
 			Provider:          env("SSO_PROVIDER", ""),
 			OIDCIssuer:        env("SSO_OIDC_ISSUER", ""),
 			OIDCClientID:      env("SSO_OIDC_CLIENT_ID", ""),
-			OIDCClientSecret:  env("SSO_OIDC_CLIENT_SECRET", ""),
 			RedirectURL:       env("SSO_REDIRECT_URL", ""),
 			FrontendURL:       env("SSO_FRONTEND_URL", ""),
 			AllowSignup:       envBool("SSO_ALLOW_SIGNUP", true),

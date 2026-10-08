@@ -74,27 +74,6 @@ func (wh *Webhooks) Routes() []WebhookRoute {
 	return out
 }
 
-// InboundPlatforms lists, sorted, the platform segments the unified dispatcher
-// answers — including aliases such as instagram.
-func (wh *Webhooks) InboundPlatforms() []string {
-	seen := make(map[string]bool, len(webhookRouteSpecs)+len(WebhookPlatformAliases))
-	out := make([]string, 0, len(webhookRouteSpecs)+len(WebhookPlatformAliases))
-	for _, spec := range webhookRouteSpecs {
-		if spec.platform != "" && !seen[spec.platform] {
-			seen[spec.platform] = true
-			out = append(out, spec.platform)
-		}
-	}
-	for alias := range WebhookPlatformAliases {
-		if !seen[alias] {
-			seen[alias] = true
-			out = append(out, alias)
-		}
-	}
-	sortStrings(out)
-	return out
-}
-
 // handlerForPlatform resolves a unified-dispatch segment to its callback.
 // Unknown segments - and known channels with no inbound callback (the website
 // widget) - resolve false so the dispatcher can 404 rather than accept an event

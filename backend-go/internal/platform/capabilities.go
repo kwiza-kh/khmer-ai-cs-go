@@ -375,30 +375,9 @@ func CapabilitiesFor(platform string) Capabilities {
 	return defaultCapabilities(platform)
 }
 
-// KnownPlatforms lists every platform this build declares capabilities for,
-// sorted. Used by tests and by the admin surface.
-func KnownPlatforms() []string {
-	out := make([]string, 0, len(capabilitiesTable))
-	for name := range capabilitiesTable {
-		out = append(out, name)
-	}
-	sortStrings(out)
-	return out
-}
-
-// sortStrings keeps KnownPlatforms deterministic without pulling sort into the
-// hot path of every caller.
-func sortStrings(in []string) {
-	for i := 1; i < len(in); i++ {
-		for j := i; j > 0 && in[j] < in[j-1]; j-- {
-			in[j], in[j-1] = in[j-1], in[j]
-		}
-	}
-}
-
 // SplitChannelText splits an outbound message so that every chunk fits the
 // channel's cap in the channel's own unit. It replaces the bare
-// SplitPlatformText(text, PlatformTextLimit(platform)) pattern, which always
+// SplitPlatformText(text, caps.TextLimit) pattern, which always
 // counted runes.
 func SplitChannelText(text string, caps Capabilities) []string {
 	if caps.TextLimit <= 0 {

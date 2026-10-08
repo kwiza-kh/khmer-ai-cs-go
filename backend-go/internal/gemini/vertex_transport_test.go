@@ -476,47 +476,6 @@ func TestVertexContextCacheUsesTheResourceName(t *testing.T) {
 	}
 }
 
-// TestVertexListModelsStripsTheResourcePath — the platform answers with
-// publishers/google/models/… names; pasting one into a URL would double the
-// path.
-func TestVertexListModelsStripsTheResourcePath(t *testing.T) {
-	// ListModels is a package function with no Service: it must resolve the
-	// transport on its own.
-	_, platform, _ := vertexService(t, func(r *http.Request, body []byte) (int, string) {
-		return http.StatusOK, `{"publisherModels":[` +
-			`{"name":"publishers/google/models/gemini-2.5-flash","displayName":"2.5 Flash"},` +
-			`{"name":"publishers/google/models/text-embedding-005","displayName":"Embeddings"}]}`
-	})
-	names, err := ListModels(context.Background(), "ignored-in-vertex-mode")
-	if err != nil {
-		t.Fatalf("ListModels: %v", err)
-	}
-	if len(names) != 2 || names[0] != "gemini-2.5-flash" || names[1] != "text-embedding-005" {
-		t.Fatalf("names = %v, want both parsed entries, prefix stripped", names)
-	}
-	got := platform.last(t)
-	// See provider_test: the catalog route is /v1beta1/publishers/google/models.
-	// The old path here was .../locations/{l}/models, which lists the project's
-	// OWN models — names every URL this client builds would then mis-address.
-	if want := "/v1beta1/publishers/google/models"; got.Path != want {
-		t.Errorf("path = %q, want %q", got.Path, want)
-	}
-	if got.Auth != "Bearer tok-vertex" {
-		t.Errorf("Authorization = %q", got.Auth)
-	}
-	// A model name from this list must build a valid URL, not a doubled path.
-	if err := ValidateProviderConfig(); err != nil {
-		t.Fatal(err)
-	}
-	prov, err := providerFromEnv()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := prov.generateURL(names[0]); strings.Contains(got, "publishers/google/models/publishers/google/models") {
-		t.Errorf("generated URL doubles the resource path: %q", got)
-	}
-}
-
 // TestStudioIgnoresVertexVariables — the red line from the other side: studio
 // must keep working when the vertex variables are absent, empty or garbage.
 func TestStudioIgnoresVertexVariables(t *testing.T) {
@@ -583,17 +542,6 @@ func TestBrokenVertexConfigFailsLoudlyWithoutSending(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&hits); got != 0 {
 		t.Errorf("%d request(s) left the process under a broken vertex configuration", got)
-	}
-}
-
-// TestVertexMissingAPIKeyEnvStillRediscoveredByListModels — ListModels is a
-// package function with no Service, so it resolves the transport itself; it
-// must not silently fall back to the studio URL in vertex mode.
-func TestListModelsInVertexModeWithoutConfiguration(t *testing.T) {
-	t.Setenv("GEMINI_PROVIDER", "vertex")
-	t.Setenv("GEMINI_VERTEX_SA_FILE", "")
-	if _, err := ListModels(context.Background(), "k"); err == nil || !strings.Contains(err.Error(), "GEMINI_VERTEX_SA_FILE") {
-		t.Fatalf("err = %v, want the configuration error rather than a studio request", err)
 	}
 }
 

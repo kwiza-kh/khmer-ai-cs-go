@@ -822,8 +822,6 @@ func LineVerifySignature(secret, signature string, body []byte) bool {
 // but LINE reported an error inside the body).
 type WebhookAPIError struct{ Msg string }
 
-func (e *WebhookAPIError) Error() string { return e.Msg }
-
 func (l *LineClient) webhookCall(ctx context.Context, method, path string, body any) (map[string]any, error) {
 	payload, err := json.Marshal(body)
 	if err != nil {
@@ -857,16 +855,6 @@ func (l *LineClient) SetWebhookEndpoint(ctx context.Context, endpoint string) er
 		return err
 	}
 	return nil
-}
-
-// GetWebhookEndpointInfo returns the currently configured webhook URL.
-func (l *LineClient) GetWebhookEndpointInfo(ctx context.Context) (string, error) {
-	v, err := l.webhookCall(ctx, http.MethodGet, "/v2/bot/channel/webhook/info", map[string]any{})
-	if err != nil {
-		return "", err
-	}
-	u, _ := v["endpoint"].(string)
-	return u, nil
 }
 
 // TestWebhookEndpoint asks LINE to fire a test event at the webhook and

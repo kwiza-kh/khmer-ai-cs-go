@@ -164,7 +164,7 @@ type CurrentUser struct {
 
 	// TenantID is the account whose data the caller works in: their own for an
 	// independent tenant, the owner's for an active agent seat (resolved once per
-	// request in resolveMembership).
+	// request in the auth middleware's seat resolution).
 	TenantID int32
 	// IsMember is true when the caller is an active seat rather than a tenant
 	// owner — the switch that turns the permission matrix on.

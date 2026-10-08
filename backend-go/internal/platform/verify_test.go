@@ -15,7 +15,12 @@ import (
 // Asking NewChannel is the point: the list is not restated here, so adding a
 // channel to one switch and forgetting the other fails this test.
 func TestNewChannelAndVerifyHandlerAgree(t *testing.T) {
-	candidates := append(KnownPlatforms(), "telegram", "line", "zalo", "whatsapp", "meta", "instagram", "web", "not-a-platform")
+	candidates := []string{"telegram", "line", "zalo", "whatsapp", "meta", "instagram", "web", "not-a-platform"}
+	// Every declared platform, plus one name no table knows: the handler and the
+	// channel factory must agree on both.
+	for plat := range capabilitiesTable {
+		candidates = append(candidates, plat)
+	}
 	seen := map[string]bool{}
 	for _, plat := range candidates {
 		if seen[plat] {

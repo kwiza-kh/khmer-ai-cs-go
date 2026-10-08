@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"khmer-ai-cs-go/internal/platform"
 	"net/http"
 	"net/url"
 	"strings"
@@ -146,7 +147,7 @@ func (a *App) googleCallback(w http.ResponseWriter, r *http.Request) {
 	// Hand the token to the SPA through a short-lived one-time code rather
 	// than the URL fragment (keeps it out of history/referrer). The state is
 	// embedded in the payload so the exchange can verify code↔flow↔state.
-	loginCode := newUUID()
+	loginCode := platform.NewUUID()
 	payload, _ := json.Marshal(map[string]any{
 		"token": token,
 		"state": state,

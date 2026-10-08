@@ -48,23 +48,25 @@ func TestCapabilitiesTableIsSelfConsistent(t *testing.T) {
 // platform_type enum in the database: a value that exists in the DB but not here
 // would make policy refuse a live channel.
 func TestCapabilitiesCoverPlatformTypeEnum(t *testing.T) {
-	// KnownPlatforms is documented as sorted, and every platform_type value the
-	// database can hold must appear.
+	// Every platform_type value the database can hold must be a KNOWN capability
+	// row: an enum member missing here would make policy refuse a live channel.
+	// (This used to enumerate through a KnownPlatforms() helper that nothing else
+	// called; the assertion is the same, asked of the table itself.)
 	want := []string{"instagram", "line", "meta", "telegram", "web", "whatsapp", "zalo"}
-	got := KnownPlatforms()
-	if len(got) != len(want) {
-		t.Fatalf("KnownPlatforms = %v, want %d entries", got, len(want))
-	}
-	for i, name := range want {
-		if got[i] != name {
-			t.Fatalf("KnownPlatforms[%d] = %q, want %q (must also be sorted)", i, got[i], name)
+	for _, name := range want {
+		if c := CapabilitiesFor(name); !c.Known {
+			t.Errorf("CapabilitiesFor(%q).Known = false, want the DB enum member to be known", name)
 		}
+	}
+	if c := CapabilitiesFor("nope"); c.Known {
+		t.Error("an unknown platform must not be Known")
 	}
 }
 
 // TestPlatformTextLimitPreservesLegacyValues is the regression net for the
 // switch this table replaced.
 func TestPlatformTextLimitPreservesLegacyValues(t *testing.T) {
+	// The regression net for the switch this table replaced: the caps must not move.
 	cases := map[string]int{
 		"telegram":  4096,
 		"line":      5000,
@@ -77,8 +79,8 @@ func TestPlatformTextLimitPreservesLegacyValues(t *testing.T) {
 		"nope": 2000,
 	}
 	for platform, want := range cases {
-		if got := PlatformTextLimit(platform); got != want {
-			t.Errorf("PlatformTextLimit(%q) = %d, want %d", platform, got, want)
+		if got := CapabilitiesFor(platform).TextLimit; got != want {
+			t.Errorf("TextLimit(%q) = %d, want %d", platform, got, want)
 		}
 	}
 }
@@ -137,7 +139,7 @@ func TestSplitChannelTextRuneChannelMatchesLegacySplitter(t *testing.T) {
 	caps := CapabilitiesFor("telegram")
 
 	got := SplitChannelText(text, caps)
-	want := SplitPlatformText(text, PlatformTextLimit("telegram"))
+	want := SplitPlatformText(text, CapabilitiesFor("telegram").TextLimit)
 
 	if len(got) != len(want) {
 		t.Fatalf("chunk count = %d, want %d", len(got), len(want))

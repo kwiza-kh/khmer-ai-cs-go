@@ -129,31 +129,6 @@ func hasCJK(s string) bool {
 	return false
 }
 
-// cjkBigrams — character bigrams from the CJK runs of the query (lexical unit
-// for ILIKE recall; tsquery('simple') cannot segment Chinese).
-func cjkBigrams(s string, capN int) []string {
-	var runes []rune
-	for _, c := range s {
-		if isCJK(c) {
-			runes = append(runes, c)
-		}
-	}
-	seen := make(map[string]bool)
-	var out []string
-	for i := 0; i+1 < len(runes); i++ {
-		b := string(runes[i : i+2])
-		if seen[b] {
-			continue
-		}
-		seen[b] = true
-		out = append(out, b)
-		if len(out) >= capN {
-			break
-		}
-	}
-	return out
-}
-
 func isSentenceEnd(c rune) bool {
 	switch c {
 	case '.', '!', '?', ';', '\n', '。', '！', '？', '；', '។', '៕':
