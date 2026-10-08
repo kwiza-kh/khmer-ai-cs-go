@@ -740,6 +740,23 @@ export const km: Dict = {
   "admin.temperature": "សីតុណ្ហភាព",
   "admin.maxTokens": "Token អតិបរមា",
   "admin.cacheTtl": "TTL ឃ្លាំង (វិនាទី)",
+  // Model provider routing (Claude / Gemini). Terminology follows the keys
+  // above: provider = អ្នកផ្តល់សេវា, region = តំបន់, service account =
+  // គណនីសេវា, cache = ឃ្លាំង. Native review still owed (DEVELOPMENT.md §十六).
+  "admin.providerGemini": "Gemini (Google AI)",
+  "admin.providerClaudeApi": "Claude (Anthropic API)",
+  "admin.providerClaudeVertex": "Claude (Vertex AI)",
+  "admin.providerScopeNote": "ទទួលបន្ទុកការឆ្លើយតបអតិថិជន និងការបង្កើតអត្ថបទ។ ការស្វែងរកវ៉ិចទ័រ រូបភាព និងសំឡេង នៅតែប្រើ Gemini។",
+  "admin.claudeApiKey": "សោ API របស់ Anthropic",
+  "admin.claudeSaHint": "Claude នៅលើ Vertex ប្រើគណនីសេវានៅលើម៉ាស៊ីនបម្រើ (GEMINI_VERTEX_SA_FILE)។ មិនរក្សាទុកសោសម្រាប់វាទេ។",
+  "admin.claudeRegion": "តំបន់ Claude",
+  "admin.claudeRegionHint": "Claude នៅលើ Vertex AI មានតែនៅ global, us និង eu។ us និង eu ថ្លៃជាង global ប្រហែល 10%។",
+  "admin.claudeSamplingNote": "Claude Haiku 5.5 មិនទទួលយកប៉ារ៉ាម៉ែត្រជ្រើសគំរូ ដូច្នេះ temperature មិនត្រូវបានផ្ញើទៅវាទេ។",
+  "admin.cacheTtlGeminiOnly": "ឃ្លាំងបរិបទ (Gemini តែប៉ុណ្ណោះ)",
+  "admin.checkingClaude": "កំពុងផ្ទុកម៉ូដែល Claude...",
+  "admin.connectedClaude": "បានតភ្ជាប់ · មានម៉ូដែល Claude {n}",
+  "admin.claudeNeedsVerify": "រក្សាទុក ដើម្បីផ្ទៀងផ្ទាត់សោ Anthropic និងផ្ទុកម៉ូដែល។",
+  "admin.providerSwitchNote": "ការប្តូរអ្នកផ្តល់សេវា ត្រូវការព័ត៌មានសម្គាល់របស់វា៖ សោដែលបានរក្សាទុក មិនអនុវត្តតាមជួរនេះទេ។",
   "admin.saveVerify": "រក្សាទុក និងផ្ទៀងផ្ទាត់ការតភ្ជាប់",
   "admin.testChat": "សន្ទនាសាកល្បង",
   "admin.testNotSaved": "មិនរក្សាទុកក្នុងការសន្ទនាអតិថិជន",

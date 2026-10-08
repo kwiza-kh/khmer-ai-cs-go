@@ -690,7 +690,6 @@ export const zh: Dict = {
   "admin.connectedClaude": "已连接 · 可用 {n} 个 Claude 模型。",
   "admin.claudeNeedsVerify": "保存后将验证 Anthropic Key 并加载模型。",
   "admin.providerSwitchNote": "切换服务商需要它自己的凭据：已保存的 key 不会跟随此行。",
-  "admin.providerModelsAfterSave": "保存后加载此服务商的模型。",
 
   "admin.provider": "服务商",
   "admin.modelIdentifier": "模型标识",

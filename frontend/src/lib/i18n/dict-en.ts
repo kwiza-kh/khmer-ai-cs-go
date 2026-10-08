@@ -704,7 +704,6 @@ export const en: Dict = {
   "admin.connectedClaude": "Connected · {n} Claude models available.",
   "admin.claudeNeedsVerify": "Save to verify the Anthropic key and load the models.",
   "admin.providerSwitchNote": "Changing the provider needs its own credential: the stored key does not follow the row.",
-  "admin.providerModelsAfterSave": "Save to load the models for this provider.",
 
   "admin.provider": "Provider",
   "admin.modelIdentifier": "Model identifier",
