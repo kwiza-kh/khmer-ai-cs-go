@@ -71,6 +71,44 @@ func TestSanitizeReply(t *testing.T) {
 			in:   "We ship EPS panels in 50/75/100 mm.",
 			want: "We ship EPS panels in 50/75/100 mm.",
 		},
+		// The markup cases come from a real run: Claude Haiku 5.5 wrapped names, prices
+		// and languages in **bold** in 13 of 31 graded replies, while the prompt forbids
+		// markdown twice and Gemini never emitted any (cmd/claudeeval, 2026-10-08).
+		{
+			name: "bold around a company name is dropped",
+			in:   "យើងជា **WANFANG INSULATION PACKAGING MATERIAL CO., LTD** ជារោងចក្រ",
+			want: "យើងជា WANFANG INSULATION PACKAGING MATERIAL CO., LTD ជារោងចក្រ",
+		},
+		{
+			name: "bold around each language in a list is dropped",
+			in:   "**ខ្មែរ**, **中文 (Chinese)** និង **English**",
+			want: "ខ្មែរ, 中文 (Chinese) និង English",
+		},
+		{
+			name: "a heading marker and bold around a price are dropped",
+			in:   "## តម្លៃ\nគឺ **$1.90 ក្នុងមួយ KG**",
+			want: "តម្លៃ\nគឺ $1.90 ក្នុងមួយ KG",
+		},
+		{
+			name: "code fence lines are dropped",
+			in:   "```json\n{\"ok\": true}\n```",
+			want: "{\"ok\": true}",
+		},
+		{
+			name: "a street address starting with # is not a heading",
+			in:   "#777, Road No. 2, Phnom Penh",
+			want: "#777, Road No. 2, Phnom Penh",
+		},
+		{
+			name: "a single asterisk (multiplication) survives",
+			in:   "MOQ 5 * 10 គីឡូ",
+			want: "MOQ 5 * 10 គីឡូ",
+		},
+		{
+			name: "a table separator is left for the rubric to report",
+			in:   "| a | b |\n| --- | --- |",
+			want: "| a | b |\n| --- | --- |",
+		},
 		{
 			name: "empty stays empty",
 			in:   "",

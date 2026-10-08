@@ -648,7 +648,7 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 	}
 	reply := result.Reply
 	if !result.UsedMock {
-		reply = gemini.StripSourceMarkers(reply)
+		reply = gemini.SanitizeReply(reply)
 	}
 	// The stream already reached the visitor, so the semantic guard is
 	// after-the-fact here: it can escalate and page the owner, not unsend.

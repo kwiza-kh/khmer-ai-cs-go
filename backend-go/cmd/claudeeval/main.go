@@ -141,19 +141,25 @@ type checkResult struct {
 }
 
 type caseResult struct {
-	ID         string   `json:"id"`
-	Category   string   `json:"category"`
-	Language   string   `json:"language"`
-	Missing    []string `json:"missing"`
-	Leaks      []string `json:"leaks"`
-	Format     []string `json:"format"`
-	Millis     float64  `json:"ms"`
-	PromptTok  int      `json:"prompt_tokens"`
-	OutTok     int      `json:"output_tokens"`
-	Cost       float64  `json:"cost_usd"`
-	KhmerRatio float64  `json:"khmer_letter_ratio"`
-	Err        string   `json:"error,omitempty"`
-	Reply      string   `json:"reply,omitempty"`
+	ID       string   `json:"id"`
+	Category string   `json:"category"`
+	Language string   `json:"language"`
+	Missing  []string `json:"missing"`
+	Leaks    []string `json:"leaks"`
+	Format   []string `json:"format"`
+	// RawMarkup records that the MODEL emitted markdown, before the reply was passed
+	// through gemini.SanitizeReply — the same door every outbound reply walks through in
+	// production. Scoring uses the sanitized text (what a customer would see), so this
+	// field is the model-behaviour signal: a provider that ignores the prompt's "no
+	// markdown" rule shows up here even when the delivered reply is clean.
+	RawMarkup  bool    `json:"raw_markup"`
+	Millis     float64 `json:"ms"`
+	PromptTok  int     `json:"prompt_tokens"`
+	OutTok     int     `json:"output_tokens"`
+	Cost       float64 `json:"cost_usd"`
+	KhmerRatio float64 `json:"khmer_letter_ratio"`
+	Err        string  `json:"error,omitempty"`
+	Reply      string  `json:"reply,omitempty"`
 }
 
 type report struct {
@@ -219,19 +225,25 @@ func (r *report) print() {
 			case len(c.Format) > 0:
 				verdict = "format " + short(strings.Join(c.Format, ","), 46)
 			}
+			if c.RawMarkup {
+				verdict += "  [raw: markdown]"
+			}
 			fmt.Printf("    %-7s %5.0fms %4d+%-4d $%.5f km=%.2f  %s\n",
 				name, c.Millis, c.PromptTok, c.OutTok, c.Cost, c.KhmerRatio, verdict)
 		}
 	}
 	fmt.Println()
 	fmt.Println("── summary ─────────────────────────────────────────────────")
-	fmt.Printf("%-8s %8s %8s %10s %10s %10s %12s\n", "arm", "cases", "past", "missing", "leaked", "format", "avg lat")
+	fmt.Printf("%-8s %8s %8s %10s %10s %10s %12s %12s\n", "arm", "cases", "past", "missing", "leaked", "format", "raw-km", "avg lat")
 	for _, name := range r.order {
 		cases := r.cases[name]
-		var past, missing, leaked, format int
+		var past, missing, leaked, format, rawMarkup int
 		var total float64
 		for _, c := range cases {
 			total += c.Millis
+			if c.RawMarkup {
+				rawMarkup++
+			}
 			switch {
 			case c.Err != "":
 			case len(c.Missing) > 0:
@@ -245,7 +257,7 @@ func (r *report) print() {
 			}
 		}
 		avg := total / float64(max(len(cases), 1))
-		fmt.Printf("%-8s %8d %8d %10d %10d %10d %9.0fms\n", name, len(cases), past, missing, leaked, format, avg)
+		fmt.Printf("%-8s %8d %8d %10d %10d %10d %12d %9.0fms\n", name, len(cases), past, missing, leaked, format, rawMarkup, avg)
 	}
 }
 
@@ -472,15 +484,37 @@ func scoreCase(ctx context.Context, svc *rag.Service, a arm, c replyscore.Case, 
 		out.Err = err.Error()
 		return out
 	}
-	out.Reply = res.Reply
+	// Score what the customer would actually receive: production passes every reply
+	// through gemini.SanitizeReply (citation leftovers + Khmer hygiene + the chat markup
+	// strip), so a raw-model metric would report a formatting defect that never ships.
+	raw := res.Reply
+	sanitized := gemini.SanitizeReply(raw)
+	out.Reply = sanitized
+	out.RawMarkup = strings.Contains(raw, "**") || strings.Contains(raw, "```") || hasHeadingMarker(raw)
 	out.PromptTok = res.PromptTokens
 	out.OutTok = res.OutputTokens
 	out.Cost = usage.EstimateCostFor(a.model.ModelName(), res.PromptTokens, res.OutputTokens, res.CachedTokens)
-	out.KhmerRatio = replyscore.KhmerLetterRatio(res.Reply)
-	out.Missing = replyscore.MissingFacts(c, res.Reply)
-	out.Leaks = replyscore.Leaked(c, res.Reply)
-	out.Format = replyscore.FormatProblems(c, res.Reply)
+	out.KhmerRatio = replyscore.KhmerLetterRatio(sanitized)
+	out.Missing = replyscore.MissingFacts(c, sanitized)
+	out.Leaks = replyscore.Leaked(c, sanitized)
+	out.Format = replyscore.FormatProblems(c, sanitized)
 	return out
+}
+
+// hasHeadingMarker reports a line-leading markdown heading in the RAW reply: one to six
+// '#' followed by a space, the same shape gemini's markup strip removes. "#777, Road No.
+// 2" is an address, not a heading, and must not be reported as markup.
+func hasHeadingMarker(s string) bool {
+	for _, line := range strings.Split(s, "\n") {
+		i := 0
+		for i < len(line) && line[i] == '#' && i < 7 {
+			i++
+		}
+		if i > 0 && i <= 6 && i < len(line) && (line[i] == ' ' || line[i] == '\t') {
+			return true
+		}
+	}
+	return false
 }
 
 // ── clients ─────────────────────────────────────────────────────────────────

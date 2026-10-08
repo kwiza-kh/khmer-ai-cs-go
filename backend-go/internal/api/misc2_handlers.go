@@ -813,7 +813,7 @@ func (a *App) copilotSuggest(w http.ResponseWriter, r *http.Request, sessionID s
 	}
 	reply := result.Reply
 	if !result.UsedMock {
-		reply = gemini.StripSourceMarkers(reply)
+		reply = gemini.SanitizeReply(reply)
 	}
 	return map[string]any{"suggestions": []string{reply}, "grounded": true}, nil
 }

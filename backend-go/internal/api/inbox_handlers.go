@@ -493,7 +493,7 @@ func (a *App) sessionSummary(w http.ResponseWriter, r *http.Request, sessionID s
 	}
 	summary := result.Reply
 	if !result.UsedMock {
-		summary = gemini.StripSourceMarkers(summary)
+		summary = gemini.SanitizeReply(summary)
 	}
 	_, _ = a.DB.Exec(r.Context(),
 		"UPDATE sessions SET summary = $1, summary_at = $2, summary_language = $3 WHERE session_id = $4",

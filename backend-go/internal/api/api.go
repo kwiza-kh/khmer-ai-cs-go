@@ -93,9 +93,11 @@ func (a *App) notifyUser(ctx context.Context, userID int32, kind, title, body, s
 	}
 }
 
-// stripSourceMarkers removes [Source N] citation leftovers (ragQuery replies).
-func stripSourceMarkers(text string) string {
-	return gemini.StripSourceMarkers(text)
+// sanitizeReply is what a console reply may show: citation leftovers and the chat
+// markup the prompt forbids. Both providers pass through here (see gemini.SanitizeReply
+// for why the markup strip exists at all).
+func sanitizeReply(text string) string {
+	return gemini.SanitizeReply(text)
 }
 
 // ApiError maps to the HTTP envelope the frontend expects:

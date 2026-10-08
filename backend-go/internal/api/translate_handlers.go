@@ -77,7 +77,7 @@ func (a *App) translateOneText(ctx context.Context, text, target string) (string
 	if !ok {
 		return "", errTranslateFailed
 	}
-	translation := strings.TrimSpace(gemini.StripSourceMarkers(out))
+	translation := strings.TrimSpace(gemini.SanitizeReply(out))
 	if translation == "" {
 		return "", errTranslateFailed
 	}

@@ -286,7 +286,7 @@ func (a *App) chatPlain(w http.ResponseWriter, r *http.Request) (any, error) {
 	usage.Record(r.Context(), a.DB, user.UserID, &sid, a.serving().ModelName(), result.PromptTokens, result.OutputTokens, result.CachedTokens)
 	reply := result.Reply
 	if !result.UsedMock {
-		reply = gemini.StripSourceMarkers(reply)
+		reply = gemini.SanitizeReply(reply)
 	}
 	a.persistModelReply(r.Context(), user.UserID, sessionID, result, reply, &groundCtx, language, time.Now(), "")
 
@@ -450,7 +450,7 @@ func (a *App) chatStream(w http.ResponseWriter, r *http.Request) {
 	usage.Record(persistCtx, a.DB, user.UserID, &sid, a.serving().ModelName(), result.PromptTokens, result.OutputTokens, result.CachedTokens)
 	reply := result.Reply
 	if !result.UsedMock {
-		reply = gemini.StripSourceMarkers(reply)
+		reply = gemini.SanitizeReply(reply)
 	}
 	a.persistModelReply(persistCtx, user.UserID, sessionID, result, reply, &groundCtx, language, time.Now(), "")
 

@@ -381,7 +381,7 @@ func (a *App) ragQuery(w http.ResponseWriter, r *http.Request) (any, error) {
 	}
 	answer := result.Reply
 	if !result.UsedMock {
-		answer = stripSourceMarkers(answer)
+		answer = sanitizeReply(answer)
 	}
 	return map[string]any{
 		"query":   req.Query,
@@ -491,7 +491,7 @@ func (a *App) knowledgeGapDraft(w http.ResponseWriter, r *http.Request) (any, er
 	if !ok || strings.TrimSpace(draft) == "" {
 		return nil, &ApiError{http.StatusBadGateway, "草稿生成失败，请稍后重试"}
 	}
-	draft = strings.TrimSpace(gemini.StripSourceMarkers(draft))
+	draft = strings.TrimSpace(gemini.SanitizeReply(draft))
 	title := query
 	if body, found := strings.CutPrefix(draft, "# "); found {
 		if parts := strings.SplitN(body, "\n", 2); len(parts) == 2 {

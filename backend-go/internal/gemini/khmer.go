@@ -1,6 +1,7 @@
 package gemini
 
 import (
+	"regexp"
 	"strings"
 	"unicode"
 
@@ -32,6 +33,14 @@ import (
 //
 // It is idempotent and total: any byte sequence a model can emit comes out as
 // text a chat bubble renders faithfully and a search box can match.
+//
+// It also drops the chat-hostile markup the prompt forbids twice ("no **bold**, no
+// ## headings, no | tables", prompts.go). Gemini obeys that instruction; Claude Haiku
+// 5.5 did not — 13 of 31 graded replies came back with **bold** around names, prices
+// and languages (cmd/claudeeval against this deployment, 2026-10-08), and every
+// transport here renders plain text, so a customer would have read the asterisks. A
+// prompt rule is a request; this is the guarantee, and it lives here because this is
+// already the single door every outbound reply walks through.
 func SanitizeReply(s string) string {
 	if s == "" {
 		return ""
@@ -48,6 +57,7 @@ func SanitizeReply(s string) string {
 	// the special form.
 	s = strings.ReplaceAll(s, "\u00a0", " ")
 	s = khmerDigitsToASCII(s)
+	s = stripChatMarkup(s)
 	return strings.TrimSpace(tidyWhitespace(s))
 }
 
@@ -134,6 +144,36 @@ func khmerDigitsToASCII(s string) string {
 		return r
 	}, s)
 }
+
+// stripChatMarkup removes the markdown a chat bubble must not show.
+//
+// Deliberately narrow, so ordinary text survives:
+//
+//   - runs of two or more asterisks (bold/italic markers) go;
+//   - a line-leading # marker only when a space follows it, so the company address
+//     "#777, Road No. 2" is untouched;
+//   - whole code-fence lines (``` or ```json) go.
+//
+// A single asterisk stays: it may be arithmetic ("5 * 10"), and the reply rubric does
+// not forbid it. A table separator ("| ---") stays too — the rubric still reports it
+// if a provider emits one, and guessing at table layout would risk more than it fixes.
+func stripChatMarkup(s string) string {
+	if !strings.ContainsAny(s, "*#`") {
+		return s
+	}
+	s = chatMarkupFence.ReplaceAllString(s, "")
+	s = chatMarkupHeading.ReplaceAllString(s, "")
+	return chatMarkupBold.ReplaceAllString(s, "")
+}
+
+var (
+	// A whole line that is nothing but a fence, with an optional language tag.
+	chatMarkupFence = regexp.MustCompile("(?m)^[ \\t]*`{3}[A-Za-z0-9_+#.-]*[ \\t]*$")
+	// A heading marker only counts when a space follows it (#777 survives).
+	chatMarkupHeading = regexp.MustCompile(`(?m)^#{1,6}[ \t]+`)
+	// Bold and italic markers: two or more asterisks in a row.
+	chatMarkupBold = regexp.MustCompile(`\*{2,}`)
+)
 
 // tidyWhitespace trims layout noise without touching structure: human text has
 // paragraphs, and both the widget and the messengers render a blank line as a

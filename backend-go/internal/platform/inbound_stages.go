@@ -512,7 +512,7 @@ func (p *Pipeline) stageGenerate(ctx context.Context, t *inboundTurn) (bool, err
 	usage.Record(ctx, p.DB, t.Config.UserID, &sid, p.serving().ModelName(), result.PromptTokens, result.OutputTokens, result.CachedTokens)
 	t.Reply = result.Reply
 	if !result.UsedMock {
-		t.Reply = gemini.StripSourceMarkers(t.Reply)
+		t.Reply = gemini.SanitizeReply(t.Reply)
 	}
 	return true, nil
 }
