@@ -231,10 +231,18 @@ func main() {
 		results = append(results, p.checkChat(ctx, m, fatalModels[m]))
 	}
 
-	// 3. Embeddings. Vertex may serve these as :predict rather than
-	//    :embedContent, so both are tried and reported.
-	results = append(results, p.checkEmbedPredict(ctx, "gemini-embedding-001"))
-	results = append(results, p.checkEmbedContent(ctx, "gemini-embedding-001"))
+	// 3. Embeddings. WHICH method is authoritative depends on the model: 001 is
+	//    served through :predict on the platform and 404s on :embedContent,
+	//    while 002 is the mirror image (measured 2026-10-09). Both are probed
+	//    and reported, and the one matching the deployment's configured
+	//    embedding model (GEMINI_EMBEDDING_MODEL) is the fatal check — a gate
+	//    that certified the wrong method of the right model would pass while
+	//    every retrieval failed.
+	embedModel := gemini.ConfiguredEmbeddingModel()
+	requiredEmbedMethod := gemini.EmbeddingVertexMethod(embedModel)
+	predictFatal := requiredEmbedMethod == ":predict"
+	results = append(results, p.checkEmbedPredict(ctx, embedModel, predictFatal))
+	results = append(results, p.checkEmbedContent(ctx, embedModel, !predictFatal))
 
 	// 4. Explicit context caching — creatable and removable. Cached content is
 	//    pinned to a model, so the probe uses a required one: pointing it at a
@@ -357,17 +365,17 @@ func (p *probe) checkChat(ctx context.Context, model string, fatal bool) result 
 	return r
 }
 
-// checkEmbedPredict tries Vertex's :predict embedding shape, which is what the
-// platform documents for embedding models (the AI Studio :embedContent shape is
-// a different method).
+// checkEmbedPredict tries Vertex's :predict embedding shape — the method
+// gemini-embedding-001 is served by on the platform (002 404s on it; see
+// checkEmbedContent).
 //
 // outputDimensionality is sent explicitly and verified: knowledge_chunks holds
 // vector(768) and every stored chunk was embedded at that width, so a different
 // width would invalidate the index. The model's own default is 3072 — sending
 // the parameter is what keeps this migration a config change rather than a full
 // re-embed of the knowledge base.
-func (p *probe) checkEmbedPredict(ctx context.Context, model string) result {
-	r := result{name: "embedding :predict: " + model, fatal: true}
+func (p *probe) checkEmbedPredict(ctx context.Context, model string, fatal bool) result {
+	r := result{name: "embedding :predict: " + model, fatal: fatal}
 	payload := map[string]any{
 		"instances":  []map[string]any{{"content": "khmer customer service probe"}},
 		"parameters": map[string]any{"outputDimensionality": embeddingWidth},
@@ -388,13 +396,15 @@ func (p *probe) checkEmbedPredict(ctx context.Context, model string) result {
 	return r
 }
 
-// checkEmbedContent tries the AI Studio method name, so the report says
-// explicitly whether the existing shape survives on the platform.
-func (p *probe) checkEmbedContent(ctx context.Context, model string) result {
-	r := result{name: "embedding :embedContent: " + model}
+// checkEmbedContent tries the :embedContent method — the AI Studio shape, and
+// on the platform the method gemini-embedding-2 is served by (001 404s on it).
+// fatal=true when the deployment's configured embedding model routes through
+// this method, so the wrong model still fails the gate it is meant to fail.
+func (p *probe) checkEmbedContent(ctx context.Context, model string, fatal bool) result {
+	r := result{name: "embedding :embedContent: " + model, fatal: fatal}
 	payload := map[string]any{
-		"model":   "models/" + model,
-		"content": map[string]any{"parts": []map[string]any{{"text": "probe"}}},
+		"content":              map[string]any{"parts": []map[string]any{{"text": "khmer customer service probe"}}},
+		"outputDimensionality": embeddingWidth,
 	}
 	status, body, err := p.post(ctx, p.modelBase+"/"+model+":embedContent", payload)
 	r.status = status
@@ -402,8 +412,30 @@ func (p *probe) checkEmbedContent(ctx context.Context, model string) result {
 		r.detail = err.Error()
 		return r
 	}
-	r.ok = status == http.StatusOK
-	r.detail = summarize(status, body)
+	if status != http.StatusOK {
+		r.detail = summarize(status, body)
+		return r
+	}
+	// :embedContent answers {"embedding":{"values":[…]}} — a single object, not
+	// the predictions array the :predict shape returns.
+	var v struct {
+		Embedding struct {
+			Values []float64 `json:"values"`
+		} `json:"embedding"`
+	}
+	if json.Unmarshal(body, &v) != nil || len(v.Embedding.Values) == 0 {
+		// Fall back to the array-shaped reader: the platform has shipped more
+		// than one envelope for embeddings.
+		if got := dimensions(body); got != "?" {
+			r.ok = got == fmt.Sprint(embeddingWidth)
+			r.detail = fmt.Sprintf("dim=%s (want %d)", got, embeddingWidth)
+			return r
+		}
+		r.detail = "200 but no vector in the response: " + summarize(status, body)
+		return r
+	}
+	r.ok = len(v.Embedding.Values) == embeddingWidth
+	r.detail = fmt.Sprintf("dim=%d (want %d)", len(v.Embedding.Values), embeddingWidth)
 	return r
 }
 

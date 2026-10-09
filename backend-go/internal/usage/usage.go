@@ -19,11 +19,17 @@ const (
 	inputPer1M    = 0.30
 	outputPer1M   = 2.50
 	cachedInPer1M = 0.03
-	// embeddingPer1M is the embedding model's list price. It is a separate rate
+	// embeddingPer1M is gemini-embedding-001's list price. It is a separate rate
 	// because an embedding billed at the chat input rate would overstate a
 	// document ingest by an order of magnitude and shed turns at the spend gate
 	// for no reason.
 	embeddingPer1M = 0.15
+	// embeddingPer1MGE2 is gemini-embedding-2's list price ($0.20 / 1M text
+	// tokens, public pricing page 2026-10-09). Kept as its own constant because
+	// the two models are both live during a migration window, and a dashboard
+	// that keeps pricing GE2 rows at GE1's rate under-counts the spend exactly
+	// while an operator is watching it.
+	embeddingPer1MGE2 = 0.20
 )
 
 // EstimateCostFor prices one call by the model that served it: the chat formula
@@ -33,12 +39,28 @@ func EstimateCostFor(model string, prompt, completion, cached int) float64 {
 		if prompt < 0 {
 			prompt = 0
 		}
-		return float64(prompt) / 1e6 * embeddingPer1M
+		return float64(prompt) / 1e6 * embeddingRatePer1M(model)
 	}
 	if isClaude(model) {
 		return estimateClaude(prompt, completion, cached)
 	}
 	return EstimateCost(prompt, completion, cached)
+}
+
+// embeddingRatePer1M returns the list rate for an embedding model name, using
+// the NEWER rate whenever the name is not recognisably one of the two known
+// models: under-counting a spend guardrail is the failure direction that
+// actually hurts.
+func embeddingRatePer1M(model string) float64 {
+	lower := strings.ToLower(model)
+	if strings.Contains(lower, "embedding-2") {
+		return embeddingPer1MGE2
+	}
+	if strings.Contains(lower, "gemini-embedding-001") || strings.Contains(lower, "text-embedding") ||
+		strings.Contains(lower, "textembedding") {
+		return embeddingPer1M
+	}
+	return embeddingPer1MGE2
 }
 
 // Claude list prices (USD per 1M tokens) for claude-haiku-5-5, the one model the

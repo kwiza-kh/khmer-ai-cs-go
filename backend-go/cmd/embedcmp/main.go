@@ -318,6 +318,10 @@ func buildServices(apiKey, saFile, project, region string) (studio, vertexSvc *g
 
 	setenv("GEMINI_PROVIDER", "studio")
 	studio = gemini.New(apiKey, gemini.EmbeddingModel, 0)
+	// Pin the model: this tool's premise, its corpus filter and its report all
+	// name 001, so inheriting GEMINI_EMBEDDING_MODEL from the host's .env-go
+	// would silently measure a different model than the one it prints.
+	studio.SetEmbeddingModel(gemini.EmbeddingModelGE1)
 	if !studio.IsConfigured() {
 		// On the studio path an empty key means mock mode, and mock mode would
 		// silently compare a constant template vector against real Vertex
@@ -343,6 +347,7 @@ func buildServices(apiKey, saFile, project, region string) (studio, vertexSvc *g
 		return nil, nil, fmt.Errorf("vertex configuration: %w", err)
 	}
 	vertexSvc = gemini.New("", gemini.EmbeddingModel, 0)
+	vertexSvc.SetEmbeddingModel(gemini.EmbeddingModelGE1)
 	if !vertexSvc.IsConfigured() {
 		return nil, nil, errors.New("vertex service did not configure (no service account?)")
 	}

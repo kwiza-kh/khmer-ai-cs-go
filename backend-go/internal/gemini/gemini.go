@@ -28,11 +28,107 @@ import (
 )
 
 const (
-	// EmbeddingModel — shared with the Rust backend (identical vectors).
-	EmbeddingModel = "gemini-embedding-001"
-	// embeddingVectorDimension matches EmbeddingModel's output width.
+	// EmbeddingModelGE1 and EmbeddingModelGE2 are the two embedding models this
+	// codebase routes. They are NOT interchangeable: the vector spaces are
+	// incompatible (a corpus indexed with one cannot be queried with the other),
+	// they disagree on the serving method on Vertex — 001 answers :predict,
+	// 002 answers :embedContent and 404s on :predict (measured 2026-10-09,
+	// production project, region global) — and 002 has no batch entry point at
+	// all. 001 retires no sooner than 2028-05; 002 is its named successor.
+	EmbeddingModelGE1 = "gemini-embedding-001"
+	EmbeddingModelGE2 = "gemini-embedding-2"
+
+	// EmbeddingModel is the name used when GEMINI_EMBEDDING_MODEL is unset. It
+	// deliberately stays the legacy model: an unconfigured or misconfigured
+	// deployment must keep behaving exactly as it did before 002 existed, in the
+	// same way GEMINI_PROVIDER defaults to studio. The switch to 002 is an
+	// explicit env change (see ConfiguredEmbeddingModel), never a silent default
+	// flip.
+	EmbeddingModel = EmbeddingModelGE1
+
+	// embeddingModelEnv names the deployment's embedding model.
+	embeddingModelEnv = "GEMINI_EMBEDDING_MODEL"
+
+	// embeddingVectorDimension is the width knowledge_chunks.embedding holds.
+	// BOTH models default to 3072 when outputDimensionality is omitted, so every
+	// call site must send it; a wrong width is not an upstream error (the call
+	// succeeds) and only surfaces later as a pgvector mismatch or bad search.
 	embeddingVectorDimension = 768
+
+	// embeddingBatchConcurrency bounds the parallel per-text calls that replace
+	// batching for models with no batch entry point (002). 6 is deliberately
+	// modest: the embedding quota is shared with the reply path and the
+	// keep-warm probe, and the 2026-10-05 quota storm showed what saturating it
+	// does to retrieval. Raise it only with the quota headroom to match.
+	embeddingBatchConcurrency = 6
 )
+
+// ConfiguredEmbeddingModel resolves GEMINI_EMBEDDING_MODEL: the model this
+// deployment embeds and searches with. It is read per call like every other env
+// knob, so tests and the A/B tooling (cmd/embedab) can point one process at one
+// model without rebuilding.
+func ConfiguredEmbeddingModel() string {
+	return NormalizeModelName(config.EnvText(embeddingModelEnv, EmbeddingModel))
+}
+
+// embeddingShape describes how ONE embedding model is addressed and conditioned.
+// It is a table rather than a switch so a model can be added in one place, and
+// so the differences that matter are visible side by side:
+//
+//	model                  vertex method   batch        conditioning
+//	gemini-embedding-001   :predict        yes          taskType (studio only)
+//	gemini-embedding-2     :embedContent   NO           prompt prefixes
+//
+// Measured 2026-10-09 on the production project (global): 002 answers
+// :embedContent with any outputDimensionality in {256,768,1536,3072} and returns
+// unit-normalised vectors; :batchEmbedContents is an HTML 404 on the platform
+// route; an explicit taskType is accepted and IGNORED (vectors bit-identical to
+// no taskType), which is why 002 is conditioned with the documented prefixes
+// instead — "task: search result | query: …" for queries and
+// "title: none | text: …" for documents.
+type embeddingShape struct {
+	// vertexMethod is the serving method on the platform.
+	vertexMethod string
+	// nativeBatch reports a one-call batch entry point: studio :batchEmbedContents
+	// for 001, the multi-instance :predict for 001 on vertex. 002 has none.
+	nativeBatch bool
+	// queryPrefix/documentPrefix prepend the model's task idiom. Empty for 001,
+	// whose conditioning (where it exists) is the taskType field.
+	queryPrefix    string
+	documentPrefix string
+}
+
+func embeddingShapeFor(model string) embeddingShape {
+	if isEmbeddingModelGE2(model) {
+		return embeddingShape{
+			vertexMethod:   ":embedContent",
+			nativeBatch:    false,
+			queryPrefix:    "task: search result | query: ",
+			documentPrefix: "title: none | text: ",
+		}
+	}
+	return embeddingShape{vertexMethod: ":predict", nativeBatch: true}
+}
+
+// isEmbeddingModelGE2 matches the 002 family by prefix, not equality, so a
+// spelled suffix (gemini-embedding-2-preview) routes to the same serving shape
+// instead of silently falling back to 001's :predict — which 404s — as its
+// "failure mode". An unknown future name still falls back to the legacy shape:
+// that is the direction that fails loudly (404) rather than mixing vector
+// spaces.
+func isEmbeddingModelGE2(model string) bool {
+	return strings.HasPrefix(NormalizeModelName(model), EmbeddingModelGE2)
+}
+
+// EmbeddingVertexMethod names the :method a model is served by on the Vertex
+// platform — ":predict" for 001, ":embedContent" for 002 (measured 2026-10-09;
+// each 404s on the other's method). Exported for cmd/vertexprobe, whose job is
+// to certify that THIS deployment's model still resolves, so it must ask the
+// same table the client routes with instead of hard-coding a method that was
+// right for the previous model.
+func EmbeddingVertexMethod(model string) string {
+	return embeddingShapeFor(model).vertexMethod
+}
 
 // FastModel routes auxiliary calls (rewrite/rerank/audit) to a cheap model.
 // GEMINI_FAST_MODEL overrides it per deploy.
@@ -212,6 +308,16 @@ type Service struct {
 	// can see that the deployment is running on its second transport).
 	failovers atomic.Int64
 
+	// embedModel is the embedding model in force: GEMINI_EMBEDDING_MODEL
+	// resolved in New, overridable for A/B tooling via SetEmbeddingModel. Empty
+	// means "resolve from the environment per call" — the zero-value Service
+	// must keep working.
+	embedModel string
+	// embedPrefixes enables the prefix conditioning GE2 was trained for (GE1's
+	// prefixes are empty, so this is a no-op for it). On in New; SetEmbeddingPrefixes
+	// exists for the A/B tooling that measures the prefix's effect.
+	embedPrefixes bool
+
 	mu         sync.Mutex
 	embedCache map[string]embedCacheEntry
 }
@@ -225,14 +331,16 @@ type embedCacheEntry struct {
 func New(apiKey, model string, maxTokens int) *Service {
 	prov, provErr := providerFromEnv()
 	s := &Service{
-		apiKey:       apiKey,
-		modelName:    NormalizeModelName(model),
-		systemPrompt: DefaultSystemPrompt,
-		maxTokens:    maxTokens,
-		provider:     prov,
-		providerErr:  provErr,
-		region:       NormalizeRegion(prov.vertex.region),
-		embedCache:   make(map[string]embedCacheEntry),
+		apiKey:        apiKey,
+		modelName:     NormalizeModelName(model),
+		systemPrompt:  DefaultSystemPrompt,
+		maxTokens:     maxTokens,
+		provider:      prov,
+		providerErr:   provErr,
+		region:        NormalizeRegion(prov.vertex.region),
+		embedModel:    ConfiguredEmbeddingModel(),
+		embedPrefixes: true,
+		embedCache:    make(map[string]embedCacheEntry),
 	}
 	// Resolve the failover transport once, here, for the reason the field
 	// documents: building a vertex provider reads the service-account file.
@@ -368,6 +476,103 @@ func (s *Service) ModelName() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.modelName
+}
+
+// EmbeddingModel reports the embedding model this service embeds and searches
+// with. The zero-value Service resolves it from the environment, so a Service
+// assembled without New behaves exactly like one built by it.
+func (s *Service) EmbeddingModel() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.embedModel == "" {
+		return ConfiguredEmbeddingModel()
+	}
+	return s.embedModel
+}
+
+// SetEmbeddingModel pins the embedding model for this service, overriding
+// GEMINI_EMBEDDING_MODEL. Intended for measurement tooling that needs two
+// models in one process (cmd/embedab); production switches the env var instead
+// — one writer, one source of truth. The query cache is keyed by model, so a
+// swap cannot serve one model's vectors for another's query.
+func (s *Service) SetEmbeddingModel(model string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.embedModel = NormalizeModelName(model)
+}
+
+// SetEmbeddingPrefixes toggles the GE2 prompt-prefix conditioning. It exists so
+// a measurement can isolate the prefix's effect; a deployment that never calls
+// it gets the documented prefixes.
+func (s *Service) SetEmbeddingPrefixes(enabled bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.embedPrefixes = enabled
+}
+
+// conditionText applies this service's embedding conditioning to raw text.
+//
+// It is the ONE place the text that goes on the wire is assembled, shared by
+// the embed calls and by the query cache key — two copies of this rule would
+// let a cached vector from one conditioning answer for the other.
+//
+// GE1 sends the text raw here because its conditioning is the taskType FIELD
+// (studio) or nothing at all (vertex, which ignores task fields — measured);
+// GE2 ignores taskType and is conditioned by these prefixes instead.
+func (s *Service) conditionText(text, taskType string) string {
+	s.mu.Lock()
+	model := s.embedModel
+	prefixes := s.embedPrefixes
+	s.mu.Unlock()
+	if model == "" {
+		model = ConfiguredEmbeddingModel()
+	}
+	shape := embeddingShapeFor(model)
+	if !prefixes {
+		return text
+	}
+	switch taskType {
+	case "RETRIEVAL_QUERY":
+		return shape.queryPrefix + text
+	case "RETRIEVAL_DOCUMENT":
+		return shape.documentPrefix + text
+	default:
+		return text
+	}
+}
+
+// conditionDocument applies the DOCUMENT-side conditioning, using the
+// document's real title when the indexing path knows it.
+//
+// This is where the measured result lives: GE2's documented idiom is
+// "title: <title> | text: <text>", and filling the title field with a real
+// title beat both the placeholder and the bare text on the production Khmer
+// corpus (recall@5 0.563 vs 0.492 vs 0.548 respectively, 2026-10-09). A title
+// that is present but blank falls back to the placeholder, so a document whose
+// title is whitespace cannot produce a malformed prefix.
+//
+// Models with no prefix conditioning (GE1) get the text unchanged: their
+// vectors must stay byte-identical to the ones already in the column.
+func (s *Service) conditionDocument(title, text string) string {
+	s.mu.Lock()
+	model := s.embedModel
+	prefixes := s.embedPrefixes
+	s.mu.Unlock()
+	if model == "" {
+		model = ConfiguredEmbeddingModel()
+	}
+	if !prefixes {
+		return text
+	}
+	shape := embeddingShapeFor(model)
+	if shape.documentPrefix == "" {
+		// GE1: no document-side conditioning exists, not even a placeholder.
+		return text
+	}
+	if t := strings.TrimSpace(title); t != "" {
+		return "title: " + t + " | text: " + text
+	}
+	return shape.documentPrefix + text
 }
 
 // snapshot returns an immutable copy of the serving config for one request.
@@ -2081,32 +2286,77 @@ func (s *Service) GenerateEmbedding(ctx context.Context, text string) ([]float32
 	return s.embed(ctx, text, "RETRIEVAL_DOCUMENT")
 }
 
-// GenerateEmbeddings — batch document embeddings via batchEmbedContents
-// (up to 100 texts per call; falls back to per-text calls on batch failure).
+// GenerateEmbeddings — batch document embeddings for callers that hold only
+// texts (no titles). See GenerateDocumentEmbeddings for the indexing path.
 func (s *Service) GenerateEmbeddings(ctx context.Context, texts []string) ([][]float32, error) {
+	return s.generateEmbeddings(ctx, s.conditionedTexts(texts, "RETRIEVAL_DOCUMENT"))
+}
+
+// GenerateDocumentEmbeddings — the indexing path: embeds each chunk with its
+// DOCUMENT's title where the model supports it.
+//
+// WHY TITLES: GE2's documented document idiom is "title: <title> | text: <text>",
+// and it is not decorative. Measured 2026-10-09 on the production Khmer corpus
+// (602 chunks, 126 generated questions): with the field filled by a real title
+// recall@5 = 0.563 / MRR 0.384; with the documented placeholder ("title: none")
+// the SAME model scored 0.492 / 0.361 — worse than the model it is replacing.
+// The placeholder is not neutral, it is actively harmful on this corpus, so the
+// title is passed through rather than fabricated.
+//
+// GE1 is unaffected: it has no such conditioning, so titles are ignored and its
+// vectors stay byte-identical to the ones already in the column (which is what
+// makes the switch reversible without a re-embed in the other direction).
+//
+// The return contract matches GenerateEmbeddings: n vectors in input order.
+func (s *Service) GenerateDocumentEmbeddings(ctx context.Context, titles, texts []string) ([][]float32, error) {
+	conditioned := make([]string, len(texts))
+	for i, text := range texts {
+		title := ""
+		if i < len(titles) {
+			title = titles[i]
+		}
+		conditioned[i] = s.conditionDocument(title, text)
+	}
+	return s.generateEmbeddings(ctx, conditioned)
+}
+
+// generateEmbeddings dispatches ALREADY-CONDITIONED texts to the batch path its
+// model supports; see GenerateEmbeddings for the contract.
+//
+// GE1 uses its native batch entry point (up to 100 texts per call; falls back
+// to per-text calls on batch failure). GE2 has NO batch entry point on either
+// platform (measured 2026-10-09: :batchEmbedContents is an HTML 404 on the
+// platform route, and multi-instance :predict 404s for the model itself), so
+// its documents go one text per call, bounded by embeddingBatchConcurrency.
+func (s *Service) generateEmbeddings(ctx context.Context, conditioned []string) ([][]float32, error) {
 	if !s.IsConfigured() {
 		mock := MockEmbedding()
-		out := make([][]float32, len(texts))
+		out := make([][]float32, len(conditioned))
 		for i := range out {
 			out[i] = mock
 		}
 		return out, nil
 	}
-	out := make([][]float32, 0, len(texts))
-	for start := 0; start < len(texts); start += 100 {
+	if !embeddingShapeFor(s.EmbeddingModel()).nativeBatch {
+		return s.embedAllConcurrent(ctx, conditioned)
+	}
+	out := make([][]float32, 0, len(conditioned))
+	for start := 0; start < len(conditioned); start += 100 {
 		end := start + 100
-		if end > len(texts) {
-			end = len(texts)
+		if end > len(conditioned) {
+			end = len(conditioned)
 		}
-		batch := texts[start:end]
+		batch := conditioned[start:end]
 		vecs, err := s.embedBatch(ctx, batch)
 		if err != nil {
 			// Fall back to per-text embedding so one bad batch never blocks
-			// indexing.
-			for _, text := range batch {
-				vec, err := s.embed(ctx, text, "RETRIEVAL_DOCUMENT")
+			// indexing. The fallback costs one round trip per text, which is why
+			// it stays a fallback; GE2 is that path by design. The texts are
+			// already conditioned, so the fallback embeds them as they are.
+			for i, text := range batch {
+				vec, err := s.embedConditioned(ctx, text, "RETRIEVAL_DOCUMENT")
 				if err != nil {
-					return nil, err
+					return nil, fmt.Errorf("text %d: %w", start+i, err)
 				}
 				vecs = append(vecs, vec)
 			}
@@ -2116,21 +2366,85 @@ func (s *Service) GenerateEmbeddings(ctx context.Context, texts []string) ([][]f
 	return out, nil
 }
 
-func (s *Service) embedBatch(ctx context.Context, texts []string) ([][]float32, error) {
+// embedAllConcurrent embeds one text per call with at most
+// embeddingBatchConcurrency in flight, preserving input order.
+//
+// This is the batching story for models with no batch API. Order preservation
+// is part of the contract: indexDocument pairs embeddings[i] with chunks[i] by
+// index, so a reordered or dropped result would silently mismatch every chunk
+// of the document with its vector. The first error cancels the batch — a
+// partially embedded document must fail, not be stored half-vectorised.
+//
+// Texts arrive ALREADY conditioned; this function adds no prefix of its own.
+func (s *Service) embedAllConcurrent(ctx context.Context, conditioned []string) ([][]float32, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	out := make([][]float32, len(conditioned))
+	sem := make(chan struct{}, embeddingBatchConcurrency)
+	var wg sync.WaitGroup
+	var firstErrOnce sync.Once
+	var firstErr error
+	for i := range conditioned {
+		if ctx.Err() != nil {
+			break
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			vec, err := s.embedConditioned(ctx, conditioned[i], "RETRIEVAL_DOCUMENT")
+			if err != nil {
+				firstErrOnce.Do(func() {
+					firstErr = fmt.Errorf("text %d: %w", i, err)
+					cancel()
+				})
+				return
+			}
+			out[i] = vec
+		}(i)
+	}
+	wg.Wait()
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	if err := ctx.Err(); err != nil {
+		// A cancellation with no reported per-text error came from the caller's
+		// own context dying mid-batch; surface it rather than the misleading
+		// "vector was not produced" the nil scan below would invent.
+		return nil, err
+	}
+	for i, vec := range out {
+		if vec == nil {
+			return nil, fmt.Errorf("embedding %d of %d was not produced", i, len(conditioned))
+		}
+	}
+	return out, nil
+}
+
+func (s *Service) embedBatch(ctx context.Context, conditioned []string) ([][]float32, error) {
 	// The body differs per provider (studio: :batchEmbedContents with a
 	// `requests` array; vertex: one :predict carrying `instances`) — see
 	// provider.embedBatchBody. The return contract does not: n vectors of
-	// embeddingVectorDimension, in input order.
+	// embeddingVectorDimension, in input order. Texts arrive already
+	// conditioned, exactly as they will be sent.
+	model := s.EmbeddingModel()
+	// GE2 has no batch entry point on either platform; a direct caller that
+	// missed generateEmbeddings' dispatch gets the concurrent path rather than a
+	// 404-shaped failure.
+	if !embeddingShapeFor(model).nativeBatch {
+		return s.embedAllConcurrent(ctx, conditioned)
+	}
 	prov, err := s.activeProvider()
 	if err != nil {
 		return nil, err
 	}
-	status, respText, err := s.postWithRetry(ctx, prov.batchEmbedURL(), prov.embedBatchBody(texts))
+	status, respText, err := s.postWithRetry(ctx, prov.batchEmbedURL(model), prov.embedBatchBody(model, conditioned))
 	if err != nil {
-		return nil, fmt.Errorf("batchEmbedContents request: %w", err)
+		return nil, fmt.Errorf("batch embed request: %w", err)
 	}
 	if status != http.StatusOK {
-		return nil, fmt.Errorf("batchEmbedContents failed (%d): %s", status, textutil.Ellipsize(respText, 300))
+		return nil, fmt.Errorf("batch embed failed (%d): %s", status, textutil.Ellipsize(respText, 300))
 	}
 	// Embedded spend used to be invisible: the auxiliary observer is fed by the
 	// generative calls only. Reported here, before the provider split, because the
@@ -2139,34 +2453,48 @@ func (s *Service) embedBatch(ctx context.Context, texts []string) ([][]float32, 
 	// returns a vector, not usageMetadata), the same 4-chars-per-token heuristic the
 	// mock path uses; the rate is usage.embeddingPer1M, not the chat input rate.
 	total := 0
-	for _, t := range texts {
+	for _, t := range conditioned {
 		total += len(t)
 	}
-	reportAuxUsage(ctx, EmbeddingModel, total/4, 0, 0)
+	reportAuxUsage(ctx, model, total/4, 0, 0)
 	if prov.kind == providerVertex {
-		return parseVertexPredictBatch(respText, len(texts))
+		return parseVertexPredictBatch(respText, len(conditioned), model)
 	}
 	var v struct {
 		Embeddings []struct {
 			Values []float32 `json:"values"`
 		} `json:"embeddings"`
 	}
-	if json.Unmarshal([]byte(respText), &v) != nil || len(v.Embeddings) != len(texts) {
-		return nil, fmt.Errorf("batchEmbedContents: invalid response")
+	if json.Unmarshal([]byte(respText), &v) != nil || len(v.Embeddings) != len(conditioned) {
+		return nil, fmt.Errorf("batch embed: invalid response")
 	}
 	out := make([][]float32, len(v.Embeddings))
 	for i, e := range v.Embeddings {
 		if len(e.Values) == 0 {
-			return nil, fmt.Errorf("batchEmbedContents: empty vector at %d", i)
+			return nil, fmt.Errorf("batch embed: empty vector at %d", i)
 		}
 		out[i] = e.Values
 	}
 	return out, nil
 }
 
+// conditionedTexts applies conditionText to each text in order.
+func (s *Service) conditionedTexts(texts []string, taskType string) []string {
+	out := make([]string, len(texts))
+	for i, t := range texts {
+		out[i] = s.conditionText(t, taskType)
+	}
+	return out
+}
+
 // GenerateQueryEmbedding — query-time vector, cached 5 minutes.
 func (s *Service) GenerateQueryEmbedding(ctx context.Context, text string) ([]float32, error) {
-	key := strings.ToLower(strings.TrimSpace(text))
+	// The cache key carries BOTH the model and the conditioned text: a cache
+	// keyed by raw text alone would answer a GE2 query with a GE1 vector (or a
+	// prefixed query with the plain text's vector) for five minutes after any
+	// model or prefix switch — the worst kind of stale, because every retrieval
+	// still "succeeds".
+	key := s.EmbeddingModel() + "\x00" + strings.ToLower(s.conditionText(text, "RETRIEVAL_QUERY"))
 	s.mu.Lock()
 	if entry, ok := s.embedCache[key]; ok && time.Since(entry.at) < 5*time.Minute {
 		s.mu.Unlock()
@@ -2191,36 +2519,48 @@ func (s *Service) GenerateQueryEmbedding(ctx context.Context, text string) ([]fl
 	return vec, nil
 }
 
+// embed conditions raw text and embeds it — the single-text entry point for
+// callers that hold only text (queries, probes, similarity samples).
 func (s *Service) embed(ctx context.Context, text, taskType string) ([]float32, error) {
+	return s.embedConditioned(ctx, s.conditionText(text, taskType), taskType)
+}
+
+// embedConditioned embeds text that is already in its final wire form: the ONE
+// place a single embedding is requested, its billed usage is reported, and its
+// width is validated.
+func (s *Service) embedConditioned(ctx context.Context, text, taskType string) ([]float32, error) {
 	if !s.IsConfigured() {
 		return MockEmbedding(), nil
 	}
+	model := s.EmbeddingModel()
 	prov, err := s.activeProvider()
 	if err != nil {
 		return nil, err
 	}
-	// Same query/document split, two different bodies — see provider.embedBody.
-	status, respText, err := s.postWithRetry(ctx, prov.embedURL(), prov.embedBody(text, taskType))
+	// The body shape (instances/:predict vs content/:embedContent) lives behind
+	// the provider — see provider.embedBody. taskType reaches the studio-GE1
+	// body, the one transport that conditions on the field.
+	status, respText, err := s.postWithRetry(ctx, prov.embedURL(model), prov.embedBody(model, text, taskType))
 	if err != nil {
-		return nil, fmt.Errorf("embedContent request: %w", err)
+		return nil, fmt.Errorf("embed request: %w", err)
 	}
 	if status != http.StatusOK {
-		return nil, fmt.Errorf("embedContent failed (%d): %s", status, textutil.Ellipsize(respText, 300))
+		return nil, fmt.Errorf("embed failed (%d): %s", status, textutil.Ellipsize(respText, 300))
 	}
 	// Single-document/query embedding: same reasoning as embedBatch above —
 	// reported before validation so a billed call is always recorded.
-	reportAuxUsage(ctx, EmbeddingModel, len(text)/4, 0, 0)
+	reportAuxUsage(ctx, model, len(text)/4, 0, 0)
 	var v map[string]any
 	if json.Unmarshal([]byte(respText), &v) != nil {
-		return nil, fmt.Errorf("embedContent: invalid response")
+		return nil, fmt.Errorf("embed: invalid response")
 	}
-	values := prov.embeddingValues(v, 0)
+	values := prov.embeddingValues(v, 0, model)
 	if len(values) != embeddingVectorDimension {
 		// Checked here rather than at the pgvector INSERT because a wrong-width
 		// vector is not an error upstream: the call succeeds, and the mismatch
 		// only surfaces later as a failed insert or as silently bad search
 		// results. See embeddingWidthError.
-		return nil, embeddingWidthError(prov.kind, len(values))
+		return nil, embeddingWidthError(prov, model, len(values))
 	}
 	out := make([]float32, len(values))
 	for i, n := range values {

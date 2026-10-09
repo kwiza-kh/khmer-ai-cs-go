@@ -17,19 +17,40 @@ import (
 
 // embedBody builds the body for embedding ONE text.
 //
-// The two shapes (both measured by cmd/vertexprobe against the real endpoints):
+// The shapes were each measured against the real endpoints:
 //
-//	studio: {"model":"models/gemini-embedding-001","content":{"parts":[{"text":…}]},
-//	         "taskType":…,"outputDimensionality":768}
-//	vertex: {"instances":[{"content":"…"}],"parameters":{"outputDimensionality":768}}
+//	studio (both models):
+//	  {"model":"models/{model}","content":{"parts":[{"text":…}]},
+//	   "taskType":…,"outputDimensionality":768}
+//	vertex gemini-embedding-001:
+//	  {"instances":[{"content":"…"}],"parameters":{"outputDimensionality":768}}
+//	vertex gemini-embedding-2:
+//	  {"content":{"parts":[{"text":…}]},"outputDimensionality":768}
 //
-// outputDimensionality is mandatory on both, and for the same reason: the
-// model's own default is 3072 while knowledge_chunks is vector(768). Omitting
-// it does not fail the call — it returns vectors of the wrong width, which
+// GE2's :predict answers 404 (measured 2026-10-09: "Publisher model … was not
+// found or your project does not have access to it") and 001's :embedContent
+// answers 404 in the mirror image, so the method AND the body are chosen
+// together by embeddingShapeFor — a body from one shape sent to the other
+// method fails every retrieval.
+//
+// outputDimensionality is mandatory on both, and for the same reason: both
+// models default to 3072 while knowledge_chunks is vector(768). Omitting it
+// does not fail the call — it returns vectors of the wrong width, which
 // pgvector then rejects on insert ("expected 768 dimensions"), or, for a QUERY
 // vector, silently compares against a column of a different width.
-func (p provider) embedBody(text, taskType string) map[string]any {
+//
+// taskType: GE1-studio conditions on it and gets it verbatim. The vertex
+// endpoints ignore task fields (measured on both models), so text arrives here
+// already conditioned by the caller (see Service.conditionText) and the field
+// is omitted rather than sent dead weight.
+func (p provider) embedBody(model, text, taskType string) map[string]any {
 	if p.kind == providerVertex {
+		if isEmbeddingModelGE2(model) {
+			return map[string]any{
+				"content":              map[string]any{"parts": []map[string]any{{"text": text}}},
+				"outputDimensionality": embeddingVectorDimension,
+			}
+		}
 		// Only the two fields the platform was measured to accept are sent here.
 		// taskType has no verified spelling on :predict (the platform's docs use
 		// snake_case task_type for some embedding models and camelCase for
@@ -41,22 +62,32 @@ func (p provider) embedBody(text, taskType string) map[string]any {
 			"parameters": map[string]any{"outputDimensionality": embeddingVectorDimension},
 		}
 	}
-	return map[string]any{
-		"model":                "models/" + EmbeddingModel,
+	body := map[string]any{
+		"model":                "models/" + NormalizeModelName(model),
 		"content":              map[string]any{"parts": []map[string]any{{"text": text}}},
-		"taskType":             taskType,
 		"outputDimensionality": embeddingVectorDimension,
 	}
+	if !isEmbeddingModelGE2(model) {
+		// GE1-studio conditions on taskType; GE2 ignores it (measured on the
+		// platform) and is conditioned by the prompt prefixes instead, so the
+		// field is omitted rather than sent as dead weight.
+		body["taskType"] = taskType
+	}
+	return body
 }
 
 // embedBatchBody builds the body for embedding N texts.
 //
-// Vertex has no :batchEmbedContents at all: the generic :predict takes an
-// `instances` array and answers with one prediction per instance, so batching
+// Vertex has no :batchEmbedContents at all: for 001 the generic :predict takes
+// an `instances` array and answers with one prediction per instance, so batching
 // survives the migration as a shape change rather than a lost capability —
 // which matters, because the per-text fallback in GenerateEmbeddings costs one
 // round trip per chunk of an ingested document.
-func (p provider) embedBatchBody(texts []string) map[string]any {
+//
+// GE2 is never sent here: neither platform batches it (its :predict 404s and
+// :batchEmbedContents is an HTML 404 on the platform route — measured
+// 2026-10-09), so GenerateEmbeddings routes it to embedAllConcurrent instead.
+func (p provider) embedBatchBody(model string, texts []string) map[string]any {
 	if p.kind == providerVertex {
 		instances := make([]map[string]any, len(texts))
 		for i, text := range texts {
@@ -70,7 +101,7 @@ func (p provider) embedBatchBody(texts []string) map[string]any {
 	requests := make([]map[string]any, len(texts))
 	for i, text := range texts {
 		requests[i] = map[string]any{
-			"model":                "models/" + EmbeddingModel,
+			"model":                "models/" + NormalizeModelName(model),
 			"content":              map[string]any{"parts": []map[string]any{{"text": text}}},
 			"taskType":             "RETRIEVAL_DOCUMENT",
 			"outputDimensionality": embeddingVectorDimension,
@@ -80,11 +111,12 @@ func (p provider) embedBatchBody(texts []string) map[string]any {
 }
 
 // embeddingValues reads vector i out of a single-embedding response.
-func (p provider) embeddingValues(v map[string]any, i int) []float64 {
-	if p.kind == providerVertex {
+func (p provider) embeddingValues(v map[string]any, i int, model string) []float64 {
+	if p.kind == providerVertex && !isEmbeddingModelGE2(model) {
 		return vertexPredictValues(v, i)
 	}
-	// Studio's :embedContent answers {"embedding":{"values":[…]}}.
+	// :embedContent — studio for both models, and GE2 on the platform — answers
+	// {"embedding":{"values":[…]}} (measured 2026-10-09 for GE2/vertex).
 	return digArray(v, "embedding", "values")
 }
 
@@ -134,24 +166,26 @@ func float64Slice(arr []any) []float64 {
 	return out
 }
 
+// embedAllConcurrent errors carry the text index — see gemini.go.
+
 // parseVertexPredictBatch reads n vectors out of one :predict response.
 //
-// The width is checked per vector, not once for the batch: a truncated or
-// padded prediction would otherwise be stored as a valid chunk embedding and
-// only surface as bad search results much later.
-func parseVertexPredictBatch(respText string, n int) ([][]float32, error) {
+// GE1 only (GE2 has no batch path). The width is checked per vector, not once
+// for the batch: a truncated or padded prediction would otherwise be stored as
+// a valid chunk embedding and only surface as bad search results much later.
+func parseVertexPredictBatch(respText string, n int, model string) ([][]float32, error) {
 	var v map[string]any
 	if json.Unmarshal([]byte(respText), &v) != nil {
-		return nil, errors.New("batchEmbedContents: invalid response")
+		return nil, errors.New("batch embed: invalid response")
 	}
 	out := make([][]float32, n)
 	for i := 0; i < n; i++ {
 		values := vertexPredictValues(v, i)
 		if len(values) == 0 {
-			return nil, fmt.Errorf("batchEmbedContents: empty vector at %d", i)
+			return nil, fmt.Errorf("batch embed: empty vector at %d", i)
 		}
 		if len(values) != embeddingVectorDimension {
-			return nil, embeddingWidthError(providerVertex, len(values))
+			return nil, embeddingWidthError(provider{kind: providerVertex}, model, len(values))
 		}
 		vec := make([]float32, len(values))
 		for j, f := range values {
@@ -167,12 +201,14 @@ func parseVertexPredictBatch(respText string, n int) ([][]float32, error) {
 // A wrong width is silent upstream — the call succeeds — so the message has to
 // carry the consequence: knowledge_chunks is vector(768), and a 3072-dim
 // vector is rejected by pgvector on insert or, for a query vector, compared
-// against a column it cannot match.
-func embeddingWidthError(kind providerKind, got int) error {
-	if kind == providerVertex {
-		return fmt.Errorf("vertex :predict returned %d dimensions, want %d: parameters.outputDimensionality "+
+// against a column it cannot match. The model is named because the fix differs
+// per model: GEMINI_EMBEDDING_MODEL (shape) vs a request-side bug in
+// embeddingVectorDimension.
+func embeddingWidthError(p provider, model string, got int) error {
+	if p.kind == providerVertex {
+		return fmt.Errorf("vertex embedding (%s) returned %d dimensions, want %d: outputDimensionality "+
 			"was not honoured (the model's default is 3072 and knowledge_chunks is vector(%d))",
-			got, embeddingVectorDimension, embeddingVectorDimension)
+			model, got, embeddingVectorDimension, embeddingVectorDimension)
 	}
 	// Unchanged from before the transport split: the studio caller only ever
 	// acted on the error being non-nil.

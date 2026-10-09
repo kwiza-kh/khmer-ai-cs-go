@@ -210,6 +210,16 @@ func main() {
 	// lexical+trigram only. Regional endpoints measure ~0.3s cold and do not
 	// need this, but the probe is one tiny embedding either way and
 	// GEMINI_EMBED_KEEPWARM_SEC=0 turns it off.
+	//
+	// The embedding model is echoed first: the retriever and the corpus must
+	// name the same model, and a mismatch shows up only as every dense search
+	// returning nothing (searchDense filters on embedding_model). During a model
+	// switch this line plus the re-embed burst from SpawnIndexWorkers is how an
+	// operator tells "the sweep is running" from "the sweep silently did
+	// nothing".
+	logger.Info("embedding model in force",
+		"model", gem.EmbeddingModel(),
+		"keepwarm_interval", gemini.EmbedKeepWarmInterval().String())
 	gem.StartEmbedKeepWarm(ctx, gemini.EmbedKeepWarmInterval())
 
 	// Jev (TypeSafe System One) powers every typed judgment — turn

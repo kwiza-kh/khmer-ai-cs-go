@@ -40,9 +40,11 @@ func TestStudioEndpointsUnchanged(t *testing.T) {
 			"https://relay.example/v1beta/models/gemini-flash-lite-latest:generateContent"},
 		{"streamGenerateContent", s.provider.streamURL("m"),
 			"https://relay.example/v1beta/models/m:streamGenerateContent?alt=sse"},
-		{"embedContent", s.provider.embedURL(),
+		{"embedContent", s.provider.embedURL(EmbeddingModelGE1),
 			"https://relay.example/v1beta/models/gemini-embedding-001:embedContent"},
-		{"batchEmbedContents", s.provider.batchEmbedURL(),
+		{"embedContent GE2", s.provider.embedURL(EmbeddingModelGE2),
+			"https://relay.example/v1beta/models/gemini-embedding-2:embedContent"},
+		{"batchEmbedContents", s.provider.batchEmbedURL(EmbeddingModelGE1),
 			"https://relay.example/v1beta/models/gemini-embedding-001:batchEmbedContents"},
 		{"cachedContents", s.provider.cachedContentsURL(),
 			"https://relay.example/v1beta/cachedContents"},
@@ -120,10 +122,15 @@ func TestVertexEndpointShapes(t *testing.T) {
 		{"generateContent", p.generateURL("gemini-3.5-flash"), models + "/gemini-3.5-flash:generateContent"},
 		{"generateContent strips models/", p.generateURL("models/gemini-3.5-flash"), models + "/gemini-3.5-flash:generateContent"},
 		{"streamGenerateContent", p.streamURL("gemini-3.5-flash"), models + "/gemini-3.5-flash:streamGenerateContent?alt=sse"},
-		// :predict, NOT :embedContent — the latter answers 400
-		// "oneof field '_model' is already set" on the platform.
-		{"embed predict", p.embedURL(), models + "/gemini-embedding-001:predict"},
-		{"batch embed predict", p.batchEmbedURL(), models + "/gemini-embedding-001:predict"},
+		// :predict, NOT :embedContent — the latter 404s for 001 on the platform
+		// (and 002 is the mirror image; see the GE2 case below).
+		{"embed predict", p.embedURL(EmbeddingModelGE1), models + "/gemini-embedding-001:predict"},
+		{"batch embed predict", p.batchEmbedURL(EmbeddingModelGE1), models + "/gemini-embedding-001:predict"},
+		// GE2 is served by the OPPOSITE method on the same host: :embedContent
+		// answers 200 and :predict answers 404 (measured 2026-10-09 on the
+		// production project, region global). A client that hard-coded one method
+		// for both models would fail every retrieval of the other's corpus.
+		{"embedContent GE2", p.embedURL(EmbeddingModelGE2), models + "/gemini-embedding-2:embedContent"},
 		{"cachedContents", p.cachedContentsURL(),
 			r.base + "/projects/gen-lang-client-0354228918/locations/asia-southeast1/cachedContents"},
 		// The cachedContents body's model must be a BARE RESOURCE NAME — no

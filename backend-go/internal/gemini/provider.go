@@ -396,25 +396,36 @@ func (p provider) streamURL(model string) string {
 		apiBase(), NormalizeModelName(model))
 }
 
-// embedURL — the two platforms do not even agree on the METHOD for embeddings.
-// AI Studio serves :embedContent; the platform serves embedding models through
-// the generic :predict. Probing :embedContent against the platform returns
-// 400 `oneof field '_model' is already set` (measured 2026-09-25), so this is
-// not a cosmetic naming difference: the wrong one fails every retrieval.
-func (p provider) embedURL() string {
+// embedURL — the two platforms do not even agree on the METHOD for embeddings,
+// and neither do the two models on ONE platform:
+//
+//	               gemini-embedding-001        gemini-embedding-2
+//	studio         :embedContent               :embedContent
+//	vertex         :predict   (200)            :embedContent (200)
+//
+// Measured 2026-10-09 on the production project/global: 001 :predict → 200 and
+// :embedContent → 404; 002 :embedContent → 200 and :predict → 404 "Publisher
+// model … was not found or your project does not have access to it". The wrong
+// method therefore fails every retrieval, which is why the model — not just the
+// transport — selects it (embeddingShapeFor).
+func (p provider) embedURL(model string) string {
+	model = NormalizeModelName(model)
 	if p.kind == providerVertex {
-		return p.vertex.model(EmbeddingModel) + ":predict"
+		return p.vertex.model(model) + embeddingShapeFor(model).vertexMethod
 	}
-	return fmt.Sprintf("%s/models/%s:embedContent", apiBase(), EmbeddingModel)
+	return fmt.Sprintf("%s/models/%s:embedContent", apiBase(), model)
 }
 
-// batchEmbedURL — Vertex has no batchEmbedContents: one :predict carries every
-// instance (see embedBatchBody).
-func (p provider) batchEmbedURL() string {
+// batchEmbedURL — GE1 only. Vertex serves its batch through the same :predict
+// as its singles; studio through :batchEmbedContents. GE2 has no batch entry
+// point on either platform (measured 2026-10-09), so callers must route it to
+// embedAllConcurrent; this URL would 404 the model.
+func (p provider) batchEmbedURL(model string) string {
+	model = NormalizeModelName(model)
 	if p.kind == providerVertex {
-		return p.vertex.model(EmbeddingModel) + ":predict"
+		return p.vertex.model(model) + ":predict"
 	}
-	return fmt.Sprintf("%s/models/%s:batchEmbedContents", apiBase(), EmbeddingModel)
+	return fmt.Sprintf("%s/models/%s:batchEmbedContents", apiBase(), model)
 }
 
 // cachedContentsURL — the context-cache collection.

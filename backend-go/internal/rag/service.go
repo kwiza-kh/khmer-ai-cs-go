@@ -149,10 +149,13 @@ func (s *Service) SpawnIndexWorkers(ctx context.Context) {
 			"UPDATE knowledge_documents SET index_status = 'pending', index_error = '' WHERE index_status = 'indexing'")
 		// Vectors from a different embedding model are not comparable with
 		// today's query vectors — re-embed those docs with the current model.
+		// The comparison runs in SQL with the model name as a parameter, so the
+		// GEMINI_EMBEDDING_MODEL switch (001 → 002) makes every stale doc
+		// pending on the next boot without a data migration.
 		_, _ = s.DB.Exec(ctx,
 			"UPDATE knowledge_documents SET index_status = 'pending' "+
 				"WHERE index_status = 'ready' AND embedding_model <> '' AND embedding_model <> $1",
-			gemini.EmbeddingModel)
+			s.Gemini.EmbeddingModel())
 	}()
 	// Legacy chunks (indexed before 058) have content_tsv NULL; segment
 	// them in the background so the lexical leg covers them too. Pure lexical
@@ -247,7 +250,7 @@ func (s *Service) indexNextPending(ctx context.Context) bool {
 	// untagged spend is invisible: the 429 storm of 2026-10-05 left NOTHING in
 	// token_usage for gemini-embedding-001.
 	ctx = usage.WithUser(ctx, userID)
-	if err := s.indexDocument(ctx, docID, content); err != nil {
+	if err := s.indexDocument(ctx, docID, title, content); err != nil {
 		s.Logger.Warn("knowledge document indexing failed", "error", err.Error())
 		s.markDocumentFailed(ctx, docID, err.Error())
 		return true
@@ -262,10 +265,18 @@ func (s *Service) indexNextPending(ctx context.Context) bool {
 	return true
 }
 
-func (s *Service) indexDocument(ctx context.Context, docID int32, content string) error {
+func (s *Service) indexDocument(ctx context.Context, docID int32, title, content string) error {
 	content = NormalizeText(content)
 	chunks := ChunkMarkdown(content)
-	embeddings, err := s.Gemini.GenerateEmbeddings(ctx, chunks)
+	// Titles go with the chunks: GE2's document conditioning is measured to
+	// improve when the title field carries the document's REAL title rather than
+	// a placeholder (see gemini.GenerateDocumentEmbeddings). Models without that
+	// conditioning ignore them.
+	titles := make([]string, len(chunks))
+	for i := range titles {
+		titles[i] = title
+	}
+	embeddings, err := s.Gemini.GenerateDocumentEmbeddings(ctx, titles, chunks)
 	if err != nil {
 		return fmt.Errorf("embed chunks: %w", err)
 	}
@@ -294,7 +305,7 @@ func (s *Service) indexDocument(ctx context.Context, docID int32, content string
 	}
 	if _, err := tx.Exec(ctx,
 		"UPDATE knowledge_documents SET chunk_count = $1, embedding_model = $2, index_status = 'ready', index_error = '', last_embedded_at = $3 WHERE doc_id = $4",
-		len(chunks), gemini.EmbeddingModel, now, docID); err != nil {
+		len(chunks), s.Gemini.EmbeddingModel(), now, docID); err != nil {
 		return fmt.Errorf("mark ready: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -622,7 +633,7 @@ func (s *Service) findSimilarDocs(ctx context.Context, userID int32, sample stri
 			"WHERE kd.uploaded_by = $2 AND kd.index_status = 'ready' AND kd.embedding_model = $3 "+
 			"AND 1 - (kc.embedding <=> $1::vector) > 0.88 "+
 			"ORDER BY kc.embedding <=> $1::vector LIMIT 3",
-		gemini.FormatVector(vec), userID, gemini.EmbeddingModel)
+		gemini.FormatVector(vec), userID, s.Gemini.EmbeddingModel())
 	if err != nil {
 		return nil
 	}
@@ -1005,7 +1016,7 @@ func (s *Service) searchDense(ctx context.Context, userID int32, vector string, 
 			"AND kd.embedding_model = $5 "+
 			"AND 1 - (kc.embedding <=> $1::vector) > $2 "+
 			"ORDER BY kc.embedding <=> $1::vector LIMIT $3",
-		vector, currentThresholds().floor, limit, userID, gemini.EmbeddingModel)
+		vector, currentThresholds().floor, limit, userID, s.Gemini.EmbeddingModel())
 	if err != nil {
 		return nil, fmt.Errorf("vector search: %w", err)
 	}

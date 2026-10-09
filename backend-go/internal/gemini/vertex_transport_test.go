@@ -50,6 +50,19 @@ func (s *platformStub) count() int {
 	return len(s.requests)
 }
 
+// requestAt returns the i-th recorded request, in order. Unlike last() it does
+// not fail on an empty log — callers assert the count first, so a missing entry
+// is an indexing bug they have already excluded.
+func (s *platformStub) requestAt(t *testing.T, i int) stubRequest {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if i >= len(s.requests) {
+		t.Fatalf("request %d not recorded (have %d)", i, len(s.requests))
+	}
+	return s.requests[i]
+}
+
 func newPlatformStub(t *testing.T, reply func(r *http.Request, body []byte) (int, string)) *platformStub {
 	t.Helper()
 	stub := &platformStub{}
