@@ -60,6 +60,13 @@ npm run build            # NEXT_PUBLIC_API_URL must be set: it is baked into the
   the reply guard skip a broken strategy; a broken credential stops the turn.
 - **Tests run or they do not exist.** `go test ./...` must be green before a
   push; new behaviour ships with a test that would fail without it.
+- **Tenant data is bound in the statement, or under a funnel.** Every query
+  that touches a tenant table names its tenant column (`user_id`,
+  `uploaded_by`, `owner_user_id`, …) or runs after `ensureSessionAccess` /
+  `ensureConfigOwner`. `internal/tenantscope` enforces that statically (and
+  needs no database, so it cannot skip the way the `DATABASE_URL`-gated
+  isolation tests do); reviewed exceptions carry their reason in
+  `internal/tenantscope/exceptions.go`.
 - Comments explain *why*, and name the incident or the measurement when there is
   one. Do not restate the code.
 

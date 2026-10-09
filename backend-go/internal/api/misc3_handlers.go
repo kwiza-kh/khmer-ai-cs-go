@@ -177,6 +177,14 @@ type createHandoffRequest struct {
 
 func (a *App) createHandoffRequest(w http.ResponseWriter, r *http.Request) (any, error) {
 	user, _ := UserFrom(r)
+	// Escalating a conversation to a human is inbox work: a seat needs the
+	// takeover grant, and the tenant it acts in is the owner's — never the
+	// seat's own user id, which would file the request in a tenant nobody
+	// works in.
+	if err := requirePermission(user, PermInboxTakeover); err != nil {
+		return nil, err
+	}
+	tid := user.Tenant()
 	var req createHandoffRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		return nil, ErrBadRequest("请求格式错误")
@@ -197,7 +205,7 @@ func (a *App) createHandoffRequest(w http.ResponseWriter, r *http.Request) (any,
 		return nil, ErrBadRequest("reason is required")
 	}
 	var isTest bool
-	err := a.DB.QueryRow(r.Context(), "SELECT is_test FROM sessions WHERE session_id = $1 AND user_id = $2", req.SessionID, user.UserID).Scan(&isTest)
+	err := a.DB.QueryRow(r.Context(), "SELECT is_test FROM sessions WHERE session_id = $1 AND user_id = $2", req.SessionID, tid).Scan(&isTest)
 	if err != nil {
 		return nil, ErrNotFound("session not found")
 	}
@@ -215,15 +223,15 @@ func (a *App) createHandoffRequest(w http.ResponseWriter, r *http.Request) (any,
 	if !openExists {
 		_, err = a.DB.Exec(r.Context(),
 			"INSERT INTO human_handoff_requests (session_id, user_id, status, priority, trigger, reason, created_at) VALUES ($1,$2,'pending',$3,'manual',$4,NOW()) ON CONFLICT DO NOTHING",
-			req.SessionID, user.UserID, priority, reason)
+			req.SessionID, tid, priority, reason)
 		if err != nil {
 			return nil, ErrInternal("创建失败")
 		}
-		a.notifyUser(r.Context(), user.UserID, "handoff", "New human-handoff request", "manual: "+reason, req.SessionID)
+		a.notifyUser(r.Context(), tid, "handoff", "New human-handoff request", "manual: "+reason, req.SessionID)
 	}
 	// Mark the session as handoff.
 	_, _ = a.DB.Exec(r.Context(), "UPDATE sessions SET status='handoff', escalated_at=COALESCE(escalated_at,NOW()) WHERE session_id = $1", req.SessionID)
-	a.publishSessionEvent(r.Context(), user.UserID, req.SessionID)
+	a.publishSessionEvent(r.Context(), tid, req.SessionID)
 
 	// Return the open request row (data + created flag → CreateHumanHandoffRequestResult).
 	data := map[string]any{

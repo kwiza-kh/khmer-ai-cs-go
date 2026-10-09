@@ -882,24 +882,82 @@ func (wh *Webhooks) metaConfigWhere(ctx context.Context, where, id string) *webh
 	return &cfg
 }
 
+// telegramRoute is the decision a hash lookup may take.
+type telegramRoute int
+
+const (
+	telegramNoMatch   telegramRoute = iota // 0 configs: try the legacy lookup
+	telegramRouted                         // exactly one config owns this secret
+	telegramAmbiguous                      // several configs share it: refuse
+)
+
+// classifyTelegramMatches is the whole routing rule for a hash match, kept
+// pure so the "never guess between tenants" property is testable without a
+// database. Zero matches is not an error: it is the pre-051 config case.
+func classifyTelegramMatches(n int) telegramRoute {
+	switch {
+	case n == 1:
+		return telegramRouted
+	case n > 1:
+		return telegramAmbiguous
+	default:
+		return telegramNoMatch
+	}
+}
+
 // resolveTelegramConfig routes a Telegram update to its tenant. The bot API
 // sends the per-webhook secret in X-Telegram-Bot-Api-Secret-Token; its
 // sha256 matches webhook_secret_hash, which is how the owning config is found
 // when several tenants each run a bot. Falling back to "first active" would
 // 401 the other tenants' events forever.
+//
+// A hash that matches MORE THAN ONE active config is refused rather than
+// resolved to the lowest config_id. Nothing stops two tenants from saving the
+// same secret (the column has no unique index — 015/051 index the provider
+// identities, not this), and picking one would deliver the other tenant's
+// customers into the wrong inbox *with a valid signature*, which is the
+// misroute class 051 exists to prevent. Refusing is a loud outage for the
+// duplicated pair, visible in the operator log, and no leak.
 func (wh *Webhooks) resolveTelegramConfig(ctx context.Context, providedSecret string) *webhookConfig {
 	var cfg webhookConfig
 	var secretEnc *string
 	if providedSecret != "" {
 		hash := security.Sha256Hex(providedSecret)
-		if err := wh.DB.QueryRow(ctx,
+		rows, err := wh.DB.Query(ctx,
 			"SELECT config_id, user_id, platform::text, webhook_secret FROM platform_configs "+
-				"WHERE platform = 'telegram'::platform_type AND is_active = true AND webhook_secret_hash = $1 LIMIT 1",
-			hash).Scan(&cfg.ConfigID, &cfg.UserID, &cfg.Platform, &secretEnc); err == nil {
-			if secretEnc != nil {
-				cfg.WebhookSecret, _ = wh.Sealer.Decrypt(*secretEnc)
+				"WHERE platform = 'telegram'::platform_type AND is_active = true AND webhook_secret_hash = $1 LIMIT 2",
+			hash)
+		if err == nil {
+			matched := make([]webhookConfig, 0, 2)
+			secrets := make([]*string, 0, 2)
+			for rows.Next() {
+				var c webhookConfig
+				var enc *string
+				if rows.Scan(&c.ConfigID, &c.UserID, &c.Platform, &enc) == nil {
+					matched = append(matched, c)
+					secrets = append(secrets, enc)
+				}
 			}
-			return &cfg
+			rows.Close()
+			if err := rows.Err(); err != nil {
+				// A truncated read must not look like "exactly one match".
+				wh.logger().Warn("telegram webhook routing unreadable; refusing", "error", err.Error())
+				return nil
+			}
+			switch classifyTelegramMatches(len(matched)) {
+			case telegramRouted:
+				cfg = matched[0]
+				secretEnc = secrets[0]
+				if secretEnc != nil {
+					cfg.WebhookSecret, _ = wh.Sealer.Decrypt(*secretEnc)
+				}
+				return &cfg
+			case telegramAmbiguous:
+				wh.logger().Warn("telegram webhook secret matches several tenants; refusing to route — rotate one secret",
+					"matches", len(matched), "config_a", matched[0].ConfigID, "config_b", matched[1].ConfigID)
+				return nil
+			}
+			// telegramNoMatch: fall through to the legacy lookup below.
 		}
 	}
 	// Legacy configs saved before the hash column was populated.
