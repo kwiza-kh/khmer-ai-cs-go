@@ -656,17 +656,20 @@ export type TranslateTarget =
 	| "ja" | "ko" | "ar" | "ru" | "fr" | "es" | "de";
 
 export async function translateText(text: string, target: TranslateTarget) {
-	return apiFetch<{ translation: string; target: TranslateTarget }>("/translate", {
+	return apiFetch<{ translation: string; target: TranslateTarget; verified: boolean }>("/translate", {
 		method: "POST",
 		body: JSON.stringify({ text, target }),
 	});
 }
 
-// translateTexts — batch translation: one model call for up to 50 messages
-// instead of one request each (auto-translate used to be the slowest part of
-// opening a busy conversation).
+// translateTexts — batch translation: one model call per chunk of up to 50
+// messages instead of one request each (auto-translate used to be the slowest
+// part of opening a busy conversation). `unverified` lists positions whose
+// rendering changed a digit in the source, and `skipped` lists positions too
+// long to translate at all — the UI shows both rather than pretending the
+// translation is complete.
 export async function translateTexts(texts: string[], target: TranslateTarget) {
-	return apiFetch<{ translations: string[]; target: TranslateTarget }>("/translate/batch", {
+	return apiFetch<{ translations: string[]; target: TranslateTarget; unverified?: number[]; skipped?: number[] }>("/translate/batch", {
 		method: "POST",
 		body: JSON.stringify({ texts, target }),
 	});

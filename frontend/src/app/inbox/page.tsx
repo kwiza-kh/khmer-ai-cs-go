@@ -162,7 +162,37 @@ function TranslateLangMenu({ current, onPick, label, triggerTitle, triggerClassN
 // Module-level translation cache: message_id → rendering. Survives component
 // remounts (switching conversations) so the same message is never translated
 // twice in one browser session.
-const translationCache = new Map<number, { text: string; target: TranslateTarget }>();
+const translationCache = new Map<number, TranslatedMessage>();
+
+type TranslatedMessage = { text: string; target: TranslateTarget; unverified?: boolean };
+
+// What the message UI shows while a rendering is still missing.
+type TranslateProblem = "failed" | "too_long";
+
+function isTranslateTarget(v: unknown): v is TranslateTarget {
+  return typeof v === "string" && TRANSLATE_LANGS.some((l) => l.code === v);
+}
+
+// Per-user storage keys: one browser can be shared by several seats, and the
+// language one agent picks must not follow the next agent in.
+function lsKey(base: string, userId: number) {
+  return `${base}.u${userId}`;
+}
+
+// The read language follows the agent's own console language — the same
+// preference the backend keeps in sync as the AI language — instead of a
+// hard-coded Chinese that suited exactly one deployment.
+function defaultReadLang(): TranslateTarget {
+  if (typeof window === "undefined") return "zh";
+  const ui = window.localStorage.getItem("lang");
+  return isTranslateTarget(ui) ? ui : "zh";
+}
+
+// A message already written in the read language comes back unchanged; a panel
+// repeating it is noise, not information.
+function sameText(a: string, b: string) {
+  return a.trim() === b.trim();
+}
 
 function clampRunes(value: string, max: number) {
   return Array.from(value).slice(0, max).join("");
@@ -954,91 +984,175 @@ function ConversationDetail({
   // automatic translation of every customer message into the picked language.
   // Results are cached per message id at module scope, so switching
   // conversations never re-requests the same message.
-  const [autoTranslate, setAutoTranslate] = React.useState<boolean>(() => lsGetJSON<boolean>("inbox.autoTranslate", false));
-  const [readLang, setReadLang] = React.useState<TranslateTarget>(() => lsGetJSON<TranslateTarget>("inbox.readLang", "zh"));
-  const [replyLang, setReplyLang] = React.useState<TranslateTarget>(() => lsGetJSON<TranslateTarget>("inbox.replyLang", "km"));
-  const [translations, setTranslations] = React.useState<Record<number, { text: string; target: TranslateTarget }>>({});
+  const [autoTranslate, setAutoTranslate] = React.useState<boolean>(() => lsGetJSON<boolean>(lsKey("inbox.autoTranslate", currentUserId), false));
+  const [readLang, setReadLang] = React.useState<TranslateTarget>(() => {
+    const stored = lsGetJSON<TranslateTarget | null>(lsKey("inbox.readLang", currentUserId), null);
+    return isTranslateTarget(stored) ? stored : defaultReadLang();
+  });
+  const [replyLang, setReplyLang] = React.useState<TranslateTarget>(() => lsGetJSON<TranslateTarget>(lsKey("inbox.replyLang", currentUserId), "km"));
+  const [translations, setTranslations] = React.useState<Record<number, TranslatedMessage>>({});
+  const [translateProblems, setTranslateProblems] = React.useState<Record<number, TranslateProblem>>({});
+  const [translateRetry, setTranslateRetry] = React.useState(0);
   const [translatingDraft, setTranslatingDraft] = React.useState(false);
   const inflightRef = React.useRef<Set<string>>(new Set());
 
   React.useEffect(() => {
-    lsSetJSON("inbox.autoTranslate", autoTranslate);
-  }, [autoTranslate]);
+    lsSetJSON(lsKey("inbox.autoTranslate", currentUserId), autoTranslate);
+  }, [autoTranslate, currentUserId]);
 
-  // Translate one message on demand (the manual "translate this" path).
+  // Latest-value mirrors: the pass below runs in an async lane and must read the
+  // transcript and language as they are now, not as they were when it started.
+  const msgListRef = React.useRef(msgList);
+  React.useEffect(() => { msgListRef.current = msgList; }, [msgList]);
+  const readLangRef = React.useRef(readLang);
+  React.useEffect(() => { readLangRef.current = readLang; }, [readLang]);
+  const problemsRef = React.useRef<Record<number, TranslateProblem>>({});
+  const passRef = React.useRef(false);
+  const passQueuedRef = React.useRef(false);
+
+  const setProblem = React.useCallback((id: number, kind: TranslateProblem | null) => {
+    const next = { ...problemsRef.current };
+    if (kind) next[id] = kind;
+    else delete next[id];
+    problemsRef.current = next;
+    setTranslateProblems(next);
+  }, []);
+
   // Auto-translate every customer message in ONE batch request per pass.
   //
-  // Sending one request per message made opening a busy conversation slow
-  // (N sequential model calls). The batch endpoint translates up to 50 texts
-  // per call, and the server caches by (text, target), so the second and later
-  // passes are essentially free.
-  const batchInflightRef = React.useRef(false);
-  React.useEffect(() => {
-    if (!autoTranslate || batchInflightRef.current) return;
-
-    const pending: { id: number; content: string }[] = [];
-    const fresh: Record<number, { text: string; target: TranslateTarget }> = {};
-    for (const m of msgList) {
-      if (m.role !== "user" || !m.content) continue;
-      const cached = translationCache.get(m.message_id);
-      if (cached && cached.target === readLang) {
-        fresh[m.message_id] = cached;
-        continue;
-      }
-      // Not cached, or cached for a different language → needs translating.
-      if (!inflightRef.current.has(`${m.message_id}:${readLang}`)) {
-        pending.push({ id: m.message_id, content: m.content });
-      }
+  // Sending one request per message made opening a busy conversation slow (N
+  // sequential model calls); the batch endpoint takes up to 50 texts and caches
+  // by (text, target), so later passes are free. Two details this pass has to
+  // get right: a message that arrives while a batch is in flight must be picked
+  // up by a follow-up pass (it used to be skipped until something else changed
+  // the transcript), and a failure must end up visible on the message it
+  // belongs to (it used to be swallowed).
+  const runTranslatePass = React.useCallback(async () => {
+    if (passRef.current) {
+      passQueuedRef.current = true;
+      return;
     }
-    if (pending.length === 0 && Object.keys(fresh).length === 0) return;
+    passRef.current = true;
+    try {
+      for (;;) {
+        passQueuedRef.current = false;
+        const lang = readLangRef.current;
+        const pending: { id: number; content: string }[] = [];
+        const fresh: Record<number, TranslatedMessage> = {};
+        for (const m of msgListRef.current) {
+          if (m.role !== "user" || !m.content) continue;
+          const cached = translationCache.get(m.message_id);
+          if (cached && cached.target === lang) {
+            fresh[m.message_id] = cached;
+            continue;
+          }
+          // Not cached, or cached for a different language → needs translating.
+          // An over-long message cannot be retried into success, so it stays
+          // parked and the UI says why.
+          if (problemsRef.current[m.message_id] === "too_long") continue;
+          if (inflightRef.current.has(`${m.message_id}:${lang}`)) continue;
+          pending.push({ id: m.message_id, content: m.content });
+        }
+        if (Object.keys(fresh).length > 0) {
+          setTranslations((prev) => ({ ...prev, ...fresh }));
+        }
+        if (pending.length === 0) break;
 
-    batchInflightRef.current = true;
-    void (async () => {
-      // Cache hits first, inside the async lane: the effect body itself must not
-      // call setState synchronously (that is the extra render this rule bans),
-      // and one tick earlier or later is imperceptible next to a batch request.
-      if (Object.keys(fresh).length > 0) {
-        setTranslations((prev) => ({ ...prev, ...fresh }));
-      }
-      // Chunk to the endpoint's 50-item limit.
-      for (let i = 0; i < pending.length; i += 50) {
-        const slice = pending.slice(i, i + 50);
-        slice.forEach((p) => inflightRef.current.add(`${p.id}:${readLang}`));
-        try {
-          const res = await translateTexts(slice.map((p) => p.content), readLang);
-          const update: Record<number, { text: string; target: TranslateTarget }> = {};
-          slice.forEach((p, idx) => {
-            const text = res.translations[idx];
-            if (text) {
-              const entry = { text, target: res.target as TranslateTarget };
+        // Chunk to the endpoint's 50-item / 20k-rune bounds so a burst of long
+        // messages never arrives as one rejected request.
+        const chunks: { id: number; content: string }[][] = [];
+        let chunk: { id: number; content: string }[] = [];
+        let runes = 0;
+        for (const p of pending) {
+          const size = Array.from(p.content).length;
+          if (chunk.length > 0 && (chunk.length >= 50 || runes + size > 12000)) {
+            chunks.push(chunk);
+            chunk = [];
+            runes = 0;
+          }
+          chunk.push(p);
+          runes += size;
+        }
+        if (chunk.length > 0) chunks.push(chunk);
+
+        for (const slice of chunks) {
+          slice.forEach((p) => inflightRef.current.add(`${p.id}:${lang}`));
+          try {
+            const res = await translateTexts(slice.map((p) => p.content), lang);
+            const update: Record<number, TranslatedMessage> = {};
+            const unverified = new Set(res.unverified ?? []);
+            const skipped = new Set(res.skipped ?? []);
+            slice.forEach((p, idx) => {
+              if (skipped.has(idx)) {
+                setProblem(p.id, "too_long");
+                return;
+              }
+              const text = res.translations[idx];
+              if (!text) {
+                setProblem(p.id, "failed");
+                return;
+              }
+              const entry: TranslatedMessage = {
+                text,
+                target: res.target as TranslateTarget,
+                unverified: unverified.has(idx),
+              };
               translationCache.set(p.id, entry);
               update[p.id] = entry;
+              setProblem(p.id, null);
+            });
+            if (Object.keys(update).length > 0) {
+              setTranslations((prev) => ({ ...prev, ...update }));
             }
-          });
-          if (Object.keys(update).length > 0) {
-            setTranslations((prev) => ({ ...prev, ...update }));
+          } catch {
+            // A failure the agent can see and retry beats a silent gap.
+            slice.forEach((p) => setProblem(p.id, "failed"));
+          } finally {
+            slice.forEach((p) => inflightRef.current.delete(`${p.id}:${lang}`));
           }
-        } catch { /* silent — the toggle can be retried */ }
-        finally {
-          slice.forEach((p) => inflightRef.current.delete(`${p.id}:${readLang}`));
+          // The agent switched language mid-pass: leave the rest to this same
+          // loop (it re-reads the language at the top) rather than dropping it —
+          // a break here would leave the transcript half-translated until the
+          // next unrelated event.
+          if (readLangRef.current !== lang) break;
         }
+        if (readLangRef.current !== lang) continue;
+        if (!passQueuedRef.current) break;
       }
-    })().finally(() => { batchInflightRef.current = false; });
-  }, [autoTranslate, msgList, readLang]);
+    } finally {
+      passRef.current = false;
+    }
+  }, [setProblem]);
+
+  React.useEffect(() => {
+    if (!autoTranslate) return;
+    // Coalesce a burst of realtime messages into one pass instead of one model
+    // call per arrival; a retry click re-runs the same pass.
+    const timer = window.setTimeout(() => { void runTranslatePass(); }, 250);
+    return () => window.clearTimeout(timer);
+  }, [autoTranslate, msgList, readLang, translateRetry, runTranslatePass]);
+
+  const retryTranslate = (messageId: number) => {
+    setProblem(messageId, null);
+    setTranslateRetry((v) => v + 1);
+  };
 
   const pickReadLang = (target: TranslateTarget) => {
     setReadLang(target);
-    lsSetJSON("inbox.readLang", target);
+    lsSetJSON(lsKey("inbox.readLang", currentUserId), target);
   };
 
   const handleTranslateDraft = async (target: TranslateTarget) => {
     if (!draft.trim()) return;
     setReplyLang(target);
-    lsSetJSON("inbox.replyLang", target);
+    lsSetJSON(lsKey("inbox.replyLang", currentUserId), target);
     setTranslatingDraft(true);
     try {
       const res = await translateText(draft, target);
       onDraftChange(res.translation);
+      // The draft is about to be sent to a customer: if a digit moved, say so
+      // now rather than after the customer reads a wrong price.
+      if (res.verified === false) toast.warning(t("inbox.translateUnverified"));
     } catch (err: unknown) {
       toast.error((err as Error).message || t("inbox.translateFailed"));
     } finally {
@@ -1526,6 +1640,12 @@ function ConversationDetail({
                           {group.map((m) => {
                             const inboundMedia = parseInboundPlatformMedia(m.metadata);
                             const isVoiceMsg = inboundMedia != null && (inboundMedia.kind === "audio" || inboundMedia.kind === "voice");
+                            // Only a rendering that says something new earns a panel:
+                            // a same-language message comes back unchanged.
+                            const shownTranslation =
+                              translations[m.message_id] && !sameText(translations[m.message_id].text, m.content)
+                                ? translations[m.message_id]
+                                : undefined;
                             return (
                               <React.Fragment key={m.message_id}>
                                 <div className={cn(
@@ -1563,20 +1683,47 @@ function ConversationDetail({
                                 {/* Translation layer: sits OUTSIDE the customer bubble as a
                                     distinct annotation so it reads as an aid, not as the
                                     message itself. Voice notes get the dark companion
-                                    panel so transcript + translation read as one unit. */}
-                                {m.role === "user" && autoTranslate && translations[m.message_id] && (
-                                  <div className={cn(
-                                    "max-w-[85%] rounded-xl px-3 py-1.5",
-                                    isVoiceMsg ? "bg-primary/85 text-primary-foreground" : "bg-muted/60 text-foreground",
-                                  )}>
-                                    <p className={cn("mb-0.5 flex items-center gap-1 text-[10px] font-medium uppercase tracking-wide", isVoiceMsg ? "text-primary-foreground/60" : "text-muted-foreground")}>
-                                      <Languages className="size-2.5" />
-                                      {translateLang(translations[m.message_id].target).label}
+                                    panel so transcript + translation read as one unit.
+                                    A rendering that is missing, failed, too long or of
+                                    doubtful accuracy says so here: the agent has to know
+                                    which of those they are looking at. */}
+                                {m.role === "user" && autoTranslate && (
+                                  shownTranslation ? (
+                                    <div className={cn(
+                                      "max-w-[85%] rounded-xl px-3 py-1.5",
+                                      isVoiceMsg ? "bg-primary/85 text-primary-foreground" : "bg-muted/60 text-foreground",
+                                    )}>
+                                      <p className={cn("mb-0.5 flex items-center gap-1 text-[10px] font-medium uppercase tracking-wide", isVoiceMsg ? "text-primary-foreground/60" : "text-muted-foreground")}>
+                                        <Languages className="size-2.5" />
+                                        {translateLang(shownTranslation.target).label}
+                                      </p>
+                                      <p className="whitespace-pre-wrap text-[13px] leading-6">
+                                        {shownTranslation.text}
+                                      </p>
+                                      {shownTranslation.unverified && (
+                                        <p className="mt-1 flex items-center gap-1 text-[10px] text-amber-500">
+                                          <AlertTriangle className="size-2.5 shrink-0" />
+                                          {t("inbox.translateUnverified")}
+                                        </p>
+                                      )}
+                                    </div>
+                                  ) : translations[m.message_id] ? null : translateProblems[m.message_id] === "too_long" ? (
+                                    <p className="max-w-[85%] text-[11px] text-muted-foreground">
+                                      {t("inbox.translateTooLong")}
                                     </p>
-                                    <p className="whitespace-pre-wrap text-[13px] leading-6">
-                                      {translations[m.message_id].text}
+                                  ) : translateProblems[m.message_id] === "failed" ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => retryTranslate(m.message_id)}
+                                      className="max-w-[85%] text-left text-[11px] text-amber-500 underline decoration-dotted hover:text-amber-400"
+                                    >
+                                      {t("inbox.translateFailed")} · {t("inbox.translateRetry")}
+                                    </button>
+                                  ) : (
+                                    <p className="max-w-[85%] text-[11px] text-muted-foreground">
+                                      {t("inbox.translating")}
                                     </p>
-                                  </div>
+                                  )
                                 )}
                               </React.Fragment>
                             );
