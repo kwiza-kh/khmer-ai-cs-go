@@ -63,6 +63,18 @@ description: 将「Khmer AI 客服系统 (khmer-ai-cs-go, Go 后端 + Next.js �
    而且二进制里有 `embed keep-warm: connection established` 等三条字面量、仓库 grep 不到 ——
    **直接部署本地 HEAD 会把线上的 embed keep-warm 默默删掉**。发布因此暂停。
    补充：`/ready` 的 `version` 是构建期 ldflags 注的短哈希，它只告诉你“哪个 commit”，不告诉你“那些 commit 在不在仓库里”。
+   **`vcs.modified=true`（脏树构建）时的补检**：revision 存在还不够 —— 构建树里可能有当时未提交、后来才提交的改动，也可能有永远没提交的实验代码。用**源文件集合**比一比，它比字符串比对噪点少得多：
+   ```bash
+   # 本地：拿 revision（或疑似对应的提交）干净地构建一个对照二进制
+   git worktree add /tmp/wt <revision> && (cd /tmp/wt/backend-go && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/server-go-cmp ./cmd/server)
+   # 两边各抽「Go 源文件路径」并归一化后 diff（`strings` 抽全量字面量噪声太大，文件集合能一眼看出“多/少一个文件”）
+   for b in /opt/khmer-ai-cs/server-go /tmp/server-go-cmp; do
+     strings -a "$b" | grep -aoE "[A-Za-z0-9_./-]*backend-go/[A-Za-z0-9_./-]+\.go" | sed 's|.*backend-go/|backend-go/|' | sort -u
+   done > /tmp/paths.txt   # 分别存两个文件再 comm -3
+   ```
+   集合一致 = 没有“仓库里不存在的新文件”；再抽查几个关键行为字面量（例如本次要保留的功能的日志文案）就能放行。
+   2026-10-09 实例：线上 `3c65bce` + `vcs.modified=true`（version `3c65bce-ge2.1`），源头是构建树里带着当时**还未提交**的 embedding-002 改动
+   （当天晚些时候才成为 `998eb14`）。文件集合与干净构建的 `998eb14` 完全一致 ⇒ 部署 HEAD 不会丢任何东西，发布继续。
 1. **构建后端** (本地, 需 go ≥1.26, `brew install go`): `backend-go/` 下交叉编译 `server-go` 与 `migrate-go`; 发布前跑一次 SQL 引用检查 (`go test ./internal/sqlcheck/`, 需 `DATABASE_URL`, 未设会 skip) 质量门 —— 它挡的是编译器看不见的那类 bug (命令见 references/deploy-commands.md §1)
 2. **构建前端**: `NEXT_PUBLIC_API_URL=https://<部署域名>/api/v1 npm run build`, 组装 standalone + `.next/static` + `public` 打 tar (§2)
 3. **上传**: scp 到 `root@$KHMER_DEPLOY_HOST:/root/khmer-deploy/` (§3)
@@ -137,9 +149,10 @@ RestartSec=3
 
 ## Vertex 区域与在用模型（生产已切完：`vertex` + `global`）
 
-**现行状态（2026-09-26 迁 Vertex；下面三个值 2026-09-29 核对）**: `.env-go` 有 `GEMINI_PROVIDER=vertex`、区域 = `global`，
-**主模型 = `gemini-3.8-flash`**（DB `model_configs.is_default` 行）、**快模型 = `gemini-3.8-flash`**（`GEMINI_FAST_MODEL`，2026-09-28 起；它比 3.5-flash 快约 1.5×）、
-嵌入 = `gemini-embedding-001` @ 768 维；`GEMINI_API_BASE` 已清空（不再走 CF AI Gateway 中继）。
+**现行状态（2026-10-09 重新核对）**: 生成（回复 / 摘要 / 翻译 / 知识编译）已由 **Anthropic `claude-haiku-5-5`** 服务 —— DB `model_configs` 只有一行且 `is_default=t`，启动日志印 `generation provider in force: anthropic`；`.env-go` 有 `GEMINI_PROVIDER=vertex`、区域 = `global`，
+**快模型 = `gemini-3.8-flash`**（`GEMINI_FAST_MODEL`，2026-09-28 起；Gemini 那一侧仍用它做 rerank / 查询改写 / turn judge 这类辅助调用）、
+嵌入 = `gemini-embedding-2`（`GEMINI_EMBEDDING_MODEL`，2026-10-09 起；启动日志 `embedding model in force`）；`GEMINI_API_BASE` 已清空（不再走 CF AI Gateway 中继）。
+下面这段「主模型」措辞指**需要 Gemini 的路径**（嵌入、ASR、视觉与门禁探针）——对话生成已不看它。
 **采样温度 = 1.0**（`model_configs.temperature`，2026-09-29 接通）：该值现在随每次对话请求发出，管理页改它即时生效；
 越界（[0,2] 之外）会被写入接口拒绝（否则会让这个配置的每一次回复都 400）；启动日志会打印实际值，
 `"temperature":"platform default"` 表示不发送、用平台默认。四档实测（unset/1.0/0.7/0.3 × 3 轮 × 24 例）无可测量差别，故取厂商推荐值 1.0 —— 细节见 docs/DEVELOPMENT.md §十三。
