@@ -341,6 +341,9 @@ func (a *App) deleteWebhook(w http.ResponseWriter, r *http.Request, id int32) (a
 // listHandoffs — human-handoff queue (request_id is a UUID → string).
 func (a *App) listHandoffs(w http.ResponseWriter, r *http.Request) (any, error) {
 	user, _ := UserFrom(r)
+	if err := requirePermission(user, PermInboxView); err != nil {
+		return nil, err
+	}
 	statusFilter := r.URL.Query().Get("status")
 	page := parseIntOr(r.URL.Query().Get("page"), 1)
 	pageSize := parseIntOr(r.URL.Query().Get("page_size"), 100)
@@ -350,12 +353,14 @@ func (a *App) listHandoffs(w http.ResponseWriter, r *http.Request) (any, error) 
 	offset := (page - 1) * pageSize
 
 	// Tenant users only see their own queue; the platform super-admin sees
-	// every tenant's open requests (cross-tenant operations view).
+	// every tenant's open requests (cross-tenant operations view). A seat works
+	// in the owner's tenant, so the queue it sees is the owner's, not the empty
+	// one under its own user id.
 	args := []any{}
 	where := "WHERE 1=1"
 	if !user.IsPlatformAdmin() {
 		where += " AND h.user_id = $" + strconv.Itoa(len(args)+1)
-		args = append(args, user.UserID)
+		args = append(args, user.Tenant())
 	}
 	if statusFilter != "" {
 		where += " AND h.status::text = $" + strconv.Itoa(len(args)+1)
@@ -802,7 +807,11 @@ func (a *App) copilotSuggest(w http.ResponseWriter, r *http.Request, sessionID s
 	if latest == "" {
 		return map[string]any{"suggestions": []string{}, "grounded": false}, nil
 	}
-	groundCtx := a.RAG.Ground(r.Context(), user.UserID, &sessionID, latest, "km", history, 3)
+	// The session was authorised against user.Tenant() above (ensureSessionAccess),
+	// and the suggestions must be grounded in the tenant's knowledge base — a
+	// seat's own user id owns no documents, which turned every copilot answer
+	// into the ungrounded fallback.
+	groundCtx := a.RAG.Ground(r.Context(), user.Tenant(), &sessionID, latest, "km", history, 3)
 	if !groundCtx.HasMatch {
 		return map[string]any{"suggestions": []string{"感谢咨询，请稍等，我为您查询。"}, "grounded": false}, nil
 	}

@@ -48,3 +48,16 @@ repos:
         entry: bash -c 'cd backend-go && go test ./internal/migrations/'
         files: ^backend-go/(internal/)?migrations/.*\.sql$
         pass_filenames: false
+
+      # Tenant isolation as a static invariant. The database-backed isolation
+      # tests (list_scope_test.go, platform_tenants_test.go, …) skip whenever
+      # DATABASE_URL is unset — which is every CI run — so this is the gate
+      # that actually fails on a query reaching tenant data with no tenant
+      # binding. Exceptions live, reviewed and justified, in
+      # backend-go/internal/tenantscope/exceptions.go.
+      - id: tenant-scope
+        name: tenant isolation (static)
+        language: system
+        entry: bash -c 'cd backend-go && go test ./internal/tenantscope/'
+        files: ^backend-go/.*\.go$
+        pass_filenames: false

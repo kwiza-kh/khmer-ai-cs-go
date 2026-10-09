@@ -584,12 +584,15 @@ func (a *App) setSessionArchived(w http.ResponseWriter, r *http.Request, session
 	}
 	var tag interface{ RowsAffected() int64 }
 	var err error
+	// The session was authorised against user.Tenant() above: the write must use
+	// the same tenant, or a seat's archive lands under its own (empty) user id
+	// and reports 404.
 	if archived {
 		tag, err = a.DB.Exec(r.Context(),
-			"UPDATE sessions SET archived_at = NOW() WHERE session_id = $1 AND user_id = $2", sessionID, user.UserID)
+			"UPDATE sessions SET archived_at = NOW() WHERE session_id = $1 AND user_id = $2", sessionID, user.Tenant())
 	} else {
 		tag, err = a.DB.Exec(r.Context(),
-			"UPDATE sessions SET archived_at = NULL WHERE session_id = $1 AND user_id = $2", sessionID, user.UserID)
+			"UPDATE sessions SET archived_at = NULL WHERE session_id = $1 AND user_id = $2", sessionID, user.Tenant())
 	}
 	if err != nil {
 		return nil, ErrInternal("操作失败")
