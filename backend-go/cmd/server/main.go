@@ -155,23 +155,28 @@ func main() {
 		logger.Warn("Gemini not configured — running in mock mode")
 	}
 
-	// The generation router. The default row names the provider in force. A Claude
-	// default gets its own client, built from that row with its key unsealed here; the
-	// Gemini client above keeps serving embeddings and retrieval whichever provider
-	// generates. SetProvider runs before the spend check below, which reads the provider.
+	// The generation router. The default row names the provider in force. A Claude or
+	// DeepSeek default gets its own client, built from that row with its key unsealed
+	// here; the Gemini client above keeps serving embeddings and retrieval whichever
+	// provider generates. SetProvider runs before the spend check below, which reads the
+	// provider.
 	servingRow, haveServingRow := llm.LoadDefault(ctx, pool)
 	router := llm.NewRouter(gem)
 	if haveServingRow {
-		if llm.IsClaude(servingRow.Provider) {
+		switch {
+		case llm.IsClaude(servingRow.Provider):
 			router.InstallClaude(servingRow, sealer.DecryptOrKeep(servingRow.APIKey))
+		case llm.IsDeepSeek(servingRow.Provider):
+			router.InstallDeepSeek(servingRow, sealer.DecryptOrKeep(servingRow.APIKey))
 		}
 		router.SetProvider(servingRow.Provider)
 	}
 	logger.Info("generation provider in force", "provider", router.Provider())
-	if llm.IsClaude(router.Provider()) && !router.Model().IsConfigured() {
-		// The Gemini client warns above when it falls back to mock mode; a Claude provider has
-		// no mock. Without this line the first customer turn is the one that discovers an
-		// unreadable key or service-account file.
+	if !llm.IsGemini(router.Provider()) && !router.Model().IsConfigured() {
+		// The Gemini client warns above when it falls back to mock mode; the other
+		// providers have no mock. Without this line the first customer turn is the one
+		// that discovers an unreadable key. Customer replies fail until the row is fixed
+		// from the console.
 		logger.Error("the serving provider is not configured — customer replies will fail",
 			"provider", router.Provider())
 	}

@@ -55,7 +55,7 @@ func oldestGeminiRow(t *testing.T, tx pgx.Tx) int32 {
 	t.Helper()
 	var id int32
 	if err := tx.QueryRow(context.Background(),
-		"SELECT min(config_id) FROM model_configs WHERE provider <> 'anthropic'").Scan(&id); err != nil {
+		"SELECT min(config_id) FROM model_configs WHERE provider NOT IN ('anthropic', 'deepseek')").Scan(&id); err != nil {
 		t.Fatalf("oldest gemini row: %v", err)
 	}
 	return id
@@ -110,5 +110,26 @@ func TestGeminiNeverReadsAClaudeRow(t *testing.T) {
 	}
 	if def, ok := LoadDefault(ctx, tx); !ok || def.Provider != ProviderAnthropic {
 		t.Fatalf("LoadDefault = %+v, %v; want the default Claude row", def, ok)
+	}
+}
+
+func TestGeminiNeverReadsADeepSeekRow(t *testing.T) {
+	tx := openRolledBackTx(t)
+	ctx := context.Background()
+	deepseekRow := insertTestRow(t, tx, "deepseek default", ProviderDeepSeek, true)
+
+	def, ok := LoadDefault(ctx, tx)
+	if !ok || def.ConfigID != deepseekRow || def.Provider != ProviderDeepSeek {
+		t.Fatalf("LoadDefault = %+v, %v; want the DeepSeek row marked default", def, ok)
+	}
+	g, ok := LoadGemini(ctx, tx)
+	if !ok {
+		t.Fatal("LoadGemini found no Gemini row, but the seeded table holds one")
+	}
+	if g.ConfigID == deepseekRow || IsDeepSeek(g.Provider) {
+		t.Fatalf("LoadGemini returned the DeepSeek row (%s): its key would become the Gemini credential", g.Provider)
+	}
+	if want := oldestGeminiRow(t, tx); g.ConfigID != want {
+		t.Errorf("LoadGemini = config %d, want the oldest Gemini row %d", g.ConfigID, want)
 	}
 }

@@ -2930,7 +2930,7 @@ func LoadDefaultConfig(ctx context.Context, pool *pgxpool.Pool) (string, string,
 	err := pool.QueryRow(ctx,
 		"SELECT api_key, model_name, COALESCE(system_prompt, ''), COALESCE(max_tokens, 2048), "+
 			"COALESCE(vertex_region, ''), temperature "+
-			"FROM model_configs WHERE provider <> 'anthropic' ORDER BY is_default DESC, config_id LIMIT 1",
+			"FROM model_configs WHERE provider NOT IN ('anthropic', 'deepseek') ORDER BY is_default DESC, config_id LIMIT 1",
 	).Scan(&apiKey, &modelName, &systemPrompt, &maxTokens, &region, &temperature)
 	if err != nil {
 		return "", "", "", 0, "", nil, false

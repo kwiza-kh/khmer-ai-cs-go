@@ -1891,3 +1891,60 @@ go build ./... && go vet ./... && go test ./...
 DATABASE_URL=<生产隧道> go test -count=1 ./internal/api/ -run 'TestUserListIsScoped|TestSessionListFilter' -v
 DATABASE_URL=<生产隧道> go test -count=1 ./internal/sqlcheck/   # 或 SQLCHECK_REQUIRED=1
 ```
+
+---
+
+## 二十二、DeepSeek 接入：第三个生成服务商（2026-10-10）
+
+按 §二十 的模式加一个服务商：一行数据（`model_configs.provider='deepseek'`）+ 一个客户端 +
+目录与价目。**没有迁移**：`provider` 自 001 起就是无 CHECK 的 `VARCHAR(50)`，加一行不需要 DDL。
+
+| 件 | 落点 |
+|---|---|
+| 常量与路由 | `internal/llm`：`ProviderDeepSeek`、`IsDeepSeek`、`IsGemini`（未知值仍读作 Gemini）、`InstallDeepSeek`/`DeepSeekConfig`。`SetProvider` 用 `Valid` 而非 `IsClaude` 判范围，否则新服务商会被折回 Gemini。 |
+| 客户端 | `internal/deepseek`：OpenAI 格式 `/chat/completions` + `Authorization: Bearer`。与 `internal/gemini` 相同的生成方法与 DTO；空系统提示词回退内置默认、人工客服轮保留标记、相邻同角色轮合并、辅助调用不带系统提示词并报 `AuxUsageObserver`。 |
+| 目录 | `internal/deepseek/catalog.go`：只收 `deepseek-flash`（V4.1-Flash）与 `deepseek-v4-pro`。旧名 `deepseek-v4-flash` 官方仍接受但已退役、按 Flash 价计费，**不是可存的模型**（保存即 400）。 |
+| 计费 | `usage.EstimateCostFor` 加 `deepseek-` 前缀分支，缓存命中价是独立数字（不是入价的固定比例）。 |
+| 用量闸门 | `usage.servingIsGemini` 把 `deepseek` 与 `anthropic` 同等对待：AI Studio 的 Tier 上限只约束 Gemini 调用，遗留 Tier 数字仍被启动校验拒绝。 |
+| 控制台 | 服务商下拉第三项；Key 输入框、模型下拉（目录）、测试按钮与状态文案（`connecting/connected/needsVerify`）都按草稿中的服务商切换；`vertex_region` 与上下文缓存仅 Gemini 行显示。 |
+| 行选择 | **四处 SQL 的 `NOT IN` 必须同时列全非 Gemini 服务商**（`llm.LoadGemini`、`gemini.LoadDefaultConfig`、`api.otherGeminiRowHasKeyFromDB`、`api.studioAPIKeyFromDB`）：漏一处就会把 DeepSeek 的 key/model 交给 Gemini 客户端，embedding 会开始用别人的凭据。 |
+
+### 从官方文档核对到的事实（2026-10-10）
+
+- 端点 `https://api.deepseek.com/chat/completions`，`Authorization: Bearer <key>`；另有
+  `https://api.deepseek.com/anthropic` 兼容端点，**本实现不用它**——原生 OpenAI 格式是主路径，
+  兼容层只保证「可调用」不保证字段逐一对应。
+- 模型：`deepseek-flash` / `deepseek-v4-pro`；上下文 1M，最大输出 384K。
+- **思考默认开启**（V4.1）：推理 token 按输出价计费、增加数秒延迟，且让 `temperature` 失效。
+  客户端对所有目录模型发 `thinking.type=disabled`（目录里的 `ThinkingOff` 控制），因此
+  temperature 是有效的，管理页的说明与 Claude 行不同（Claude 是「不发送」）。
+- 用量字段：`prompt_tokens` = `prompt_cache_hit_tokens` + `prompt_cache_miss_tokens`，**含缓存**，
+  正好是平台计费要的口径（成本公式从 prompt 里减缓存）。流式响应最后一块携带 usage，以
+  `data: [DONE]` 结束，**没有单独的 usage-only 块**（与 OpenAI 不同），所以客户端不需要
+  `stream_options`。
+- 价格分峰谷：谷时正好是峰时一半；峰时为工作日 01:00–04:00 与 06:00–10:00 UTC。价目卡取
+  **峰时价**（flash 峰时 $0.30 入 / $1.20 出 / $0.006 缓存；pro $1.32 / $3.96 / $0.044）：
+  这是用量闸门，高估只是让运维多看一眼面板，低估才会让预算悄悄跑过上限。
+
+### 已知边界
+
+- **未对真实端点做过实际调用**（没有 key）：行为由 stub 服务器单测与目录/价目单测覆盖，
+  API 形状来自上面的官方文档页面；第一次上线时应先在控制台点「测试」。
+- 峰谷用峰时常数固定，没有按时段计算；谷时调用会被高估最多 2×。
+- 图片理解只有 `deepseek-flash` 支持，且未接入——多模态仍走 Gemini，与 Claude 相同。
+
+### 切换步骤（运维）
+
+1. 控制台 → 模型 → 该行服务商选 `DeepSeek` → 填 DeepSeek API Key（不会从别的行沿用）→
+   保存（模型只能选目录里的两个）→ 点「测试」→ 设为默认。
+2. 回滚：把默认行改回 Gemini 或 Claude 行并保存。其它行的凭据与设置不受影响，也不需要重启。
+
+### 验证
+
+```bash
+cd backend-go
+go build ./... && go vet ./... && go test ./...
+SQLCHECK_REQUIRED=1 go test -count=1 ./internal/sqlcheck/  # 改动过 4 处 provider 过滤 SQL
+DATABASE_URL=<已迁移的库> go test -count=1 ./internal/llm/  # 行选择：DeepSeek 行不得成为 Gemini 凭据
+cd ../frontend && NEXT_PUBLIC_API_URL=https://example.invalid/api/v1 npm run build
+```

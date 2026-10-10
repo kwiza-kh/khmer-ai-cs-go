@@ -231,11 +231,12 @@ func SetServingProvider(provider string) {
 	servingProvider.Store(provider)
 }
 
-// servingIsGemini mirrors internal/llm.IsClaude: a value this package does not
-// recognise is Gemini, the reading every model_configs row has always had.
+// servingIsGemini mirrors internal/llm.IsGemini: only a value this package does
+// not recognise is Gemini, the reading every model_configs row has always had,
+// and the two known non-Gemini providers have no AI Studio tier ceiling.
 func servingIsGemini() bool {
 	p, _ := servingProvider.Load().(string)
-	return p != "anthropic"
+	return p != "anthropic" && p != "deepseek"
 }
 
 // regimeName names the spend regime the vertex branch applies, for the operator

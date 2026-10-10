@@ -1227,13 +1227,22 @@ function usesServiceAccountCredential(model: ModelItem): boolean {
 
 // The providers a model config can name. The server accepts the same values
 // (internal/llm); anything else is refused on save.
-const MODEL_PROVIDERS: ModelProvider[] = ["gemini", "anthropic"];
+const MODEL_PROVIDERS: ModelProvider[] = ["gemini", "anthropic", "deepseek"];
 
 // providerLabelKey maps a stored provider to its label. An unknown value reads as Gemini,
 // the same reading the server gives it.
 function providerLabelKey(provider: string): string {
   if (provider === "anthropic") return "admin.providerClaudeApi";
+  if (provider === "deepseek") return "admin.providerDeepSeek";
   return "admin.providerGemini";
+}
+
+// The default model id a provider's rows start on when the draft switches to it. Only
+// used to fill the form; the server validates the value against the provider catalog.
+function defaultModelForProvider(provider: ModelProvider): string {
+  if (provider === "anthropic") return "claude-haiku-5-5";
+  if (provider === "deepseek") return "deepseek-flash";
+  return "";
 }
 
 // Launch stages are an API enum, not prose: only the two values an operator has
@@ -1466,10 +1475,13 @@ export function ModelsAdminPage() {
   // than guessed, because it can only come from the server once the row names the new provider.
   const handleProviderChange = (model: ModelItem, provider: ModelProvider) => {
     const current = modelDrafts[model.config_id] ?? model;
-    const claudeNow = provider === "anthropic";
+    const currentName = current.model_name ?? "";
+    // A hosted provider's model ids carry its own prefix; landing on one of them from
+    // another provider would leave a name the server refuses at save time.
+    const hostPrefix = provider === "gemini" ? "" : provider === "anthropic" ? "claude-" : "deepseek-";
     const patch: Partial<ModelItem> = { provider };
-    if (claudeNow && !(current.model_name ?? "").startsWith("claude-")) patch.model_name = "claude-haiku-5-5";
-    if (!claudeNow && (current.model_name ?? "").startsWith("claude-")) patch.model_name = "";
+    if (provider !== "gemini" && !currentName.startsWith(hostPrefix)) patch.model_name = defaultModelForProvider(provider);
+    if (provider === "gemini" && (currentName.startsWith("claude-") || currentName.startsWith("deepseek-"))) patch.model_name = "";
     updateModelDraft(model, patch);
     setAvailableModels((previous) => {
       const next = { ...previous };
@@ -1494,8 +1506,9 @@ export function ModelsAdminPage() {
         // A key is sent only to a provider that authenticates with one: a Gemini
         // row on Vertex carries the service-account credential instead, and the
         // backend refuses a key there outright (nothing would read it), so sending
-        // an empty/leftover value would turn a settings save into a 400.
-        ...(apiKey && (draft.provider === "anthropic" || (draft.provider === "gemini" && !usesServiceAccountCredential(model))) ? { api_key: apiKey } : {}),
+        // an empty/leftover value would turn a settings save into a 400. Claude and
+        // DeepSeek always authenticate with a key.
+        ...(apiKey && (draft.provider !== "gemini" || !usesServiceAccountCredential(model)) ? { api_key: apiKey } : {}),
       });
       setModelDrafts((previous) => {
         const next = { ...previous };
@@ -1618,9 +1631,18 @@ export function ModelsAdminPage() {
             // Which form and which credential the card shows follows the provider the draft
             // names, so changing the provider changes the form before the save.
             const draftProvider = draft.provider;
+            const isGemini = draftProvider === "gemini";
             const claudeDirect = draftProvider === "anthropic";
-            const isClaude = claudeDirect;
-            const serviceAccount = !isClaude && usesServiceAccountCredential(model);
+            const deepseekDirect = draftProvider === "deepseek";
+            // The service-account credential is a Vertex fact, so it can only apply while
+            // the draft still names Gemini: on the saved row's field a switch to a hosted
+            // provider would otherwise keep hiding the key input.
+            const serviceAccount = isGemini && usesServiceAccountCredential(model);
+            // Provider-named status strings follow the draft too, so the card does not
+            // promise a Claude connection while the form says DeepSeek.
+            const checkingKey = claudeDirect ? "admin.checkingClaude" : deepseekDirect ? "admin.checkingDeepSeek" : "admin.checkingGemini";
+            const connectedKey = claudeDirect ? "admin.connectedClaude" : deepseekDirect ? "admin.connectedDeepSeek" : "admin.connectedGemini";
+            const needsVerifyKey = claudeDirect ? "admin.claudeNeedsVerify" : deepseekDirect ? "admin.deepseekNeedsVerify" : "admin.geminiNeedsVerify";
             const credentialReady = serviceAccount || model.has_api_key;
             const isConnected = credentialReady && modelOptions.length > 0 && !modelListError;
             // A Vertex card's list is not even requested until the region list
@@ -1696,7 +1718,7 @@ export function ModelsAdminPage() {
                       </div>
                       <div className={cn(serviceAccount && "sm:col-span-2")}>
                         <label className="mb-1 block text-xs text-muted-foreground">
-                          {claudeDirect ? t("admin.claudeApiKey") : serviceAccount ? t("admin.geminiCredential") : t("admin.geminiApiKey")}
+                          {claudeDirect ? t("admin.claudeApiKey") : deepseekDirect ? t("admin.deepseekApiKey") : serviceAccount ? t("admin.geminiCredential") : t("admin.geminiApiKey")}
                         </label>
                         {serviceAccount ? (
                           // No input at all under Vertex. An API-key box here is
@@ -1726,7 +1748,7 @@ export function ModelsAdminPage() {
 
                   <ModelConfigSection icon={Cpu} title={t("admin.sectionModelRegion")}>
                     <div className={cn("grid gap-3", serviceAccount && "lg:grid-cols-2")}>
-                      {serviceAccount && !isClaude && (
+                      {serviceAccount && (
                         <div>
                           <label className="mb-1 block text-xs text-muted-foreground">{t("admin.region")}</label>
                           {regions.length > 0 ? (
@@ -1849,13 +1871,13 @@ export function ModelsAdminPage() {
                           {modelsPending
                             ? region
                               ? tf("admin.loadingModelsForRegion", { region })
-                              : t(isClaude ? "admin.checkingClaude" : "admin.checkingGemini")
+                              : t(checkingKey)
                             : isConnected
                               ? region
-                                ? tf(isClaude ? "admin.connectedClaude" : "admin.connectedGeminiRegion", { n: chatModels.length, region })
-                                : tf(isClaude ? "admin.connectedClaude" : "admin.connectedGemini", { n: chatModels.length })
+                                ? tf(isGemini ? "admin.connectedGeminiRegion" : connectedKey, { n: chatModels.length, region })
+                                : tf(connectedKey, { n: chatModels.length })
                               : credentialReady
-                                ? t(isClaude ? "admin.claudeNeedsVerify" : "admin.geminiNeedsVerify")
+                                ? t(needsVerifyKey)
                                 : t("admin.saveKeyToLoad")}
                         </p>
                         {selectedUnavailable && (
@@ -1885,14 +1907,14 @@ export function ModelsAdminPage() {
                       <div>
                         <label className="mb-1 block text-xs text-muted-foreground">{t("admin.temperature")}</label>
                         <Input type="number" step="0.1" min="0" max="2" value={draft.temperature} onChange={(event) => updateModelDraft(model, { temperature: Number(event.target.value) })} className="h-8 text-xs" />
-                        {isClaude && <p className="mt-1 text-xs text-muted-foreground">{t("admin.claudeSamplingNote")}</p>}
+                        {claudeDirect && <p className="mt-1 text-xs text-muted-foreground">{t("admin.claudeSamplingNote")}</p>}
                       </div>
                       <div>
                         <label className="mb-1 block text-xs text-muted-foreground">{t("admin.maxTokens")}</label>
                         <Input type="number" min="1" value={draft.max_tokens} onChange={(event) => updateModelDraft(model, { max_tokens: Number(event.target.value) })} className="h-8 text-xs" />
                       </div>
                       <div>
-                        <label className="mb-1 block text-xs text-muted-foreground">{isClaude ? t("admin.cacheTtlGeminiOnly") : t("admin.cacheTtl")}</label>
+                        <label className="mb-1 block text-xs text-muted-foreground">{isGemini ? t("admin.cacheTtl") : t("admin.cacheTtlGeminiOnly")}</label>
                         <Input type="number" min="0" value={draft.context_cache_ttl} onChange={(event) => updateModelDraft(model, { context_cache_ttl: Number(event.target.value) })} className="h-8 text-xs" />
                       </div>
                     </div>
