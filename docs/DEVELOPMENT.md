@@ -2061,3 +2061,78 @@ Claude 的失败与 DeepSeek **不同类**：
 
 结论订正：**转人工句子的保真度是跨服务商的脆弱点**——DeepSeek 用错语言（zh 5/5、en 4/5），Claude
 把英文句改写掉（1/2 轮），Gemini 5/5 全对。建议维持：转人工落到确定性分语言模板，不赌模型输出。
+
+---
+
+## 二十四、转人工与三模型回复质量收口（2026-10-10）
+
+§二十三 量出的问题在此收口。核心判断：**「转人工」不能赌模型写对句子**——三个服务商
+各写坏一种（DeepSeek 用错语言、Claude 改写、Gemini 全对），而客户被告知人工会来却
+没有工单/看不懂语言，是产品最不该发生的一类回复。
+
+### 一、转人工：从「希望」到「约束」
+
+先把已有事实查清：**客户明确要人工时，生产根本不调模型**（`stageKeywordHandoff`
+命中关键词即短路，发确定性 ack 并建工单）。所以 §二十三 的评测用例在生产中从不经过
+模型；真正的缺口是「模型/Jev 主动发起转人工」那条路——句子保真与语言无人保证。
+
+- **单一事实来源**：三个语言的固定句提炼为 `gemini.KhmerHandoffSentence` /
+  `EnglishHandoffSentence` / `ChineseHandoffSentence`，prompt、canned acknowledgement、
+  守卫匹配（`handoffClaimPhrases`）与交付前强制全部引用同一串。此前英文 prompt 句
+  与英文 ack 句**根本不是同一句**。
+- **`platform.CanonicalHandoffReply(reply, language)`**：句子已在且语言正确 → 原样交付
+  （保留模型的联系方式等上下文）；语言不对（脚本计数：Khmer/Han/Latin 多数）→ 整条
+  替换；只改写 → 保留正文并追加固定句。
+- **新阶段 `handoff-reply`**（`after-hours-preamble` 之后、`persist-and-deliver` 之前）：
+  本回合转人工则交付文本必含本语言固定句，并把 `ClaimsHandoff` 置真 →
+  `post-delivery` 建工单成为确定性行为，不再依赖字面匹配。
+- 顺带修：`after-hours-preamble` 此前只有高棉语，英文/中文客户会收到高棉语句（同类语言缺陷）。
+- **staff-authority 规则**（prompt）：caps 实测 gemini-3.8/lite 把 `[Human agent reply]`
+  轮当噪声、丢掉客服报的 77 美元并反问产品（deepseek/claude 通过）。三个客户端都在发
+  这个标记，prompt 里却从未解释它。Core behavior 第一条补上「该标记是同事已发出的消息，
+  其中的数字为权威」——改后三臂该检查全过。
+
+### 二、评测工具（都是「量错对象」的同类 bug）
+
+- `jeveval -mode reply` 生成改走默认行的 provider（此前经 `gemini.LoadDefaultConfig`
+  构建，默认行非 Gemini 时**静默评 Gemini**）；Gemini 仍负责 embedding/检索/判官，
+  且无 Gemini 行时按环境（Vertex SA）构建。
+- `claudeeval`：关键词转人工按生产短路计分（不调模型、`[keyword-handoff:…]` 标注）；
+  handoff 用例按**交付文本**打分并断言 `ReplyClaimsHandoff`；caps 的 persona 检查改为
+  生产形态（角色+签名），放弃方括号字面量（deepseek 会解码坏它，而价格/产品码/固定句
+  都逐字正确——那是解码怪癖，不是 persona 缺陷）。
+- `kb/evals/reply_eval.json` faq-s29：单位接受 `T` 与自然柬语 `តោន`（事实是数字与吨位，
+  写法不是事实；claude 会写「ឡាន 5 តោន」）。
+
+### 三、验收（线上 `e497607`，capability 两轮 + 评测四轮）
+
+capability（三臂各 8 项）：**24/24 通过**（含新 persona、history+agent turn）。
+
+| 轮次 | deepseek-flash | gemini-3.8-flash | claude-haiku-5-5 | 判官（neutral lite） |
+|---|---|---|---|---|
+| 1 | 31/31 | 31/31 | 30/31（faq-s29 写法，已修） | 11.77 / 11.90 / 11.68 |
+| 2 | 31/31 | 30/31（trap 漏提 30） | 30/31（同上） | 11.74 / 11.87 / 11.74 |
+| 3 | 31/31 | 31/31 | 31/31 | 11.77 / 11.93* / 11.71 |
+| 4 | **31/31** | **31/31** | **31/31** | 11.71 / 11.84 / 11.71 |
+
+\* 第 3 轮 gemini 有一例判官未应答（`(30/31)`），确定性检查仍是 31/31。
+
+**残余（都非客户可见缺陷）**：claude 原始 markdown 12–13/31——`SanitizeReply` 已剥，
+`format` 判列为 0；gemini 偶发 `trap-grade-40` 漏提最高档 30（判官仍 12/12）；判官偶发
+不判分（门禁算失败，报告会标注）。
+
+**凭据与堆**：Claude key 已从死元组恢复并写入非默认行（`config_id=7`，不参与服务），
+随后 `VACUUM (FULL, ANALYZE) model_configs` 清掉旧副本（`n_dead_tup` 13 → 0）——即
+「清掉的行」不再是可读凭据；线上仍由 `config_id=1`（deepseek-flash）服务。
+
+### 复现
+
+```bash
+set -a; . /opt/khmer-ai-cs/.env-go; set +a
+cd /root/khmer-deploy
+./claudeeval -mode caps -gemini-model gemini-3.8-flash
+./claudeeval -mode reply -eval reply_eval.json -user 1 \
+  -gemini-model gemini-3.8-flash -judge-model gemini-3.5-flash-lite -json reply.json
+```
+
+原始输出：`/root/khmer-deploy/reply-final-run{1..4}.{txt,json}`。
