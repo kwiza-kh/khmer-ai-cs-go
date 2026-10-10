@@ -3,14 +3,15 @@ package api
 // The model-config console and the hot reload behind it.
 //
 // A row of model_configs names its provider. The default row (is_default) decides
-// which client answers generation: the Gemini client, or the Claude client built
-// from that row. The Gemini client is always configured from its own row, because
-// embeddings and retrieval run on it whichever provider generates, so its
-// credentials stay in place while Claude serves.
+// which client answers generation: the Gemini client, the Claude client, or the
+// DeepSeek client built from that row. The Gemini client is always configured from
+// its own row, because embeddings and retrieval run on it whichever provider
+// generates, so its credentials stay in place while another provider serves.
 //
 // A credential belongs to the provider it was entered for. A Gemini key is not an
-// Anthropic key, so a provider change never carries the stored key across: the new
-// provider needs its own key in the same request, or the change is refused.
+// Anthropic key and neither is a DeepSeek key, so a provider change never carries
+// the stored key across: the new provider needs its own key in the same request, or
+// the change is refused.
 
 import (
 	"context"
@@ -22,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"khmer-ai-cs-go/internal/anthropic"
+	"khmer-ai-cs-go/internal/deepseek"
 	"khmer-ai-cs-go/internal/gemini"
 	"khmer-ai-cs-go/internal/llm"
 )
@@ -169,28 +171,37 @@ func (a *App) updateModelConfig(w http.ResponseWriter, r *http.Request, configID
 		if switching && !keyGiven && gemini.CredentialSourceOf().IsAPIKey() {
 			return nil, ErrBadRequest("切换到 Gemini（AI Studio）需要同时填写 API Key：旧服务商的 key 不会沿用")
 		}
-	case llm.ProviderAnthropic:
+	case llm.ProviderAnthropic, llm.ProviderDeepSeek:
+		label, keyName := "Claude", "Anthropic API Key"
+		if llm.IsDeepSeek(nextProvider) {
+			label, keyName = "DeepSeek", "DeepSeek API Key"
+		}
 		if req.VertexRegion != nil {
-			return nil, ErrBadRequest("region 只用于 Gemini 行（Vertex 区域）：Claude 直连没有区域")
+			return nil, ErrBadRequest("region 只用于 Gemini 行（Vertex 区域）：" + label + " 直连没有区域")
 		}
 		if switching && !keyGiven {
-			return nil, ErrBadRequest("切换到 Claude API 需要同时填写 Anthropic API Key：旧服务商的 key 不会沿用")
+			return nil, ErrBadRequest("切换到 " + label + " API 需要同时填写 " + keyName + "：旧服务商的 key 不会沿用")
 		}
 		if !keyGiven && (current.apiKey == "" || switching) {
-			return nil, ErrBadRequest("Claude API 需要 API Key")
+			return nil, ErrBadRequest(label + " API 需要 API Key")
 		}
 	}
 
-	// Model names. A Claude row takes a model from the catalog, because pricing,
+	// Model names. A non-Gemini row takes a model from its catalog, because pricing,
 	// sampling and thinking are per model. A Gemini row keeps the probes below.
 	if llm.IsClaude(nextProvider) && req.ModelName != nil {
 		if _, ok := anthropic.Lookup(strings.TrimSpace(*req.ModelName)); !ok {
 			return nil, ErrBadRequest("未知的 Claude 模型: " + strings.TrimSpace(*req.ModelName) + "（可选：" + claudeModelIDs() + "）")
 		}
 	}
+	if llm.IsDeepSeek(nextProvider) && req.ModelName != nil {
+		if _, ok := deepseek.Lookup(strings.TrimSpace(*req.ModelName)); !ok {
+			return nil, ErrBadRequest("未知的 DeepSeek 模型: " + strings.TrimSpace(*req.ModelName) + "（可选：" + deepseekModelIDs() + "）")
+		}
+	}
 	// Leaving the AI Studio credential row takes the only Gemini key with it when no
 	// other Gemini row holds one, and embeddings and retrieval read that key.
-	if !llm.IsClaude(current.provider) && nextProvider != llm.ProviderGemini &&
+	if llm.IsGemini(current.provider) && nextProvider != llm.ProviderGemini &&
 		current.apiKey != "" && gemini.CredentialSourceOf().IsAPIKey() && !otherGeminiRowHasKeyFromDB(r.Context(), a.DB, configID) {
 		return nil, ErrBadRequest("这是 AI Studio 唯一的 Gemini 凭据：embedding 与检索依赖它。" +
 			"请先保留另一行 Gemini 配置并保存其 API Key，再切换此行。本次未写入任何改动。")
@@ -205,8 +216,9 @@ func (a *App) updateModelConfig(w http.ResponseWriter, r *http.Request, configID
 	}
 	if req.Temperature != nil {
 		// Temperature is sent with every chat request of a Gemini row, so an out-of-range
-		// value is a 400 on every reply. Claude rows store it and do not send it to models
-		// that refuse sampling parameters.
+		// value is a 400 on every reply. A Claude row stores it and does not send it to
+		// models that refuse sampling parameters; a DeepSeek row sends it, because the
+		// client turns thinking off (see internal/deepseek), and the API's range is [0, 2].
 		if *req.Temperature < 0 || *req.Temperature > 2 {
 			return nil, ErrBadRequest(fmt.Sprintf(
 				"temperature %.2f 超出平台范围 [0, 2]：该值会随每次对话请求发给模型，越界会让这个配置的每一次回复都失败。本次未写入任何改动。",
@@ -335,7 +347,7 @@ func (a *App) checkGeminiEdit(r *http.Request, req updateModelRequest) error {
 var otherGeminiRowHasKeyFromDB = func(ctx context.Context, db *pgxpool.Pool, configID int32) bool {
 	var has bool
 	err := db.QueryRow(ctx,
-		"SELECT EXISTS (SELECT 1 FROM model_configs WHERE config_id <> $1 AND provider <> 'anthropic' AND api_key <> '')",
+		"SELECT EXISTS (SELECT 1 FROM model_configs WHERE config_id <> $1 AND provider NOT IN ('anthropic', 'deepseek') AND api_key <> '')",
 		configID).Scan(&has)
 	return err == nil && has
 }
@@ -343,11 +355,12 @@ var otherGeminiRowHasKeyFromDB = func(ctx context.Context, db *pgxpool.Pool, con
 // reloadServingFromDB rebuilds the serving clients from the database after every
 // model-config write, so an edit takes effect without a restart.
 //
-//   - The default row names the provider in force. When it is a Claude row, the Claude
-//     client is configured from it, with its key unsealed here.
+//   - The default row names the provider in force. When it is a Claude or DeepSeek
+//     row, that provider's client is configured from it, with its key unsealed here.
 //   - The Gemini client is configured from its own row. When the default row is a
-//     Gemini row that is the same row; when it is a Claude row, Gemini keeps the
-//     credentials and settings of its own row, because embeddings and retrieval run on it.
+//     Gemini row that is the same row; when it is any other provider, Gemini keeps
+//     the credentials and settings of its own row, because embeddings and retrieval
+//     run on it.
 //
 // Without a default row nothing changes: the clients keep what they were configured with.
 func (a *App) reloadServingFromDB(ctx context.Context) {
@@ -355,14 +368,17 @@ func (a *App) reloadServingFromDB(ctx context.Context) {
 	if !ok {
 		return
 	}
-	if !llm.IsClaude(def.Provider) {
+	if llm.IsGemini(def.Provider) {
 		a.applyGeminiRow(def)
 	} else if row, found := geminiModelConfigFromDB(ctx, a.DB); found {
 		a.applyGeminiRow(row)
 	}
 	if a.LLM != nil {
-		if llm.IsClaude(def.Provider) {
-			a.LLM.InstallClaude(def, a.claudeKey(def))
+		switch {
+		case llm.IsClaude(def.Provider):
+			a.LLM.InstallClaude(def, a.providerKey(def))
+		case llm.IsDeepSeek(def.Provider):
+			a.LLM.InstallDeepSeek(def, a.providerKey(def))
 		}
 		a.LLM.SetProvider(def.Provider)
 	}
@@ -398,10 +414,11 @@ func (a *App) applyGeminiRow(row llm.Row) {
 	a.Gemini.SetTemperature(row.Temperature)
 }
 
-// claudeKey is the Anthropic key of a Claude row, unsealed for the client. The Vertex
-// transport authenticates with the service account and has no key.
-func (a *App) claudeKey(row llm.Row) string {
-	if row.Provider != llm.ProviderAnthropic || row.APIKey == "" {
+// providerKey is the unsealed API key of a non-Gemini row: Claude and DeepSeek
+// authenticate with the key stored in model_configs.api_key. A Gemini row has no
+// key on this path (its credential is applied by applyGeminiRow).
+func (a *App) providerKey(row llm.Row) string {
+	if llm.IsGemini(row.Provider) || row.APIKey == "" {
 		return ""
 	}
 	if a.Sealer == nil {
@@ -419,14 +436,22 @@ func (a *App) serving() llm.Model {
 	return a.Gemini
 }
 
-// testClaudeConfig answers one test prompt through a Claude row. It builds a client
-// for this call only: a test must not change what serves customers, and a row that is
-// not the default still answers its own test.
-func (a *App) testClaudeConfig(ctx context.Context, row llm.Row) (any, error) {
-	if row.Provider == llm.ProviderAnthropic && strings.TrimSpace(row.APIKey) == "" {
+// testProviderConfig answers one test prompt through a non-Gemini row (Claude or
+// DeepSeek). It builds a client for this call only: a test must not change what
+// serves customers, and a row that is not the default still answers its own test.
+func (a *App) testProviderConfig(ctx context.Context, row llm.Row) (any, error) {
+	if strings.TrimSpace(row.APIKey) == "" {
 		return nil, ErrBadRequest("该配置未设置 API Key")
 	}
-	client := anthropic.New(llm.ClaudeConfig(row, a.claudeKey(row)))
+	var client llm.Model
+	switch {
+	case llm.IsClaude(row.Provider):
+		client = anthropic.New(llm.ClaudeConfig(row, a.providerKey(row)))
+	case llm.IsDeepSeek(row.Provider):
+		client = deepseek.New(llm.DeepSeekConfig(row, a.providerKey(row)))
+	default:
+		return nil, ErrInternal("未知的服务商")
+	}
 	result, err := client.Chat(ctx, "Reply with the single word: ok", nil, "en")
 	if err != nil {
 		// The cause is shown, not just "failed": a balance or quota stop reads very
@@ -439,34 +464,52 @@ func (a *App) testClaudeConfig(ctx context.Context, row llm.Row) (any, error) {
 	}, nil
 }
 
-// claudeAvailableModels lists the catalog for a Claude row. It needs no network: the
-// catalog is the platform's verified list, and every entry is available — Claude is
-// served straight from Anthropic, so no location can be missing a model.
-func claudeAvailableModels(_ llm.Row, _ string) (any, error) {
+// providerAvailableModels lists the catalog for a Claude or DeepSeek row. It needs
+// no network: each catalog is the platform's verified list, and every entry is
+// available — both providers are served straight from their own API, so no
+// location can be missing a model.
+func providerAvailableModels(row llm.Row, _ string) (any, error) {
 	out := make([]map[string]any, 0)
-	for _, m := range anthropic.Catalog() {
+	add := func(id, display, stage string) {
 		out = append(out, map[string]any{
-			"name": m.ID, "display_name": m.DisplayName, "launch_stage": m.LaunchStage,
+			"name": id, "display_name": display, "launch_stage": stage,
 			"capability": "chat", "available": true,
 		})
+	}
+	switch {
+	case llm.IsDeepSeek(row.Provider):
+		for _, m := range deepseek.Catalog() {
+			add(m.ID, m.DisplayName, m.LaunchStage)
+		}
+	default:
+		for _, m := range anthropic.Catalog() {
+			add(m.ID, m.DisplayName, m.LaunchStage)
+		}
 	}
 	return out, nil
 }
 
-// claudeRow returns the row when it names a Claude provider. Without a database there
-// is no row to read, so the answer is no and the Gemini path runs, as it always did.
-func (a *App) claudeRow(ctx context.Context, configID int32) (llm.Row, bool) {
+// providerRow returns the row by id. Without a database there is no row to read.
+func (a *App) providerRow(ctx context.Context, configID int32) (llm.Row, bool) {
 	if a.DB == nil {
 		return llm.Row{}, false
 	}
-	row, ok := llm.LoadByID(ctx, a.DB, configID)
-	return row, ok && llm.IsClaude(row.Provider)
+	return llm.LoadByID(ctx, a.DB, configID)
 }
 
-// claudeModelIDs lists the catalog's ids for an error message.
+// claudeModelIDs lists the Claude catalog's ids for an error message.
 func claudeModelIDs() string {
 	ids := make([]string, 0)
 	for _, m := range anthropic.Catalog() {
+		ids = append(ids, m.ID)
+	}
+	return strings.Join(ids, ", ")
+}
+
+// deepseekModelIDs lists the DeepSeek catalog's ids for an error message.
+func deepseekModelIDs() string {
+	ids := make([]string, 0)
+	for _, m := range deepseek.Catalog() {
 		ids = append(ids, m.ID)
 	}
 	return strings.Join(ids, ", ")

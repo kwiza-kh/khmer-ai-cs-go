@@ -1891,3 +1891,275 @@ go build ./... && go vet ./... && go test ./...
 DATABASE_URL=<生产隧道> go test -count=1 ./internal/api/ -run 'TestUserListIsScoped|TestSessionListFilter' -v
 DATABASE_URL=<生产隧道> go test -count=1 ./internal/sqlcheck/   # 或 SQLCHECK_REQUIRED=1
 ```
+
+---
+
+## 二十二、DeepSeek 接入：第三个生成服务商（2026-10-10）
+
+按 §二十 的模式加一个服务商：一行数据（`model_configs.provider='deepseek'`）+ 一个客户端 +
+目录与价目。**没有迁移**：`provider` 自 001 起就是无 CHECK 的 `VARCHAR(50)`，加一行不需要 DDL。
+
+| 件 | 落点 |
+|---|---|
+| 常量与路由 | `internal/llm`：`ProviderDeepSeek`、`IsDeepSeek`、`IsGemini`（未知值仍读作 Gemini）、`InstallDeepSeek`/`DeepSeekConfig`。`SetProvider` 用 `Valid` 而非 `IsClaude` 判范围，否则新服务商会被折回 Gemini。 |
+| 客户端 | `internal/deepseek`：OpenAI 格式 `/chat/completions` + `Authorization: Bearer`。与 `internal/gemini` 相同的生成方法与 DTO；空系统提示词回退内置默认、人工客服轮保留标记、相邻同角色轮合并、辅助调用不带系统提示词并报 `AuxUsageObserver`。 |
+| 目录 | `internal/deepseek/catalog.go`：只收 `deepseek-flash`（V4.1-Flash）与 `deepseek-v4-pro`。旧名 `deepseek-v4-flash` 官方仍接受但已退役、按 Flash 价计费，**不是可存的模型**（保存即 400）。 |
+| 计费 | `usage.EstimateCostFor` 加 `deepseek-` 前缀分支，缓存命中价是独立数字（不是入价的固定比例）。 |
+| 用量闸门 | `usage.servingIsGemini` 把 `deepseek` 与 `anthropic` 同等对待：AI Studio 的 Tier 上限只约束 Gemini 调用，遗留 Tier 数字仍被启动校验拒绝。 |
+| 控制台 | 服务商下拉第三项；Key 输入框、模型下拉（目录）、测试按钮与状态文案（`connecting/connected/needsVerify`）都按草稿中的服务商切换；`vertex_region` 与上下文缓存仅 Gemini 行显示。 |
+| 行选择 | **四处 SQL 的 `NOT IN` 必须同时列全非 Gemini 服务商**（`llm.LoadGemini`、`gemini.LoadDefaultConfig`、`api.otherGeminiRowHasKeyFromDB`、`api.studioAPIKeyFromDB`）：漏一处就会把 DeepSeek 的 key/model 交给 Gemini 客户端，embedding 会开始用别人的凭据。 |
+
+### 从官方文档核对到的事实（2026-10-10）
+
+- 端点 `https://api.deepseek.com/chat/completions`，`Authorization: Bearer <key>`；另有
+  `https://api.deepseek.com/anthropic` 兼容端点，**本实现不用它**——原生 OpenAI 格式是主路径，
+  兼容层只保证「可调用」不保证字段逐一对应。
+- 模型：`deepseek-flash` / `deepseek-v4-pro`；上下文 1M，最大输出 384K。
+- **思考默认开启**（V4.1）：推理 token 按输出价计费、增加数秒延迟，且让 `temperature` 失效。
+  客户端对所有目录模型发 `thinking.type=disabled`（目录里的 `ThinkingOff` 控制），因此
+  temperature 是有效的，管理页的说明与 Claude 行不同（Claude 是「不发送」）。
+- 用量字段：`prompt_tokens` = `prompt_cache_hit_tokens` + `prompt_cache_miss_tokens`，**含缓存**，
+  正好是平台计费要的口径（成本公式从 prompt 里减缓存）。流式响应最后一块携带 usage，以
+  `data: [DONE]` 结束，**没有单独的 usage-only 块**（与 OpenAI 不同），所以客户端不需要
+  `stream_options`。
+- 价格分峰谷：谷时正好是峰时一半；峰时为工作日 01:00–04:00 与 06:00–10:00 UTC。价目卡取
+  **峰时价**（flash 峰时 $0.30 入 / $1.20 出 / $0.006 缓存；pro $1.32 / $3.96 / $0.044）：
+  这是用量闸门，高估只是让运维多看一眼面板，低估才会让预算悄悄跑过上限。
+
+### 已知边界
+
+- **未对真实端点做过实际调用**（没有 key）：行为由 stub 服务器单测与目录/价目单测覆盖，
+  API 形状来自上面的官方文档页面；第一次上线时应先在控制台点「测试」。
+- 峰谷用峰时常数固定，没有按时段计算；谷时调用会被高估最多 2×。
+- 图片理解只有 `deepseek-flash` 支持，且未接入——多模态仍走 Gemini，与 Claude 相同。
+
+### 切换步骤（运维）
+
+1. 控制台 → 模型 → 该行服务商选 `DeepSeek` → 填 DeepSeek API Key（不会从别的行沿用）→
+   保存（模型只能选目录里的两个）→ 点「测试」→ 设为默认。
+2. 回滚：把默认行改回 Gemini 或 Claude 行并保存。其它行的凭据与设置不受影响，也不需要重启。
+
+### 验证
+
+```bash
+cd backend-go
+go build ./... && go vet ./... && go test ./...
+SQLCHECK_REQUIRED=1 go test -count=1 ./internal/sqlcheck/  # 改动过 4 处 provider 过滤 SQL
+DATABASE_URL=<已迁移的库> go test -count=1 ./internal/llm/  # 行选择：DeepSeek 行不得成为 Gemini 凭据
+cd ../frontend && NEXT_PUBLIC_API_URL=https://example.invalid/api/v1 npm run build
+```
+
+---
+
+## 二十三、DeepSeek Flash 回复质量实测（2026-10-10）
+
+触发：生产默认行切到 `deepseek` / `deepseek-flash` 后，用平台自己的评测工具做一次全面对照。
+评测跑在 app 主机上（凭据所在），走生产路径：默认行的提示词与密封 key、生产检索、31 例评测集
+（km 22 / en 5 / zh 4；租户 1：47 篇 ready / 609 chunk），3 workers。
+
+### 工具链改造（本次，先于结论）
+
+两个评测工具都测不了正在服务的 DeepSeek：
+
+- `jeveval -mode reply` 用 `gemini.LoadDefaultConfig` 建生成客户端 —— 默认行不是 Gemini 时它会
+  **静默去评 Gemini**（Claude 时代就已如此，只是没人发现）。
+- `claudeeval` 是「Claude vs Gemini」的固定双臂，且手臂建不起来就直接退出。
+
+改成：
+
+- 判分 rubric 移到 `internal/replyscore`（`Judge` / `JudgePrompt`）：两个工具共用一份，轴值 clamp
+  到 0-3，**未判分 = 失败**（继承 2026-10-04 的教训）；`jeveval` 改为调用它。
+- `claudeeval` 手臂化：`deepseek`（默认行的密封 key）、`gemini`（SA 文件）、`claude`（有 key 时才建），
+  建不起来打印 `SKIPPED`；capability checks 逐手臂跑；新增 `-deepseek-model` / `-deepseek-key` /
+  `-judge-model`。
+- 判官偏差实测：Gemini 3.8 自评 11.81–11.87，换独立 lite 判官 11.68 ⇒ 自偏好 ≈0.15；DeepSeek 在两个
+  判官下 11.10–11.39 / 11.10。**结论：选型看确定性检查，判官分只做趋势**，且判官最好不兼任手臂。
+
+### 结果（确定性检查为门禁，5 轮一致）
+
+| 手臂 | 确定性通过 | 判官均分 | 中位延迟 | 成本（3 轮总 / 每千例） |
+|---|---|---|---|---|
+| `deepseek-flash` | **29/31** | 11.10–11.39 | ~1.6s | $0.0407 / ≈$0.44 |
+| `gemini-3.8-flash` | **31/31** | 11.68–11.87 | 5.2–9.1s | $0.2313 / ≈$2.49 |
+
+Claude 手臂在首轮缺席，原因与恢复过程见本节末「补记」；恢复后已完成三臂对照。
+
+### 发现
+
+1. **非高棉语的转人工请求，DeepSeek 用高棉语整句回复 —— 唯一系统性缺陷。**
+   - 证据：`lang-zh-handoff` **5/5 失败**、`lang-en-handoff` **4/5 失败**；回复文本跨轮完全相同
+     （`បុគ្គលិករបស់យើងត្រូវបានជូនដំណឹង … ខ្ញុំនឹងប្រគល់ការសន្ទនានេះទៅឱ្យពួកគេ។`），
+     缺 `已为您转接` / `Connecting you to a human agent`；判官 3/12。Gemini 同提示词同 grounding
+     5/5 正确。
+   - 根因证据（不是猜测）：`gemini/prompts.go:74/76` 明确要求「用在 CUSTOMER'S language 的固定句」；
+     这两例无 KB 命中，消息里只剩尾部的 `[Language Preference] English - Secondary`，DeepSeek 低估
+     了它，回落到以高棉语为主的内置系统提示词。有 grounding 的 en/zh 例（KB 里是对应语言文本）
+     全部通过，与该解释一致。
+   - 生产影响：回复原样投递（`stagePersistAndDeliver`），客户读到高棉语句子；但 `ReplyClaimsHandoff`
+     能从高棉语句匹配，人工请求照建 —— **工单不会丢，错的是客户看到的那句话**。
+   - 修法（未做，改提示词要 A/B）：把语言指令提到系统提示词开头或放进当轮用户消息；或转人工
+     直接走已有的分语言模板（`HandoffAcknowledgement` 有 km/en/zh），不赌模型。
+2. **字面量整体复制不可靠（能力检查 4/4 失败）**：要求原样输出 `[PERSONA-OK]`，DeepSeek 返回
+   `[P1]` / `[P#PERSONA-OK]` / `[P#ERSONA-OK]` / `[P'`。先限定为「方括号整词」这一类：31 例里的
+   价格、产品码、高棉语转接句都能逐字复现。要确认是否影响生产 persona，需用自然语言 persona
+   再测一轮（本次未做）。
+3. 其余能力全绿：三语 chat、流式（45 个 delta，首字 465ms）、历史里的客服报价、aux JSON、
+   未知模型 400。Gemini 基线反而在 `history + agent turn` 上挂（仅 lite 手臂跑过 caps，4/4；3.8 未跑 caps，该结论不得外推到它）。
+4. 速度与成本：中位 ~1.6s vs 5–9s；按峰时价成本约 1/5.7。延迟优势来自关闭思考 + 输出更短
+   （31 例输出 8897 vs 19320 token）。
+
+### 复现
+
+```bash
+set -a; . /opt/khmer-ai-cs/.env-go; set +a
+cd /root/khmer-deploy
+./claudeeval -mode caps
+./claudeeval -mode reply -eval reply_eval.json -user 1 \
+  -gemini-model gemini-3.8-flash -judge-model gemini-3.5-flash-lite -json reply.json
+```
+
+原始输出留在服务器：`/root/khmer-deploy/reply-run{1,2,3}.{txt,json}`（自评判官）、
+`reply-neutral.{txt,json}`（独立判官）、`reply-20261010.{txt,json}`（首轮探索，Gemini 基线为 lite）。
+
+### 补记：Claude 手臂（同日恢复，三臂对照）
+
+首轮缺席的原因：切换服务商时旧 key 按设计被清空（`updateModelConfig` 不沿用），而服务器上没有任何
+含该 key 的备份——两份 `pg_dump` 是 10-04 的（早于 10-07/08 的 Claude 接入），14 份 `.env-go*`
+备份没有任何 `ANTHROPIC*` 变量，`audit_logs` 只记 path/method/status（`details::text ilike '%sk-ant%'`
+命中 0）。
+
+但 key 还在数据库里：`model_configs` **从未 VACUUM**（`last_vacuum`/`last_autovacuum` 均为 NULL，
+`n_dead_tup=13`），旧行版本以死元组形式留在堆中，超级用户可用 `pageinspect` 读出。用
+`heap_page_item_attrs` 解码第 2 页的 8 个旧版本：189 字符密文 ≈ 108 字符明文（Anthropic key 的长度；
+live 行是 91 字符 ≈ 35 字符的 DeepSeek key）。把该密文插回一行**非默认**的 Claude 行，capability
+检查 8/8 通过，随后完成三臂评测，临时行已删除。`claudeeval` 现在会找 `provider='anthropic'` 的行而
+不只读默认行（`llm.LoadProvider`），所以非默认的对比手臂不再被静默跳过。
+
+> **安全提示**：被「清掉」的凭据在 VACUUM 之前仍可从表内读出（本表 autovacuum 阈值 50 行，迟迟不会
+> 触发）。要真正吊销一个凭据，清数据库行不够，须在服务商侧 revoke；`VACUUM model_configs` 才会把旧
+> 版本从堆上抹掉。
+
+三臂结果（同一集、同提示词、同 grounding、独立判官 `gemini-3.5-flash-lite`，2 轮）：
+
+| 手臂 | 确定性通过 | 判官均分 | 中位延迟 | 成本/千例 | 原始 markdown |
+|---|---|---|---|---|---|
+| `deepseek-flash` | 29/31 | 11.13–11.19 | ~1.6s | $0.43 | 0 |
+| `claude-haiku-5-5` | 29/31 | 11.69–11.71 | ~2.1s | $0.64 | **10–11/31** |
+| `gemini-3.8-flash` | **31/31** | 11.81–11.87 | 5.5–6.7s | $2.53 | 0 |
+
+各轴（判官）：deepseek 语言 2.81 / 自然 2.61；claude 2.89 / 2.73；gemini 3.00 / 2.89。
+
+Claude 的失败与 DeepSeek **不同类**：
+
+- 转人工那句它**改写**了（"Yes, I can connect you with a human agent…"，还补了一句「人工现在不在」）。
+  语言正确、判官 12/12，但 `platform.ReplyClaimsHandoff` 实测 **false** —— 客户被告知人工会来，
+  **工单不会创建**（用真实检测函数跑过：改写句 false、要求句 true）。这正是提示词 74/76 行要防的
+  失败，也是「确定性检查是门禁、判官只是趋势」的又一个例子。
+- 另 2 例是 `Post …: EOF` 的瞬时错误（第二轮），属网络/上游，不是质量分。
+- 原始 markdown 11/31（DeepSeek/Gemini 为 0）：`SanitizeReply` 会剥掉、客户看不到，但说明它更常无视
+  「不要 markdown」的提示词。
+
+结论订正：**转人工句子的保真度是跨服务商的脆弱点**——DeepSeek 用错语言（zh 5/5、en 4/5），Claude
+把英文句改写掉（1/2 轮），Gemini 5/5 全对。建议维持：转人工落到确定性分语言模板，不赌模型输出。
+
+---
+
+## 二十四、转人工与三模型回复质量收口（2026-10-10）
+
+§二十三 量出的问题在此收口。核心判断：**「转人工」不能赌模型写对句子**——三个服务商
+各写坏一种（DeepSeek 用错语言、Claude 改写、Gemini 全对），而客户被告知人工会来却
+没有工单/看不懂语言，是产品最不该发生的一类回复。
+
+### 一、转人工：从「希望」到「约束」
+
+先把已有事实查清：**客户明确要人工时，生产根本不调模型**（`stageKeywordHandoff`
+命中关键词即短路，发确定性 ack 并建工单）。所以 §二十三 的评测用例在生产中从不经过
+模型；真正的缺口是「模型/Jev 主动发起转人工」那条路——句子保真与语言无人保证。
+
+- **单一事实来源**：三个语言的固定句提炼为 `gemini.KhmerHandoffSentence` /
+  `EnglishHandoffSentence` / `ChineseHandoffSentence`，prompt、canned acknowledgement、
+  守卫匹配（`handoffClaimPhrases`）与交付前强制全部引用同一串。此前英文 prompt 句
+  与英文 ack 句**根本不是同一句**。
+- **`platform.CanonicalHandoffReply(reply, language)`**：句子已在且语言正确 → 原样交付
+  （保留模型的联系方式等上下文）；语言不对（脚本计数：Khmer/Han/Latin 多数）→ 整条
+  替换；只改写 → 保留正文并追加固定句。
+- **新阶段 `handoff-reply`**（`after-hours-preamble` 之后、`persist-and-deliver` 之前）：
+  本回合转人工则交付文本必含本语言固定句，并把 `ClaimsHandoff` 置真 →
+  `post-delivery` 建工单成为确定性行为，不再依赖字面匹配。
+- 顺带修：`after-hours-preamble` 此前只有高棉语，英文/中文客户会收到高棉语句（同类语言缺陷）。
+- **staff-authority 规则**（prompt）：caps 实测 gemini-3.8/lite 把 `[Human agent reply]`
+  轮当噪声、丢掉客服报的 77 美元并反问产品（deepseek/claude 通过）。三个客户端都在发
+  这个标记，prompt 里却从未解释它。Core behavior 第一条补上「该标记是同事已发出的消息，
+  其中的数字为权威」——改后三臂该检查全过。
+
+### 二、评测工具（都是「量错对象」的同类 bug）
+
+- `jeveval -mode reply` 生成改走默认行的 provider（此前经 `gemini.LoadDefaultConfig`
+  构建，默认行非 Gemini 时**静默评 Gemini**）；Gemini 仍负责 embedding/检索/判官，
+  且无 Gemini 行时按环境（Vertex SA）构建。
+- `claudeeval`：关键词转人工按生产短路计分（不调模型、`[keyword-handoff:…]` 标注）；
+  handoff 用例按**交付文本**打分并断言 `ReplyClaimsHandoff`；caps 的 persona 检查改为
+  生产形态（角色+签名），放弃方括号字面量（deepseek 会解码坏它，而价格/产品码/固定句
+  都逐字正确——那是解码怪癖，不是 persona 缺陷）。
+- `kb/evals/reply_eval.json` faq-s29：单位接受 `T` 与自然柬语 `តោន`（事实是数字与吨位，
+  写法不是事实；claude 会写「ឡាន 5 តោន」）。
+
+### 三、验收（线上 `e497607`，capability 两轮 + 评测四轮）
+
+capability（三臂各 8 项）：**24/24 通过**（含新 persona、history+agent turn）。
+
+| 轮次 | deepseek-flash | gemini-3.8-flash | claude-haiku-5-5 | 判官（neutral lite） |
+|---|---|---|---|---|
+| 1 | 31/31 | 31/31 | 30/31（faq-s29 写法，已修） | 11.77 / 11.90 / 11.68 |
+| 2 | 31/31 | 30/31（trap 漏提 30） | 30/31（同上） | 11.74 / 11.87 / 11.74 |
+| 3 | 31/31 | 31/31 | 31/31 | 11.77 / 11.93* / 11.71 |
+| 4 | **31/31** | **31/31** | **31/31** | 11.71 / 11.84 / 11.71 |
+
+\* 第 3 轮 gemini 有一例判官未应答（`(30/31)`），确定性检查仍是 31/31。
+
+**残余（都非客户可见缺陷）**：claude 原始 markdown 12–13/31——`SanitizeReply` 已剥，
+`format` 判列为 0；gemini 偶发 `trap-grade-40` 漏提最高档 30（判官仍 12/12）；判官偶发
+不判分（门禁算失败，报告会标注）。
+
+**凭据与堆**：Claude key 已从死元组恢复并写入非默认行（`config_id=7`，不参与服务），
+随后 `VACUUM (FULL, ANALYZE) model_configs` 清掉旧副本（`n_dead_tup` 13 → 0）——即
+「清掉的行」不再是可读凭据；线上仍由 `config_id=1`（deepseek-flash）服务。
+
+### 复现
+
+```bash
+set -a; . /opt/khmer-ai-cs/.env-go; set +a
+cd /root/khmer-deploy
+./claudeeval -mode caps -gemini-model gemini-3.8-flash
+./claudeeval -mode reply -eval reply_eval.json -user 1 \
+  -gemini-model gemini-3.8-flash -judge-model gemini-3.5-flash-lite -json reply.json
+```
+
+原始输出：`/root/khmer-deploy/reply-final-run{1..4}.{txt,json}`。
+
+### 四、凭据保留、卫生清理与最终验收（同日补记）
+
+**三个 provider 的凭据都保留**（`model_configs` 三行，仅一行服务）：
+
+| config_id | provider | model | 凭据 | is_default |
+|---|---|---|---|---|
+| 1 | deepseek | deepseek-flash | 密封 key（91 字符密文） | **true** |
+| 7 | anthropic | claude-haiku-5-5 | 密封 key（186，从死元组恢复） | false |
+| 8 | gemini | gemini-3.8-flash | Vertex 服务账号文件（`vertex-sa.json`，600，`khmerai`） | false，`vertex_region=global`、`temperature=1` |
+
+建 Gemini 行后启动日志确认：`Gemini configured from database model config model=gemini-3.8-flash
+region=global temperature=1 credential=service_account`。注意该行的 `temperature` 必须显式写：
+列的默认值是 0.7，直接 INSERT 会静默改变 Gemini 的采样（补记时已改为 1，与 §十三 的结论一致）。
+
+**卫生清理**：`/root/db-backups/tenant-wanfang-password.txt`（明文口令）归档为
+`/root/archive/credentials-<ts>.tgz`（600）并删原件；`server-go.bak-*` 留最新 5 份；
+`.env-go.bak-*` 留最新 3 份，其余 8 份归档为 `/root/archive/env-go-backups-<ts>.tgz`（600）；
+`vertex-sa.json` 权限 600；前端回滚点 3 份。
+
+**最终验收（线上 `6c25eb2`）**：capability 三臂 **24/24**；评测第 5、6 轮
+**deepseek 31/31 · gemini 31/31 · claude 31/31**（判官 11.74/11.87/11.74 与
+11.81/11.94/11.55）。判官失败重试一次后未再出现未判分；trap-grade-40 两轮全过。
+
+**残余（非客户可见）**：claude 原始 markdown 11–13/31——`SanitizeReply` 后 `format` 判列
+全 0，客户看到的永远是纯文本；该项作为模型行为观测保留（新增的「价格列表每行一条纯文本」
+提示没有压低该计数，实测 13→11，属噪声范围）。

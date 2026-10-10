@@ -1,18 +1,20 @@
-// Command claudeeval measures the Claude provider against this platform's own
+// Command claudeeval measures this platform's model providers against its own
 // criteria: the capability surface the reply path uses, and the Khmer reply quality
 // that kb/evals/reply_eval.json measures.
 //
-// The reply half is an A/B: every case runs through BOTH clients (Claude and Gemini)
-// with the same system prompt, the same grounding and the same eval rubric, so the
-// two arms differ only in the model. That is the question an operator actually has
-// before switching a tenant — "is it as good for Khmer customers?" — and a single-arm
-// run cannot answer it.
+// The reply half is an A/B: every case runs through every available arm (DeepSeek,
+// the Gemini baseline, Claude when it can authenticate) with the same system prompt,
+// the same grounding and the same rubric — deterministic checks plus the shared
+// judge in internal/replyscore — so the arms differ only in the model. That is the
+// question an operator actually has before switching a provider — "is it as good
+// for Khmer customers?" — and a single-arm run cannot answer it.
 //
-// Run it where the credentials live (the app host): the Anthropic key is read from the
-// sealed model_configs row, decrypted with PLATFORM_CREDENTIAL_KEY, unless
-// -anthropic-key is given; Gemini is built from GEMINI_VERTEX_SA_FILE. It writes
-// nothing: grounding is read-only and no usage observer is installed, so a run leaves
-// no rows in token_usage.
+// Arms are built from what the host can authenticate: Gemini from the service-account
+// file, DeepSeek and Claude from the sealed key of their model_configs row. An arm
+// that cannot be built is printed as SKIPPED, never silently dropped.
+//
+// Run it where the credentials live (the app host). It writes nothing: grounding is
+// read-only and no usage observer is installed, so a run leaves no rows in token_usage.
 //
 //	set -a; . /opt/khmer-ai-cs/.env-go; set +a
 //	./claudeeval -eval reply_eval.json -user 1 -limit 0
@@ -34,8 +36,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"khmer-ai-cs-go/internal/anthropic"
+	"khmer-ai-cs-go/internal/deepseek"
 	"khmer-ai-cs-go/internal/gemini"
 	"khmer-ai-cs-go/internal/llm"
+	"khmer-ai-cs-go/internal/platform"
 	"khmer-ai-cs-go/internal/rag"
 	"khmer-ai-cs-go/internal/replyscore"
 	"khmer-ai-cs-go/internal/security"
@@ -47,6 +51,10 @@ import (
 type arm struct {
 	name  string
 	model llm.Model
+	// bogus builds the same provider pinned to a model id that does not exist. The
+	// capability check uses it to prove a typo fails loudly instead of being answered
+	// by a mock; nil skips that one check for the arm.
+	bogus func() llm.Model
 }
 
 func main() {
@@ -59,8 +67,11 @@ func main() {
 	systemPrompt := flag.String("system", "", "system prompt for both arms (default: the deployment's stored prompt)")
 	geminiModel := flag.String("gemini-model", envOr("GEMINI_MODEL", "gemini-3.8-flash"), "Gemini model for the baseline arm")
 	geminiRegion := flag.String("gemini-region", envOr("GEMINI_VERTEX_REGION", "global"), "Vertex region for the Gemini arm")
+	judgeModel := flag.String("judge-model", "", "-mode reply: the fast model that scores replies (default: the Gemini arm's model)")
 	claudeModel := flag.String("claude-model", "claude-haiku-5-5", "Claude model under test")
 	claudeKeyFlag := flag.String("anthropic-key", "", "Anthropic API key (default: the sealed key of the default model_configs row)")
+	deepseekModel := flag.String("deepseek-model", "deepseek-flash", "DeepSeek model under test")
+	deepseekKeyFlag := flag.String("deepseek-key", "", "DeepSeek API key (default: the sealed key of the default model_configs row)")
 	jsonOut := flag.String("json", "", "also write the raw results to this path")
 	flag.Parse()
 
@@ -82,10 +93,49 @@ func main() {
 		fmt.Fprintln(os.Stderr, "claudeeval: gemini arm:", err)
 		os.Exit(2)
 	}
+	// Arms are built from what this host can actually authenticate, and a missing arm
+	// is SAID OUT LOUD: a comparison that quietly lost an arm reads as a clean result,
+	// and this harness exists to tell providers apart, not to run whatever answers.
+	var arms []arm
+	deep, deepKey, err := newDeepSeek(ctx, pool, *deepseekModel, *deepseekKeyFlag)
+	if err != nil {
+		fmt.Printf("  deepseek arm: SKIPPED (%v)\n", err)
+	} else {
+		arms = append(arms, arm{name: "deepseek", model: deep, bogus: func() llm.Model {
+			return deepseek.New(deepseek.Config{APIKey: deepKey, Model: "deepseek-does-not-exist-9-9", MaxTokens: 64})
+		}})
+	}
+	// The Gemini arm's bogus client: same transport, an id no catalog has, so a typo
+	// must fail rather than be answered.
+	gemBogus := gemini.New("", "gemini-does-not-exist-9-9", 64)
+	if region := gem.Region(); region != "" {
+		_ = gemBogus.SetVertexRegion(region)
+	}
+	arms = append(arms, arm{name: "gemini", model: gem, bogus: func() llm.Model { return gemBogus }})
 	claude, provider, claudeKey, err := newClaude(ctx, pool, *claudeModel, *claudeKeyFlag)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "claudeeval: claude arm:", err)
+		fmt.Printf("  claude arm : SKIPPED (%v)\n", err)
+	} else {
+		arms = append(arms, arm{name: "claude", model: claude, bogus: func() llm.Model {
+			return anthropic.New(anthropic.Config{APIKey: claudeKey, Model: "claude-does-not-exist-9-9"})
+		}})
+	}
+	if len(arms) == 0 {
+		fmt.Fprintln(os.Stderr, "claudeeval: no arm could be built — nothing to measure")
 		os.Exit(2)
+	}
+	// The judge is the fast model. Keeping it separate from the Gemini ARM removes the
+	// self-preference of a model scoring its own outputs: measured 2026-10-10, Gemini 3.8
+	// judged by itself averaged 11.81-11.87/12 against DeepSeek, and 11.68 under the
+	// flash-lite judge — a ~0.15 tilt, small but free to remove. With one arm only, the
+	// default (arm model = judge model) is what the deployment already uses.
+	judgeGen := gem
+	if m := strings.TrimSpace(*judgeModel); m != "" && m != *geminiModel {
+		judgeGen, err = newGemini(m, *geminiRegion)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "claudeeval: judge:", err)
+			os.Exit(2)
+		}
 	}
 	prompt := *systemPrompt
 	if prompt == "" {
@@ -100,23 +150,31 @@ func main() {
 		system:   promptSource(prompt),
 	}
 	fmt.Printf("claudeeval — %s\n", report.started.Format(time.RFC3339))
-	fmt.Printf("  claude arm : claude (model=%s, provider=%s)\n", *claudeModel, provider)
-	fmt.Printf("  gemini arm : gemini (model=%s, region=%s)\n", *geminiModel, gem.Region())
+	for _, a := range arms {
+		switch a.name {
+		case "deepseek":
+			fmt.Printf("  deepseek arm: deepseek (model=%s)\n", *deepseekModel)
+		case "gemini":
+			fmt.Printf("  gemini arm : gemini (model=%s, region=%s)\n", *geminiModel, gem.Region())
+		case "claude":
+			fmt.Printf("  claude arm : claude (model=%s, provider=%s)\n", *claudeModel, provider)
+		}
+	}
 	if prompt != "" {
 		fmt.Printf("  system     : %d chars from the deployment's stored prompt\n", len(prompt))
 	} else {
 		fmt.Printf("  system     : the clients' built-in default\n")
 	}
+	fmt.Printf("  judge      : %s\n", judgeGen.ModelName())
 	fmt.Println()
 
-	claudeArm := arm{name: "claude", model: claude}
-	geminiArm := arm{name: "gemini", model: gem}
-
 	if *mode == "caps" || *mode == "all" {
-		runCaps(ctx, claudeArm, claudeKey, provider, *timeout, report)
+		for _, a := range arms {
+			runCaps(ctx, a, *timeout, report)
+		}
 	}
 	if *mode == "reply" || *mode == "all" {
-		runReplyEval(ctx, pool, gem, prompt, []arm{claudeArm, geminiArm}, *evalPath, int32(*userID), *limit, *workers, *timeout, report)
+		runReplyEval(ctx, pool, gem, judgeGen.GenerateFast, prompt, arms, *evalPath, int32(*userID), *limit, *workers, *timeout, report)
 	}
 
 	report.print()
@@ -158,21 +216,38 @@ type caseResult struct {
 	OutTok     int     `json:"output_tokens"`
 	Cost       float64 `json:"cost_usd"`
 	KhmerRatio float64 `json:"khmer_letter_ratio"`
-	Err        string  `json:"error,omitempty"`
-	Reply      string  `json:"reply,omitempty"`
+	// Judge is the rubric verdict from the fast model (the same one production uses
+	// for auxiliary work, so it is never the model under test). Available()==false
+	// means the judge did not answer — reported, not averaged away.
+	Judge replyscore.JudgeVerdict `json:"judge"`
+	// ShortCircuit names the production rule that answered without the model (today:
+	// an explicit human request, which stageKeywordHandoff handles deterministically).
+	ShortCircuit string `json:"short_circuit,omitempty"`
+	// Canonicalized records that the handoff sentence was enforced before scoring —
+	// production does this in stageHandoffReply, so the score is the delivered text.
+	Canonicalized bool   `json:"canonicalized,omitempty"`
+	Err           string `json:"error,omitempty"`
+	Reply         string `json:"reply,omitempty"`
 }
 
 type report struct {
 	started  time.Time
 	provider string
 	system   string
-	caps     []checkResult
+	caps     map[string][]checkResult
+	capOrder []string
 	order    []string
 	cases    map[string][]caseResult
 }
 
-func (r *report) addCheck(c checkResult) {
-	r.caps = append(r.caps, c)
+func (r *report) addCheck(armName string, c checkResult) {
+	if r.caps == nil {
+		r.caps = map[string][]checkResult{}
+	}
+	if _, seen := r.caps[armName]; !seen {
+		r.capOrder = append(r.capOrder, armName)
+	}
+	r.caps[armName] = append(r.caps[armName], c)
 }
 
 func (r *report) addCases(name string, results []caseResult) {
@@ -185,9 +260,11 @@ func (r *report) addCases(name string, results []caseResult) {
 
 func (r *report) failed() int {
 	n := 0
-	for _, c := range r.caps {
-		if !c.OK {
-			n++
+	for _, list := range r.caps {
+		for _, c := range list {
+			if !c.OK {
+				n++
+			}
 		}
 	}
 	return n
@@ -196,12 +273,14 @@ func (r *report) failed() int {
 func (r *report) print() {
 	if len(r.caps) > 0 {
 		fmt.Println("── capabilities ─────────────────────────────────────────────")
-		for _, c := range r.caps {
-			mark := "✓"
-			if !c.OK {
-				mark = "✗"
+		for _, armName := range r.capOrder {
+			for _, c := range r.caps[armName] {
+				mark := "✓"
+				if !c.OK {
+					mark = "✗"
+				}
+				fmt.Printf("%s %-9s %-26s %7.0fms  %s\n", mark, armName, c.Name, c.Millis, c.Detail)
 			}
-			fmt.Printf("%s %-26s %7.0fms  %s\n", mark, c.Name, c.Millis, c.Detail)
 		}
 		fmt.Println()
 	}
@@ -228,21 +307,41 @@ func (r *report) print() {
 			if c.RawMarkup {
 				verdict += "  [raw: markdown]"
 			}
-			fmt.Printf("    %-7s %5.0fms %4d+%-4d $%.5f km=%.2f  %s\n",
-				name, c.Millis, c.PromptTok, c.OutTok, c.Cost, c.KhmerRatio, verdict)
+			judge := "-"
+			if c.Judge.Available() {
+				judge = fmt.Sprintf("%d/12", c.Judge.Total)
+			}
+			note := ""
+			if c.ShortCircuit != "" {
+				note = "  [" + c.ShortCircuit + "]"
+			} else if c.Canonicalized {
+				note = "  [handoff sentence enforced]"
+			}
+			fmt.Printf("    %-7s %5.0fms %4d+%-4d $%.5f km=%.2f judge=%-5s  %s%s\n",
+				name, c.Millis, c.PromptTok, c.OutTok, c.Cost, c.KhmerRatio, judge, verdict, note)
+			// A judge reason is only printed where it can change a decision: the
+			// low scores. Every-reply prose would bury the summary this report exists for.
+			if c.Judge.Available() && c.Judge.Total < 9 {
+				fmt.Printf("                                     judge: %s\n", short(c.Judge.Reason, 72))
+			}
 		}
 	}
 	fmt.Println()
 	fmt.Println("── summary ─────────────────────────────────────────────────")
-	fmt.Printf("%-8s %8s %8s %10s %10s %10s %12s %12s\n", "arm", "cases", "past", "missing", "leaked", "format", "raw-km", "avg lat")
+	fmt.Printf("%-8s %8s %8s %10s %10s %10s %12s %12s %10s\n", "arm", "cases", "pass", "missing", "leaked", "format", "raw-md", "avg lat", "judge")
 	for _, name := range r.order {
 		cases := r.cases[name]
 		var past, missing, leaked, format, rawMarkup int
 		var total float64
+		var judgeSum, judged int
 		for _, c := range cases {
 			total += c.Millis
 			if c.RawMarkup {
 				rawMarkup++
+			}
+			if c.Judge.Available() {
+				judgeSum += c.Judge.Total
+				judged++
 			}
 			switch {
 			case c.Err != "":
@@ -257,7 +356,16 @@ func (r *report) print() {
 			}
 		}
 		avg := total / float64(max(len(cases), 1))
-		fmt.Printf("%-8s %8d %8d %10d %10d %10d %12d %9.0fms\n", name, len(cases), past, missing, leaked, format, rawMarkup, avg)
+		judge := "-"
+		if judged > 0 {
+			judge = fmt.Sprintf("%.2f/12", float64(judgeSum)/float64(judged))
+		}
+		if judged < len(cases) {
+			// Say the denominator out loud: an average over a subset must not read
+			// as a whole-arm number (same rule as jeveval's UNJUDGED line).
+			judge += fmt.Sprintf(" (%d/%d)", judged, len(cases))
+		}
+		fmt.Printf("%-8s %8d %8d %10d %10d %10d %12d %9.0fms %10s\n", name, len(cases), past, missing, leaked, format, rawMarkup, avg, judge)
 	}
 }
 
@@ -277,7 +385,7 @@ func (r *report) writeJSON(path string) error {
 
 // ── capability checks ────────────────────────────────────────────────────────
 
-func runCaps(ctx context.Context, a arm, key, provider string, timeout time.Duration, rep *report) {
+func runCaps(ctx context.Context, a arm, timeout time.Duration, rep *report) {
 	check := func(name string, fn func(context.Context) (string, error)) {
 		cctx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
@@ -285,10 +393,10 @@ func runCaps(ctx context.Context, a arm, key, provider string, timeout time.Dura
 		detail, err := fn(cctx)
 		took := time.Since(started)
 		if err != nil {
-			rep.addCheck(checkResult{Name: name, OK: false, Detail: short(err.Error(), 90), Millis: ms(took)})
+			rep.addCheck(a.name, checkResult{Name: name, OK: false, Detail: short(err.Error(), 90), Millis: ms(took)})
 			return
 		}
-		rep.addCheck(checkResult{Name: name, OK: true, Detail: detail, Millis: ms(took)})
+		rep.addCheck(a.name, checkResult{Name: name, OK: true, Detail: detail, Millis: ms(took)})
 	}
 
 	// Chat, one per language the product serves. The Khmer case also runs the
@@ -354,13 +462,19 @@ func runCaps(ctx context.Context, a arm, key, provider string, timeout time.Dura
 		return "kept the agent's figure (77)", nil
 	})
 
-	// Persona override (migration 067): the per-turn prompt must win over the stored one.
+	// Persona override (migration 067): the per-turn prompt must win over the stored
+	// one. The instruction is production-shaped (a role plus a signature the reply has
+	// to carry), NOT a bracketed literal: deepseek-flash garbles tokens like
+	// [PERSONA-OK] while copying real content (prices, product codes, the handoff
+	// sentence) exactly, so the literal form measured a decoding quirk no persona uses
+	// (2026-10-10).
 	check("persona override", func(cctx context.Context) (string, error) {
-		res, err := a.model.ChatAs(cctx, "ping", nil, "en", "Reply with exactly [PERSONA-OK] and nothing else.")
+		res, err := a.model.ChatAs(cctx, "Say hello to a customer.", nil, "en",
+			"You are Anna, a sales agent for WANFANG. Reply in one short sentence and sign it exactly as: — Anna")
 		if err != nil {
 			return "", err
 		}
-		if !strings.Contains(res.Reply, "[PERSONA-OK]") {
+		if !strings.Contains(res.Reply, "Anna") {
 			return "", fmt.Errorf("persona prompt ignored: %s", short(res.Reply, 60))
 		}
 		return "the per-turn prompt was followed", nil
@@ -386,9 +500,11 @@ func runCaps(ctx context.Context, a arm, key, provider string, timeout time.Dura
 
 	// A model that does not exist must fail loudly. A silent mock answer here would
 	// make every model-config typo look like a working deployment.
+	if a.bogus == nil {
+		return
+	}
 	check("unknown model id fails", func(cctx context.Context) (string, error) {
-		svc := anthropic.New(anthropic.Config{APIKey: key, Model: "claude-does-not-exist-9-9"})
-		res, err := svc.Chat(cctx, "ping", nil, "en")
+		res, err := a.bogus().Chat(cctx, "ping", nil, "en")
 		if err == nil && strings.TrimSpace(res.Reply) != "" {
 			return "", errors.New("an unknown model id was answered instead of failing")
 		}
@@ -401,7 +517,7 @@ func runCaps(ctx context.Context, a arm, key, provider string, timeout time.Dura
 
 // ── the Khmer reply eval, both arms ──────────────────────────────────────────
 
-func runReplyEval(ctx context.Context, pool *pgxpool.Pool, gem *gemini.Service, systemPrompt string,
+func runReplyEval(ctx context.Context, pool *pgxpool.Pool, gem *gemini.Service, judge replyscore.Ask, systemPrompt string,
 	arms []arm, evalPath string, userID int32, limit, workers int, timeout time.Duration, rep *report) {
 
 	file, err := replyscore.Load(evalPath)
@@ -447,7 +563,7 @@ func runReplyEval(ctx context.Context, pool *pgxpool.Pool, gem *gemini.Service, 
 			defer wg.Done()
 			for job := range jobs {
 				for _, a := range arms {
-					results[a.name][job.i] = scoreCase(ctx, svc, a, job.c, userID, systemPrompt, timeout)
+					results[a.name][job.i] = scoreCase(ctx, svc, a, job.c, userID, systemPrompt, timeout, judge)
 				}
 			}
 		}()
@@ -463,8 +579,19 @@ func runReplyEval(ctx context.Context, pool *pgxpool.Pool, gem *gemini.Service, 
 	}
 }
 
-func scoreCase(ctx context.Context, svc *rag.Service, a arm, c replyscore.Case, userID int32, systemPrompt string, timeout time.Duration) caseResult {
+func scoreCase(ctx context.Context, svc *rag.Service, a arm, c replyscore.Case, userID int32, systemPrompt string, timeout time.Duration, judge replyscore.Ask) caseResult {
 	out := caseResult{ID: c.ID, Category: c.Category, Language: c.Language}
+
+	// An explicit human request never reaches the model in production: the
+	// keyword-handoff stage answers with the canned acknowledgement in the customer's
+	// language and opens the queue entry. Score exactly that — measuring an arm here
+	// would measure a path customers never take.
+	if keyword, matched := platform.HumanRequestKeyword(c.Question); matched {
+		out.ShortCircuit = "keyword-handoff:" + keyword
+		finalize(ctx, &out, c, platform.HandoffAcknowledgement(c.Language), judge)
+		return out
+	}
+
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -480,21 +607,39 @@ func scoreCase(ctx context.Context, svc *rag.Service, a arm, c replyscore.Case, 
 		out.Err = err.Error()
 		return out
 	}
-	// Score what the customer would actually receive: production passes every reply
-	// through gemini.SanitizeReply (citation leftovers + Khmer hygiene + the chat markup
-	// strip), so a raw-model metric would report a formatting defect that never ships.
-	raw := res.Reply
-	sanitized := gemini.SanitizeReply(raw)
-	out.Reply = sanitized
-	out.RawMarkup = strings.Contains(raw, "**") || strings.Contains(raw, "```") || hasHeadingMarker(raw)
 	out.PromptTok = res.PromptTokens
 	out.OutTok = res.OutputTokens
 	out.Cost = usage.EstimateCostFor(a.model.ModelName(), res.PromptTokens, res.OutputTokens, res.CachedTokens)
-	out.KhmerRatio = replyscore.KhmerLetterRatio(sanitized)
-	out.Missing = replyscore.MissingFacts(c, sanitized)
-	out.Leaks = replyscore.Leaked(c, sanitized)
-	out.Format = replyscore.FormatProblems(c, sanitized)
+	// RawMarkup records that the MODEL emitted markdown, before the sanitizer every
+	// outbound reply walks through in production: a provider that ignores the prompt's
+	// "no markdown" rule shows up here even when the delivered reply is clean.
+	out.RawMarkup = strings.Contains(res.Reply, "**") || strings.Contains(res.Reply, "```") || hasHeadingMarker(res.Reply)
+	finalize(ctx, &out, c, gemini.SanitizeReply(res.Reply), judge)
 	return out
+}
+
+// finalize scores the text a customer would receive. Production post-processes every
+// reply before delivery — the sanitizer strips markdown, and a turn that is handing off
+// gets the platform's own sentence in the customer's language (stageHandoffReply) — so
+// the deterministic checks and the judge must see that text, not the raw model output.
+// The handoff category additionally asserts the guard: a promise the guard cannot match
+// is a promise no agent is paged for (claude-haiku-5-5 paraphrased it on 2026-10-10).
+func finalize(ctx context.Context, out *caseResult, c replyscore.Case, delivered string, judge replyscore.Ask) {
+	if c.Category == "handoff" {
+		if next := platform.CanonicalHandoffReply(delivered, c.Language); next != delivered {
+			delivered = next
+			out.Canonicalized = true
+		}
+	}
+	out.Reply = delivered
+	out.KhmerRatio = replyscore.KhmerLetterRatio(delivered)
+	out.Missing = replyscore.MissingFacts(c, delivered)
+	out.Leaks = replyscore.Leaked(c, delivered)
+	out.Format = replyscore.FormatProblems(c, delivered)
+	if c.Category == "handoff" && !platform.ReplyClaimsHandoff(delivered) {
+		out.Format = append(out.Format, "handoff promise the guard cannot match: ReplyClaimsHandoff=false, no agent would be notified")
+	}
+	out.Judge = replyscore.Judge(ctx, judge, c, delivered)
 }
 
 // hasHeadingMarker reports a line-leading markdown heading in the RAW reply: one to six
@@ -540,15 +685,60 @@ func newGemini(model, region string) (*gemini.Service, error) {
 	return svc, nil
 }
 
+// newDeepSeek builds the DeepSeek arm. The key comes from -deepseek-key or from the
+// sealed key of a DeepSeek row: the default row when DeepSeek serves, otherwise the row
+// kept alongside the serving provider. The key is also returned so the caller can build
+// the bogus-model client for the capability check.
+func newDeepSeek(ctx context.Context, pool *pgxpool.Pool, model, keyFlag string) (*deepseek.Service, string, error) {
+	key := strings.TrimSpace(keyFlag)
+	row, ok := llm.LoadDefault(ctx, pool)
+	if !ok || row.Provider != llm.ProviderDeepSeek {
+		if r, found := llm.LoadProvider(ctx, pool, llm.ProviderDeepSeek); found {
+			row, ok = r, true
+		}
+	}
+	if !ok && key == "" {
+		return nil, "", errors.New("no default model_configs row: nothing names the provider")
+	}
+	if key == "" {
+		if row.Provider != llm.ProviderDeepSeek {
+			return nil, "", fmt.Errorf("no DeepSeek row found (default is %q); pass -deepseek-key", row.Provider)
+		}
+		if row.APIKey == "" {
+			return nil, "", errors.New("the default row has no stored key and -deepseek-key was not given")
+		}
+		sealer, err := security.NewSealer(os.Getenv("PLATFORM_CREDENTIAL_KEY"))
+		if err != nil {
+			return nil, "", fmt.Errorf("PLATFORM_CREDENTIAL_KEY: %w", err)
+		}
+		key = sealer.DecryptOrKeep(row.APIKey)
+	}
+	row.ModelName = model
+	svc := deepseek.New(llm.DeepSeekConfig(row, key))
+	if !svc.IsConfigured() {
+		return nil, "", errors.New("the DeepSeek client is not configured")
+	}
+	return svc, key, nil
+}
+
 // newClaude builds the arm under test. The key comes from -anthropic-key or from the
-// sealed key of the default row, which is where the console stores it.
+// sealed key of a Claude row: the default row when Claude serves, otherwise the Claude
+// row kept alongside the serving provider.
 func newClaude(ctx context.Context, pool *pgxpool.Pool, model, keyFlag string) (*anthropic.Service, string, string, error) {
 	row, ok := llm.LoadDefault(ctx, pool)
+	if !ok || row.Provider != llm.ProviderAnthropic {
+		if r, found := llm.LoadProvider(ctx, pool, llm.ProviderAnthropic); found {
+			row, ok = r, true
+		}
+	}
 	if !ok {
 		return nil, "", "", errors.New("no default model_configs row: nothing names the provider")
 	}
 	key := strings.TrimSpace(keyFlag)
 	if key == "" {
+		if row.Provider != llm.ProviderAnthropic {
+			return nil, "", "", fmt.Errorf("no Claude row found (default is %q); pass -anthropic-key", row.Provider)
+		}
 		if row.APIKey == "" {
 			return nil, "", "", errors.New("the default row has no stored key and -anthropic-key was not given")
 		}

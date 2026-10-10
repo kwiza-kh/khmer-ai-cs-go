@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"khmer-ai-cs-go/internal/gemini"
+	"khmer-ai-cs-go/internal/llm"
 	"khmer-ai-cs-go/internal/platform"
 )
 
@@ -198,11 +199,12 @@ var studioAPIKeyFromDB = func(ctx context.Context, db *pgxpool.Pool, configID in
 	var apiKey string
 	if err := db.QueryRow(ctx, "SELECT api_key FROM model_configs WHERE config_id = $1", configID).Scan(&apiKey); err != nil || apiKey == "" {
 		// Fall back to the deployment's Gemini key — NOT the default row: after a provider
-		// switch the default row can be a Claude row, and an Anthropic key is not an AI Studio
-		// credential. Sending it to Gemini answers 401, which reads as "the region is broken".
-		// Only rows that hold a key qualify, so the fallback cannot blank out a good one.
+		// switch the default row can be a Claude or DeepSeek row, and neither key is an AI
+		// Studio credential. Sending one to Gemini answers 401, which reads as "the region
+		// is broken". Only rows that hold a key qualify, so the fallback cannot blank out
+		// a good one.
 		_ = db.QueryRow(ctx,
-			"SELECT api_key FROM model_configs WHERE provider <> 'anthropic' AND api_key <> '' "+
+			"SELECT api_key FROM model_configs WHERE provider NOT IN ('anthropic', 'deepseek') AND api_key <> '' "+
 				"ORDER BY is_default DESC, config_id LIMIT 1").Scan(&apiKey)
 	}
 	return apiKey
@@ -223,8 +225,8 @@ func (a *App) defaultSystemPrompt(w http.ResponseWriter, r *http.Request) (any, 
 
 // testModelConfig — run a test prompt against one model config.
 func (a *App) testModelConfig(w http.ResponseWriter, r *http.Request, configID int32) (any, error) {
-	if row, ok := a.claudeRow(r.Context(), configID); ok {
-		return a.testClaudeConfig(r.Context(), row)
+	if row, ok := a.providerRow(r.Context(), configID); ok && !llm.IsGemini(row.Provider) {
+		return a.testProviderConfig(r.Context(), row)
 	}
 	var apiKey, modelName, systemPrompt string
 	var maxTokens int
@@ -283,8 +285,8 @@ const modelListWarningHeader = "X-Model-List-Warning"
 // open on a region the deployment has left. It never selects what serves
 // traffic — that is the same Service.Region, set by the console or by boot.
 func (a *App) listAvailableModels(w http.ResponseWriter, r *http.Request, configID int32) (any, error) {
-	if row, ok := a.claudeRow(r.Context(), configID); ok {
-		return claudeAvailableModels(row, r.URL.Query().Get("region"))
+	if row, ok := a.providerRow(r.Context(), configID); ok && !llm.IsGemini(row.Provider) {
+		return providerAvailableModels(row, r.URL.Query().Get("region"))
 	}
 	// Validated before it can reach a URL: the region becomes part of the
 	// request HOST on the vertex path, and that request carries a bearer token.

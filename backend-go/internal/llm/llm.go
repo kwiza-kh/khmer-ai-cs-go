@@ -9,10 +9,10 @@
 // the model, the key and the prompt it governs.
 //
 // What stays on Gemini whichever provider serves generation: embeddings and the
-// retrieval path built on them (Claude has no embedding model), reranking and query
-// rewriting (Gemini-specific prompts), image and audio understanding, speech
-// synthesis and transcription, and the turn judge. Those callers keep the Gemini
-// client they always used.
+// retrieval path built on them (neither Claude nor DeepSeek has an embedding
+// model), reranking and query rewriting (Gemini-specific prompts), image and audio
+// understanding, speech synthesis and transcription, and the turn judge. Those
+// callers keep the Gemini client they always used.
 package llm
 
 import (
@@ -24,6 +24,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"khmer-ai-cs-go/internal/anthropic"
+	"khmer-ai-cs-go/internal/deepseek"
 	"khmer-ai-cs-go/internal/gemini"
 	"khmer-ai-cs-go/internal/usage"
 )
@@ -40,11 +41,14 @@ const (
 	// "anthropic-vertex", used to reach Claude through Vertex AI with the platform
 	// service account; it was removed — see DEVELOPMENT.md §十九.)
 	ProviderAnthropic = "anthropic"
+	// ProviderDeepSeek serves DeepSeek through its OpenAI-compatible chat-completions
+	// API. The key is sealed in model_configs.api_key, as for Claude.
+	ProviderDeepSeek = "deepseek"
 )
 
 // Providers lists every value the console may store.
 func Providers() []string {
-	return []string{ProviderGemini, ProviderAnthropic}
+	return []string{ProviderGemini, ProviderAnthropic, ProviderDeepSeek}
 }
 
 // Valid reports whether the console may store this provider.
@@ -57,11 +61,21 @@ func Valid(provider string) bool {
 	return false
 }
 
-// IsClaude reports whether a provider serves through the Claude client. Every other
-// value, including one nothing recognises, serves through Gemini: that is the
-// reading every existing row has always had, and it fails in the known direction.
+// IsClaude reports whether a provider serves through the Claude client.
 func IsClaude(provider string) bool {
 	return provider == ProviderAnthropic
+}
+
+// IsDeepSeek reports whether a provider serves through the DeepSeek client.
+func IsDeepSeek(provider string) bool {
+	return provider == ProviderDeepSeek
+}
+
+// IsGemini reports whether a provider serves through the Gemini client. That
+// includes a value nothing recognises: it is the reading every existing row has
+// always had, and it fails in the known direction.
+func IsGemini(provider string) bool {
+	return !IsClaude(provider) && !IsDeepSeek(provider)
 }
 
 // CredentialSource names the secret a provider authenticates with, in the
@@ -70,7 +84,7 @@ func IsClaude(provider string) bool {
 // names (which only the Gemini transport reads now).
 func CredentialSource(provider string) string {
 	switch provider {
-	case ProviderAnthropic:
+	case ProviderAnthropic, ProviderDeepSeek:
 		return "api_key"
 	default:
 		return string(gemini.CredentialSourceOf())
@@ -91,6 +105,7 @@ type Model interface {
 }
 
 var (
+	_ Model = (*deepseek.Service)(nil)
 	_ Model = (*gemini.Service)(nil)
 	_ Model = (*anthropic.Service)(nil)
 )
@@ -101,6 +116,7 @@ type Router struct {
 	mu       sync.RWMutex
 	gemini   *gemini.Service
 	claude   *anthropic.Service
+	deepseek *deepseek.Service
 	provider string
 }
 
@@ -132,6 +148,22 @@ func (r *Router) SetClaude(c *anthropic.Service) {
 	r.claude = c
 }
 
+// DeepSeek returns the DeepSeek client, or nil until one is installed.
+func (r *Router) DeepSeek() *deepseek.Service {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.deepseek
+}
+
+// SetDeepSeek installs a DeepSeek client built elsewhere. InstallDeepSeek is the
+// path the serving code takes; this one is for a caller that already holds a
+// configured client.
+func (r *Router) SetDeepSeek(d *deepseek.Service) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.deepseek = d
+}
+
 // Provider names the provider in force.
 func (r *Router) Provider() string {
 	r.mu.RLock()
@@ -140,10 +172,10 @@ func (r *Router) Provider() string {
 }
 
 // SetProvider puts a provider in force. An unrecognised value serves as Gemini, the
-// same reading IsClaude gives every row. The spend guardrail is told the same
+// same reading IsGemini gives every row. The spend guardrail is told the same
 // thing, because the AI Studio tier ceiling is a wall on Gemini calls only.
 func (r *Router) SetProvider(provider string) {
-	if !IsClaude(provider) {
+	if !Valid(provider) {
 		provider = ProviderGemini
 	}
 	r.mu.Lock()
@@ -166,19 +198,39 @@ func (r *Router) InstallClaude(row Row, apiKey string) {
 	r.claude.Reconfigure(cfg)
 }
 
+// InstallDeepSeek builds the DeepSeek client from a row, or reconfigures the one
+// already built. apiKey is the unsealed key; the caller holds the Sealer, and the
+// row keeps the key sealed.
+func (r *Router) InstallDeepSeek(row Row, apiKey string) {
+	cfg := DeepSeekConfig(row, apiKey)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.deepseek == nil {
+		r.deepseek = deepseek.New(cfg)
+		return
+	}
+	r.deepseek.Reconfigure(cfg)
+}
+
 // Model returns the client that answers generation calls right now.
 //
-// A Claude provider with no client answers every call with an error. It never falls
-// back to Gemini: a silent change of model is exactly the kind of change that must
-// be visible, and the turn should fail loudly on the money path instead.
+// A non-Gemini provider with no client answers every call with an error. It never
+// falls back to Gemini: a silent change of model is exactly the kind of change that
+// must be visible, and the turn should fail loudly on the money path instead.
 func (r *Router) Model() Model {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	if IsClaude(r.provider) {
+	switch {
+	case IsClaude(r.provider):
 		if r.claude == nil {
 			return unavailable{provider: r.provider}
 		}
 		return r.claude
+	case IsDeepSeek(r.provider):
+		if r.deepseek == nil {
+			return unavailable{provider: r.provider}
+		}
+		return r.deepseek
 	}
 	if r.gemini == nil {
 		return unavailable{provider: r.provider}
@@ -246,12 +298,17 @@ func LoadDefault(ctx context.Context, db querier) (Row, bool) {
 
 // LoadGemini reads the row the Gemini client is configured from. That is the default
 // row when it is a Gemini row, otherwise the oldest Gemini row. Gemini keeps its
-// credentials when Claude serves, because embeddings and retrieval run on it. ok is
-// false when no Gemini row exists, and the Gemini client then runs on its environment.
+// credentials when another provider serves, because embeddings and retrieval run on
+// it. ok is false when no Gemini row exists, and the Gemini client then runs on its
+// environment.
+//
+// The NOT IN list must name every non-Gemini provider: a provider missing from it
+// would have its key and model handed to the Gemini client, and embeddings would
+// start failing with someone else's credential.
 func LoadGemini(ctx context.Context, db querier) (Row, bool) {
 	return scanRow(db.QueryRow(ctx,
 		"SELECT config_id, provider, api_key, model_name, COALESCE(system_prompt,''), COALESCE(max_tokens,2048), COALESCE(vertex_region,''), temperature "+
-			"FROM model_configs WHERE provider NOT IN ('anthropic') "+
+			"FROM model_configs WHERE provider NOT IN ('anthropic', 'deepseek') "+
 			"ORDER BY is_default DESC, config_id LIMIT 1"))
 }
 
@@ -260,6 +317,18 @@ func LoadByID(ctx context.Context, db querier, configID int32) (Row, bool) {
 	return scanRow(db.QueryRow(ctx,
 		"SELECT config_id, provider, api_key, model_name, COALESCE(system_prompt,''), COALESCE(max_tokens,2048), COALESCE(vertex_region,''), temperature "+
 			"FROM model_configs WHERE config_id = $1", configID))
+}
+
+// LoadProvider reads the row a provider is configured from: its default row when it
+// has one, otherwise its oldest row. It is the lookup a tool needs when the provider
+// under test is not the one serving — an operator comparing providers keeps the
+// non-serving one as a plain row, and reading only the default row (LoadDefault)
+// would silently skip an arm that has credentials. ok is false when the provider has
+// no row at all.
+func LoadProvider(ctx context.Context, db querier, provider string) (Row, bool) {
+	return scanRow(db.QueryRow(ctx,
+		"SELECT config_id, provider, api_key, model_name, COALESCE(system_prompt,''), COALESCE(max_tokens,2048), COALESCE(vertex_region,''), temperature "+
+			"FROM model_configs WHERE provider = $1 ORDER BY is_default DESC, config_id LIMIT 1", provider))
 }
 
 func scanRow(row pgx.Row) (Row, bool) {
@@ -277,6 +346,18 @@ func scanRow(row pgx.Row) (Row, bool) {
 // unsealed.
 func ClaudeConfig(row Row, apiKey string) anthropic.Config {
 	return anthropic.Config{
+		APIKey:       apiKey,
+		Model:        row.ModelName,
+		SystemPrompt: row.SystemPrompt,
+		MaxTokens:    row.MaxTokens,
+		Temperature:  row.Temperature,
+	}
+}
+
+// DeepSeekConfig builds the DeepSeek client's configuration from a row. The key
+// arrives unsealed.
+func DeepSeekConfig(row Row, apiKey string) deepseek.Config {
+	return deepseek.Config{
 		APIKey:       apiKey,
 		Model:        row.ModelName,
 		SystemPrompt: row.SystemPrompt,

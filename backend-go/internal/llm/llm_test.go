@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"khmer-ai-cs-go/internal/anthropic"
+	"khmer-ai-cs-go/internal/deepseek"
 	"khmer-ai-cs-go/internal/gemini"
 )
 
@@ -66,6 +67,47 @@ func TestAnUnconfiguredClaudeClientFailsTheCall(t *testing.T) {
 	}
 }
 
+func TestDeepSeekProviderServesDeepSeek(t *testing.T) {
+	d := deepseek.New(deepseek.Config{APIKey: "k", Model: "deepseek-flash"})
+	r := NewRouter(gemini.New("", "m", 128))
+	r.SetDeepSeek(d)
+	r.SetProvider(ProviderDeepSeek)
+	if m, ok := r.Model().(*deepseek.Service); !ok || m != d {
+		t.Fatalf("Model() = %T, want the DeepSeek client once deepseek is in force", r.Model())
+	}
+	if !r.Model().IsConfigured() {
+		t.Error("a DeepSeek client with a key must report itself configured")
+	}
+}
+
+func TestADeepSeekProviderWithoutAClientFailsLoudlyNeverGemini(t *testing.T) {
+	r := NewRouter(gemini.New("", "m", 128))
+	r.SetProvider(ProviderDeepSeek)
+	m := r.Model()
+	if _, ok := m.(*gemini.Service); ok {
+		t.Fatal("a DeepSeek provider with no client fell back to Gemini")
+	}
+	if _, err := m.Chat(context.Background(), "hi", nil, "en"); err == nil {
+		t.Error("Chat on a missing DeepSeek client must return an error")
+	}
+	if m.IsConfigured() {
+		t.Error("a missing DeepSeek client must not report itself configured")
+	}
+}
+
+func TestAnUnconfiguredDeepSeekClientFailsTheCall(t *testing.T) {
+	d := deepseek.New(deepseek.Config{Model: "deepseek-flash"}) // no key
+	r := NewRouter(gemini.New("", "m", 128))
+	r.SetDeepSeek(d)
+	r.SetProvider(ProviderDeepSeek)
+	if _, err := r.Model().Chat(context.Background(), "hi", nil, "en"); err == nil {
+		t.Error("an unconfigured DeepSeek client answered a call")
+	}
+	if r.Model().IsConfigured() {
+		t.Error("an unconfigured DeepSeek client reported itself configured")
+	}
+}
+
 func TestUnknownProviderServesGemini(t *testing.T) {
 	g := gemini.New("", "m", 128)
 	r := NewRouter(g)
@@ -81,12 +123,18 @@ func TestUnknownProviderServesGemini(t *testing.T) {
 func TestSwitchingProvidersTakesEffectOnTheNextCall(t *testing.T) {
 	g := gemini.New("", "m", 128)
 	c := anthropic.New(anthropic.Config{APIKey: "k", Model: "claude-haiku-5-5"})
+	d := deepseek.New(deepseek.Config{APIKey: "k", Model: "deepseek-flash"})
 	r := NewRouter(g)
 	r.SetClaude(c)
+	r.SetDeepSeek(d)
 
 	r.SetProvider(ProviderAnthropic)
 	if _, ok := r.Model().(*anthropic.Service); !ok {
 		t.Fatal("switching to anthropic did not take effect")
+	}
+	r.SetProvider(ProviderDeepSeek)
+	if _, ok := r.Model().(*deepseek.Service); !ok {
+		t.Fatal("switching to deepseek did not take effect")
 	}
 	r.SetProvider(ProviderGemini)
 	if _, ok := r.Model().(*gemini.Service); !ok {
@@ -125,10 +173,44 @@ func TestClaudeConfigMapsTheRow(t *testing.T) {
 	}
 }
 
+func TestInstallDeepSeekBuildsThenReconfigures(t *testing.T) {
+	r := NewRouter(gemini.New("", "m", 128))
+	r.InstallDeepSeek(Row{Provider: ProviderDeepSeek, ModelName: "deepseek-flash", MaxTokens: 512}, "key-1")
+	first := r.DeepSeek()
+	if first == nil || !first.IsConfigured() || first.ModelName() != "deepseek-flash" {
+		t.Fatalf("InstallDeepSeek did not build a configured client: %+v", first)
+	}
+
+	r.InstallDeepSeek(Row{Provider: ProviderDeepSeek, ModelName: "deepseek-flash"}, "")
+	if r.DeepSeek() != first {
+		t.Error("a reload must reconfigure the client in place, not replace it under callers holding it")
+	}
+	if first.IsConfigured() {
+		t.Error("an empty key on reload must leave the client unconfigured, not keep a stale one")
+	}
+}
+
+func TestDeepSeekConfigMapsTheRow(t *testing.T) {
+	temp := 0.7
+	cfg := DeepSeekConfig(Row{Provider: ProviderDeepSeek, ModelName: "deepseek-flash", SystemPrompt: "p", MaxTokens: 900, Region: "us", Temperature: &temp}, "sk-ds")
+	if cfg.APIKey != "sk-ds" || cfg.Model != "deepseek-flash" || cfg.SystemPrompt != "p" {
+		t.Errorf("config = %+v, want the row's key, model and prompt", cfg)
+	}
+	if cfg.MaxTokens != 900 || cfg.Temperature == nil || *cfg.Temperature != 0.7 {
+		t.Errorf("generation settings lost in the mapping: %+v", cfg)
+	}
+	if cfg.BaseURL != "" {
+		t.Errorf("BaseURL comes from the caller, not the row: %+v", cfg)
+	}
+}
+
 func TestCredentialSourceNamesTheSecretPerProvider(t *testing.T) {
 	t.Setenv("GEMINI_PROVIDER", "vertex")
 	if got := CredentialSource(ProviderAnthropic); got != "api_key" {
 		t.Errorf("anthropic = %q, want api_key", got)
+	}
+	if got := CredentialSource(ProviderDeepSeek); got != "api_key" {
+		t.Errorf("deepseek = %q, want api_key", got)
 	}
 	if got := CredentialSource(ProviderGemini); got != "service_account" {
 		t.Errorf("gemini on vertex = %q, want service_account", got)
@@ -140,7 +222,7 @@ func TestCredentialSourceNamesTheSecretPerProvider(t *testing.T) {
 }
 
 func TestProviderVocabulary(t *testing.T) {
-	for _, p := range []string{ProviderGemini, ProviderAnthropic} {
+	for _, p := range []string{ProviderGemini, ProviderAnthropic, ProviderDeepSeek} {
 		if !Valid(p) {
 			t.Errorf("%q must be a storable provider", p)
 		}
@@ -150,7 +232,15 @@ func TestProviderVocabulary(t *testing.T) {
 			t.Errorf("%q must not be storable", p)
 		}
 	}
-	if !IsClaude(ProviderAnthropic) || IsClaude(ProviderGemini) || IsClaude("") {
+	if !IsClaude(ProviderAnthropic) || IsClaude(ProviderGemini) || IsClaude(ProviderDeepSeek) || IsClaude("") {
 		t.Error("IsClaude must select exactly the Claude provider")
+	}
+	if !IsDeepSeek(ProviderDeepSeek) || IsDeepSeek(ProviderGemini) || IsDeepSeek(ProviderAnthropic) || IsDeepSeek("") {
+		t.Error("IsDeepSeek must select exactly the DeepSeek provider")
+	}
+	// An unrecognised value is Gemini, the reading every existing row has always
+	// had and the direction the comment on IsGemini promises.
+	if !IsGemini(ProviderGemini) || !IsGemini("openai") || IsGemini(ProviderAnthropic) || IsGemini(ProviderDeepSeek) {
+		t.Error("IsGemini must select Gemini and every unknown value")
 	}
 }

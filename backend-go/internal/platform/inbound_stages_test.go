@@ -141,6 +141,7 @@ func TestInboundStageListIsStable(t *testing.T) {
 		"guard-reply",
 		"screen-reply",
 		"after-hours-preamble",
+		"handoff-reply",
 		"persist-and-deliver",
 		"post-delivery",
 	}

@@ -34,6 +34,7 @@ var crossTenantFiles = []struct {
 	{"internal/scheduler/", "job store; the registered handlers own their own scoping"},
 	{"internal/gemini/", "provider client, no tenant tables"},
 	{"internal/anthropic/", "provider client, no tenant tables"},
+	{"internal/deepseek/", "provider client, no tenant tables"},
 	{"internal/llm/", "provider router, no tenant tables"},
 	{"internal/security/", "crypto helper, no tenant tables"},
 	{"internal/textutil/", "text helper, no tenant tables"},

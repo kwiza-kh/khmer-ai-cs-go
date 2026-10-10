@@ -119,6 +119,7 @@ func (p *Pipeline) inboundStages() []inboundStage {
 		{Name: "guard-reply", Run: p.stageGuardReply},
 		{Name: "screen-reply", Run: p.stageScreenReply},
 		{Name: "after-hours-preamble", Run: p.stageAfterHours},
+		{Name: "handoff-reply", Run: p.stageHandoffReply},
 		{Name: "persist-and-deliver", Run: p.stagePersistAndDeliver},
 		{Name: "post-delivery", Run: p.stagePostDelivery},
 	}
@@ -529,11 +530,50 @@ func (p *Pipeline) stageGuardReply(ctx context.Context, t *inboundTurn) (bool, e
 	return true, nil
 }
 
-// after-hours-preamble — a reply delivered outside business hours says so first.
+// after-hours-preamble — a reply delivered outside business hours says so first, in
+// the customer's own language (it was Khmer-only until 2026-10-10, so an English or
+// Chinese customer got a Khmer sentence glued to their reply — the same class as the
+// handoff-language bug).
 func (p *Pipeline) stageAfterHours(ctx context.Context, t *inboundTurn) (bool, error) {
 	if !p.isOpenNow(ctx, t.Config.UserID, t.Config.Platform) {
-		t.Reply = "យើងកំពុងបិទសេវាកម្មនៅពេលនេះ។ ភ្នាក់ងារនឹងឆ្លើយតបនៅពេលម៉ោងធ្វើការ។\n\n" + t.Reply
+		t.Reply = closedHoursPreamble(t.ReplyLang) + "\n\n" + t.Reply
 	}
+	return true, nil
+}
+
+// closedHoursPreamble is the customer-facing "we are closed" line.
+func closedHoursPreamble(language string) string {
+	switch language {
+	case "en":
+		return "We are currently closed. An agent will reply during working hours."
+	case "zh":
+		return "我们目前不在服务时间，客服将在工作时间内回复您。"
+	default:
+		return "យើងកំពុងបិទសេវាកម្មនៅពេលនេះ។ ភ្នាក់ងារនឹងឆ្លើយតបនៅពេលម៉ោងធ្វើការ។"
+	}
+}
+
+// handoff-reply — a turn that is handing off must say so in the customer's language
+// with the platform's own sentence. Runs after the after-hours preamble (prepended text)
+// and before delivery, so it is the last stage that may touch the reply; post-delivery
+// then sees a sentence the guard matches and creates the handoff request deterministically.
+//
+// This is where "the model must end with the exact sentence" stops being a hope: the
+// reply-quality eval measured all three providers failing it in different ways, and a
+// promise of a human that nobody is paged for is the one reply the product must never
+// send (see CanonicalHandoffReply).
+func (p *Pipeline) stageHandoffReply(_ context.Context, t *inboundTurn) (bool, error) {
+	if !t.ClaimsHandoff && !ReplyClaimsHandoff(t.Reply) {
+		return true, nil
+	}
+	if next := CanonicalHandoffReply(t.Reply, t.ReplyLang); next != t.Reply {
+		t.Reply = next
+		if p.Logger != nil {
+			p.Logger.Info("handoff reply normalized to the platform sentence",
+				"session_id", t.SessionID, "language", t.ReplyLang)
+		}
+	}
+	t.ClaimsHandoff = true
 	return true, nil
 }
 

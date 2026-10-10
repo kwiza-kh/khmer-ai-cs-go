@@ -41,23 +41,21 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"khmer-ai-cs-go/internal/anthropic"
 	"khmer-ai-cs-go/internal/db"
+	"khmer-ai-cs-go/internal/deepseek"
 	"khmer-ai-cs-go/internal/gemini"
+	"khmer-ai-cs-go/internal/llm"
 	"khmer-ai-cs-go/internal/platform"
 	"khmer-ai-cs-go/internal/rag"
 	"khmer-ai-cs-go/internal/replyscore"
 	"khmer-ai-cs-go/internal/security"
 )
 
-// judgeVerdict is what the judge model is asked to return, one JSON object.
-type judgeVerdict struct {
-	Language   int    `json:"language"` // 0-3: is it the asked-for language, cleanly
-	Register   int    `json:"register"` // 0-3: consistent polite register
-	Natural    int    `json:"natural"`  // 0-3: reads like a person, not translated English
-	Format     int    `json:"format"`   // 0-3: chat-shaped (no markdown/citations)
-	Reason     string `json:"reason"`   // one short sentence
-	ScoreTotal int    `json:"-"`        // filled in locally
-}
+// judgeVerdict is the shared rubric verdict, re-exported under the name this file
+// used before the judge moved to internal/replyscore (both harnesses must grade
+// with one implementation).
+type judgeVerdict = replyscore.JudgeVerdict
 
 type caseResult struct {
 	c       replyscore.Case
@@ -151,11 +149,12 @@ func runReply(mode evalOptions) {
 	}
 	defer pool.Close()
 
-	svc, err := servingRAGService(ctx, pool)
+	svc, serving, err := servingRAGService(ctx, pool)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "reply:", err)
 		os.Exit(2)
 	}
+	fmt.Printf("serving provider: %s\n", serving.ModelName())
 	// Refuse to measure a tenant that has no indexed knowledge. This harness was
 	// run for a whole round with -user 1 (a platform account) while the KB belongs
 	// to another tenant: every case then measured "what does it answer with no
@@ -171,7 +170,7 @@ func runReply(mode evalOptions) {
 	// operator can reproduce "what if we switched".
 	if mode.temperature >= 0 {
 		t := mode.temperature
-		svc.Gemini.SetTemperature(&t)
+		setServingTemperature(serving, &t)
 	}
 	// Warm the embedding connection the way the server does at boot, and FAIL
 	// LOUDLY if it cannot be warmed: a cold connection drops the dense retrieval
@@ -194,7 +193,7 @@ func runReply(mode evalOptions) {
 		if mode.category != "" && c.Category != mode.category {
 			continue
 		}
-		results = append(results, runOneReplyCase(ctx, svc, c, mode))
+		results = append(results, runOneReplyCase(ctx, svc, serving, c, mode))
 	}
 	if len(results) == 0 {
 		fmt.Fprintln(os.Stderr, "reply: no cases matched the filters")
@@ -208,31 +207,65 @@ func runReply(mode evalOptions) {
 }
 
 // servingRAGService builds the retrieval + generation stack from the deployed
-// configuration, exactly as the server does at boot: the default model_configs
-// row (prompt included), its sealed API key, and the Vertex region the console
-// last switched to.
-func servingRAGService(ctx context.Context, pool *pgxpool.Pool) (*rag.Service, error) {
+// configuration, exactly as the server does at boot: Gemini for embeddings,
+// retrieval and the judge, and the DEFAULT model_configs row's provider for
+// generation. Until 2026-10-10 this built ONLY a Gemini client, so whenever the
+// serving provider was not Gemini the harness silently measured Gemini — the exact
+// class of bug it exists to catch.
+func servingRAGService(ctx context.Context, pool *pgxpool.Pool) (*rag.Service, llm.Model, error) {
 	svc := &rag.Service{DB: pool, Logger: logToStderr()}
+	// Retrieval and the judge stay on Gemini whichever provider generates, so this
+	// client must work even when no Gemini row exists: the deployment's own settings
+	// come from the row when there is one, otherwise from the environment (the Vertex
+	// service account the server itself boots with).
 	if apiKey, modelName, systemPrompt, maxTokens, region, temperature, ok := gemini.LoadDefaultConfig(ctx, pool); ok {
 		svc.Gemini = gemini.FromPartsFull(decryptModelKey(apiKey), modelName, systemPrompt, maxTokens)
 		if err := svc.Gemini.SetVertexRegion(region); err != nil {
-			// Loud, but not fatal: the eval then measures the environment's
-			// region, which is what a misconfigured deployment would serve from.
 			fmt.Fprintln(os.Stderr, "reply: ignoring stored vertex region:", err)
 		}
-		// Same sampling temperature as the deployment, so the arm that is supposed
-		// to represent "what production sends today" really is. -temperature below
-		// overrides it for the other arms of a comparison.
 		svc.Gemini.SetTemperature(temperature)
-	} else if key := strings.TrimSpace(os.Getenv("GEMINI_API_KEY")); key != "" {
-		svc.Gemini = gemini.New(key, strings.TrimSpace(os.Getenv("GEMINI_MODEL")), 2048)
 	} else {
-		return nil, fmt.Errorf("no model config (no default model_configs row and no GEMINI_API_KEY)")
+		svc.Gemini = gemini.New(os.Getenv("GEMINI_API_KEY"), strings.TrimSpace(os.Getenv("GEMINI_MODEL")), 2048)
+		if region := strings.TrimSpace(os.Getenv("GEMINI_VERTEX_REGION")); region != "" {
+			if err := svc.Gemini.SetVertexRegion(region); err != nil {
+				fmt.Fprintln(os.Stderr, "reply: ignoring GEMINI_VERTEX_REGION:", err)
+			}
+		}
 	}
 	if !svc.Gemini.IsConfigured() {
-		return nil, fmt.Errorf("the serving model is not configured (mock mode)")
+		return nil, nil, fmt.Errorf("the Gemini client (embeddings/retrieval/judge) is not configured")
 	}
-	return svc, nil
+
+	// Generation goes through the serving provider, the same routing the reply path
+	// uses, so a non-Gemini deployment is measured instead of being mistaken for one.
+	router := llm.NewRouter(svc.Gemini)
+	if row, ok := llm.LoadDefault(ctx, pool); ok {
+		switch {
+		case llm.IsClaude(row.Provider):
+			router.InstallClaude(row, decryptModelKey(row.APIKey))
+		case llm.IsDeepSeek(row.Provider):
+			router.InstallDeepSeek(row, decryptModelKey(row.APIKey))
+		}
+		router.SetProvider(row.Provider)
+	}
+	serving := router.Model()
+	if !serving.IsConfigured() {
+		return nil, nil, fmt.Errorf("the serving model (%s) is not configured", router.Provider())
+	}
+	return svc, serving, nil
+}
+
+// setServingTemperature applies a per-run temperature override to whichever client
+// serves generation. The Gemini client keeps its own setting for the judge.
+func setServingTemperature(model llm.Model, t *float64) {
+	switch m := model.(type) {
+	case *gemini.Service:
+		m.SetTemperature(t)
+	case *anthropic.Service:
+		m.SetTemperature(t)
+	case *deepseek.Service:
+		m.SetTemperature(t)
+	}
 }
 
 // requireIndexedKnowledge fails when the tenant has no ready documents.
@@ -256,7 +289,7 @@ func requireIndexedKnowledge(ctx context.Context, pool *pgxpool.Pool, userID int
 		userID, tenants)
 }
 
-func runOneReplyCase(ctx context.Context, svc *rag.Service, c replyscore.Case, mode evalOptions) caseResult {
+func runOneReplyCase(ctx context.Context, svc *rag.Service, serving llm.Model, c replyscore.Case, mode evalOptions) caseResult {
 	res := caseResult{c: c}
 	started := time.Now()
 
@@ -269,7 +302,7 @@ func runOneReplyCase(ctx context.Context, svc *rag.Service, c replyscore.Case, m
 	if ground.HasMatch {
 		message = rag.AugmentMessage(c.Question, &ground)
 	}
-	chat, err := svc.Gemini.Chat(ctx, message, nil, c.Language)
+	chat, err := serving.Chat(ctx, message, nil, c.Language)
 	res.seconds = time.Since(started).Seconds()
 	if err != nil {
 		res.format = append(res.format, "generation error: "+err.Error())
@@ -296,49 +329,10 @@ func runOneReplyCase(ctx context.Context, svc *rag.Service, c replyscore.Case, m
 			"no agent would be notified")
 	}
 	if mode.judge {
-		res.verdict = judgeReply(ctx, svc, c, chat.Reply)
+		res.verdict = replyscore.Judge(ctx, svc.Gemini.GenerateFast, c, chat.Reply)
 		res.judged = true
 	}
 	return res
-}
-
-func judgePrompt(c replyscore.Case, reply string) string {
-	return "You are auditing ONE customer-service reply from a Cambodian EPS/insulation supplier.\n" +
-		"The customer wrote in " + c.Language + ". The reply must be in " + c.Language + ".\n\n" +
-		"Question: " + c.Question + "\n" +
-		"Reply: " + reply + "\n\n" +
-		"Score the reply on four axes, each 0-3:\n" +
-		"- language: 3 = fluent, idiomatic " + c.Language + "; 0 = wrong language or unreadable\n" +
-		"- register: 3 = one consistent polite customer-service register; 0 = mixed/cold\n" +
-		"- natural: 3 = reads like a Cambodian salesperson wrote it; 0 = word-for-word translation\n" +
-		"- format: 3 = clean chat text; 0 = markup, citations, invisible junk, wall of text\n" +
-		// The house chat convention, stated because it is a convention and not a
-		// judgment call: without it the judge systematically penalises the list
-		// style the product asks for (measured: it flagged '- ' bullets as markdown
-		// in 4 of the first 23 cases). It is NOT told which pronoun to expect —
-		// that disagreement is a finding for a native speaker, not something to
-		// suppress.
-		"Note: this product's chat convention allows plain paragraphs and list lines starting with '- ' or '• '. " +
-		"Those are NOT formatting failures; only **bold**, ## headings, tables, code fences and citation markers are.\n" +
-		"Answer with JSON only: {\"language\":n,\"register\":n,\"natural\":n,\"format\":n,\"reason\":\"<one short sentence>\"}"
-}
-
-func judgeReply(ctx context.Context, svc *rag.Service, c replyscore.Case, reply string) judgeVerdict {
-	text, ok := svc.Gemini.GenerateFast(ctx, judgePrompt(c, reply), 45*time.Second)
-	if !ok {
-		return judgeVerdict{Reason: "judge unavailable"}
-	}
-	start := strings.Index(text, "{")
-	end := strings.LastIndex(text, "}")
-	if start < 0 || end <= start {
-		return judgeVerdict{Reason: "judge returned no JSON"}
-	}
-	var v judgeVerdict
-	if err := json.Unmarshal([]byte(text[start:end+1]), &v); err != nil {
-		return judgeVerdict{Reason: "judge JSON unparseable"}
-	}
-	v.ScoreTotal = v.Language + v.Register + v.Natural + v.Format
-	return v
 }
 
 func printReplyReport(results []caseResult, file replyscore.File, mode evalOptions, cold, temperature string) {
@@ -349,10 +343,10 @@ func printReplyReport(results []caseResult, file replyscore.File, mode evalOptio
 			status = "FAIL"
 		}
 		judgedScore := "-"
-		if r.judged && r.verdict.ScoreTotal > 0 {
-			judgedScore = fmt.Sprintf("%d/12", r.verdict.ScoreTotal)
+		if r.judged && r.verdict.Total > 0 {
+			judgedScore = fmt.Sprintf("%d/12", r.verdict.Total)
 			judged++
-			scoreSum += r.verdict.ScoreTotal
+			scoreSum += r.verdict.Total
 		}
 		fmt.Printf("%s %-22s %-10s judge=%-6s %5.1fs\n", status, r.c.ID, r.c.Category, judgedScore, r.seconds)
 		for _, m := range r.missing {
@@ -439,10 +433,10 @@ func (r caseResult) ok(mode evalOptions) bool {
 		// by 23, and the one reply nobody looked at was the one reported as fine
 		// (2026-10-04). Same class of false green as sqlcheck skipping without
 		// SQLCHECK_REQUIRED: a gate that cannot fail is not a gate.
-		if r.verdict.ScoreTotal <= 0 {
+		if r.verdict.Total <= 0 {
 			return false
 		}
-		if float64(r.verdict.ScoreTotal) < mode.gate {
+		if float64(r.verdict.Total) < mode.gate {
 			return false
 		}
 	}

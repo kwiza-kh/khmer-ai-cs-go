@@ -44,6 +44,9 @@ func EstimateCostFor(model string, prompt, completion, cached int) float64 {
 	if isClaude(model) {
 		return estimateClaude(prompt, completion, cached)
 	}
+	if isDeepSeek(model) {
+		return estimateDeepSeek(model, prompt, completion, cached)
+	}
 	return EstimateCost(prompt, completion, cached)
 }
 
@@ -73,12 +76,54 @@ const (
 	claudeCacheReadFactor  = 0.10
 )
 
-type rateCard struct{ in, out float64 }
+type rateCard struct{ in, out, cacheHit float64 }
 
 var (
 	claudeShortRates = rateCard{in: 0.10, out: 0.50}
 	claudeLongRates  = rateCard{in: 0.50, out: 2.50}
 )
+
+// DeepSeek list prices (USD per 1M tokens), read from the public pricing page
+// 2026-10-10. DeepSeek prices in two tiers: off-peak is exactly half of peak,
+// and peak is 7 hours of weekday (01:00-04:00 and 06:00-10:00 UTC). These are
+// the PEAK numbers for both models, because the rate here feeds a spend
+// guardrail: over-counting an off-peak call merely asks the operator to review
+// a dashboard, while under-counting one is the failure direction that lets a
+// budget run past its ceiling unnoticed. The cache-hit rate is its own number
+// (it is not a fixed fraction of the input rate on this platform).
+var (
+	deepseekFlashRates = rateCard{in: 0.30, out: 1.20, cacheHit: 0.006}
+	deepseekProRates   = rateCard{in: 1.32, out: 3.96, cacheHit: 0.044}
+)
+
+// isDeepSeek matches the DeepSeek family by name.
+func isDeepSeek(model string) bool {
+	return strings.HasPrefix(strings.ToLower(model), "deepseek-")
+}
+
+// deepseekRate picks the rate card for a model name. "flash" (including the
+// retired deepseek-v4-flash alias, which the API bills at the Flash price) takes
+// the Flash card; pro and anything unrecognised take the Pro card, the same
+// over-count-not-under-count rule embeddingRatePer1M follows.
+func deepseekRate(model string) rateCard {
+	if strings.Contains(strings.ToLower(model), "flash") {
+		return deepseekFlashRates
+	}
+	return deepseekProRates
+}
+
+// estimateDeepSeek prices one call. prompt includes the cached part, as the
+// Gemini and Claude accounting do, so the uncached part is what is left after it.
+func estimateDeepSeek(model string, prompt, completion, cached int) float64 {
+	rates := deepseekRate(model)
+	uncached := prompt - cached
+	if uncached < 0 {
+		uncached = 0
+	}
+	return float64(uncached)/1e6*rates.in +
+		float64(cached)/1e6*rates.cacheHit +
+		float64(completion)/1e6*rates.out
+}
 
 // isClaude matches the Claude family by name, as isEmbeddingModel does for the
 // embedding family.

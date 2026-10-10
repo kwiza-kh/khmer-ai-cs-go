@@ -95,7 +95,7 @@ export interface UsersStats {
   admins: number;
 }
 
-export type ModelProvider = "gemini" | "anthropic";
+export type ModelProvider = "gemini" | "anthropic" | "deepseek";
 
 export interface ModelItem {
   config_id: number;

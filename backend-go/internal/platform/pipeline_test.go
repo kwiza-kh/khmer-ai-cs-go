@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -63,6 +64,91 @@ func TestKhmerHandoffSentenceIsStillMatchedByTheDetector(t *testing.T) {
 	// canned copy is the one string a human would have to edit by hand.
 	if strings.Contains(full, "ភ្នាក់ងារមនុស្ស") {
 		t.Errorf("the handoff copy is back to the literal 'human agent' rendering: %q", full)
+	}
+}
+
+// The trilingual contract: prompt sentence, canned acknowledgement, guard matcher and
+// pre-delivery enforcement must agree on ONE string per language. Before 2026-10-10 the
+// English prompt sentence and the English canned acknowledgement were different
+// sentences, so the two halves of the product promised a transfer in different words —
+// and only the prompt's words were in the matcher.
+func TestAllThreeHandoffSentencesAgree(t *testing.T) {
+	for _, lang := range []string{"km", "en", "zh"} {
+		sentence := HandoffSentence(lang)
+		if !ReplyClaimsHandoff(sentence) {
+			t.Errorf("%s: the platform sentence is not matched by the guard: %q", lang, sentence)
+		}
+		if !strings.Contains(HandoffAcknowledgement(lang), sentence) {
+			t.Errorf("%s: the canned acknowledgement does not quote the platform sentence %q", lang, sentence)
+		}
+		if !strings.Contains(gemini.DefaultSystemPrompt, sentence) {
+			t.Errorf("%s: the system prompt does not quote the platform sentence %q", lang, sentence)
+		}
+	}
+}
+
+// CanonicalHandoffReply is the enforcement the eval failure asked for: every provider
+// failed the handoff sentence in a different way, and the customer must never read a
+// promise the system cannot act on.
+func TestCanonicalHandoffReply(t *testing.T) {
+	khmerSentence := HandoffSentence("km")
+	cases := []struct {
+		name, reply, lang, want string
+	}{
+		{"already correct is kept", "Sure — in stock now. " + HandoffSentence("en"), "en",
+			"Sure — in stock now. " + HandoffSentence("en")},
+		{"wrong language is replaced", khmerSentence, "zh", HandoffSentence("zh")},
+		{"wrong language (en) is replaced", khmerSentence, "en", HandoffSentence("en")},
+		{"paraphrase keeps its text and gains the sentence", "I can connect you with a human agent.", "en",
+			"I can connect you with a human agent.\n\n" + HandoffSentence("en")},
+		{"empty becomes the sentence", "   ", "km", khmerSentence},
+		{"latin-heavy khmer reply is not replaced", "EPS-P 50mm តម្លៃ $9.80", "km",
+			"EPS-P 50mm តម្លៃ $9.80\n\n" + khmerSentence},
+	}
+	for _, tc := range cases {
+		if got := CanonicalHandoffReply(tc.reply, tc.lang); got != tc.want {
+			t.Errorf("%s: CanonicalHandoffReply = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+	// Every language's enforced output must satisfy the guard: post-delivery keys on it.
+	for _, lang := range []string{"km", "en", "zh"} {
+		if !ReplyClaimsHandoff(CanonicalHandoffReply("", lang)) {
+			t.Errorf("%s: the enforced reply is not detected as a handoff", lang)
+		}
+	}
+}
+
+func TestStageHandoffReplyNormalizesOnlyHandoffTurns(t *testing.T) {
+	p := &Pipeline{}
+	turn := &inboundTurn{Reply: "បុគ្គលិករបស់យើងត្រូវបានជូនដំណឹង ហើយនឹងឆ្លើយតបក្នុងពេលឆាប់ៗនេះ។ ខ្ញុំនឹងប្រគល់ការសន្ទនានេះទៅឱ្យពួកគេ។",
+		ReplyLang: "en", ClaimsHandoff: true}
+	if _, err := p.stageHandoffReply(context.Background(), turn); err != nil {
+		t.Fatalf("stage: %v", err)
+	}
+	if turn.Reply != HandoffSentence("en") {
+		t.Errorf("a Khmer reply to an English customer was not replaced: %q", turn.Reply)
+	}
+	if !turn.ClaimsHandoff {
+		t.Error("the stage must keep the turn marked as a handoff so post-delivery escalates")
+	}
+
+	plain := &inboundTurn{Reply: "30 kg in stock.", ReplyLang: "en"}
+	if _, err := p.stageHandoffReply(context.Background(), plain); err != nil {
+		t.Fatalf("stage: %v", err)
+	}
+	if plain.Reply != "30 kg in stock." || plain.ClaimsHandoff {
+		t.Errorf("a normal reply must be untouched: reply=%q claims=%v", plain.Reply, plain.ClaimsHandoff)
+	}
+}
+
+func TestClosedHoursPreambleSpeaksTheCustomerLanguage(t *testing.T) {
+	for _, lang := range []string{"en", "zh", "km"} {
+		if got := closedHoursPreamble(lang); strings.TrimSpace(got) == "" {
+			t.Errorf("%s: empty closed-hours preamble", lang)
+		}
+	}
+	if closedHoursPreamble("en") == closedHoursPreamble("km") || closedHoursPreamble("zh") == closedHoursPreamble("km") {
+		t.Error("English and Chinese must not reuse the Khmer preamble")
 	}
 }
 

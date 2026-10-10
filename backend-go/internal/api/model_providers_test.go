@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"khmer-ai-cs-go/internal/anthropic"
+	"khmer-ai-cs-go/internal/deepseek"
 	"khmer-ai-cs-go/internal/gemini"
 	"khmer-ai-cs-go/internal/llm"
 )
@@ -86,9 +87,34 @@ func TestClaudeRowsTakeOnlyCatalogModels(t *testing.T) {
 	providerTestWantRefusal(t, providerTestUpdate(t, &App{}, 1, `{"model_name":"claude-sonnet-5-5"}`), "未知的 Claude 模型")
 }
 
+func TestSwitchingToDeepSeekNeedsItsOwnKey(t *testing.T) {
+	t.Setenv("GEMINI_PROVIDER", "vertex")
+	providerTestStubRow(t, modelRow{provider: llm.ProviderGemini, apiKey: "sealed-gemini-key"})
+	err := providerTestUpdate(t, &App{}, 1, `{"provider":"deepseek","model_name":"deepseek-flash"}`)
+	// The Gemini key is not a DeepSeek key: it must not follow the row.
+	providerTestWantRefusal(t, err, "需要同时填写 DeepSeek API Key")
+}
+
+func TestDeepSeekRowsTakeOnlyCatalogModels(t *testing.T) {
+	providerTestStubRow(t, modelRow{provider: llm.ProviderDeepSeek, apiKey: "sealed"})
+	// deepseek-v4-flash is an accepted alias at the API, but it is retired and
+	// billed at the Flash price, so it is not a model this console may store.
+	providerTestWantRefusal(t, providerTestUpdate(t, &App{}, 1, `{"model_name":"deepseek-v4-flash"}`), "未知的 DeepSeek 模型")
+}
+
 func TestTheDirectTransportTakesNoRegion(t *testing.T) {
 	providerTestStubRow(t, modelRow{provider: llm.ProviderAnthropic, apiKey: "sealed"})
 	providerTestWantRefusal(t, providerTestUpdate(t, &App{}, 1, `{"vertex_region":"us"}`), "Claude 直连没有区域")
+}
+
+func TestDeepSeekTakesNoRegion(t *testing.T) {
+	providerTestStubRow(t, modelRow{provider: llm.ProviderDeepSeek, apiKey: "sealed"})
+	providerTestWantRefusal(t, providerTestUpdate(t, &App{}, 1, `{"vertex_region":"us"}`), "DeepSeek 直连没有区域")
+}
+
+func TestDeepSeekRowsNeedAKeyToBeTested(t *testing.T) {
+	_, err := (&App{}).testProviderConfig(context.Background(), llm.Row{Provider: llm.ProviderDeepSeek, ModelName: "deepseek-flash"})
+	providerTestWantRefusal(t, err, "未设置 API Key")
 }
 
 func TestAnUnknownProviderIsRefused(t *testing.T) {
@@ -132,8 +158,39 @@ func TestReloadServesClaudeFromTheDefaultRowAndGeminiFromItsOwn(t *testing.T) {
 	if got := serving.ModelName(); got != "gemini-3.8-flash" {
 		t.Errorf("the Gemini client took model %q, want its own row's gemini-3.8-flash", got)
 	}
-	if got := app.claudeKey(llm.Row{Provider: llm.ProviderAnthropic, APIKey: sealedKey}); got != "sk-ant-plain" {
+	if got := app.providerKey(llm.Row{Provider: llm.ProviderAnthropic, APIKey: sealedKey}); got != "sk-ant-plain" {
 		t.Errorf("the Claude key reached the client as %q, want the unsealed key", got)
+	}
+}
+
+func TestReloadServesDeepSeekFromTheDefaultRowAndGeminiFromItsOwn(t *testing.T) {
+	t.Setenv("GEMINI_PROVIDER", "vertex")
+	t.Setenv("GEMINI_VERTEX_SA_FILE", "")
+	sealer := newTestSealer(t)
+	sealedKey, err := sealer.Encrypt("sk-ds-plain")
+	if err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	providerTestStubDefault(t, llm.Row{ConfigID: 2, Provider: llm.ProviderDeepSeek, APIKey: sealedKey, ModelName: "deepseek-flash", MaxTokens: 700})
+	providerTestStubGemini(t, llm.Row{ConfigID: 1, Provider: llm.ProviderGemini, ModelName: "gemini-3.8-flash", MaxTokens: 256})
+
+	serving := gemini.New("", "gemini-old", 64)
+	app := &App{Gemini: serving, Sealer: sealer, Logger: slog.Default(), LLM: llm.NewRouter(serving)}
+	app.reloadServingFromDB(context.Background())
+
+	if got := app.LLM.Provider(); got != llm.ProviderDeepSeek {
+		t.Fatalf("provider in force = %q, want deepseek", got)
+	}
+	client := app.LLM.DeepSeek()
+	if client == nil || !client.IsConfigured() || client.ModelName() != "deepseek-flash" {
+		t.Fatalf("the DeepSeek client was not built from the default row: %+v", client)
+	}
+	if app.LLM.Claude() != nil {
+		t.Error("a DeepSeek default must not build a Claude client")
+	}
+	// Gemini keeps its own row's settings: embeddings and retrieval run on it.
+	if got := serving.ModelName(); got != "gemini-3.8-flash" {
+		t.Errorf("the Gemini client took model %q, want its own row's gemini-3.8-flash", got)
 	}
 }
 
@@ -170,9 +227,9 @@ func TestServingFollowsTheRouterAndFallsBackToGemini(t *testing.T) {
 }
 
 func TestClaudeModelListIsTheCatalogAndAllAvailable(t *testing.T) {
-	out, err := claudeAvailableModels(llm.Row{Provider: llm.ProviderAnthropic, Region: "asia-southeast1"}, "")
+	out, err := providerAvailableModels(llm.Row{Provider: llm.ProviderAnthropic, Region: "asia-southeast1"}, "")
 	if err != nil {
-		t.Fatalf("claudeAvailableModels: %v", err)
+		t.Fatalf("providerAvailableModels: %v", err)
 	}
 	models := out.([]map[string]any)
 	if len(models) != len(anthropic.Catalog()) {
@@ -186,8 +243,29 @@ func TestClaudeModelListIsTheCatalogAndAllAvailable(t *testing.T) {
 	}
 }
 
+func TestDeepSeekModelListIsTheCatalogAndAllAvailable(t *testing.T) {
+	out, err := providerAvailableModels(llm.Row{Provider: llm.ProviderDeepSeek}, "")
+	if err != nil {
+		t.Fatalf("providerAvailableModels: %v", err)
+	}
+	models := out.([]map[string]any)
+	if len(models) != len(deepseek.Catalog()) {
+		t.Fatalf("listed %d models, want the %d in the catalog", len(models), len(deepseek.Catalog()))
+	}
+	for _, m := range models {
+		if m["available"] != true {
+			t.Errorf("%v must be available", m["name"])
+		}
+	}
+	// A region query is a Gemini concern and must not change the DeepSeek list.
+	withRegion, _ := providerAvailableModels(llm.Row{Provider: llm.ProviderDeepSeek, Region: "us"}, "asia-southeast1")
+	if len(withRegion.([]map[string]any)) != len(models) {
+		t.Error("a region must not change a hosted provider's model list")
+	}
+}
+
 func TestTestingAClaudeRowNeedsItsKeyFirst(t *testing.T) {
-	_, err := (&App{}).testClaudeConfig(context.Background(), llm.Row{Provider: llm.ProviderAnthropic, ModelName: "claude-haiku-5-5"})
+	_, err := (&App{}).testProviderConfig(context.Background(), llm.Row{Provider: llm.ProviderAnthropic, ModelName: "claude-haiku-5-5"})
 	providerTestWantRefusal(t, err, "未设置 API Key")
 }
 
@@ -198,7 +276,14 @@ func TestClaudeKeyIsUnsealed(t *testing.T) {
 		t.Fatalf("seal: %v", err)
 	}
 	app := &App{Sealer: sealer}
-	if got := app.claudeKey(llm.Row{Provider: llm.ProviderAnthropic, APIKey: sealed}); got != "sk-ant" {
+	if got := app.providerKey(llm.Row{Provider: llm.ProviderAnthropic, APIKey: sealed}); got != "sk-ant" {
 		t.Errorf("direct key = %q, want the unsealed key", got)
+	}
+	// The same helper serves DeepSeek rows; a Gemini row has no key on this path.
+	if got := app.providerKey(llm.Row{Provider: llm.ProviderDeepSeek, APIKey: sealed}); got != "sk-ant" {
+		t.Errorf("deepseek key = %q, want the unsealed key", got)
+	}
+	if got := app.providerKey(llm.Row{Provider: llm.ProviderGemini, APIKey: sealed}); got != "" {
+		t.Errorf("gemini key on this path = %q, want none", got)
 	}
 }

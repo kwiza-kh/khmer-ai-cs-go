@@ -1,423 +1,423 @@
 {
-  "corpus": "kb/docs (24 Khmer + 6 Chinese documents; facts must come from there)",
-  "how_to_run": [
-    "DATABASE_URL=… PLATFORM_CREDENTIAL_KEY=… go run ./cmd/jeveval -mode reply -eval kb/evals/reply_eval.json",
-    "deterministic checks are the gate; -min-score sets the judge threshold (total out of 12)"
-  ],
-  "rubric": [
-    {
-      "score": 0,
-      "meaning": "wrong language, or the reply is unusable (empty, markup, invented facts)"
-    },
-    {
-      "score": 1,
-      "meaning": "Understandable but reads as translated English; register drifts; missing facts"
-    },
-    {
-      "score": 2,
-      "meaning": "Correct, natural Khmer with the recorded facts and a consistent register; minor stiffness or one extra sentence"
-    },
-    {
-      "score": 3,
-      "meaning": "A Cambodian salesperson could have written it: natural, warm, brief, exactly the asked facts"
-    }
-  ],
-  "cases": [
-    {
-      "id": "faq-s1",
-      "category": "company",
-      "language": "km",
-      "question": "តើក្រុមហ៊ុនអ្នកជាអ្នកណា?",
-      "must_include": [
-        "WANFANG"
-      ],
-      "must_not_contain": [],
-      "notes": "公司身份：只说 KB 记录的名称"
-    },
-    {
-      "id": "faq-s2",
-      "category": "contact",
-      "language": "km",
-      "question": "តើទំនាក់ទំនងក្រុមហ៊ុនដោយរបៀបណា?",
-      "must_include": [
-        "+855 06663800|06663800"
-      ],
-      "must_not_contain": [
-        "SVN-",
-        "Source 1"
-      ],
-      "notes": "联系方式，电话必须逐字"
-    },
-    {
-      "id": "faq-s3",
-      "category": "company",
-      "language": "km",
-      "question": "តើម៉ោងធ្វើការពេលណា?",
-      "must_include": [
-        "8:00",
-        "17:30"
-      ],
-      "must_not_contain": [],
-      "notes": "营业时间两个端点都要在"
-    },
-    {
-      "id": "faq-s4",
-      "category": "company",
-      "language": "km",
-      "question": "តើអ្នកមានបុគ្គលិកនិយាយភាសាអង់គ្លេស ឬចិនទេ?",
-      "must_include": [
-        "中|Chinese|ចិន",
-        "English|អង់គ្លេស"
-      ],
-      "must_not_contain": [],
-      "notes": "三种语言服务"
-    },
-    {
-      "id": "faq-s5",
-      "category": "company",
-      "language": "km",
-      "question": "តើអ្នកធ្លាប់ផ្គត់ផ្គង់ឱ្យក្រុមហ៊ុនធំណាមួយទេ?",
-      "must_include": [
-        "ISI STEEL"
-      ],
-      "must_not_contain": [],
-      "notes": "参考客户名逐字"
-    },
-    {
-      "id": "faq-s7",
-      "category": "product",
-      "language": "km",
-      "question": "តើអ្នកមានដង់ស៊ីតេអ្វីខ្លះ?",
-      "must_include": [
-        "10",
-        "30 kg|30kg"
-      ],
-      "must_not_contain": [],
-      "notes": "密度等级端点"
-    },
-    {
-      "id": "faq-s9",
-      "category": "product",
-      "language": "km",
-      "question": "តើអ្នកមានផលិតផលប៉ុន្មានប្រភេទ?",
-      "must_include": [
-        "EPS-P",
-        "EPS-S",
-        "EPS-B",
-        "EPS-C",
-        "EPS-R"
-      ],
-      "must_not_contain": [],
-      "notes": "五条产品线代码"
-    },
-    {
-      "id": "faq-s10",
-      "category": "product",
-      "language": "km",
-      "question": "តើអ្នកមានថ្នាក់ធន់ភ្លើងទេ?",
-      "must_include": [
-        "FR"
-      ],
-      "must_not_contain": [],
-      "notes": "阻燃等级须点名 FR"
-    },
-    {
-      "id": "faq-s11",
-      "category": "price",
-      "language": "km",
-      "question": "តើតម្លៃប៉ុន្មានក្នុង 1 m³?",
-      "must_include": [
-        "$32.00|$38.00|$45.00|$52.00|$58.00|$72.00|$86.00"
-      ],
-      "must_not_contain": [
-        "SVN-",
-        "Source 1"
-      ],
-      "notes": "EPS-S 每 m³：任一已记录档位价即可（提示词禁止整表粘贴，故不要求端点同时出现）"
-    },
-    {
-      "id": "faq-s12",
-      "category": "price",
-      "language": "km",
-      "question": "តើដុំ EPS-B តម្លៃប៉ុន្មាន?",
-      "must_include": [
-        "$30.00|$30",
-        "$43.00|$43"
-      ],
-      "must_not_contain": [],
-      "notes": "EPS-B 两个密度档"
-    },
-    {
-      "id": "faq-s13",
-      "category": "price",
-      "language": "km",
-      "question": "តើផ្ទាំងសាំងវិច EPS-P តម្លៃប៉ុន្មាន?",
-      "must_include": [
-        "$2.80|2.8",
-        "$15.40|15.4"
-      ],
-      "must_not_contain": [],
-      "notes": "EPS-P：kg 价或 100mm 的 m² 价至少各一（原答案两者都给）"
-    },
-    {
-      "id": "faq-s14",
-      "category": "price",
-      "language": "km",
-      "question": "តើគ្រាប់ EPS ឆៅតម្លៃប៉ុន្មាន?",
-      "must_include": [
-        "$1.90|1.9"
-      ],
-      "must_not_contain": [],
-      "notes": "EPS-R 原料单价"
-    },
-    {
-      "id": "faq-s15",
-      "category": "price",
-      "language": "km",
-      "question": "តើការកាត់តាមទំហំគិតថ្លៃបន្ថែមទេ?",
-      "must_include": [
-        "15"
-      ],
-      "must_not_contain": [],
-      "notes": "定制切割加价 15%"
-    },
-    {
-      "id": "faq-s16",
-      "category": "ordering",
-      "language": "km",
-      "question": "តើការបញ្ជាទិញអប្បបរមា (MOQ) ប៉ុន្មាន?",
-      "must_include": [
-        "20"
-      ],
-      "must_not_contain": [],
-      "notes": "MOQ 20 m³"
-    },
-    {
-      "id": "faq-s19",
-      "category": "ordering",
-      "language": "km",
-      "question": "តើសម្រង់តម្លៃមានសុពលភាពប៉ុន្មានថ្ងៃ?",
-      "must_include": [
-        "15"
-      ],
-      "must_not_contain": [],
-      "notes": "报价有效期 15 天"
-    },
-    {
-      "id": "faq-s20",
-      "category": "ordering",
-      "language": "km",
-      "question": "តើមានការបញ្ចុះតម្លៃតាមបរិមាណទេ?",
-      "must_include": [
-        "5",
-        "12"
-      ],
-      "must_not_contain": [],
-      "notes": "阶梯折扣的两个端点"
-    },
-    {
-      "id": "faq-s22",
-      "category": "payment",
-      "language": "km",
-      "question": "តើអ្នកទទួលការទូទាត់តាមរបៀបណា?",
-      "must_include": [
-        "ABA"
-      ],
-      "must_not_contain": [
-        "KHR 30|只有现金"
-      ],
-      "notes": "收款方式与币种"
-    },
-    {
-      "id": "faq-s23",
-      "category": "payment",
-      "language": "km",
-      "question": "តើអតិថិជនថ្មីត្រូវបង់ប្រាក់យ៉ាងដូចម្ដេច?",
-      "must_include": [
-        "50"
-      ],
-      "must_not_contain": [],
-      "notes": "新客户 50% 定金"
-    },
-    {
-      "id": "faq-s25",
-      "category": "delivery",
-      "language": "km",
-      "question": "តើរយៈពេលដឹកជញ្ជូនប៉ុន្មាន?",
-      "must_include": [
-        "2"
-      ],
-      "must_not_contain": [],
-      "notes": "交期 2 个工作日"
-    },
-    {
-      "id": "faq-s29",
-      "category": "delivery",
-      "language": "km",
-      "question": "តើឡានមួយអាចផ្ទុកបានប៉ុន្មាន?",
-      "must_include": [
-        "5 T|5T",
-        "20 T|20T"
-      ],
-      "must_not_contain": [],
-      "notes": "车型载量端点"
-    },
-    {
-      "id": "lang-en",
-      "category": "language",
-      "language": "en",
-      "question": "What is the minimum order quantity for EPS-S sheets, and how much is the 15 kg/m3 grade per m3?",
-      "must_include": [
-        "20",
-        "45"
-      ],
-      "must_not_contain": [
-        "Source 1",
-        "SVN-"
-      ],
-      "notes": "英文提问必须英文作答（MOQ 20 m³ / $45.00）"
-    },
-    {
-      "id": "lang-zh",
-      "category": "language",
-      "language": "zh",
-      "question": "EPS-P 面板按平方米怎么计价？100mm 厚多少钱？",
-      "must_include": [
-        "15.4|15,4",
-        "100"
-      ],
-      "must_not_contain": [
-        "Source 1",
-        "SVN-"
-      ],
-      "notes": "中文提问必须中文作答（100 mm = $15.40/m²）"
-    },
-    {
-      "id": "trap-grade-40",
-      "category": "trap",
-      "language": "km",
-      "question": "តើសន្លឹក EPS-S ដង់ស៊ីតេ 40 kg/m³ តម្លៃប៉ុន្មាន?",
-      "must_include": [
-        "30"
-      ],
-      "must_not_contain": [
-        "40 kg/m³ = $",
-        "40kg/m³=$",
-        "40 kg/m3 = $"
-      ],
-      "notes": "KB 只记 10-30 kg/m³；合格回答应点出最高档 30 并说明 40 档无记录。引用 30 档的真实价不算错；harness 只能查字面量形式，「给 40 档编价」这类判断靠 judge + 人工复核"
-    },
-    {
-      "id": "handoff-km",
-      "category": "handoff",
-      "language": "km",
-      "question": "តើអ្នកអាចឱ្យខ្ញុំនិយាយជាមួយភ្នាក់ងារមនុស្សបានទេ?",
-      "must_include": [
-        "ប្រគល់ការសន្ទនា"
-      ],
-      "must_not_contain": [
-        "已为您转接"
-      ],
-      "notes": "转人工：那句承诺必须出现在**客户的语言**里，且必须命中 platform.handoffClaimPhrases（否则客户等一个永远没被通知的客服）。中文那句出现在高棉语回复里＝失败。"
-    },
-    {
-        "id": "lang-en-2",
-        "category": "contact",
-        "language": "en",
-        "question": "How do I get in touch with your company?",
-        "must_include": [
-            "+855 06663800|06663800"
-        ],
-        "must_not_contain": [
-            "Source 1",
-            "SVN-"
-        ],
-        "notes": "英文问、英文答；电话必须逐字（与 faq-s2 同一事实）"
-    },
-        {
-        "id": "lang-en-3",
-        "category": "delivery",
-        "language": "en",
-        "question": "How long does delivery take?",
-        "must_include": [
-            "2"
-        ],
-        "must_not_contain": [
-            "Source 1",
-            "SVN-"
-        ],
-        "notes": "英文交期 2 个工作日（同 faq-s25）"
-    },
-        {
-        "id": "lang-en-trap",
-        "category": "trap",
-        "language": "en",
-        "question": "What is the price of EPS-S at 40 kg/m3?",
-        "must_include": [],
-        "must_not_contain": [
-            "40 kg/m3 = $",
-            "40 kg/m³ = $",
-            "40kg/m3=$"
-        ],
-        "notes": "把高棉语的陷阱题镜像到英文。断言只锁安全性质：绝不编造 40 档价格。不要求点出 30 —— 同一题的高棉语版 (trap-grade-40) 会点出「最高 30」，英文版只说「没有记录」，两者都符合提示词的 “say so plainly, do not enumerate”，所以跨语言一致性该在提示词层解决，而不是写成英文用例的硬性断言 (2026-10-04 实测)"
-    },
-        {
-        "id": "lang-en-handoff",
-        "category": "handoff",
-        "language": "en",
-        "question": "Can I speak to a real human agent, please?",
-        "must_include": [
-            "Connecting you to a human agent"
-        ],
-        "must_not_contain": [
-            "已为您转接",
-            "ប្រគល់ការសន្ទនា"
-        ],
-        "notes": "英文转人工必须用英文那句承诺（并命中 platform.ReplyClaimsHandoff），不得混入中文/高棉语句子"
-    },
-        {
-        "id": "lang-zh-2",
-        "category": "ordering",
-        "language": "zh",
-        "question": "批量订购有折扣吗？折扣是怎么分档的？",
-        "must_include": [
-            "5",
-            "12"
-        ],
-        "must_not_contain": [
-            "Source 1",
-            "SVN-"
-        ],
-        "notes": "中文问、中文答；阶梯折扣两端点（同 faq-s20）"
-    },
-        {
-        "id": "lang-zh-3",
-        "category": "product",
-        "language": "zh",
-        "question": "你们有哪些密度等级？",
-        "must_include": [
-            "10",
-            "30"
-        ],
-        "must_not_contain": [
-            "Source 1",
-            "SVN-"
-        ],
-        "notes": "中文问密度区间两端点（同 faq-s7）"
-    },
-        {
-        "id": "lang-zh-handoff",
-        "category": "handoff",
-        "language": "zh",
-        "question": "能帮我转人工客服吗？",
-        "must_include": [
-            "已为您转接"
-        ],
-        "must_not_contain": [
-            "Connecting you to",
-            "ប្រគល់ការសន្ទនា"
-        ],
-        "notes": "中文转人工必须用中文那句承诺（并命中 ReplyClaimsHandoff），不得混入英/高棉语句子"
-    }
-  ]
+ "corpus": "kb/docs (24 Khmer + 6 Chinese documents; facts must come from there)",
+ "how_to_run": [
+  "DATABASE_URL=… PLATFORM_CREDENTIAL_KEY=… go run ./cmd/jeveval -mode reply -eval kb/evals/reply_eval.json",
+  "deterministic checks are the gate; -min-score sets the judge threshold (total out of 12)"
+ ],
+ "rubric": [
+  {
+   "score": 0,
+   "meaning": "wrong language, or the reply is unusable (empty, markup, invented facts)"
+  },
+  {
+   "score": 1,
+   "meaning": "Understandable but reads as translated English; register drifts; missing facts"
+  },
+  {
+   "score": 2,
+   "meaning": "Correct, natural Khmer with the recorded facts and a consistent register; minor stiffness or one extra sentence"
+  },
+  {
+   "score": 3,
+   "meaning": "A Cambodian salesperson could have written it: natural, warm, brief, exactly the asked facts"
+  }
+ ],
+ "cases": [
+  {
+   "id": "faq-s1",
+   "category": "company",
+   "language": "km",
+   "question": "តើក្រុមហ៊ុនអ្នកជាអ្នកណា?",
+   "must_include": [
+    "WANFANG"
+   ],
+   "must_not_contain": [],
+   "notes": "公司身份：只说 KB 记录的名称"
+  },
+  {
+   "id": "faq-s2",
+   "category": "contact",
+   "language": "km",
+   "question": "តើទំនាក់ទំនងក្រុមហ៊ុនដោយរបៀបណា?",
+   "must_include": [
+    "+855 06663800|06663800"
+   ],
+   "must_not_contain": [
+    "SVN-",
+    "Source 1"
+   ],
+   "notes": "联系方式，电话必须逐字"
+  },
+  {
+   "id": "faq-s3",
+   "category": "company",
+   "language": "km",
+   "question": "តើម៉ោងធ្វើការពេលណា?",
+   "must_include": [
+    "8:00",
+    "17:30"
+   ],
+   "must_not_contain": [],
+   "notes": "营业时间两个端点都要在"
+  },
+  {
+   "id": "faq-s4",
+   "category": "company",
+   "language": "km",
+   "question": "តើអ្នកមានបុគ្គលិកនិយាយភាសាអង់គ្លេស ឬចិនទេ?",
+   "must_include": [
+    "中|Chinese|ចិន",
+    "English|អង់គ្លេស"
+   ],
+   "must_not_contain": [],
+   "notes": "三种语言服务"
+  },
+  {
+   "id": "faq-s5",
+   "category": "company",
+   "language": "km",
+   "question": "តើអ្នកធ្លាប់ផ្គត់ផ្គង់ឱ្យក្រុមហ៊ុនធំណាមួយទេ?",
+   "must_include": [
+    "ISI STEEL"
+   ],
+   "must_not_contain": [],
+   "notes": "参考客户名逐字"
+  },
+  {
+   "id": "faq-s7",
+   "category": "product",
+   "language": "km",
+   "question": "តើអ្នកមានដង់ស៊ីតេអ្វីខ្លះ?",
+   "must_include": [
+    "10",
+    "30 kg|30kg"
+   ],
+   "must_not_contain": [],
+   "notes": "密度等级端点"
+  },
+  {
+   "id": "faq-s9",
+   "category": "product",
+   "language": "km",
+   "question": "តើអ្នកមានផលិតផលប៉ុន្មានប្រភេទ?",
+   "must_include": [
+    "EPS-P",
+    "EPS-S",
+    "EPS-B",
+    "EPS-C",
+    "EPS-R"
+   ],
+   "must_not_contain": [],
+   "notes": "五条产品线代码"
+  },
+  {
+   "id": "faq-s10",
+   "category": "product",
+   "language": "km",
+   "question": "តើអ្នកមានថ្នាក់ធន់ភ្លើងទេ?",
+   "must_include": [
+    "FR"
+   ],
+   "must_not_contain": [],
+   "notes": "阻燃等级须点名 FR"
+  },
+  {
+   "id": "faq-s11",
+   "category": "price",
+   "language": "km",
+   "question": "តើតម្លៃប៉ុន្មានក្នុង 1 m³?",
+   "must_include": [
+    "$32.00|$38.00|$45.00|$52.00|$58.00|$72.00|$86.00"
+   ],
+   "must_not_contain": [
+    "SVN-",
+    "Source 1"
+   ],
+   "notes": "EPS-S 每 m³：任一已记录档位价即可（提示词禁止整表粘贴，故不要求端点同时出现）"
+  },
+  {
+   "id": "faq-s12",
+   "category": "price",
+   "language": "km",
+   "question": "តើដុំ EPS-B តម្លៃប៉ុន្មាន?",
+   "must_include": [
+    "$30.00|$30",
+    "$43.00|$43"
+   ],
+   "must_not_contain": [],
+   "notes": "EPS-B 两个密度档"
+  },
+  {
+   "id": "faq-s13",
+   "category": "price",
+   "language": "km",
+   "question": "តើផ្ទាំងសាំងវិច EPS-P តម្លៃប៉ុន្មាន?",
+   "must_include": [
+    "$2.80|2.8",
+    "$15.40|15.4"
+   ],
+   "must_not_contain": [],
+   "notes": "EPS-P：kg 价或 100mm 的 m² 价至少各一（原答案两者都给）"
+  },
+  {
+   "id": "faq-s14",
+   "category": "price",
+   "language": "km",
+   "question": "តើគ្រាប់ EPS ឆៅតម្លៃប៉ុន្មាន?",
+   "must_include": [
+    "$1.90|1.9"
+   ],
+   "must_not_contain": [],
+   "notes": "EPS-R 原料单价"
+  },
+  {
+   "id": "faq-s15",
+   "category": "price",
+   "language": "km",
+   "question": "តើការកាត់តាមទំហំគិតថ្លៃបន្ថែមទេ?",
+   "must_include": [
+    "15"
+   ],
+   "must_not_contain": [],
+   "notes": "定制切割加价 15%"
+  },
+  {
+   "id": "faq-s16",
+   "category": "ordering",
+   "language": "km",
+   "question": "តើការបញ្ជាទិញអប្បបរមា (MOQ) ប៉ុន្មាន?",
+   "must_include": [
+    "20"
+   ],
+   "must_not_contain": [],
+   "notes": "MOQ 20 m³"
+  },
+  {
+   "id": "faq-s19",
+   "category": "ordering",
+   "language": "km",
+   "question": "តើសម្រង់តម្លៃមានសុពលភាពប៉ុន្មានថ្ងៃ?",
+   "must_include": [
+    "15"
+   ],
+   "must_not_contain": [],
+   "notes": "报价有效期 15 天"
+  },
+  {
+   "id": "faq-s20",
+   "category": "ordering",
+   "language": "km",
+   "question": "តើមានការបញ្ចុះតម្លៃតាមបរិមាណទេ?",
+   "must_include": [
+    "5",
+    "12"
+   ],
+   "must_not_contain": [],
+   "notes": "阶梯折扣的两个端点"
+  },
+  {
+   "id": "faq-s22",
+   "category": "payment",
+   "language": "km",
+   "question": "តើអ្នកទទួលការទូទាត់តាមរបៀបណា?",
+   "must_include": [
+    "ABA"
+   ],
+   "must_not_contain": [
+    "KHR 30|只有现金"
+   ],
+   "notes": "收款方式与币种"
+  },
+  {
+   "id": "faq-s23",
+   "category": "payment",
+   "language": "km",
+   "question": "តើអតិថិជនថ្មីត្រូវបង់ប្រាក់យ៉ាងដូចម្ដេច?",
+   "must_include": [
+    "50"
+   ],
+   "must_not_contain": [],
+   "notes": "新客户 50% 定金"
+  },
+  {
+   "id": "faq-s25",
+   "category": "delivery",
+   "language": "km",
+   "question": "តើរយៈពេលដឹកជញ្ជូនប៉ុន្មាន?",
+   "must_include": [
+    "2"
+   ],
+   "must_not_contain": [],
+   "notes": "交期 2 个工作日"
+  },
+  {
+   "id": "faq-s29",
+   "category": "delivery",
+   "language": "km",
+   "question": "តើឡានមួយអាចផ្ទុកបានប៉ុន្មាន?",
+   "must_include": [
+    "5 T|5T|5 តោន",
+    "20 T|20T|20 តោន"
+   ],
+   "must_not_contain": [],
+   "notes": "车型载量端点。单位接受 KB 记法（T）与自然柬语写法（តោន）：事实是数字与吨位，写法不是事实（claude-haiku-5-5 会写成「ឡាន 5 តោន」，2026-10-10）"
+  },
+  {
+   "id": "lang-en",
+   "category": "language",
+   "language": "en",
+   "question": "What is the minimum order quantity for EPS-S sheets, and how much is the 15 kg/m3 grade per m3?",
+   "must_include": [
+    "20",
+    "45"
+   ],
+   "must_not_contain": [
+    "Source 1",
+    "SVN-"
+   ],
+   "notes": "英文提问必须英文作答（MOQ 20 m³ / $45.00）"
+  },
+  {
+   "id": "lang-zh",
+   "category": "language",
+   "language": "zh",
+   "question": "EPS-P 面板按平方米怎么计价？100mm 厚多少钱？",
+   "must_include": [
+    "15.4|15,4",
+    "100"
+   ],
+   "must_not_contain": [
+    "Source 1",
+    "SVN-"
+   ],
+   "notes": "中文提问必须中文作答（100 mm = $15.40/m²）"
+  },
+  {
+   "id": "trap-grade-40",
+   "category": "trap",
+   "language": "km",
+   "question": "តើសន្លឹក EPS-S ដង់ស៊ីតេ 40 kg/m³ តម្លៃប៉ុន្មាន?",
+   "must_include": [
+    "30"
+   ],
+   "must_not_contain": [
+    "40 kg/m³ = $",
+    "40kg/m³=$",
+    "40 kg/m3 = $"
+   ],
+   "notes": "KB 只记 10-30 kg/m³；合格回答应点出最高档 30 并说明 40 档无记录。引用 30 档的真实价不算错；harness 只能查字面量形式，「给 40 档编价」这类判断靠 judge + 人工复核"
+  },
+  {
+   "id": "handoff-km",
+   "category": "handoff",
+   "language": "km",
+   "question": "តើអ្នកអាចឱ្យខ្ញុំនិយាយជាមួយភ្នាក់ងារមនុស្សបានទេ?",
+   "must_include": [
+    "ប្រគល់ការសន្ទនា"
+   ],
+   "must_not_contain": [
+    "已为您转接"
+   ],
+   "notes": "转人工：那句承诺必须出现在**客户的语言**里，且必须命中 platform.handoffClaimPhrases（否则客户等一个永远没被通知的客服）。中文那句出现在高棉语回复里＝失败。"
+  },
+  {
+   "id": "lang-en-2",
+   "category": "contact",
+   "language": "en",
+   "question": "How do I get in touch with your company?",
+   "must_include": [
+    "+855 06663800|06663800"
+   ],
+   "must_not_contain": [
+    "Source 1",
+    "SVN-"
+   ],
+   "notes": "英文问、英文答；电话必须逐字（与 faq-s2 同一事实）"
+  },
+  {
+   "id": "lang-en-3",
+   "category": "delivery",
+   "language": "en",
+   "question": "How long does delivery take?",
+   "must_include": [
+    "2"
+   ],
+   "must_not_contain": [
+    "Source 1",
+    "SVN-"
+   ],
+   "notes": "英文交期 2 个工作日（同 faq-s25）"
+  },
+  {
+   "id": "lang-en-trap",
+   "category": "trap",
+   "language": "en",
+   "question": "What is the price of EPS-S at 40 kg/m3?",
+   "must_include": [],
+   "must_not_contain": [
+    "40 kg/m3 = $",
+    "40 kg/m³ = $",
+    "40kg/m3=$"
+   ],
+   "notes": "把高棉语的陷阱题镜像到英文。断言只锁安全性质：绝不编造 40 档价格。不要求点出 30 —— 同一题的高棉语版 (trap-grade-40) 会点出「最高 30」，英文版只说「没有记录」，两者都符合提示词的 “say so plainly, do not enumerate”，所以跨语言一致性该在提示词层解决，而不是写成英文用例的硬性断言 (2026-10-04 实测)"
+  },
+  {
+   "id": "lang-en-handoff",
+   "category": "handoff",
+   "language": "en",
+   "question": "Can I speak to a real human agent, please?",
+   "must_include": [
+    "Connecting you to a human agent"
+   ],
+   "must_not_contain": [
+    "已为您转接",
+    "ប្រគល់ការសន្ទនា"
+   ],
+   "notes": "英文转人工必须用英文那句承诺（并命中 platform.ReplyClaimsHandoff），不得混入中文/高棉语句子"
+  },
+  {
+   "id": "lang-zh-2",
+   "category": "ordering",
+   "language": "zh",
+   "question": "批量订购有折扣吗？折扣是怎么分档的？",
+   "must_include": [
+    "5",
+    "12"
+   ],
+   "must_not_contain": [
+    "Source 1",
+    "SVN-"
+   ],
+   "notes": "中文问、中文答；阶梯折扣两端点（同 faq-s20）"
+  },
+  {
+   "id": "lang-zh-3",
+   "category": "product",
+   "language": "zh",
+   "question": "你们有哪些密度等级？",
+   "must_include": [
+    "10",
+    "30"
+   ],
+   "must_not_contain": [
+    "Source 1",
+    "SVN-"
+   ],
+   "notes": "中文问密度区间两端点（同 faq-s7）"
+  },
+  {
+   "id": "lang-zh-handoff",
+   "category": "handoff",
+   "language": "zh",
+   "question": "能帮我转人工客服吗？",
+   "must_include": [
+    "已为您转接"
+   ],
+   "must_not_contain": [
+    "Connecting you to",
+    "ប្រគល់ការសន្ទនា"
+   ],
+   "notes": "中文转人工必须用中文那句承诺（并命中 ReplyClaimsHandoff），不得混入英/高棉语句子"
+  }
+ ]
 }
