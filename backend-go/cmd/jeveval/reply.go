@@ -41,8 +41,11 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"khmer-ai-cs-go/internal/anthropic"
 	"khmer-ai-cs-go/internal/db"
+	"khmer-ai-cs-go/internal/deepseek"
 	"khmer-ai-cs-go/internal/gemini"
+	"khmer-ai-cs-go/internal/llm"
 	"khmer-ai-cs-go/internal/platform"
 	"khmer-ai-cs-go/internal/rag"
 	"khmer-ai-cs-go/internal/replyscore"
@@ -146,11 +149,12 @@ func runReply(mode evalOptions) {
 	}
 	defer pool.Close()
 
-	svc, err := servingRAGService(ctx, pool)
+	svc, serving, err := servingRAGService(ctx, pool)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "reply:", err)
 		os.Exit(2)
 	}
+	fmt.Printf("serving provider: %s\n", serving.ModelName())
 	// Refuse to measure a tenant that has no indexed knowledge. This harness was
 	// run for a whole round with -user 1 (a platform account) while the KB belongs
 	// to another tenant: every case then measured "what does it answer with no
@@ -166,7 +170,7 @@ func runReply(mode evalOptions) {
 	// operator can reproduce "what if we switched".
 	if mode.temperature >= 0 {
 		t := mode.temperature
-		svc.Gemini.SetTemperature(&t)
+		setServingTemperature(serving, &t)
 	}
 	// Warm the embedding connection the way the server does at boot, and FAIL
 	// LOUDLY if it cannot be warmed: a cold connection drops the dense retrieval
@@ -189,7 +193,7 @@ func runReply(mode evalOptions) {
 		if mode.category != "" && c.Category != mode.category {
 			continue
 		}
-		results = append(results, runOneReplyCase(ctx, svc, c, mode))
+		results = append(results, runOneReplyCase(ctx, svc, serving, c, mode))
 	}
 	if len(results) == 0 {
 		fmt.Fprintln(os.Stderr, "reply: no cases matched the filters")
@@ -203,31 +207,65 @@ func runReply(mode evalOptions) {
 }
 
 // servingRAGService builds the retrieval + generation stack from the deployed
-// configuration, exactly as the server does at boot: the default model_configs
-// row (prompt included), its sealed API key, and the Vertex region the console
-// last switched to.
-func servingRAGService(ctx context.Context, pool *pgxpool.Pool) (*rag.Service, error) {
+// configuration, exactly as the server does at boot: Gemini for embeddings,
+// retrieval and the judge, and the DEFAULT model_configs row's provider for
+// generation. Until 2026-10-10 this built ONLY a Gemini client, so whenever the
+// serving provider was not Gemini the harness silently measured Gemini — the exact
+// class of bug it exists to catch.
+func servingRAGService(ctx context.Context, pool *pgxpool.Pool) (*rag.Service, llm.Model, error) {
 	svc := &rag.Service{DB: pool, Logger: logToStderr()}
+	// Retrieval and the judge stay on Gemini whichever provider generates, so this
+	// client must work even when no Gemini row exists: the deployment's own settings
+	// come from the row when there is one, otherwise from the environment (the Vertex
+	// service account the server itself boots with).
 	if apiKey, modelName, systemPrompt, maxTokens, region, temperature, ok := gemini.LoadDefaultConfig(ctx, pool); ok {
 		svc.Gemini = gemini.FromPartsFull(decryptModelKey(apiKey), modelName, systemPrompt, maxTokens)
 		if err := svc.Gemini.SetVertexRegion(region); err != nil {
-			// Loud, but not fatal: the eval then measures the environment's
-			// region, which is what a misconfigured deployment would serve from.
 			fmt.Fprintln(os.Stderr, "reply: ignoring stored vertex region:", err)
 		}
-		// Same sampling temperature as the deployment, so the arm that is supposed
-		// to represent "what production sends today" really is. -temperature below
-		// overrides it for the other arms of a comparison.
 		svc.Gemini.SetTemperature(temperature)
-	} else if key := strings.TrimSpace(os.Getenv("GEMINI_API_KEY")); key != "" {
-		svc.Gemini = gemini.New(key, strings.TrimSpace(os.Getenv("GEMINI_MODEL")), 2048)
 	} else {
-		return nil, fmt.Errorf("no model config (no default model_configs row and no GEMINI_API_KEY)")
+		svc.Gemini = gemini.New(os.Getenv("GEMINI_API_KEY"), strings.TrimSpace(os.Getenv("GEMINI_MODEL")), 2048)
+		if region := strings.TrimSpace(os.Getenv("GEMINI_VERTEX_REGION")); region != "" {
+			if err := svc.Gemini.SetVertexRegion(region); err != nil {
+				fmt.Fprintln(os.Stderr, "reply: ignoring GEMINI_VERTEX_REGION:", err)
+			}
+		}
 	}
 	if !svc.Gemini.IsConfigured() {
-		return nil, fmt.Errorf("the serving model is not configured (mock mode)")
+		return nil, nil, fmt.Errorf("the Gemini client (embeddings/retrieval/judge) is not configured")
 	}
-	return svc, nil
+
+	// Generation goes through the serving provider, the same routing the reply path
+	// uses, so a non-Gemini deployment is measured instead of being mistaken for one.
+	router := llm.NewRouter(svc.Gemini)
+	if row, ok := llm.LoadDefault(ctx, pool); ok {
+		switch {
+		case llm.IsClaude(row.Provider):
+			router.InstallClaude(row, decryptModelKey(row.APIKey))
+		case llm.IsDeepSeek(row.Provider):
+			router.InstallDeepSeek(row, decryptModelKey(row.APIKey))
+		}
+		router.SetProvider(row.Provider)
+	}
+	serving := router.Model()
+	if !serving.IsConfigured() {
+		return nil, nil, fmt.Errorf("the serving model (%s) is not configured", router.Provider())
+	}
+	return svc, serving, nil
+}
+
+// setServingTemperature applies a per-run temperature override to whichever client
+// serves generation. The Gemini client keeps its own setting for the judge.
+func setServingTemperature(model llm.Model, t *float64) {
+	switch m := model.(type) {
+	case *gemini.Service:
+		m.SetTemperature(t)
+	case *anthropic.Service:
+		m.SetTemperature(t)
+	case *deepseek.Service:
+		m.SetTemperature(t)
+	}
 }
 
 // requireIndexedKnowledge fails when the tenant has no ready documents.
@@ -251,7 +289,7 @@ func requireIndexedKnowledge(ctx context.Context, pool *pgxpool.Pool, userID int
 		userID, tenants)
 }
 
-func runOneReplyCase(ctx context.Context, svc *rag.Service, c replyscore.Case, mode evalOptions) caseResult {
+func runOneReplyCase(ctx context.Context, svc *rag.Service, serving llm.Model, c replyscore.Case, mode evalOptions) caseResult {
 	res := caseResult{c: c}
 	started := time.Now()
 
@@ -264,7 +302,7 @@ func runOneReplyCase(ctx context.Context, svc *rag.Service, c replyscore.Case, m
 	if ground.HasMatch {
 		message = rag.AugmentMessage(c.Question, &ground)
 	}
-	chat, err := svc.Gemini.Chat(ctx, message, nil, c.Language)
+	chat, err := serving.Chat(ctx, message, nil, c.Language)
 	res.seconds = time.Since(started).Seconds()
 	if err != nil {
 		res.format = append(res.format, "generation error: "+err.Error())

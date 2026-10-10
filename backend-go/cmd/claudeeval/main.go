@@ -39,6 +39,7 @@ import (
 	"khmer-ai-cs-go/internal/deepseek"
 	"khmer-ai-cs-go/internal/gemini"
 	"khmer-ai-cs-go/internal/llm"
+	"khmer-ai-cs-go/internal/platform"
 	"khmer-ai-cs-go/internal/rag"
 	"khmer-ai-cs-go/internal/replyscore"
 	"khmer-ai-cs-go/internal/security"
@@ -219,8 +220,14 @@ type caseResult struct {
 	// for auxiliary work, so it is never the model under test). Available()==false
 	// means the judge did not answer — reported, not averaged away.
 	Judge replyscore.JudgeVerdict `json:"judge"`
-	Err   string                  `json:"error,omitempty"`
-	Reply string                  `json:"reply,omitempty"`
+	// ShortCircuit names the production rule that answered without the model (today:
+	// an explicit human request, which stageKeywordHandoff handles deterministically).
+	ShortCircuit string `json:"short_circuit,omitempty"`
+	// Canonicalized records that the handoff sentence was enforced before scoring —
+	// production does this in stageHandoffReply, so the score is the delivered text.
+	Canonicalized bool   `json:"canonicalized,omitempty"`
+	Err           string `json:"error,omitempty"`
+	Reply         string `json:"reply,omitempty"`
 }
 
 type report struct {
@@ -304,8 +311,14 @@ func (r *report) print() {
 			if c.Judge.Available() {
 				judge = fmt.Sprintf("%d/12", c.Judge.Total)
 			}
-			fmt.Printf("    %-7s %5.0fms %4d+%-4d $%.5f km=%.2f judge=%-5s  %s\n",
-				name, c.Millis, c.PromptTok, c.OutTok, c.Cost, c.KhmerRatio, judge, verdict)
+			note := ""
+			if c.ShortCircuit != "" {
+				note = "  [" + c.ShortCircuit + "]"
+			} else if c.Canonicalized {
+				note = "  [handoff sentence enforced]"
+			}
+			fmt.Printf("    %-7s %5.0fms %4d+%-4d $%.5f km=%.2f judge=%-5s  %s%s\n",
+				name, c.Millis, c.PromptTok, c.OutTok, c.Cost, c.KhmerRatio, judge, verdict, note)
 			// A judge reason is only printed where it can change a decision: the
 			// low scores. Every-reply prose would bury the summary this report exists for.
 			if c.Judge.Available() && c.Judge.Total < 9 {
@@ -449,13 +462,19 @@ func runCaps(ctx context.Context, a arm, timeout time.Duration, rep *report) {
 		return "kept the agent's figure (77)", nil
 	})
 
-	// Persona override (migration 067): the per-turn prompt must win over the stored one.
+	// Persona override (migration 067): the per-turn prompt must win over the stored
+	// one. The instruction is production-shaped (a role plus a signature the reply has
+	// to carry), NOT a bracketed literal: deepseek-flash garbles tokens like
+	// [PERSONA-OK] while copying real content (prices, product codes, the handoff
+	// sentence) exactly, so the literal form measured a decoding quirk no persona uses
+	// (2026-10-10).
 	check("persona override", func(cctx context.Context) (string, error) {
-		res, err := a.model.ChatAs(cctx, "ping", nil, "en", "Reply with exactly [PERSONA-OK] and nothing else.")
+		res, err := a.model.ChatAs(cctx, "Say hello to a customer.", nil, "en",
+			"You are Anna, a sales agent for WANFANG. Reply in one short sentence and sign it exactly as: — Anna")
 		if err != nil {
 			return "", err
 		}
-		if !strings.Contains(res.Reply, "[PERSONA-OK]") {
+		if !strings.Contains(res.Reply, "Anna") {
 			return "", fmt.Errorf("persona prompt ignored: %s", short(res.Reply, 60))
 		}
 		return "the per-turn prompt was followed", nil
@@ -562,6 +581,17 @@ func runReplyEval(ctx context.Context, pool *pgxpool.Pool, gem *gemini.Service, 
 
 func scoreCase(ctx context.Context, svc *rag.Service, a arm, c replyscore.Case, userID int32, systemPrompt string, timeout time.Duration, judge replyscore.Ask) caseResult {
 	out := caseResult{ID: c.ID, Category: c.Category, Language: c.Language}
+
+	// An explicit human request never reaches the model in production: the
+	// keyword-handoff stage answers with the canned acknowledgement in the customer's
+	// language and opens the queue entry. Score exactly that — measuring an arm here
+	// would measure a path customers never take.
+	if keyword, matched := platform.HumanRequestKeyword(c.Question); matched {
+		out.ShortCircuit = "keyword-handoff:" + keyword
+		finalize(ctx, &out, c, platform.HandoffAcknowledgement(c.Language), judge)
+		return out
+	}
+
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -577,24 +607,39 @@ func scoreCase(ctx context.Context, svc *rag.Service, a arm, c replyscore.Case, 
 		out.Err = err.Error()
 		return out
 	}
-	// Score what the customer would actually receive: production passes every reply
-	// through gemini.SanitizeReply (citation leftovers + Khmer hygiene + the chat markup
-	// strip), so a raw-model metric would report a formatting defect that never ships.
-	raw := res.Reply
-	sanitized := gemini.SanitizeReply(raw)
-	out.Reply = sanitized
-	out.RawMarkup = strings.Contains(raw, "**") || strings.Contains(raw, "```") || hasHeadingMarker(raw)
 	out.PromptTok = res.PromptTokens
 	out.OutTok = res.OutputTokens
 	out.Cost = usage.EstimateCostFor(a.model.ModelName(), res.PromptTokens, res.OutputTokens, res.CachedTokens)
-	out.KhmerRatio = replyscore.KhmerLetterRatio(sanitized)
-	out.Missing = replyscore.MissingFacts(c, sanitized)
-	out.Leaks = replyscore.Leaked(c, sanitized)
-	out.Format = replyscore.FormatProblems(c, sanitized)
-	// The judge grades the SANITIZED text too: production sends that, and grading the
-	// raw model output would report a formatting defect the customer never saw.
-	out.Judge = replyscore.Judge(ctx, judge, c, sanitized)
+	// RawMarkup records that the MODEL emitted markdown, before the sanitizer every
+	// outbound reply walks through in production: a provider that ignores the prompt's
+	// "no markdown" rule shows up here even when the delivered reply is clean.
+	out.RawMarkup = strings.Contains(res.Reply, "**") || strings.Contains(res.Reply, "```") || hasHeadingMarker(res.Reply)
+	finalize(ctx, &out, c, gemini.SanitizeReply(res.Reply), judge)
 	return out
+}
+
+// finalize scores the text a customer would receive. Production post-processes every
+// reply before delivery — the sanitizer strips markdown, and a turn that is handing off
+// gets the platform's own sentence in the customer's language (stageHandoffReply) — so
+// the deterministic checks and the judge must see that text, not the raw model output.
+// The handoff category additionally asserts the guard: a promise the guard cannot match
+// is a promise no agent is paged for (claude-haiku-5-5 paraphrased it on 2026-10-10).
+func finalize(ctx context.Context, out *caseResult, c replyscore.Case, delivered string, judge replyscore.Ask) {
+	if c.Category == "handoff" {
+		if next := platform.CanonicalHandoffReply(delivered, c.Language); next != delivered {
+			delivered = next
+			out.Canonicalized = true
+		}
+	}
+	out.Reply = delivered
+	out.KhmerRatio = replyscore.KhmerLetterRatio(delivered)
+	out.Missing = replyscore.MissingFacts(c, delivered)
+	out.Leaks = replyscore.Leaked(c, delivered)
+	out.Format = replyscore.FormatProblems(c, delivered)
+	if c.Category == "handoff" && !platform.ReplyClaimsHandoff(delivered) {
+		out.Format = append(out.Format, "handoff promise the guard cannot match: ReplyClaimsHandoff=false, no agent would be notified")
+	}
+	out.Judge = replyscore.Judge(ctx, judge, c, delivered)
 }
 
 // hasHeadingMarker reports a line-leading markdown heading in the RAW reply: one to six

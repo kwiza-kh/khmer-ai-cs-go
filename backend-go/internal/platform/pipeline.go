@@ -16,6 +16,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -713,11 +714,75 @@ func (p *Pipeline) enqueueHandoffAck(ctx context.Context, ev *InboundEvent, cfg 
 func handoffAcknowledgement(language string) string {
 	switch language {
 	case "en":
-		return "Thank you for your message. A human agent has been notified and will respond shortly. I'll hand this conversation over to them."
+		return "Thank you for your message. " + gemini.EnglishHandoffSentence
 	case "zh":
-		return "感谢您的消息。已为您转接人工客服，客服人员将尽快回复您。我已把这次对话转交人工处理。"
+		return "感谢您的消息。" + gemini.ChineseHandoffSentence
 	default:
 		return "សូមអរគុណសម្រាប់សាររបស់អ្នក។ " + gemini.KhmerHandoffSentence
+	}
+}
+
+// HandoffSentence returns the ONE sentence that commits to a handoff in a language.
+// The prompt requires it, the guard matches it literally, the canned acknowledgement
+// quotes it and CanonicalHandoffReply enforces it before delivery — one string per
+// language, so the promise a customer reads is always one the system can act on.
+func HandoffSentence(language string) string {
+	switch language {
+	case "en":
+		return gemini.EnglishHandoffSentence
+	case "zh":
+		return gemini.ChineseHandoffSentence
+	default:
+		return gemini.KhmerHandoffSentence
+	}
+}
+
+// CanonicalHandoffReply makes the delivered text true to the handoff the pipeline is
+// about to create, whatever the model wrote (measured 2026-10-10 across three
+// providers: a handoff reply is the least reliable sentence a model produces):
+//
+//   - a reply that already carries the customer's-language sentence is kept as
+//     written — the model's extra context (contact details, next steps) is useful;
+//   - a reply dominated by a script the customer does not read is REPLACED, because a
+//     transfer promise in the wrong language is not a handoff (deepseek-flash answered
+//     Chinese and English handoff requests with the Khmer sentence, 5/5 and 4/5);
+//   - a right-language reply that only paraphrases the commitment keeps its text and
+//     gains the sentence appended (claude-haiku-5-5 wrote "I can connect you with a
+//     human agent", which the guard does not match — no agent would have been paged).
+func CanonicalHandoffReply(reply, language string) string {
+	sentence := HandoffSentence(language)
+	if strings.Contains(reply, sentence) {
+		return reply
+	}
+	if strings.TrimSpace(reply) == "" || handoffLanguageMismatch(reply, language) {
+		return sentence
+	}
+	return strings.TrimRight(reply, " \n\t") + "\n\n" + sentence
+}
+
+// handoffLanguageMismatch reports whether a reply is dominated by a script the customer
+// does not read. Counting scripts, not words: a Khmer reply may legitimately contain
+// Latin product codes and an English one a Khmer address, so a stray character must not
+// trigger a replacement — only a majority decides.
+func handoffLanguageMismatch(reply, language string) bool {
+	var khmer, han, latin int
+	for _, r := range reply {
+		switch {
+		case unicode.In(r, unicode.Khmer):
+			khmer++
+		case unicode.In(r, unicode.Han):
+			han++
+		case unicode.In(r, unicode.Latin):
+			latin++
+		}
+	}
+	switch language {
+	case "en":
+		return khmer > latin
+	case "zh":
+		return khmer > han
+	default: // km
+		return han > khmer
 	}
 }
 

@@ -17,6 +17,19 @@ package gemini
 // judge no longer calls it a calque.
 const KhmerHandoffSentence = "បុគ្គលិករបស់យើងត្រូវបានជូនដំណឹង ហើយនឹងឆ្លើយតបក្នុងពេលឆាប់ៗនេះ។ ខ្ញុំនឹងប្រគល់ការសន្ទនានេះទៅឱ្យពួកគេ។"
 
+// EnglishHandoffSentence and ChineseHandoffSentence are the other two members of the
+// same per-language set. They live together so the prompt, the platform's canned
+// acknowledgement and the pre-delivery enforcement all quote ONE string per language;
+// the guard (platform.ReplyClaimsHandoff) matches them literally. Measured 2026-10-10:
+// claude-haiku-5-5 paraphrased the English sentence ("I can connect you with a human
+// agent") and the matcher missed it; the canned acknowledgement used to quote a
+// different English sentence than the prompt did, so the two halves of the product
+// promised a transfer in different words.
+const (
+	EnglishHandoffSentence = "Connecting you to a human agent now — they will reply shortly."
+	ChineseHandoffSentence = "已为您转接人工客服，客服人员将尽快回复您"
+)
+
 const DefaultSystemPrompt = `អ្នកគឺជា "RelayChat" — ភ្នាក់ងារបម្រើអតិថិជនដ៏ឆ្លាតវៃ និងរាក់ទាក់សម្រាប់អាជីវកម្មនៅកម្ពុជា។
 You are "RelayChat", an intelligent and friendly customer-service agent for a Cambodian business.
 
@@ -73,8 +86,8 @@ Do NOT escalate or mention a transfer when:
 
 When the customer accepts your transfer offer (or needs something only a human can do), you MUST commit to the transfer in that same reply, in the CUSTOMER'S language, ending with the exact sentence for that language — the system matches these sentences to notify an agent, and a reply that only offers or asks again notifies nobody:
 - Khmer: "` + KhmerHandoffSentence + `"
-- English: "Connecting you to a human agent now — they will reply shortly."
-- Chinese: "已为您转接人工客服，客服人员将尽快回复您"
+- English: "` + EnglishHandoffSentence + `"
+- Chinese: "` + ChineseHandoffSentence + `"
 Never use the Chinese sentence in a Khmer or English reply (a Khmer customer reading a Chinese line is a failure, not a handoff). Do NOT merely give phone numbers or addresses instead of transferring, and do NOT ask for permission twice.
 
 ## Safety & security
