@@ -2136,3 +2136,30 @@ cd /root/khmer-deploy
 ```
 
 原始输出：`/root/khmer-deploy/reply-final-run{1..4}.{txt,json}`。
+
+### 四、凭据保留、卫生清理与最终验收（同日补记）
+
+**三个 provider 的凭据都保留**（`model_configs` 三行，仅一行服务）：
+
+| config_id | provider | model | 凭据 | is_default |
+|---|---|---|---|---|
+| 1 | deepseek | deepseek-flash | 密封 key（91 字符密文） | **true** |
+| 7 | anthropic | claude-haiku-5-5 | 密封 key（186，从死元组恢复） | false |
+| 8 | gemini | gemini-3.8-flash | Vertex 服务账号文件（`vertex-sa.json`，600，`khmerai`） | false，`vertex_region=global`、`temperature=1` |
+
+建 Gemini 行后启动日志确认：`Gemini configured from database model config model=gemini-3.8-flash
+region=global temperature=1 credential=service_account`。注意该行的 `temperature` 必须显式写：
+列的默认值是 0.7，直接 INSERT 会静默改变 Gemini 的采样（补记时已改为 1，与 §十三 的结论一致）。
+
+**卫生清理**：`/root/db-backups/tenant-wanfang-password.txt`（明文口令）归档为
+`/root/archive/credentials-<ts>.tgz`（600）并删原件；`server-go.bak-*` 留最新 5 份；
+`.env-go.bak-*` 留最新 3 份，其余 8 份归档为 `/root/archive/env-go-backups-<ts>.tgz`（600）；
+`vertex-sa.json` 权限 600；前端回滚点 3 份。
+
+**最终验收（线上 `6c25eb2`）**：capability 三臂 **24/24**；评测第 5、6 轮
+**deepseek 31/31 · gemini 31/31 · claude 31/31**（判官 11.74/11.87/11.74 与
+11.81/11.94/11.55）。判官失败重试一次后未再出现未判分；trap-grade-40 两轮全过。
+
+**残余（非客户可见）**：claude 原始 markdown 11–13/31——`SanitizeReply` 后 `format` 判列
+全 0，客户看到的永远是纯文本；该项作为模型行为观测保留（新增的「价格列表每行一条纯文本」
+提示没有压低该计数，实测 13→11，属噪声范围）。
