@@ -1982,8 +1982,7 @@ cd ../frontend && NEXT_PUBLIC_API_URL=https://example.invalid/api/v1 npm run bui
 | `deepseek-flash` | **29/31** | 11.10–11.39 | ~1.6s | $0.0407 / ≈$0.44 |
 | `gemini-3.8-flash` | **31/31** | 11.68–11.87 | 5.2–9.1s | $0.2313 / ≈$2.49 |
 
-Claude 手臂不可用：切换服务商时该行的 key 按设计被清空，本次没有 Anthropic key，**无法与上一个
-生产模型直接对比**（有 key 时 `-anthropic-key` 即可恢复该手臂）。
+Claude 手臂在首轮缺席，原因与恢复过程见本节末「补记」；恢复后已完成三臂对照。
 
 ### 发现
 
@@ -2021,3 +2020,44 @@ cd /root/khmer-deploy
 
 原始输出留在服务器：`/root/khmer-deploy/reply-run{1,2,3}.{txt,json}`（自评判官）、
 `reply-neutral.{txt,json}`（独立判官）、`reply-20261010.{txt,json}`（首轮探索，Gemini 基线为 lite）。
+
+### 补记：Claude 手臂（同日恢复，三臂对照）
+
+首轮缺席的原因：切换服务商时旧 key 按设计被清空（`updateModelConfig` 不沿用），而服务器上没有任何
+含该 key 的备份——两份 `pg_dump` 是 10-04 的（早于 10-07/08 的 Claude 接入），14 份 `.env-go*`
+备份没有任何 `ANTHROPIC*` 变量，`audit_logs` 只记 path/method/status（`details::text ilike '%sk-ant%'`
+命中 0）。
+
+但 key 还在数据库里：`model_configs` **从未 VACUUM**（`last_vacuum`/`last_autovacuum` 均为 NULL，
+`n_dead_tup=13`），旧行版本以死元组形式留在堆中，超级用户可用 `pageinspect` 读出。用
+`heap_page_item_attrs` 解码第 2 页的 8 个旧版本：189 字符密文 ≈ 108 字符明文（Anthropic key 的长度；
+live 行是 91 字符 ≈ 35 字符的 DeepSeek key）。把该密文插回一行**非默认**的 Claude 行，capability
+检查 8/8 通过，随后完成三臂评测，临时行已删除。`claudeeval` 现在会找 `provider='anthropic'` 的行而
+不只读默认行（`llm.LoadProvider`），所以非默认的对比手臂不再被静默跳过。
+
+> **安全提示**：被「清掉」的凭据在 VACUUM 之前仍可从表内读出（本表 autovacuum 阈值 50 行，迟迟不会
+> 触发）。要真正吊销一个凭据，清数据库行不够，须在服务商侧 revoke；`VACUUM model_configs` 才会把旧
+> 版本从堆上抹掉。
+
+三臂结果（同一集、同提示词、同 grounding、独立判官 `gemini-3.5-flash-lite`，2 轮）：
+
+| 手臂 | 确定性通过 | 判官均分 | 中位延迟 | 成本/千例 | 原始 markdown |
+|---|---|---|---|---|---|
+| `deepseek-flash` | 29/31 | 11.13–11.19 | ~1.6s | $0.43 | 0 |
+| `claude-haiku-5-5` | 29/31 | 11.69–11.71 | ~2.1s | $0.64 | **10–11/31** |
+| `gemini-3.8-flash` | **31/31** | 11.81–11.87 | 5.5–6.7s | $2.53 | 0 |
+
+各轴（判官）：deepseek 语言 2.81 / 自然 2.61；claude 2.89 / 2.73；gemini 3.00 / 2.89。
+
+Claude 的失败与 DeepSeek **不同类**：
+
+- 转人工那句它**改写**了（"Yes, I can connect you with a human agent…"，还补了一句「人工现在不在」）。
+  语言正确、判官 12/12，但 `platform.ReplyClaimsHandoff` 实测 **false** —— 客户被告知人工会来，
+  **工单不会创建**（用真实检测函数跑过：改写句 false、要求句 true）。这正是提示词 74/76 行要防的
+  失败，也是「确定性检查是门禁、判官只是趋势」的又一个例子。
+- 另 2 例是 `Post …: EOF` 的瞬时错误（第二轮），属网络/上游，不是质量分。
+- 原始 markdown 11/31（DeepSeek/Gemini 为 0）：`SanitizeReply` 会剥掉、客户看不到，但说明它更常无视
+  「不要 markdown」的提示词。
+
+结论订正：**转人工句子的保真度是跨服务商的脆弱点**——DeepSeek 用错语言（zh 5/5、en 4/5），Claude
+把英文句改写掉（1/2 轮），Gemini 5/5 全对。建议维持：转人工落到确定性分语言模板，不赌模型输出。

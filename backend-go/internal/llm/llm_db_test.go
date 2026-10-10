@@ -133,3 +133,18 @@ func TestGeminiNeverReadsADeepSeekRow(t *testing.T) {
 		t.Errorf("LoadGemini = config %d, want the oldest Gemini row %d", g.ConfigID, want)
 	}
 }
+
+func TestLoadProviderFindsARowForProvidersThatAreNotServing(t *testing.T) {
+	tx := openRolledBackTx(t)
+	ctx := context.Background()
+	claudeRow := insertTestRow(t, tx, "claude row", ProviderAnthropic, false)
+	insertTestRow(t, tx, "serving row", ProviderGemini, true)
+
+	got, ok := LoadProvider(ctx, tx, ProviderAnthropic)
+	if !ok || got.ConfigID != claudeRow || got.Provider != ProviderAnthropic {
+		t.Fatalf("LoadProvider(anthropic) = %+v, %v; want the non-serving Claude row", got, ok)
+	}
+	if _, ok := LoadProvider(ctx, tx, "openai"); ok {
+		t.Error("LoadProvider found a row for a provider that has none")
+	}
+}

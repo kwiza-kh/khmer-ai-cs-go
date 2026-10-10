@@ -319,6 +319,18 @@ func LoadByID(ctx context.Context, db querier, configID int32) (Row, bool) {
 			"FROM model_configs WHERE config_id = $1", configID))
 }
 
+// LoadProvider reads the row a provider is configured from: its default row when it
+// has one, otherwise its oldest row. It is the lookup a tool needs when the provider
+// under test is not the one serving — an operator comparing providers keeps the
+// non-serving one as a plain row, and reading only the default row (LoadDefault)
+// would silently skip an arm that has credentials. ok is false when the provider has
+// no row at all.
+func LoadProvider(ctx context.Context, db querier, provider string) (Row, bool) {
+	return scanRow(db.QueryRow(ctx,
+		"SELECT config_id, provider, api_key, model_name, COALESCE(system_prompt,''), COALESCE(max_tokens,2048), COALESCE(vertex_region,''), temperature "+
+			"FROM model_configs WHERE provider = $1 ORDER BY is_default DESC, config_id LIMIT 1", provider))
+}
+
 func scanRow(row pgx.Row) (Row, bool) {
 	var out Row
 	var region string

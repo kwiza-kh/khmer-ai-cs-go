@@ -641,18 +641,23 @@ func newGemini(model, region string) (*gemini.Service, error) {
 }
 
 // newDeepSeek builds the DeepSeek arm. The key comes from -deepseek-key or from the
-// sealed key of the default row — which is where the console stores it, and which is
-// the row that serves customers when this arm is the one under test. The key is also
-// returned so the caller can build the bogus-model client for the capability check.
+// sealed key of a DeepSeek row: the default row when DeepSeek serves, otherwise the row
+// kept alongside the serving provider. The key is also returned so the caller can build
+// the bogus-model client for the capability check.
 func newDeepSeek(ctx context.Context, pool *pgxpool.Pool, model, keyFlag string) (*deepseek.Service, string, error) {
 	key := strings.TrimSpace(keyFlag)
 	row, ok := llm.LoadDefault(ctx, pool)
+	if !ok || row.Provider != llm.ProviderDeepSeek {
+		if r, found := llm.LoadProvider(ctx, pool, llm.ProviderDeepSeek); found {
+			row, ok = r, true
+		}
+	}
 	if !ok && key == "" {
 		return nil, "", errors.New("no default model_configs row: nothing names the provider")
 	}
 	if key == "" {
 		if row.Provider != llm.ProviderDeepSeek {
-			return nil, "", fmt.Errorf("the default row is provider %q, not deepseek; pass -deepseek-key", row.Provider)
+			return nil, "", fmt.Errorf("no DeepSeek row found (default is %q); pass -deepseek-key", row.Provider)
 		}
 		if row.APIKey == "" {
 			return nil, "", errors.New("the default row has no stored key and -deepseek-key was not given")
@@ -672,16 +677,22 @@ func newDeepSeek(ctx context.Context, pool *pgxpool.Pool, model, keyFlag string)
 }
 
 // newClaude builds the arm under test. The key comes from -anthropic-key or from the
-// sealed key of the default row, which is where the console stores it.
+// sealed key of a Claude row: the default row when Claude serves, otherwise the Claude
+// row kept alongside the serving provider.
 func newClaude(ctx context.Context, pool *pgxpool.Pool, model, keyFlag string) (*anthropic.Service, string, string, error) {
 	row, ok := llm.LoadDefault(ctx, pool)
+	if !ok || row.Provider != llm.ProviderAnthropic {
+		if r, found := llm.LoadProvider(ctx, pool, llm.ProviderAnthropic); found {
+			row, ok = r, true
+		}
+	}
 	if !ok {
 		return nil, "", "", errors.New("no default model_configs row: nothing names the provider")
 	}
 	key := strings.TrimSpace(keyFlag)
 	if key == "" {
 		if row.Provider != llm.ProviderAnthropic {
-			return nil, "", "", fmt.Errorf("the default row is provider %q, not anthropic; pass -anthropic-key", row.Provider)
+			return nil, "", "", fmt.Errorf("no Claude row found (default is %q); pass -anthropic-key", row.Provider)
 		}
 		if row.APIKey == "" {
 			return nil, "", "", errors.New("the default row has no stored key and -anthropic-key was not given")
