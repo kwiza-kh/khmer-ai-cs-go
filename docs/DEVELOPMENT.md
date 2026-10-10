@@ -1948,3 +1948,76 @@ SQLCHECK_REQUIRED=1 go test -count=1 ./internal/sqlcheck/  # 改动过 4 处 pro
 DATABASE_URL=<已迁移的库> go test -count=1 ./internal/llm/  # 行选择：DeepSeek 行不得成为 Gemini 凭据
 cd ../frontend && NEXT_PUBLIC_API_URL=https://example.invalid/api/v1 npm run build
 ```
+
+---
+
+## 二十三、DeepSeek Flash 回复质量实测（2026-10-10）
+
+触发：生产默认行切到 `deepseek` / `deepseek-flash` 后，用平台自己的评测工具做一次全面对照。
+评测跑在 app 主机上（凭据所在），走生产路径：默认行的提示词与密封 key、生产检索、31 例评测集
+（km 22 / en 5 / zh 4；租户 1：47 篇 ready / 609 chunk），3 workers。
+
+### 工具链改造（本次，先于结论）
+
+两个评测工具都测不了正在服务的 DeepSeek：
+
+- `jeveval -mode reply` 用 `gemini.LoadDefaultConfig` 建生成客户端 —— 默认行不是 Gemini 时它会
+  **静默去评 Gemini**（Claude 时代就已如此，只是没人发现）。
+- `claudeeval` 是「Claude vs Gemini」的固定双臂，且手臂建不起来就直接退出。
+
+改成：
+
+- 判分 rubric 移到 `internal/replyscore`（`Judge` / `JudgePrompt`）：两个工具共用一份，轴值 clamp
+  到 0-3，**未判分 = 失败**（继承 2026-10-04 的教训）；`jeveval` 改为调用它。
+- `claudeeval` 手臂化：`deepseek`（默认行的密封 key）、`gemini`（SA 文件）、`claude`（有 key 时才建），
+  建不起来打印 `SKIPPED`；capability checks 逐手臂跑；新增 `-deepseek-model` / `-deepseek-key` /
+  `-judge-model`。
+- 判官偏差实测：Gemini 3.8 自评 11.81–11.87，换独立 lite 判官 11.68 ⇒ 自偏好 ≈0.15；DeepSeek 在两个
+  判官下 11.10–11.39 / 11.10。**结论：选型看确定性检查，判官分只做趋势**，且判官最好不兼任手臂。
+
+### 结果（确定性检查为门禁，5 轮一致）
+
+| 手臂 | 确定性通过 | 判官均分 | 中位延迟 | 成本（3 轮总 / 每千例） |
+|---|---|---|---|---|
+| `deepseek-flash` | **29/31** | 11.10–11.39 | ~1.6s | $0.0407 / ≈$0.44 |
+| `gemini-3.8-flash` | **31/31** | 11.68–11.87 | 5.2–9.1s | $0.2313 / ≈$2.49 |
+
+Claude 手臂不可用：切换服务商时该行的 key 按设计被清空，本次没有 Anthropic key，**无法与上一个
+生产模型直接对比**（有 key 时 `-anthropic-key` 即可恢复该手臂）。
+
+### 发现
+
+1. **非高棉语的转人工请求，DeepSeek 用高棉语整句回复 —— 唯一系统性缺陷。**
+   - 证据：`lang-zh-handoff` **5/5 失败**、`lang-en-handoff` **4/5 失败**；回复文本跨轮完全相同
+     （`បុគ្គលិករបស់យើងត្រូវបានជូនដំណឹង … ខ្ញុំនឹងប្រគល់ការសន្ទនានេះទៅឱ្យពួកគេ។`），
+     缺 `已为您转接` / `Connecting you to a human agent`；判官 3/12。Gemini 同提示词同 grounding
+     5/5 正确。
+   - 根因证据（不是猜测）：`gemini/prompts.go:74/76` 明确要求「用在 CUSTOMER'S language 的固定句」；
+     这两例无 KB 命中，消息里只剩尾部的 `[Language Preference] English - Secondary`，DeepSeek 低估
+     了它，回落到以高棉语为主的内置系统提示词。有 grounding 的 en/zh 例（KB 里是对应语言文本）
+     全部通过，与该解释一致。
+   - 生产影响：回复原样投递（`stagePersistAndDeliver`），客户读到高棉语句子；但 `ReplyClaimsHandoff`
+     能从高棉语句匹配，人工请求照建 —— **工单不会丢，错的是客户看到的那句话**。
+   - 修法（未做，改提示词要 A/B）：把语言指令提到系统提示词开头或放进当轮用户消息；或转人工
+     直接走已有的分语言模板（`HandoffAcknowledgement` 有 km/en/zh），不赌模型。
+2. **字面量整体复制不可靠（能力检查 4/4 失败）**：要求原样输出 `[PERSONA-OK]`，DeepSeek 返回
+   `[P1]` / `[P#PERSONA-OK]` / `[P#ERSONA-OK]` / `[P'`。先限定为「方括号整词」这一类：31 例里的
+   价格、产品码、高棉语转接句都能逐字复现。要确认是否影响生产 persona，需用自然语言 persona
+   再测一轮（本次未做）。
+3. 其余能力全绿：三语 chat、流式（45 个 delta，首字 465ms）、历史里的客服报价、aux JSON、
+   未知模型 400。Gemini 基线反而在 `history + agent turn` 上挂（lite 与 3.8 都出现）。
+4. 速度与成本：中位 ~1.6s vs 5–9s；按峰时价成本约 1/5.7。延迟优势来自关闭思考 + 输出更短
+   （31 例输出 8897 vs 19320 token）。
+
+### 复现
+
+```bash
+set -a; . /opt/khmer-ai-cs/.env-go; set +a
+cd /root/khmer-deploy
+./claudeeval -mode caps
+./claudeeval -mode reply -eval reply_eval.json -user 1 \
+  -gemini-model gemini-3.8-flash -judge-model gemini-3.5-flash-lite -json reply.json
+```
+
+原始输出留在服务器：`/root/khmer-deploy/reply-run{1,2,3}.{txt,json}`（自评判官）、
+`reply-neutral.{txt,json}`（独立判官）、`reply-20261010.{txt,json}`（首轮探索，Gemini 基线为 lite）。

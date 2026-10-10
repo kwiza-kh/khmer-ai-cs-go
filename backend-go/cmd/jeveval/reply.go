@@ -49,15 +49,10 @@ import (
 	"khmer-ai-cs-go/internal/security"
 )
 
-// judgeVerdict is what the judge model is asked to return, one JSON object.
-type judgeVerdict struct {
-	Language   int    `json:"language"` // 0-3: is it the asked-for language, cleanly
-	Register   int    `json:"register"` // 0-3: consistent polite register
-	Natural    int    `json:"natural"`  // 0-3: reads like a person, not translated English
-	Format     int    `json:"format"`   // 0-3: chat-shaped (no markdown/citations)
-	Reason     string `json:"reason"`   // one short sentence
-	ScoreTotal int    `json:"-"`        // filled in locally
-}
+// judgeVerdict is the shared rubric verdict, re-exported under the name this file
+// used before the judge moved to internal/replyscore (both harnesses must grade
+// with one implementation).
+type judgeVerdict = replyscore.JudgeVerdict
 
 type caseResult struct {
 	c       replyscore.Case
@@ -296,49 +291,10 @@ func runOneReplyCase(ctx context.Context, svc *rag.Service, c replyscore.Case, m
 			"no agent would be notified")
 	}
 	if mode.judge {
-		res.verdict = judgeReply(ctx, svc, c, chat.Reply)
+		res.verdict = replyscore.Judge(ctx, svc.Gemini.GenerateFast, c, chat.Reply)
 		res.judged = true
 	}
 	return res
-}
-
-func judgePrompt(c replyscore.Case, reply string) string {
-	return "You are auditing ONE customer-service reply from a Cambodian EPS/insulation supplier.\n" +
-		"The customer wrote in " + c.Language + ". The reply must be in " + c.Language + ".\n\n" +
-		"Question: " + c.Question + "\n" +
-		"Reply: " + reply + "\n\n" +
-		"Score the reply on four axes, each 0-3:\n" +
-		"- language: 3 = fluent, idiomatic " + c.Language + "; 0 = wrong language or unreadable\n" +
-		"- register: 3 = one consistent polite customer-service register; 0 = mixed/cold\n" +
-		"- natural: 3 = reads like a Cambodian salesperson wrote it; 0 = word-for-word translation\n" +
-		"- format: 3 = clean chat text; 0 = markup, citations, invisible junk, wall of text\n" +
-		// The house chat convention, stated because it is a convention and not a
-		// judgment call: without it the judge systematically penalises the list
-		// style the product asks for (measured: it flagged '- ' bullets as markdown
-		// in 4 of the first 23 cases). It is NOT told which pronoun to expect —
-		// that disagreement is a finding for a native speaker, not something to
-		// suppress.
-		"Note: this product's chat convention allows plain paragraphs and list lines starting with '- ' or '• '. " +
-		"Those are NOT formatting failures; only **bold**, ## headings, tables, code fences and citation markers are.\n" +
-		"Answer with JSON only: {\"language\":n,\"register\":n,\"natural\":n,\"format\":n,\"reason\":\"<one short sentence>\"}"
-}
-
-func judgeReply(ctx context.Context, svc *rag.Service, c replyscore.Case, reply string) judgeVerdict {
-	text, ok := svc.Gemini.GenerateFast(ctx, judgePrompt(c, reply), 45*time.Second)
-	if !ok {
-		return judgeVerdict{Reason: "judge unavailable"}
-	}
-	start := strings.Index(text, "{")
-	end := strings.LastIndex(text, "}")
-	if start < 0 || end <= start {
-		return judgeVerdict{Reason: "judge returned no JSON"}
-	}
-	var v judgeVerdict
-	if err := json.Unmarshal([]byte(text[start:end+1]), &v); err != nil {
-		return judgeVerdict{Reason: "judge JSON unparseable"}
-	}
-	v.ScoreTotal = v.Language + v.Register + v.Natural + v.Format
-	return v
 }
 
 func printReplyReport(results []caseResult, file replyscore.File, mode evalOptions, cold, temperature string) {
@@ -349,10 +305,10 @@ func printReplyReport(results []caseResult, file replyscore.File, mode evalOptio
 			status = "FAIL"
 		}
 		judgedScore := "-"
-		if r.judged && r.verdict.ScoreTotal > 0 {
-			judgedScore = fmt.Sprintf("%d/12", r.verdict.ScoreTotal)
+		if r.judged && r.verdict.Total > 0 {
+			judgedScore = fmt.Sprintf("%d/12", r.verdict.Total)
 			judged++
-			scoreSum += r.verdict.ScoreTotal
+			scoreSum += r.verdict.Total
 		}
 		fmt.Printf("%s %-22s %-10s judge=%-6s %5.1fs\n", status, r.c.ID, r.c.Category, judgedScore, r.seconds)
 		for _, m := range r.missing {
@@ -439,10 +395,10 @@ func (r caseResult) ok(mode evalOptions) bool {
 		// by 23, and the one reply nobody looked at was the one reported as fine
 		// (2026-10-04). Same class of false green as sqlcheck skipping without
 		// SQLCHECK_REQUIRED: a gate that cannot fail is not a gate.
-		if r.verdict.ScoreTotal <= 0 {
+		if r.verdict.Total <= 0 {
 			return false
 		}
-		if float64(r.verdict.ScoreTotal) < mode.gate {
+		if float64(r.verdict.Total) < mode.gate {
 			return false
 		}
 	}

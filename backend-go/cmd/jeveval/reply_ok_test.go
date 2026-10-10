@@ -62,7 +62,7 @@ func TestScoredCaseUsesTheGate(t *testing.T) {
 		r := caseResult{
 			c:       replyscore.Case{Category: "price"},
 			judged:  true,
-			verdict: judgeVerdict{ScoreTotal: tc.score, Reason: "scored"},
+			verdict: judgeVerdict{Total: tc.score, Reason: "scored"},
 		}
 		if got := r.ok(mode); got != tc.want {
 			t.Errorf("score %d/12 with gate %.1f: ok() = %v, want %v", tc.score, mode.gate, got, tc.want)
@@ -80,7 +80,7 @@ func TestGroundingMissStillFails(t *testing.T) {
 			c:       replyscore.Case{Category: category},
 			noKB:    true,
 			judged:  true,
-			verdict: judgeVerdict{ScoreTotal: 12, Reason: "would score full marks"},
+			verdict: judgeVerdict{Total: 12, Reason: "would score full marks"},
 		}
 		if r.ok(mode) {
 			t.Errorf("category %q: a KB miss must fail even with a 12/12 verdict", category)
@@ -92,7 +92,7 @@ func TestGroundingMissStillFails(t *testing.T) {
 			c:       replyscore.Case{Category: category},
 			noKB:    true,
 			judged:  true,
-			verdict: judgeVerdict{ScoreTotal: 12},
+			verdict: judgeVerdict{Total: 12},
 		}
 		if !r.ok(mode) {
 			t.Errorf("category %q: a KB miss is expected there and must not fail", category)
