@@ -43,12 +43,19 @@ func (v JudgeVerdict) Available() bool { return v.Total > 0 }
 type Ask func(ctx context.Context, prompt string, timeout time.Duration) (string, bool)
 
 // Judge scores one reply through ask. A failed call, or an answer that is not the
-// expected JSON, yields an unavailable verdict with the reason attached.
+// expected JSON, yields an unavailable verdict with the reason attached. One retry
+// is allowed on a FAILED CALL: the harnesses count an unscored case as a failed one,
+// and a single 45s timeout (measured: one in ~90 judge calls) must not read as a
+// quality failure of the model under test. An unparseable answer is not retried —
+// that is the judge model's own output, not a transport failure.
 func Judge(ctx context.Context, ask Ask, c Case, reply string) JudgeVerdict {
 	if ask == nil {
 		return JudgeVerdict{Reason: "judge unavailable"}
 	}
 	text, ok := ask(ctx, JudgePrompt(c, reply), 45*time.Second)
+	if !ok {
+		text, ok = ask(ctx, JudgePrompt(c, reply), 45*time.Second)
+	}
 	if !ok {
 		return JudgeVerdict{Reason: "judge unavailable"}
 	}

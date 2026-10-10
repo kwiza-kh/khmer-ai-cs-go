@@ -61,3 +61,30 @@ func TestAnUnansweredOrUnparseableJudgeIsUnavailableNotAPass(t *testing.T) {
 		t.Error("a nil ask must not score")
 	}
 }
+
+func TestJudgeRetriesOneFailedCallOnly(t *testing.T) {
+	calls := 0
+	ask := func(context.Context, string, time.Duration) (string, bool) {
+		calls++
+		if calls == 1 {
+			return "", false // a timeout must not read as a quality failure
+		}
+		return `{"language":3,"register":3,"natural":3,"format":3,"reason":"second try"}`, true
+	}
+	v := Judge(context.Background(), ask, Case{Language: "km"}, "reply")
+	if !v.Available() || v.Total != 12 {
+		t.Fatalf("verdict = %+v, want the retried call's score", v)
+	}
+	if calls != 2 {
+		t.Errorf("judge calls = %d, want exactly one retry", calls)
+	}
+
+	alwaysFails := 0
+	dead := func(context.Context, string, time.Duration) (string, bool) { alwaysFails++; return "", false }
+	if v := Judge(context.Background(), dead, Case{}, "reply"); v.Available() {
+		t.Error("a judge that never answers must stay unavailable")
+	}
+	if alwaysFails != 2 {
+		t.Errorf("judge calls = %d, want two attempts and no more", alwaysFails)
+	}
+}
