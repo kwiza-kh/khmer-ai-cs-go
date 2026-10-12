@@ -224,7 +224,7 @@ export function KnowledgeUploadDialog({ onUploaded, trigger }: Props) {
               <label className="text-xs text-muted-foreground block mb-1">{t("kbup.category")}</label>
               <Input value={category} onChange={(e) => setCategory(e.target.value)} placeholder={t("kbup.categoryPh")} className="h-8 text-xs" />
             </div>
-            <p className="text-[11px] text-muted-foreground -mt-1">
+            <p className="text-label text-muted-foreground -mt-1">
               {t("kbup.langAuto")}
             </p>
 
@@ -280,7 +280,7 @@ export function KnowledgeUploadDialog({ onUploaded, trigger }: Props) {
               <label className="text-xs text-muted-foreground block mb-1">{t("kbup.category")}</label>
               <Input value={category} onChange={(e) => setCategory(e.target.value)} placeholder={t("kbup.categoryPh")} className="h-8 text-xs" />
             </div>
-            <p className="text-[11px] text-muted-foreground -mt-1">
+            <p className="text-label text-muted-foreground -mt-1">
               {t("kbup.urlLangAuto")}
             </p>
             <Button onClick={submitUrl} disabled={uploading || !url.trim()} className="w-full h-9 text-xs gap-1.5">
@@ -297,7 +297,7 @@ export function KnowledgeUploadDialog({ onUploaded, trigger }: Props) {
         {accepted && (
           <div className="flex flex-wrap gap-1 pt-1 border-t border-border">
             {Object.entries(accepted.extensions).map(([ext, label]) => (
-              <Badge key={ext} variant="outline" className="text-[11px] h-4 px-1.5 font-mono">
+              <Badge key={ext} variant="outline" className="text-label h-4 px-1.5 font-mono">
                 {ext} <span className="text-muted-foreground ml-1 font-sans">{label}</span>
               </Badge>
             ))}

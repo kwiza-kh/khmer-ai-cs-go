@@ -48,17 +48,17 @@ export function ReportsTab() {
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-sm flex items-center gap-2">
-            <Download className="size-4 text-primary" /> {t("rp.title")} <span className="text-[10px] text-muted-foreground">{t("rp.yourTenant")}</span>
+            <Download className="size-4 text-primary" /> {t("rp.title")} <span className="text-label text-muted-foreground">{t("rp.yourTenant")}</span>
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
           <div className="grid grid-cols-2 gap-2 max-w-md">
             <div>
-              <label className="text-[11px] text-muted-foreground block mb-1">{t("rp.from")}</label>
+              <label className="text-label text-muted-foreground block mb-1">{t("rp.from")}</label>
               <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-8 text-xs" />
             </div>
             <div>
-              <label className="text-[11px] text-muted-foreground block mb-1">{t("rp.to")}</label>
+              <label className="text-label text-muted-foreground block mb-1">{t("rp.to")}</label>
               <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-8 text-xs" />
             </div>
           </div>
@@ -69,7 +69,7 @@ export function ReportsTab() {
                   <r.icon className="size-4 text-muted-foreground" />
                   <p className="text-xs font-medium">{t(r.labelKey)}</p>
                 </div>
-                <p className="text-[11px] text-muted-foreground">{t(r.descKey)}</p>
+                <p className="text-label text-muted-foreground">{t(r.descKey)}</p>
                 <Button size="sm" variant="outline" className="h-7 text-xs gap-1 w-full" onClick={() => run(r.kind)} disabled={busy !== null}>
                   {busy === r.kind ? <Loader2 className="size-3 animate-spin" /> : <Download className="size-3" />}
                   {busy === r.kind ? t("rp.exporting") : t("rp.exportCsv")}

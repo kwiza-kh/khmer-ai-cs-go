@@ -71,13 +71,15 @@ type PlatformCategory = Exclude<PlatformFilter, "all">;
 type ComposerKind = PlatformMessageKind;
 
 const PLATFORM_GROUPS: { value: PlatformCategory; label: string; filterLabel: string; dotClass: string }[] = [
-  { value: "telegram", label: "Telegram", filterLabel: "Telegram", dotClass: "bg-sky-400" },
-  { value: "meta", label: "Messenger", filterLabel: "Messenger", dotClass: "bg-indigo-400" },
-  { value: "instagram", label: "Instagram", filterLabel: "Instagram", dotClass: "bg-pink-400" },
-  { value: "whatsapp", label: "WhatsApp", filterLabel: "WhatsApp", dotClass: "bg-emerald-400" },
-  { value: "line", label: "LINE", filterLabel: "LINE", dotClass: "bg-lime-500" },
-  { value: "zalo", label: "Zalo", filterLabel: "Zalo", dotClass: "bg-blue-500" },
-  { value: "web", label: "Website", filterLabel: "Website", dotClass: "bg-violet-400" },
+  // 渠道圆点走 globals.css 的品牌色 token（platform-icons 用同一组颜色），
+  // 不再用 sky/indigo/pink… 这类通用近似色 —— 同一个渠道在两处必须同色。
+  { value: "telegram", label: "Telegram", filterLabel: "Telegram", dotClass: "bg-brand-telegram" },
+  { value: "meta", label: "Messenger", filterLabel: "Messenger", dotClass: "bg-brand-messenger" },
+  { value: "instagram", label: "Instagram", filterLabel: "Instagram", dotClass: "bg-brand-instagram" },
+  { value: "whatsapp", label: "WhatsApp", filterLabel: "WhatsApp", dotClass: "bg-brand-whatsapp" },
+  { value: "line", label: "LINE", filterLabel: "LINE", dotClass: "bg-brand-line" },
+  { value: "zalo", label: "Zalo", filterLabel: "Zalo", dotClass: "bg-brand-zalo" },
+  { value: "web", label: "Website", filterLabel: "Website", dotClass: "bg-brand" },
 ];
 
 const PLATFORM_FILTERS: { value: PlatformFilter; filterLabel: string | null }[] = [
@@ -540,11 +542,11 @@ export default function InboxPage() {
               <button
                 type="button"
                 onClick={() => setMobileView("list")}
-                className="inline-flex items-center gap-1 text-[11px] text-muted-foreground lg:hidden"
+                className="inline-flex items-center gap-1 text-label text-muted-foreground lg:hidden"
               >
                 <InboxIcon className="size-3" /> {t("inbox.title")}
               </button>
-              <span className="hidden text-[11px] font-semibold uppercase tracking-wide text-muted-foreground lg:inline">{t("inbox.title")}</span>
+              <span className="hidden text-label font-semibold uppercase tracking-[0.12em] text-muted-foreground lg:inline">{t("inbox.title")}</span>
               <div className="flex items-center gap-1">
                 <button
                   type="button"
@@ -552,7 +554,7 @@ export default function InboxPage() {
                   aria-pressed={showArchived}
                   title={t("inbox.archiveViewHint")}
                   className={cn(
-                    "inline-flex h-6 items-center gap-1 rounded px-1.5 text-[11px] transition-colors",
+                    "inline-flex h-6 items-center gap-1 rounded px-1.5 text-label transition-colors",
                     showArchived ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
                   )}
                 >
@@ -563,7 +565,7 @@ export default function InboxPage() {
                   onClick={() => { setSelectMode((v) => !v); setSelectedIds(new Set()); }}
                   aria-pressed={selectMode}
                   className={cn(
-                    "inline-flex h-6 items-center gap-1 rounded px-1.5 text-[11px] transition-colors",
+                    "inline-flex h-6 items-center gap-1 rounded px-1.5 text-label transition-colors",
                     selectMode ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
                   )}
                 >
@@ -594,7 +596,7 @@ export default function InboxPage() {
                     onClick={() => setPlatformFilter(filter.value)}
                     aria-pressed={isActive}
                     className={cn(
-                      "inline-flex h-6 items-center gap-1.5 rounded-full border px-2 text-[11px] font-medium transition-colors",
+                      "inline-flex h-6 items-center gap-1.5 rounded-full border px-2 text-label font-medium transition-colors",
                       isActive
                         ? "border-transparent bg-primary text-primary-foreground shadow-sm"
                         : "border-border/70 bg-card text-muted-foreground hover:bg-accent hover:text-foreground",
@@ -604,7 +606,7 @@ export default function InboxPage() {
                       ? <InboxIcon className={cn("size-3", isActive ? "text-primary-foreground" : "text-muted-foreground")} />
                       : <PlatformMark platform={filter.value as PlatformCategory} mono={isActive} className="size-3" />}
                     {filter.filterLabel ?? t("inbox.platformAll")}
-                    <span className={cn("tabular-nums", isActive ? "text-primary-foreground/70" : "text-muted-foreground/70")}>{count}</span>
+                    <span className={cn("tabular-nums", isActive ? "text-primary-foreground/70" : "text-muted-foreground")}>{count}</span>
                   </button>
                 );
               })}
@@ -634,9 +636,9 @@ export default function InboxPage() {
                   >
                     <ChevronRight className={cn("size-3 shrink-0 text-muted-foreground transition-transform", !collapsed && "rotate-90")} />
                     <PlatformMark platform={group.value} className="size-3 shrink-0" />
-                    <span className="text-[11px] font-semibold tracking-wide text-muted-foreground">{group.label}</span>
+                    <span className="text-label font-semibold tracking-wide text-muted-foreground">{group.label}</span>
                     <span className="h-px flex-1 bg-border" />
-                    <span className="text-[11px] tabular-nums text-muted-foreground">{group.items.length}</span>
+                    <span className="text-label tabular-nums text-muted-foreground">{group.items.length}</span>
                   </button>
                   {!collapsed && (
                   <div className="space-y-1">
@@ -671,7 +673,7 @@ export default function InboxPage() {
                             }}
                           />
                         ) : (
-                          <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full border border-border bg-muted text-[11px] font-semibold text-muted-foreground">
+                          <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full border border-border bg-muted text-label font-semibold text-muted-foreground">
                             {(item.user_display_name || item.title || item.platform_user_id || "?")
                               .trim()
                               .charAt(0)
@@ -682,7 +684,7 @@ export default function InboxPage() {
                           {/* 名字单独占一行: 徽标多的时候 (Angry + Agent + 状态) 不再把
                               名字挤成 "Sok ..."。时间与徽标下移到第二行。 */}
                           <p
-                            className="truncate text-[13px] font-semibold text-foreground"
+                            className="truncate text-body-sm font-semibold text-foreground"
                             title={item.user_display_name || item.title || item.platform_user_id || t("inbox.anonymous")}
                           >
                             {item.user_display_name || item.title || item.platform_user_id || t("inbox.anonymous")}
@@ -691,21 +693,21 @@ export default function InboxPage() {
                             {item.last_message_at && item.last_message_at > (lastSeenMap[item.session_id] ?? "") && (
                               <span className="size-1.5 shrink-0 rounded-full bg-primary" aria-label={t("inbox.newMessages")} />
                             )}
-                            {item.last_message_at && <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{fmtRelTime(item.last_message_at, t("inbox.timeNow"))}</span>}
+                            {item.last_message_at && <span className="shrink-0 text-label tabular-nums text-muted-foreground">{fmtRelTime(item.last_message_at, t("inbox.timeNow"))}</span>}
                             {item.sentiment === "negative" && (
-                              <Badge variant="destructive" className="h-4 px-1.5 text-[11px] gap-0.5">
+                              <Badge variant="destructive" className="h-4 px-1.5 text-label gap-0.5">
                                 <AlertTriangle className="size-2.5" /> {t("inbox.angry")}
                               </Badge>
                             )}
                             {item.sentiment === "positive" && (
-                              <Badge variant="success" className="h-4 px-1.5 text-[11px]">😊</Badge>
+                              <Badge variant="success" className="h-4 px-1.5 text-label">😊</Badge>
                             )}
-                            <Badge variant={STATUS_BADGE[item.status].variant} className="h-4 px-1.5 text-[11px]">
+                            <Badge variant={STATUS_BADGE[item.status].variant} className="h-4 px-1.5 text-label">
                               {t(STATUS_BADGE[item.status].labelKey)}
                             </Badge>
                           </div>
                           <p className="mt-1 truncate text-xs leading-5 text-muted-foreground">{item.last_message || t("inbox.noMessagesPreview")}</p>
-                          <p className="mt-1 text-[11px] text-muted-foreground">
+                          <p className="mt-1 text-label text-muted-foreground">
                             {tf("inbox.messagesCount", { n: item.user_message_count + item.model_message_count })}
                           </p>
                         </div>
@@ -748,13 +750,13 @@ export default function InboxPage() {
             <div className="space-y-2 border-t border-border bg-card p-2.5">
               <p className="text-xs text-muted-foreground">{tf("inbox.bulkSelected", { n: selectedIds.size })}</p>
               <div className="grid grid-cols-3 gap-1.5">
-                <Button size="sm" variant="outline" disabled={bulkBusy || selectedIds.size === 0} onClick={() => void runBulk("assign")} className="h-7 px-1 text-[11px]">
+                <Button size="sm" variant="outline" disabled={bulkBusy || selectedIds.size === 0} onClick={() => void runBulk("assign")} className="h-7 px-1 text-label">
                   {t("inbox.reassignToMe")}
                 </Button>
-                <Button size="sm" variant="outline" disabled={bulkBusy || selectedIds.size === 0} onClick={() => void runBulk("close")} className="h-7 px-1 text-[11px]">
+                <Button size="sm" variant="outline" disabled={bulkBusy || selectedIds.size === 0} onClick={() => void runBulk("close")} className="h-7 px-1 text-label">
                   {t("inbox.bulkClose")}
                 </Button>
-                <Button size="sm" variant="ghost" disabled={bulkBusy} onClick={() => { setSelectMode(false); setSelectedIds(new Set()); }} className="h-7 text-[11px]">
+                <Button size="sm" variant="ghost" disabled={bulkBusy} onClick={() => { setSelectMode(false); setSelectedIds(new Set()); }} className="h-7 text-label">
                   {t("inbox.bulkExit")}
                 </Button>
               </div>
@@ -898,7 +900,7 @@ function TestChatDialog({ open, onOpenChange }: {
 							{messages.map((message) => (
 								<div key={message.id} className={cn("flex gap-2.5", message.role === "user" && "flex-row-reverse")}>
 									<div className={cn(
-										"mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-md text-[10px] font-semibold",
+										"mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-md text-label font-semibold",
 										message.role === "user" ? "bg-accent text-accent-foreground" : "bg-primary/10 text-primary",
 									)}>
 										{message.role === "user" ? t("testchat.you") : "AI"}
@@ -910,11 +912,11 @@ function TestChatDialog({ open, onOpenChange }: {
 										{message.pending ? <Loader2 className="size-4 animate-spin text-muted-foreground" /> : message.role === "user" ? (
 											<p className="whitespace-pre-wrap leading-relaxed">{message.content}</p>
 										) : <Markdown>{message.content}</Markdown>}
-										{message.usedMock && <Badge variant="warning" className="mt-2 h-4 px-1.5 text-[11px]">{t("testchat.mockReply")}</Badge>}
+										{message.usedMock && <Badge variant="warning" className="mt-2 h-4 px-1.5 text-label">{t("testchat.mockReply")}</Badge>}
 										{message.sources && message.sources.length > 0 && (
 											<div className="mt-3 flex flex-wrap gap-1.5 border-t border-border pt-2">
 												{message.sources.map((source) => (
-													<span key={`${source.doc_id}-${source.title}`} title={tf("testchat.similarity", { score: (source.score * 100).toFixed(0) })} className="inline-flex max-w-full items-center gap-1 rounded border border-border bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
+													<span key={`${source.doc_id}-${source.title}`} title={tf("testchat.similarity", { score: (source.score * 100).toFixed(0) })} className="inline-flex max-w-full items-center gap-1 rounded border border-border bg-muted px-1.5 py-0.5 text-label text-muted-foreground">
 														<FileText className="size-3 shrink-0" />
 														<span className="truncate">{source.title}</span>
 													</span>
@@ -949,11 +951,37 @@ function TestChatDialog({ open, onOpenChange }: {
 							{t("testchat.send")}
 						</Button>
 					</div>
-					<p className="mt-1.5 text-[11px] text-muted-foreground">{t("testchat.hint")}</p>
+					<p className="mt-1.5 text-label text-muted-foreground">{t("testchat.hint")}</p>
 				</div>
 			</DialogContent>
 		</Dialog>
 	);
+}
+
+// Transcript cache: switching back to a conversation renders its last-known
+// messages instantly (desktop-client behaviour) while the refetch revalidates
+// in the background — without it every switch blanked through a 200-row round
+// trip. Bounded: insertion-ordered, oldest session evicted past 10.
+const transcriptCache = new Map<string, ChatMessageItem[]>();
+const TRANSCRIPT_CACHE_MAX = 10;
+function cacheTranscript(sessionId: string, rows: ChatMessageItem[]) {
+  transcriptCache.delete(sessionId);
+  transcriptCache.set(sessionId, rows);
+  if (transcriptCache.size > TRANSCRIPT_CACHE_MAX) {
+    const oldest = transcriptCache.keys().next().value;
+    if (oldest !== undefined) transcriptCache.delete(oldest);
+  }
+}
+
+// Optimistic rows need an id/timestamp before the server answers. This factory
+// lives at module scope because those calls are impure: inside the component
+// the React Compiler's purity check rejects them even on the event-handler
+// path. A monotonic counter also beats a timestamp — two sends within the
+// same millisecond cannot collide.
+let optimisticRowSeq = 0;
+function nextOptimisticRow(): { message_id: number; created_at: string } {
+  optimisticRowSeq += 1;
+  return { message_id: -optimisticRowSeq, created_at: new Date().toISOString() };
 }
 
 function ConversationDetail({
@@ -973,7 +1001,10 @@ function ConversationDetail({
   // realtime events with a 15s fallback poll (WS 断线自愈). The component is
   // keyed by session_id upstream, so switching conversations remounts it.
   const { t, tf } = useI18n();
-  const [msgList, setMsgList] = React.useState<ChatMessageItem[]>([]);
+  // Seeded from the transcript cache so revisiting a conversation paints its
+  // rows immediately; the mount fetch below revalidates in the background.
+  const [msgList, setMsgList] = React.useState<ChatMessageItem[]>(() => transcriptCache.get(item.session_id) ?? []);
+  const wsConnected = useRealtimeConnected();
   const maxMessageIdRef = React.useRef(0);
   const [hasEarlier, setHasEarlier] = React.useState(false);
   const [loadingEarlier, setLoadingEarlier] = React.useState(false);
@@ -1003,7 +1034,10 @@ function ConversationDetail({
   // Latest-value mirrors: the pass below runs in an async lane and must read the
   // transcript and language as they are now, not as they were when it started.
   const msgListRef = React.useRef(msgList);
-  React.useEffect(() => { msgListRef.current = msgList; }, [msgList]);
+  React.useEffect(() => {
+    msgListRef.current = msgList;
+    if (msgList.length > 0) cacheTranscript(item.session_id, msgList);
+  }, [msgList, item.session_id]);
   const readLangRef = React.useRef(readLang);
   React.useEffect(() => { readLangRef.current = readLang; }, [readLang]);
   const problemsRef = React.useRef<Record<number, TranslateProblem>>({});
@@ -1173,7 +1207,22 @@ function ConversationDetail({
       setMsgList((prev) => {
         const known = new Set(prev.map((m) => m.message_id));
         const fresh = rows.filter((m) => !known.has(m.message_id));
-        return fresh.length > 0 ? [...prev, ...fresh] : prev;
+        if (fresh.length === 0) return prev;
+        // A persisted row supersedes an optimistic placeholder with the same
+        // role+content (the realtime fan-out can beat the POST response), so
+        // the bubble swaps in place instead of showing twice.
+        const used = new Set<number>();
+        let swapped = false;
+        const merged = prev.map((m) => {
+          if (m.message_id >= 0) return m;
+          const match = fresh.find((r) => !used.has(r.message_id) && r.role === m.role && r.content === m.content);
+          if (!match) return m;
+          used.add(match.message_id);
+          swapped = true;
+          return match;
+        });
+        const rest = fresh.filter((r) => !used.has(r.message_id));
+        return swapped || rest.length > 0 ? [...merged, ...rest] : prev;
       });
     } catch {
       // Transient error — the fallback poll retries.
@@ -1195,17 +1244,26 @@ function ConversationDetail({
           seenMap[item.session_id] = maxMessageIdRef.current;
           lsSetJSON(LS_LASTSEENMSG, seenMap);
         }
-        setMsgList(rows);
+        // Merge, not replace: an optimistic reply sent while this fetch was
+        // in flight (negative id) must survive the revalidation — its real row
+        // arrives through the swap in handleSendReply / pullMessages.
+        setMsgList((prev) => {
+          const pending = prev.filter((m) => m.message_id < 0 && !rows.some((r) => r.role === m.role && r.content === m.content));
+          return [...rows, ...pending];
+        });
       })
       .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [item.session_id, pullMessages]);
+
+  // Transcript safety net: slow while the shared socket is up (events drive
+  // the transcript), fast when it is down.
+  React.useEffect(() => {
     const timer = window.setInterval(() => {
       void pullMessages(maxMessageIdRef.current);
-    }, 15_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [item.session_id, pullMessages]);
+    }, wsConnected ? 60_000 : 15_000);
+    return () => window.clearInterval(timer);
+  }, [wsConnected, pullMessages]);
 
   // Backwards paging: prepend the page immediately older than the oldest
   // message in memory; hide the button once the transcript is exhausted.
@@ -1372,9 +1430,42 @@ function ConversationDetail({
         template_body_params: templateBodyParams,
       };
     }
+    // Optimistic text reply: the bubble appears on the keypress, before the
+    // POST (and the follow-up transcript pull) returns — the desktop-client
+    // feel. Media/buttons/templates skip this: their local rendering is
+    // complex enough that the persisted row should arrive first.
+    const optimistic: ChatMessageItem | null =
+      composerKind === "text" && !payload
+        ? {
+            ...nextOptimisticRow(),
+            session_id: item.session_id,
+            role: "agent",
+            message_type: "text",
+            content: draft.trim(),
+          }
+        : null;
+    if (optimistic) setMsgList((prev) => [...prev, optimistic]);
     setSending(true);
     try {
-      await agentReply(item.session_id, { content: composerKind === "template" ? "" : draft.trim(), payload });
+      const saved = await agentReply(item.session_id, { content: composerKind === "template" ? "" : draft.trim(), payload });
+      if (optimistic) {
+        // Swap the placeholder for the persisted row — or drop the placeholder
+        // if a concurrent realtime refetch already appended the saved row.
+        // The reply endpoint answers {"message_id","message"} — NOT a full
+        // message row — so keep the optimistic bubble's own fields and adopt
+        // only the id. Replacing the row wholesale blanked the bubble whenever
+        // the response carried no content/role (observed 2026-10-12).
+        const reconciled: ChatMessageItem = { ...optimistic, message_id: saved.message_id ?? optimistic.message_id };
+        setMsgList((prev) => {
+          const idx = prev.findIndex((m) => m.message_id === optimistic.message_id);
+          if (idx < 0) {
+            return prev.some((m) => m.message_id === reconciled.message_id && reconciled.message_id > 0) ? prev : [...prev, reconciled];
+          }
+          const next = [...prev];
+          next[idx] = reconciled;
+          return next;
+        });
+      }
       onDraftChange("");
       setMediaURL("");
       setButtons([{ title: "", payload: "" }]);
@@ -1384,6 +1475,7 @@ function ConversationDetail({
       void pullMessages(maxMessageIdRef.current);
       toast.success(payload ? t("inbox.toastQueued") : t("inbox.toastSent"));
     } catch (e) {
+      if (optimistic) setMsgList((prev) => prev.filter((m) => m.message_id !== optimistic.message_id));
       toast.error((e as Error).message);
     } finally {
       setSending(false);
@@ -1449,14 +1541,14 @@ function ConversationDetail({
           </p>
           {/* Intercom-style at-a-glance context: platform mark, live status,
               conversation size and session/agent refs in one chip row. */}
-          <p className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+          <p className="mt-1 flex flex-wrap items-center gap-1.5 text-label text-muted-foreground">
             {platformCategory(item.platform) && (
               <span className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-card px-1.5 py-0.5 font-medium text-foreground">
                 <PlatformMark platform={platformCategory(item.platform)!} className="size-3" />
                 {item.platform ? (PLATFORM_LABELS[item.platform] || item.platform) : t("inbox.anonymous")}
               </span>
             )}
-            <Badge variant={STATUS_BADGE[item.status].variant} className="h-4 px-1.5 text-[11px]">
+            <Badge variant={STATUS_BADGE[item.status].variant} className="h-4 px-1.5 text-label">
               {t(STATUS_BADGE[item.status].labelKey)}
             </Badge>
             <span className="inline-flex items-center gap-1 rounded-full border border-border/70 px-1.5 py-0.5 tabular-nums" title={t("inbox.messageCountTitle")}>
@@ -1494,7 +1586,7 @@ function ConversationDetail({
                 onPick={pickReadLang}
                 label={t("inbox.translatePick")}
                 triggerTitle={t("inbox.translatePick")}
-                triggerClassName="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[11px] text-muted-foreground hover:text-foreground"
+                triggerClassName="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-label text-muted-foreground hover:text-foreground"
               >
                 {translateLang(readLang).flag} {translateLang(readLang).label} <ChevronDown className="size-3" />
               </TranslateLangMenu>
@@ -1582,7 +1674,7 @@ function ConversationDetail({
                     type="button"
                     onClick={() => void loadEarlier()}
                     disabled={loadingEarlier}
-                    className="inline-flex h-7 items-center gap-1.5 rounded-full border border-border bg-card px-3 text-[11px] text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground disabled:opacity-50"
+                    className="inline-flex h-7 items-center gap-1.5 rounded-full border border-border bg-card px-3 text-label text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground disabled:opacity-50"
                   >
                     {loadingEarlier ? <Loader2 className="size-3 animate-spin" /> : <ChevronUp className="size-3" />}
                     {loadingEarlier ? t("inbox.loadingMore") : t("inbox.loadEarlier")}
@@ -1600,14 +1692,14 @@ function ConversationDetail({
                     {showDay && (
                       <div className="flex items-center gap-2">
                         <span className="h-px flex-1 bg-border" />
-                        <span className="text-[10px] text-muted-foreground">{fmtDayLabel(group[0].created_at, t("inbox.today"), t("inbox.yesterday"))}</span>
+                        <span className="text-label text-muted-foreground">{fmtDayLabel(group[0].created_at, t("inbox.today"), t("inbox.yesterday"))}</span>
                         <span className="h-px flex-1 bg-border" />
                       </div>
                     )}
                     {showUnread && (
                       <div className="flex items-center gap-2 self-stretch">
                         <span className="h-px flex-1 bg-primary/40" />
-                        <span className="flex items-center gap-1 text-[10px] font-medium text-primary">
+                        <span className="flex items-center gap-1 text-label font-medium text-primary">
                           <BellRing className="size-3" aria-hidden />
                           {t("inbox.newMessages")}
                         </span>
@@ -1633,8 +1725,8 @@ function ConversationDetail({
                           </Avatar>
                         </MessageAvatar>
                         <MessageContent className={cn("gap-1", isUser ? "mr-2 items-end" : "ml-2 items-start")}>
-                          <MessageHeader className={cn("gap-1.5 text-[10px] text-muted-foreground", isUser && "flex-row-reverse")}>
-                            <span className="text-[11px] font-semibold text-foreground">{t(roleLabelKey(role))}</span>
+                          <MessageHeader className={cn("gap-1.5 text-label text-muted-foreground", isUser && "flex-row-reverse")}>
+                            <span className="text-label font-semibold text-foreground">{t(roleLabelKey(role))}</span>
                             <span className="tabular-nums">{fmtRelTime(group[0].created_at, t("inbox.timeNow"))}</span>
                           </MessageHeader>
                           {group.map((m) => {
@@ -1662,7 +1754,7 @@ function ConversationDetail({
                                   {m.role === "model" && parseSources(m.sources_json).length > 0 && (
                                     <div className="mt-1.5 flex flex-wrap gap-1 border-t border-border/60 pt-1.5">
                                       {parseSources(m.sources_json).slice(0, 4).map((src) => (
-                                        <span key={`${src.doc_id}-${src.title}`} title={(src.content || "").slice(0, 140)} className="inline-flex max-w-full items-center gap-1 rounded border border-border bg-muted/50 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                                        <span key={`${src.doc_id}-${src.title}`} title={(src.content || "").slice(0, 140)} className="inline-flex max-w-full items-center gap-1 rounded border border-border bg-muted/50 px-1.5 py-0.5 text-label text-muted-foreground">
                                           <FileText className="size-2.5 shrink-0" />
                                           <span className="truncate">{src.title}</span>
                                         </span>
@@ -1673,7 +1765,7 @@ function ConversationDetail({
                                 {(m.feedback_rating != null || m.delivery) && (
                                   <MessageFooter className="gap-2">
                                     {m.feedback_rating != null && (
-                                      <Badge variant={m.feedback_rating === 1 ? "success" : "destructive"} className="h-3.5 px-1 text-[10px]">
+                                      <Badge variant={m.feedback_rating === 1 ? "success" : "destructive"} className="h-4 px-1 text-label">
                                         {m.feedback_rating === 1 ? "👍" : "👎"}
                                       </Badge>
                                     )}
@@ -1693,34 +1785,34 @@ function ConversationDetail({
                                       "max-w-[85%] rounded-xl px-3 py-1.5",
                                       isVoiceMsg ? "bg-primary/85 text-primary-foreground" : "bg-muted/60 text-foreground",
                                     )}>
-                                      <p className={cn("mb-0.5 flex items-center gap-1 text-[10px] font-medium uppercase tracking-wide", isVoiceMsg ? "text-primary-foreground/60" : "text-muted-foreground")}>
+                                      <p className={cn("mb-0.5 flex items-center gap-1 text-label font-medium uppercase tracking-[0.12em]", isVoiceMsg ? "text-primary-foreground/60" : "text-muted-foreground")}>
                                         <Languages className="size-2.5" />
                                         {translateLang(shownTranslation.target).label}
                                       </p>
-                                      <p className="whitespace-pre-wrap text-[13px] leading-6">
+                                      <p className="whitespace-pre-wrap text-body-sm leading-6">
                                         {shownTranslation.text}
                                       </p>
                                       {shownTranslation.unverified && (
-                                        <p className="mt-1 flex items-center gap-1 text-[10px] text-amber-500">
+                                        <p className="mt-1 flex items-center gap-1 text-label text-warning">
                                           <AlertTriangle className="size-2.5 shrink-0" />
                                           {t("inbox.translateUnverified")}
                                         </p>
                                       )}
                                     </div>
                                   ) : translations[m.message_id] ? null : translateProblems[m.message_id] === "too_long" ? (
-                                    <p className="max-w-[85%] text-[11px] text-muted-foreground">
+                                    <p className="max-w-[85%] text-label text-muted-foreground">
                                       {t("inbox.translateTooLong")}
                                     </p>
                                   ) : translateProblems[m.message_id] === "failed" ? (
                                     <button
                                       type="button"
                                       onClick={() => retryTranslate(m.message_id)}
-                                      className="max-w-[85%] text-left text-[11px] text-amber-500 underline decoration-dotted hover:text-amber-400"
+                                      className="max-w-[85%] text-left text-label text-warning underline decoration-dotted hover:text-warning/80"
                                     >
                                       {t("inbox.translateFailed")} · {t("inbox.translateRetry")}
                                     </button>
                                   ) : (
-                                    <p className="max-w-[85%] text-[11px] text-muted-foreground">
+                                    <p className="max-w-[85%] text-label text-muted-foreground">
                                       {t("inbox.translating")}
                                     </p>
                                   )
@@ -1752,7 +1844,7 @@ function ConversationDetail({
                 type="button"
                 onClick={() => setCannedOpen((v) => !v)}
                 className={cn(
-                  "inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded transition-colors",
+                  "inline-flex items-center gap-1 text-label px-1.5 py-0.5 rounded transition-colors",
                   cannedOpen ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground hover:bg-accent/50",
                 )}
                 title={t("inbox.insertSavedTitle")}
@@ -1777,7 +1869,7 @@ function ConversationDetail({
                     disabled={disabled || sending}
                     onClick={() => setComposerKind(mode.kind)}
                     className={cn(
-                      "inline-flex h-7 items-center gap-1.5 border px-2 text-[11px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-45",
+                      "inline-flex h-7 items-center gap-1.5 border px-2 text-label font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-45",
                       composerKind === mode.kind
                         ? "border-primary bg-primary text-primary-foreground"
                         : "border-border bg-background text-muted-foreground hover:border-primary/40 hover:text-foreground",
@@ -1815,7 +1907,7 @@ function ConversationDetail({
                       <div className="flex items-center gap-1.5 mb-0.5">
                         <span className="text-xs font-medium truncate flex-1">{c.title}</span>
                         {c.category && (
-                          <Badge variant="outline" className="h-3.5 px-1 text-[10px]">{c.category}</Badge>
+                          <Badge variant="outline" className="h-4 px-1 text-label">{c.category}</Badge>
                         )}
                       </div>
                       <p className="text-xs text-muted-foreground line-clamp-2">{c.body}</p>
@@ -1849,7 +1941,7 @@ function ConversationDetail({
 
           {composerKind === "buttons" && (
             <div className="mb-3 space-y-2 border-l-2 border-primary/30 pl-3">
-              <p className="text-[11px] text-muted-foreground">{tf("inbox.buttonsHint", { max: buttonLimits.maxButtons, chars: buttonLimits.maxTitleRunes, bytes: buttonLimits.maxPayloadBytes })}</p>
+              <p className="text-label text-muted-foreground">{tf("inbox.buttonsHint", { max: buttonLimits.maxButtons, chars: buttonLimits.maxTitleRunes, bytes: buttonLimits.maxPayloadBytes })}</p>
               {buttons.map((button, index) => (
                 <div key={index} className="flex gap-2">
                   <Input
@@ -1886,7 +1978,7 @@ function ConversationDetail({
                 size="sm"
                 disabled={sending || isReplyBlocked || buttons.length >= buttonLimits.maxButtons}
                 onClick={() => setButtons((current) => [...current, { title: "", payload: "" }])}
-                className="h-7 gap-1 text-[11px]"
+                className="h-7 gap-1 text-label"
               >
                 <Plus className="size-3" /> {t("inbox.addChoice")}
               </Button>
@@ -1895,7 +1987,7 @@ function ConversationDetail({
 
           {composerKind === "template" && (
             <div className="mb-3 space-y-2 border-l-2 border-success/40 pl-3">
-              <p className="text-[11px] text-muted-foreground">{t("inbox.templateHint")}</p>
+              <p className="text-label text-muted-foreground">{t("inbox.templateHint")}</p>
               <Select
                 value={selectedTemplate ? whatsAppTemplateKey(selectedTemplate) : undefined}
                 onValueChange={(value) => {
@@ -1917,12 +2009,12 @@ function ConversationDetail({
                 </SelectContent>
               </Select>
               {whatsAppTemplateError ? (
-                <p className="text-[11px] text-danger">{t("inbox.templateError")}</p>
+                <p className="text-label text-danger">{t("inbox.templateError")}</p>
               ) : !isLoadingWhatsAppTemplates && whatsAppTemplates.length === 0 ? (
-                <p className="text-[11px] text-warning">{t("inbox.templateNone")}</p>
+                <p className="text-label text-warning">{t("inbox.templateNone")}</p>
               ) : selectedTemplate ? (
                 <div className="space-y-2 rounded border border-border bg-muted/30 px-2.5 py-2">
-                  {selectedTemplate.body_preview && <p className="text-[11px] text-muted-foreground line-clamp-2">{selectedTemplate.body_preview}</p>}
+                  {selectedTemplate.body_preview && <p className="text-label text-muted-foreground line-clamp-2">{selectedTemplate.body_preview}</p>}
                   {selectedTemplate.body_parameter_count > 0 ? (
                     <Input
                       value={templateParameters}
@@ -1932,10 +2024,10 @@ function ConversationDetail({
                       className="h-8 text-xs"
                     />
                   ) : (
-                    <p className="text-[11px] text-success">{t("inbox.templateNoVars")}</p>
+                    <p className="text-label text-success">{t("inbox.templateNoVars")}</p>
                   )}
                   {selectedTemplate.body_parameter_count > 0 && templateBodyParams.length !== selectedTemplate.body_parameter_count && (
-                    <p className="text-[11px] text-warning">{tf("inbox.templateParamsMissing", { need: selectedTemplate.body_parameter_count, have: templateBodyParams.length })}</p>
+                    <p className="text-label text-warning">{tf("inbox.templateParamsMissing", { need: selectedTemplate.body_parameter_count, have: templateBodyParams.length })}</p>
                   )}
                 </div>
               ) : null}
@@ -1943,7 +2035,7 @@ function ConversationDetail({
           )}
 
           {composerKind === "template" && (
-            <p className="mb-2 text-[11px] text-muted-foreground">{t("inbox.templateBodyNote")}</p>
+            <p className="mb-2 text-label text-muted-foreground">{t("inbox.templateBodyNote")}</p>
           )}
 
           <div className="flex gap-2">
@@ -2199,10 +2291,10 @@ function InboundPlatformMediaPreview({ messageID, media }: { messageID: number; 
           <Volume2 className="size-4 shrink-0 text-muted-foreground" />
           <div className="min-w-0 flex-1">
             <p className="truncate font-medium text-foreground">{media.filename || t("inbox.voiceMessage")}</p>
-            <p className="mt-0.5 truncate text-[10px] text-muted-foreground">{media.mime_type || media.kind} · {status}</p>
+            <p className="mt-0.5 truncate text-label text-muted-foreground">{media.mime_type || media.kind} · {status}</p>
           </div>
           {media.processing_status !== "unavailable" && (
-            <Button type="button" size="sm" variant="outline" onClick={() => void preview()} disabled={loadingPreview} className="h-7 shrink-0 gap-1 px-2 text-[11px]">
+            <Button type="button" size="sm" variant="outline" onClick={() => void preview()} disabled={loadingPreview} className="h-7 shrink-0 gap-1 px-2 text-label">
               {loadingPreview ? <Loader2 className="size-3 animate-spin" /> : <Paperclip className="size-3" />}
               {t("inbox.preview")}
             </Button>
@@ -2223,7 +2315,7 @@ function InboundPlatformMediaPreview({ messageID, media }: { messageID: number; 
         />
         {media.extracted_text && (
           <div className="border-t border-primary-foreground/10 bg-primary px-3 py-2">
-            <p className="mb-0.5 flex items-center gap-1 text-[10px] font-medium uppercase tracking-wide text-primary-foreground/60">
+            <p className="mb-0.5 flex items-center gap-1 text-label font-medium uppercase tracking-[0.12em] text-primary-foreground/60">
               <AudioLines className="size-2.5" />
               {t("inbox.extractedText")}
             </p>
@@ -2231,7 +2323,7 @@ function InboundPlatformMediaPreview({ messageID, media }: { messageID: number; 
           </div>
         )}
         {media.processing_error && (
-          <p className="border-t border-primary-foreground/10 bg-primary px-3 py-1.5 text-[11px] text-warning">{media.processing_error}</p>
+          <p className="border-t border-warning-foreground/10 bg-warning px-3 py-1.5 text-label text-warning-foreground">{media.processing_error}</p>
         )}
       </div>
     );
@@ -2243,10 +2335,10 @@ function InboundPlatformMediaPreview({ messageID, media }: { messageID: number; 
         <MediaIcon className="size-4 shrink-0 text-muted-foreground" />
         <div className="min-w-0 flex-1">
           <p className="truncate font-medium text-foreground">{media.filename || tf("inbox.attachment", { kind: media.kind })}</p>
-          <p className="mt-0.5 truncate text-[10px] text-muted-foreground">{media.mime_type || media.kind} · {status}</p>
+          <p className="mt-0.5 truncate text-label text-muted-foreground">{media.mime_type || media.kind} · {status}</p>
         </div>
         {media.processing_status !== "unavailable" && (
-          <Button type="button" size="sm" variant="outline" onClick={() => void preview()} disabled={loadingPreview} className="h-7 shrink-0 gap-1 px-2 text-[11px]">
+          <Button type="button" size="sm" variant="outline" onClick={() => void preview()} disabled={loadingPreview} className="h-7 shrink-0 gap-1 px-2 text-label">
             {loadingPreview ? <Loader2 className="size-3 animate-spin" /> : <Paperclip className="size-3" />}
             {t("inbox.preview")}
           </Button>
@@ -2259,9 +2351,9 @@ function InboundPlatformMediaPreview({ messageID, media }: { messageID: number; 
           <img src={previewURL} alt={media.filename || tf("inbox.attachment", { kind: media.kind })} className="max-h-64 w-full object-contain" />
         </a>
       )}
-      {media.processing_error && <p className="mt-2 text-[11px] text-warning">{media.processing_error}</p>}
+      {media.processing_error && <p className="mt-2 text-label text-warning">{media.processing_error}</p>}
       {media.extracted_text && (
-        <details className="mt-2 border-t border-border pt-2 text-[11px] text-muted-foreground">
+        <details className="mt-2 border-t border-border pt-2 text-label text-muted-foreground">
           <summary className="cursor-pointer font-medium text-foreground">{t("inbox.extractedText")}</summary>
           <p className="mt-1 whitespace-pre-wrap leading-relaxed">{media.extracted_text}</p>
         </details>
@@ -2310,14 +2402,14 @@ function MessagePayloadPreview({ messageID, content, metadata, payload }: { mess
       {payload?.kind === "buttons" && (
         <div className="mt-2 flex flex-wrap gap-1.5" aria-label="Customer reply choices">
           {payload.buttons?.map((button) => (
-            <span key={`${button.payload}-${button.title}`} className="border border-primary/30 bg-primary/5 px-2 py-1 text-[11px] font-medium text-primary">
+            <span key={`${button.payload}-${button.title}`} className="border border-primary/30 bg-primary/5 px-2 py-1 text-label font-medium text-primary">
               {button.title}
             </span>
           ))}
         </div>
       )}
       {payload?.kind === "template" && (
-        <div className="mt-2 border-l-2 border-success/50 pl-2 text-[11px] text-muted-foreground">
+        <div className="mt-2 border-l-2 border-success/50 pl-2 text-label text-muted-foreground">
           <span className="font-medium text-foreground">{t("inbox.whatsappTemplate")}</span> {payload.template_name} ({payload.template_language})
           {payload.template_body_params?.length ? ` - ${payload.template_body_params.join(", ")}` : ""}
         </div>
@@ -2344,7 +2436,7 @@ function MessageDeliveryState({ delivery }: { delivery: NonNullable<ChatMessageI
           : { label: t("inbox.deliveryQueued"), detail: t("inbox.deliveryQueuedDetail"), icon: Loader2, className: "text-muted-foreground" };
   const Icon = state.icon;
   return (
-    <span title={state.detail} className={cn("flex w-fit items-center gap-1 text-[10px] font-medium", state.className)}>
+    <span title={state.detail} className={cn("flex w-fit items-center gap-1 text-label font-medium", state.className)}>
       <Icon className={cn("size-3", isQueued && "animate-spin")} />
       {state.label}
     </span>
@@ -2529,7 +2621,7 @@ function AiSidePanel({ item, lastUserMessageId, summaryData, summaryLoading, onR
   return (
     <aside className="hidden lg:flex w-80 shrink-0 flex-col border-l border-border bg-muted/20 min-h-0" aria-label="Session details">
       <div className="px-3.5 py-3 border-b border-border flex items-center justify-between gap-2 bg-card/60">
-        <p className="flex items-center gap-2 text-[13px] font-semibold tracking-tight">
+        <p className="flex items-center gap-2 text-body-sm font-semibold tracking-tight">
           <span className="flex size-5 items-center justify-center rounded-md bg-brand/10">
             <RelayChatLogo className="size-3.5 text-brand" />
           </span>
@@ -2544,7 +2636,7 @@ function AiSidePanel({ item, lastUserMessageId, summaryData, summaryLoading, onR
         {/* Summary */}
         <section className="pt-3 space-y-2">
           <div className="flex items-center justify-between gap-2">
-            <p className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+            <p className="flex items-center gap-1.5 text-label font-semibold uppercase tracking-[0.12em] text-muted-foreground">
               <Sparkles className="size-3" /> {t("inbox.summary")}
             </p>
             {summaryData && (
@@ -2553,7 +2645,7 @@ function AiSidePanel({ item, lastUserMessageId, summaryData, summaryLoading, onR
                 onClick={onRegenSummary}
                 disabled={summaryLoading}
                 title={t("inbox.summaryRegenTitle")}
-                className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+                className="inline-flex items-center gap-1 text-label text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
               >
                 <RefreshCw className={cn("size-3", summaryLoading && "animate-spin")} /> {t("inbox.panelRegen")}
               </button>
@@ -2568,58 +2660,58 @@ function AiSidePanel({ item, lastUserMessageId, summaryData, summaryLoading, onR
               <p className="text-xs leading-relaxed whitespace-pre-wrap text-foreground">{summaryData}</p>
             </div>
           ) : (
-            <p className="text-[11px] text-muted-foreground py-1">{t("inbox.summaryNone")}</p>
+            <p className="text-label text-muted-foreground py-1">{t("inbox.summaryNone")}</p>
           )}
         </section>
 
         {/* Suggested replies */}
         <section className="pt-4 mt-4 border-t border-border/70 space-y-2">
           <div className="flex items-center justify-between gap-2">
-            <p className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+            <p className="flex items-center gap-1.5 text-label font-semibold uppercase tracking-[0.12em] text-muted-foreground">
               <Zap className="size-3" /> {t("inbox.panelSuggest")}
             </p>
             <button
               type="button"
               onClick={() => void generate()}
               disabled={suggestLoading}
-              className="inline-flex h-6 items-center gap-1 rounded border border-border bg-background px-2 text-[11px] text-foreground transition-colors hover:border-primary/40 hover:text-primary disabled:opacity-50"
+              className="inline-flex h-6 items-center gap-1 rounded border border-border bg-background px-2 text-label text-foreground transition-colors hover:border-primary/40 hover:text-primary disabled:opacity-50"
             >
               {suggestLoading ? <Loader2 className="size-3 animate-spin" /> : <Sparkles className="size-3 text-primary" />}
               {t("inbox.suggestGenerate")}
             </button>
           </div>
           {!grounded && suggestions.length > 0 && (
-            <p className="rounded-lg border border-warning/40 bg-warning/10 px-2.5 py-1.5 text-[11px] leading-relaxed text-warning">{t("inbox.suggestUngrounded")}</p>
+            <p className="rounded-lg border border-warning/40 bg-warning/10 px-2.5 py-1.5 text-label leading-relaxed text-warning">{t("inbox.suggestUngrounded")}</p>
           )}
           {suggestions.map((s, i) => (
             <div key={i} className="rounded-lg border border-border bg-background/70 p-2.5 transition-colors hover:border-primary/40">
               <p className="text-xs leading-relaxed whitespace-pre-wrap text-foreground">{s}</p>
               <div className="mt-1.5 flex justify-end">
-                <Button variant="ghost" size="sm" className="h-6 gap-1 px-2 text-[11px] text-primary hover:bg-primary/10" onClick={() => onUseSuggestion(s)}>
+                <Button variant="ghost" size="sm" className="h-6 gap-1 px-2 text-label text-primary hover:bg-primary/10" onClick={() => onUseSuggestion(s)}>
                   <Zap className="size-3" /> {t("inbox.useSuggestion")}
                 </Button>
               </div>
             </div>
           ))}
-          {suggestError && <p className="text-[11px] leading-relaxed text-danger">{suggestError}</p>}
+          {suggestError && <p className="text-label leading-relaxed text-danger">{suggestError}</p>}
           {suggestions.length === 0 && !suggestLoading && !suggestError && (
-            <p className="text-[11px] leading-relaxed text-muted-foreground">{t("inbox.suggestEmpty")}</p>
+            <p className="text-label leading-relaxed text-muted-foreground">{t("inbox.suggestEmpty")}</p>
           )}
         </section>
 
         {/* Customer 360 (read-only) */}
         <section className="pt-4 mt-4 border-t border-border/70 space-y-2">
-          <p className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+          <p className="flex items-center gap-1.5 text-label font-semibold uppercase tracking-[0.12em] text-muted-foreground">
             <UserCircle2 className="size-3" /> {t("inbox.panelCustomer")}
           </p>
           {!item.platform_user_id ? (
-            <p className="text-[11px] text-muted-foreground">{t("inbox.customerEmpty")}</p>
+            <p className="text-label text-muted-foreground">{t("inbox.customerEmpty")}</p>
           ) : profiles === undefined ? (
             <div className="flex items-center gap-2 text-xs text-muted-foreground py-2">
               <Loader2 className="size-3.5 animate-spin" /> {t("inbox.summaryLoading")}
             </div>
           ) : !profile ? (
-            <p className="text-[11px] text-muted-foreground">{t("inbox.customerEmpty")}</p>
+            <p className="text-label text-muted-foreground">{t("inbox.customerEmpty")}</p>
           ) : (
             <div className="space-y-3">
               <div className="flex items-center gap-2.5 rounded-lg border border-border bg-background/70 p-2.5">
@@ -2631,34 +2723,34 @@ function AiSidePanel({ item, lastUserMessageId, summaryData, summaryLoading, onR
                 </Avatar>
                 <div className="min-w-0">
                   <p className="truncate text-sm font-semibold text-foreground">{c360?.profile?.display_name || profile.display_name}</p>
-                  <p className="truncate text-[11px] text-muted-foreground">{PLATFORM_LABELS[profile.platform] || profile.platform} · {profile.platform_user_id}</p>
+                  <p className="truncate text-label text-muted-foreground">{PLATFORM_LABELS[profile.platform] || profile.platform} · {profile.platform_user_id}</p>
                 </div>
               </div>
 
               {((item.sentiment && item.sentiment !== "neutral") || item.intent) && (
                 <div className="flex flex-wrap gap-1">
                   {item.sentiment === "negative" && (
-                    <Badge variant="destructive" className="h-4 gap-0.5 px-1.5 text-[11px]"><AlertTriangle className="size-2.5" /> {t("inbox.angry")}</Badge>
+                    <Badge variant="destructive" className="h-4 gap-0.5 px-1.5 text-label"><AlertTriangle className="size-2.5" /> {t("inbox.angry")}</Badge>
                   )}
                   {item.sentiment === "positive" && (
-                    <Badge variant="success" className="h-4 px-1.5 text-[11px]">😊</Badge>
+                    <Badge variant="success" className="h-4 px-1.5 text-label">😊</Badge>
                   )}
-                  {item.intent && <Badge variant="outline" className="h-4 px-1.5 text-[11px]">{item.intent}</Badge>}
+                  {item.intent && <Badge variant="outline" className="h-4 px-1.5 text-label">{item.intent}</Badge>}
                 </div>
               )}
 
               {(c360?.profile?.phone || c360?.profile?.email) && (
                 <div className="space-y-1 rounded-lg border border-border bg-background/70 px-2.5 py-2">
                   {c360?.profile?.phone && (
-                    <p className="flex items-center gap-2 text-[11px] text-muted-foreground"><Phone className="size-3 shrink-0" /><span className="truncate">{c360.profile.phone}</span></p>
+                    <p className="flex items-center gap-2 text-label text-muted-foreground"><Phone className="size-3 shrink-0" /><span className="truncate">{c360.profile.phone}</span></p>
                   )}
                   {c360?.profile?.email && (
-                    <p className="flex items-center gap-2 text-[11px] text-muted-foreground"><Mail className="size-3 shrink-0" /><span className="truncate">{c360.profile.email}</span></p>
+                    <p className="flex items-center gap-2 text-label text-muted-foreground"><Mail className="size-3 shrink-0" /><span className="truncate">{c360.profile.email}</span></p>
                   )}
                 </div>
               )}
 
-              <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-label text-muted-foreground">
                 <span>{tf("inbox.customerStats", { sessions: profile.total_sessions, messages: profile.total_messages })}</span>
                 {c360?.profile?.last_seen_at && (
                   <span>· {t("inbox.customerLastSeen")} {fmtRelTime(c360.profile.last_seen_at, t("inbox.timeNow"))}</span>
@@ -2668,18 +2760,18 @@ function AiSidePanel({ item, lastUserMessageId, summaryData, summaryLoading, onR
               {(c360?.profile?.tags ?? profile.tags ?? []).length > 0 && (
                 <div className="flex flex-wrap gap-1">
                   {(c360?.profile?.tags ?? profile.tags ?? []).map((tag) => (
-                    <Badge key={tag} variant="secondary" className="h-4 px-1.5 text-[11px]">{tag}</Badge>
+                    <Badge key={tag} variant="secondary" className="h-4 px-1.5 text-label">{tag}</Badge>
                   ))}
                 </div>
               )}
 
               {notesEditing ? (
                 <div className="rounded-lg border border-border bg-muted/30 p-2.5">
-                  <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{t("inbox.notesLabel")}</p>
-                  <Textarea value={notesDraft} onChange={(e) => setNotesDraft(e.target.value)} rows={3} className="bg-background text-[11px] resize-none" />
+                  <p className="mb-1 text-label font-semibold uppercase tracking-[0.12em] text-muted-foreground">{t("inbox.notesLabel")}</p>
+                  <Textarea value={notesDraft} onChange={(e) => setNotesDraft(e.target.value)} rows={3} className="bg-background text-label resize-none" />
                   <div className="mt-1.5 flex justify-end gap-1.5">
-                    <Button variant="ghost" size="sm" className="h-6 px-2 text-[11px]" onClick={() => setNotesEditing(false)}>{t("inbox.panelCancel")}</Button>
-                    <Button size="sm" className="h-6 px-2 text-[11px]" disabled={notesSaving} onClick={() => void saveNotes()}>
+                    <Button variant="ghost" size="sm" className="h-6 px-2 text-label" onClick={() => setNotesEditing(false)}>{t("inbox.panelCancel")}</Button>
+                    <Button size="sm" className="h-6 px-2 text-label" disabled={notesSaving} onClick={() => void saveNotes()}>
                       {notesSaving ? <Loader2 className="size-3 animate-spin" /> : t("inbox.notesSave")}
                     </Button>
                   </div>
@@ -2687,27 +2779,27 @@ function AiSidePanel({ item, lastUserMessageId, summaryData, summaryLoading, onR
               ) : c360?.profile?.notes ? (
                 <div className="rounded-lg border border-border bg-muted/30 p-2.5">
                   <div className="mb-1 flex items-center justify-between gap-2">
-                    <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{t("inbox.notesLabel")}</p>
-                    <button type="button" onClick={() => { setNotesDraft(c360.profile?.notes ?? ""); setNotesEditing(true); }} className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground">
+                    <p className="text-label font-semibold uppercase tracking-[0.12em] text-muted-foreground">{t("inbox.notesLabel")}</p>
+                    <button type="button" onClick={() => { setNotesDraft(c360.profile?.notes ?? ""); setNotesEditing(true); }} className="inline-flex items-center gap-1 text-label text-muted-foreground hover:text-foreground">
                       <Pencil className="size-3" /> {t("inbox.notesEdit")}
                     </button>
                   </div>
-                  <p className="whitespace-pre-wrap text-[11px] leading-relaxed text-muted-foreground">{c360.profile.notes}</p>
+                  <p className="whitespace-pre-wrap text-label leading-relaxed text-muted-foreground">{c360.profile.notes}</p>
                 </div>
               ) : (
-                <button type="button" onClick={() => { setNotesDraft(""); setNotesEditing(true); }} className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground">
+                <button type="button" onClick={() => { setNotesDraft(""); setNotesEditing(true); }} className="inline-flex items-center gap-1 text-label text-muted-foreground hover:text-foreground">
                   <Pencil className="size-3" /> {t("inbox.notesAdd")}
                 </button>
               )}
 
               {(c360?.sessions?.length ?? 0) > 0 && (
                 <div>
-                  <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{t("inbox.customerSessions")}</p>
+                  <p className="mb-1.5 text-label font-semibold uppercase tracking-[0.12em] text-muted-foreground">{t("inbox.customerSessions")}</p>
                   <div className="space-y-1">
                     {c360!.sessions.slice(0, 5).map((s) => (
                       <div key={s.session_id} className="flex items-center justify-between gap-2 rounded-lg border border-border bg-background/70 px-2.5 py-1.5 transition-colors hover:border-primary/30">
-                        <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">{s.title || s.session_id.slice(0, 8)}</span>
-                        <span className="text-[10px] tabular-nums text-muted-foreground">{fmtRelTime(s.created_at, t("inbox.timeNow"))}</span>
+                        <span className="min-w-0 flex-1 truncate text-label text-muted-foreground">{s.title || s.session_id.slice(0, 8)}</span>
+                        <span className="text-label tabular-nums text-muted-foreground">{fmtRelTime(s.created_at, t("inbox.timeNow"))}</span>
                       </div>
                     ))}
                   </div>

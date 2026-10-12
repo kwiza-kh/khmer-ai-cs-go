@@ -80,7 +80,7 @@ export function AnalyticsPanel({ days = 30 }: { days?: number }) {
           against the period's start. */}
       {trendCards.length > 0 && (
         <div className="space-y-2">
-          <p className="px-0.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/70">
+          <p className="px-0.5 text-label font-semibold uppercase tracking-[0.12em] text-muted-foreground">
             {tf("an.trend", { days })}
           </p>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
@@ -94,10 +94,10 @@ export function AnalyticsPanel({ days = 30 }: { days?: number }) {
       <Card>
         <CardHeader className="pb-2">
           <div className="flex items-center justify-between gap-3">
-            <CardTitle className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+            <CardTitle className="text-label font-semibold uppercase tracking-[0.12em] text-muted-foreground">
               {t("an.dailySessions")}
             </CardTitle>
-            <span className="text-[12px] tabular-nums text-muted-foreground">
+            <span className="text-caption tabular-nums text-muted-foreground">
               {fmtInt(totalSessions)} · {t("an.inPeriod")}
             </span>
           </div>
@@ -112,13 +112,13 @@ export function AnalyticsPanel({ days = 30 }: { days?: number }) {
                   <CartesianGrid vertical={false} stroke="var(--color-border)" strokeDasharray="3 3" />
                   <XAxis
                     dataKey="date"
-                    tick={{ fontSize: 10 }}
+                    tick={{ fontSize: 11 }}
                     angle={-45}
                     textAnchor="end"
                     height={54}
                     stroke="var(--color-muted-foreground)"
                   />
-                  <YAxis tick={{ fontSize: 10 }} stroke="var(--color-muted-foreground)" allowDecimals={false} />
+                  <YAxis tick={{ fontSize: 11 }} stroke="var(--color-muted-foreground)" allowDecimals={false} />
                   <Tooltip
                     cursor={{ fill: "var(--color-muted)", opacity: 0.5 }}
                     contentStyle={{
@@ -275,17 +275,17 @@ function TrendCard({ card }: { card: TrendCardData }) {
   return (
     <Card>
       <CardContent className="flex flex-col gap-2 p-4">
-        <p className="truncate text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+        <p className="truncate text-label font-medium uppercase tracking-[0.12em] text-muted-foreground">
           {label}
         </p>
         <div className="flex flex-wrap items-baseline gap-2">
-          <p className="text-[27px] font-semibold leading-none tracking-[-0.02em] tabular-nums">
+          <p className="text-display font-semibold leading-none tracking-[-0.02em] tabular-nums">
             {format(headline)}
           </p>
           {delta != null && Number.isFinite(delta) && (
             <span
               className={cn(
-                "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] font-semibold tabular-nums",
+                "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-label font-semibold tabular-nums",
                 good ? "bg-success/10 text-success" : "bg-danger/10 text-danger",
               )}
             >
@@ -320,7 +320,7 @@ function TrendCard({ card }: { card: TrendCardData }) {
             </LineChart>
           </ResponsiveContainer>
         </div>
-        <p className="truncate text-[12px] leading-none text-muted-foreground">{caption}</p>
+        <p className="truncate text-caption leading-none text-muted-foreground">{caption}</p>
       </CardContent>
     </Card>
   );

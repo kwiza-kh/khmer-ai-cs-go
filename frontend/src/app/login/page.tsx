@@ -120,14 +120,14 @@ export default function LoginPage() {
     <section className="fixed inset-0 overflow-y-auto bg-background text-foreground">
       {/* Header */}
       <header className="absolute inset-x-0 top-0 z-10 flex items-center justify-between border-b border-border px-6 py-4">
-        <span className="text-xs uppercase tracking-[0.14em] text-muted-foreground">RelayChat</span>
+        <span className="text-xs uppercase tracking-[0.12em] text-muted-foreground">RelayChat</span>
         <div className="flex items-center gap-1 rounded-lg border border-border bg-card p-0.5">
           {LANGS.map((opt) => (
             <button
               key={opt.key}
               onClick={() => setLang(opt.key)}
               className={cn(
-                "rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors",
+                "rounded-md px-2.5 py-1 text-label font-medium transition-colors",
                 lang === opt.key ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground",
               )}
             >
@@ -160,7 +160,7 @@ export default function LoginPage() {
                   type="button"
                   onClick={() => { setError(""); setTab(key); }}
                   className={cn(
-                    "h-8 rounded-md text-[13px] font-medium transition-colors",
+                    "h-8 rounded-md text-body-sm font-medium transition-colors",
                     tab === key ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
                   )}
                 >
@@ -278,7 +278,7 @@ export default function LoginPage() {
 
                   <div className="relative">
                     <Separator />
-                    <span className="absolute left-1/2 -top-3 -translate-x-1/2 bg-card px-2 text-[11px] uppercase tracking-widest text-muted-foreground/70">
+                    <span className="absolute left-1/2 -top-3 -translate-x-1/2 bg-card px-2 text-label uppercase tracking-[0.12em] text-muted-foreground">
                       {t("login.or")}
                     </span>
                   </div>
@@ -362,7 +362,7 @@ export default function LoginPage() {
 
                   <div className="relative">
                     <Separator />
-                    <span className="absolute left-1/2 -top-3 -translate-x-1/2 bg-card px-2 text-[11px] uppercase tracking-widest text-muted-foreground/70">
+                    <span className="absolute left-1/2 -top-3 -translate-x-1/2 bg-card px-2 text-label uppercase tracking-[0.12em] text-muted-foreground">
                       {t("login.or")}
                     </span>
                   </div>
@@ -392,7 +392,7 @@ export default function LoginPage() {
                 {tab === "login" ? t("login.registerTab") : t("login.tab")}
               </button>
             </div>
-            <span className="text-[11px] tracking-wide text-muted-foreground/70">{t("login.footer")}</span>
+            <span className="text-label tracking-wide text-muted-foreground">{t("login.footer")}</span>
           </CardFooter>
         </Card>
       </div>

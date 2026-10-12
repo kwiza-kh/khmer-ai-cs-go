@@ -173,14 +173,14 @@ export default function HandoffRequestsPage() {
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-2">
                           <p className="truncate text-sm font-semibold text-foreground">{customerName(request)}</p>
-                          <Badge variant={request.status === "resolved" ? "success" : request.status === "assigned" ? "info" : "warning"} className="h-5 px-1.5 text-[10px]">
+                          <Badge variant={request.status === "resolved" ? "success" : request.status === "assigned" ? "info" : "warning"} className="h-5 px-1.5 text-label">
                             {t(STATUS_KEYS[request.status])}
                           </Badge>
-                          {request.priority === "high" && <Badge variant="destructive" className="h-5 gap-1 px-1.5 text-[10px]"><CircleAlert className="size-3" /> {t("handoff.highPriority")}</Badge>}
+                          {request.priority === "high" && <Badge variant="destructive" className="h-5 gap-1 px-1.5 text-label"><CircleAlert className="size-3" /> {t("handoff.highPriority")}</Badge>}
                         </div>
                         <p className="mt-1.5 text-sm leading-6 text-foreground">{request.reason}</p>
                         {request.last_message && <p className="mt-1.5 line-clamp-1 text-xs text-muted-foreground">{tf("handoff.latest", { msg: request.last_message })}</p>}
-                        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
+                        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-label text-muted-foreground">
                           <span className="inline-flex items-center gap-1"><Clock3 className="size-3" /> {fmtDateTime(request.created_at)}</span>
                           <span>{t(TRIGGER_KEYS[request.trigger])}</span>
                           {request.platform && <span className="capitalize">{request.platform === "meta" ? "Messenger" : request.platform}</span>}

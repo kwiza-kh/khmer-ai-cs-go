@@ -83,7 +83,7 @@ export default function WidgetAdminPage() {
         }
       />
       <div className="flex-1 overflow-auto p-5 sm:p-8">
-        <div className="max-w-3xl mx-auto space-y-5">
+        <div className="mx-auto max-w-3xl space-y-5">
           <p className="text-xs text-muted-foreground">{t("widget.notice")}</p>
 
           {showForm && (
@@ -100,7 +100,7 @@ export default function WidgetAdminPage() {
                     <Input value={origins} onChange={(e) => setOrigins(e.target.value)} placeholder="https://shop.example.com" className="mt-1 h-9 text-sm" />
                   </div>
                 </div>
-                <p className="text-[11px] text-muted-foreground">{t("widget.originsHint")}</p>
+                <p className="text-label text-muted-foreground">{t("widget.originsHint")}</p>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <Label className="text-xs text-muted-foreground">{t("widget.colorLabel")}</Label>
@@ -126,7 +126,7 @@ export default function WidgetAdminPage() {
                     />
                   </div>
                 </div>
-                <p className="text-[11px] text-muted-foreground">{t("widget.questionsHint")}</p>
+                <p className="text-label text-muted-foreground">{t("widget.questionsHint")}</p>
                 <Button onClick={create} disabled={busy} className="h-8 text-xs gap-1.5">
                   {busy ? <Loader2 className="size-3 animate-spin" /> : <Plus className="size-3" />}{t("widget.create")}
                 </Button>
@@ -151,45 +151,45 @@ export default function WidgetAdminPage() {
                   <div className="flex items-center justify-between gap-3">
                     <div className="flex items-center gap-2">
                       <p className="text-sm font-medium">{tk.name}</p>
-                      <Badge variant="success" className="h-4 text-[11px]">{t("widget.active")}</Badge>
+                      <Badge variant="success" className="h-4 text-label">{t("widget.active")}</Badge>
                     </div>
                     <Button size="sm" variant="ghost" className="h-7 text-xs gap-1 text-danger" onClick={() => void remove(tk.token_id)}>
                       <Trash2 className="size-3" />{t("widget.delete")}
                     </Button>
                   </div>
                   <div>
-                    <p className="text-[11px] text-muted-foreground mb-1">{t("widget.tokenLabel")}</p>
+                    <p className="text-label text-muted-foreground mb-1">{t("widget.tokenLabel")}</p>
                     <div className="flex items-center gap-2">
                       <code className="flex-1 rounded bg-muted px-2 py-1 text-xs break-all">{tk.token}</code>
                       <Button size="icon-sm" variant="outline" onClick={() => copy(tk.token)} title={t("widget.copy")}><Copy className="size-3" /></Button>
                     </div>
                   </div>
                   <div>
-                    <p className="text-[11px] text-muted-foreground mb-1 flex items-center gap-1"><Code2 className="size-3" />{t("widget.embedLabel")}</p>
+                    <p className="text-label text-muted-foreground mb-1 flex items-center gap-1"><Code2 className="size-3" />{t("widget.embedLabel")}</p>
                     <div className="flex items-start gap-2">
-                      <pre className="flex-1 overflow-x-auto rounded bg-muted px-2 py-1.5 text-[10px] leading-relaxed text-muted-foreground">{embedSnippet(tk.token)}</pre>
+                      <pre className="flex-1 overflow-x-auto rounded bg-muted px-2 py-1.5 text-label leading-relaxed text-muted-foreground">{embedSnippet(tk.token)}</pre>
                       <Button size="icon-sm" variant="outline" onClick={() => copy(embedSnippet(tk.token))} title={t("widget.copy")}><Copy className="size-3" /></Button>
                     </div>
                   </div>
                   <div className="flex flex-wrap items-center gap-1.5">
-                    <span className="inline-flex items-center gap-1.5 rounded-full border border-border/70 px-2 py-0.5 text-[10px] text-muted-foreground">
+                    <span className="inline-flex items-center gap-1.5 rounded-full border border-border/70 px-2 py-0.5 text-label text-muted-foreground">
                       <span className="size-2 rounded-full" style={{ background: tk.primary_color }} />
                       {tk.primary_color}
                     </span>
-                    <span className="rounded-full border border-border/70 px-2 py-0.5 text-[10px] text-muted-foreground">{tk.theme}</span>
+                    <span className="rounded-full border border-border/70 px-2 py-0.5 text-label text-muted-foreground">{tk.theme}</span>
                     {(tk.suggested_questions ?? []).length > 0 && (
-                      <span className="rounded-full border border-border/70 px-2 py-0.5 text-[10px] text-muted-foreground">
+                      <span className="rounded-full border border-border/70 px-2 py-0.5 text-label text-muted-foreground">
                         {tf("widget.questionsCount", { n: tk.suggested_questions.length })}
                       </span>
                     )}
                     {(tk.allowed_origins ?? []).length > 0 && (
-                      <span className="rounded-full border border-border/70 px-2 py-0.5 text-[10px] text-muted-foreground">
+                      <span className="rounded-full border border-border/70 px-2 py-0.5 text-label text-muted-foreground">
                         {tf("widget.originsCount", { n: tk.allowed_origins.length })}
                       </span>
                     )}
                   </div>
                   {tk.allowed_origins && tk.allowed_origins.length > 0 && (
-                    <p className="text-[11px] text-muted-foreground">{tf("widget.allowedFor", { origins: tk.allowed_origins.join(", ") })}</p>
+                    <p className="text-label text-muted-foreground">{tf("widget.allowedFor", { origins: tk.allowed_origins.join(", ") })}</p>
                   )}
                 </CardContent>
               </Card>

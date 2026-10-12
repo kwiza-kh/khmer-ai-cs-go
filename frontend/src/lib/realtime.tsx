@@ -57,14 +57,18 @@ const KNOWN_EVENTS = new Set(["inbox.message", "inbox.session", "inbox.notificat
  * subscribers refetch once, immediately, instead of waiting out the fallback
  * poll.
  *
- * Reconnects are BOUNDED. The browser tells a page nothing about why a WebSocket
- * handshake failed, so a rejected token looks exactly like a network blip — and
- * production showed what unlimited retries cost: one client reconnecting every
- * ~30s for hours, 214 of 240 handshakes answered 401. After quickRetryLimit tries
- * the provider gives up and stays disconnected, which tightens the fallback polls
- * to their fast cadence; a reload or a fresh session starts a new budget.
+ * Reconnects never give up. The browser tells a page nothing about why a
+ * WebSocket handshake failed, so a rejected token looks exactly like a network
+ * blip — and production showed what FAST unlimited retries cost: one client
+ * reconnecting every ~30s for hours, 214 of 240 handshakes answered 401. The
+ * cadence is therefore budgeted rather than the attempts: quickRetryLimit fast
+ * tries (exponential, capped at 60s), then one slow retry every slowRetryDelay
+ * until the socket recovers. The fallback polls tighten to their fast cadence
+ * while disconnected, and returning to the tab grants a fresh fast budget —
+ * desktop-class UI reconnects by itself overnight, it never waits for a reload.
  */
 const quickRetryLimit = 6
+const slowRetryDelay = 120_000
 export function RealtimeProvider({ token, children }: { token: string | null; children: React.ReactNode }) {
   const [connected, setConnected] = React.useState(false);
   const listeners = React.useRef(new Set<RealtimeListener>());
@@ -114,9 +118,11 @@ export function RealtimeProvider({ token, children }: { token: string | null; ch
         if (stopped) return;
         reconnectAttempts += 1;
         if (reconnectAttempts > quickRetryLimit) {
-          // Given up: the polls carry the UI from here (they tighten to their
-          // fast cadence while disconnected), and a reload or a new session
-          // starts a fresh budget.
+          // Fast budget spent — keep trying on a slow cadence instead of
+          // giving up for the rest of the page's life (desktop-class UI must
+          // reconnect by itself; a reload is not a recovery strategy). The
+          // poll nets stay on their fast cadence meanwhile.
+          reconnectTimer = setTimeout(connect, slowRetryDelay);
           return;
         }
         const delay = Math.min(1000 * 2 ** (reconnectAttempts - 1), 60_000);
@@ -124,9 +130,23 @@ export function RealtimeProvider({ token, children }: { token: string | null; ch
       };
     };
 
+    // Returning to a hidden tab is a user gesture — grant a fresh fast budget
+    // and attempt immediately instead of waiting out the slow retry timer
+    // (browsers throttle timers while hidden, so the tab can come back long
+    // after the last attempt).
+    const onVisible = () => {
+      if (stopped || document.visibilityState !== "visible") return;
+      if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
+      reconnectAttempts = 0;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      connect();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+
     connect();
     return () => {
       stopped = true;
+      document.removeEventListener("visibilitychange", onVisible);
       if (reconnectTimer) clearTimeout(reconnectTimer);
       socket?.close();
     };

@@ -49,11 +49,14 @@ interface FileGroup {
 const UNCATEGORIZED_KEY = "\u0000uncategorized";
 
 const FILE_GROUPS: FileGroup[] = [
-  { kind: "txt", labelKey: "kb.groupTxt", extension: "TXT", icon: FileText, iconClass: "bg-sky-500/10 text-sky-600 dark:text-sky-400" },
-  { kind: "md", labelKey: "kb.groupMd", extension: "MD", icon: FileCode2, iconClass: "bg-violet-500/10 text-violet-600 dark:text-violet-400" },
-  { kind: "csv", labelKey: "kb.groupCsv", extension: "CSV", icon: FileSpreadsheet, iconClass: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" },
-  { kind: "docx", labelKey: "kb.groupDocx", extension: "DOCX", icon: FileType2, iconClass: "bg-blue-500/10 text-blue-600 dark:text-blue-400" },
-  { kind: "pdf", labelKey: "kb.groupPdf", extension: "PDF", icon: FileText, iconClass: "bg-rose-500/10 text-rose-600 dark:text-rose-400" },
+  // File-type colours come from the semantic tokens (info/brand/success/
+  // warning/danger) so they follow the theme on their own — the old
+  // hand-written `dark:` pairs were a second palette to keep in sync.
+  { kind: "txt", labelKey: "kb.groupTxt", extension: "TXT", icon: FileText, iconClass: "bg-info/10 text-info" },
+  { kind: "md", labelKey: "kb.groupMd", extension: "MD", icon: FileCode2, iconClass: "bg-brand/10 text-brand" },
+  { kind: "csv", labelKey: "kb.groupCsv", extension: "CSV", icon: FileSpreadsheet, iconClass: "bg-success/10 text-success" },
+  { kind: "docx", labelKey: "kb.groupDocx", extension: "DOCX", icon: FileType2, iconClass: "bg-warning/10 text-warning" },
+  { kind: "pdf", labelKey: "kb.groupPdf", extension: "PDF", icon: FileText, iconClass: "bg-danger/10 text-danger" },
   { kind: "other", labelKey: "kb.groupOther", icon: File, iconClass: "bg-muted text-muted-foreground" },
 ];
 
@@ -473,14 +476,14 @@ export default function KnowledgePage() {
 
           {sources.length > 0 && !searching && (
             <section className="space-y-2">
-              <p className="text-xs font-bold uppercase tracking-[0.1em] text-muted-foreground">{tf("kb.sources", { n: sources.length })}</p>
+              <p className="text-xs font-bold uppercase tracking-[0.12em] text-muted-foreground">{tf("kb.sources", { n: sources.length })}</p>
               <div className="grid gap-2 md:grid-cols-2">
                 {sources.map((source, index) => (
                   <Card key={`${source.title}-${index}`}>
                     <CardContent className="p-3">
                       <div className="mb-1 flex items-center justify-between gap-2">
                         <p className="truncate text-xs font-medium">{source.title}</p>
-                        <Badge variant="secondary" className="h-4 px-1.5 text-[11px]">{((source.score ?? 0) * 100).toFixed(0)}%</Badge>
+                        <Badge variant="secondary" className="h-4 px-1.5 text-label">{((source.score ?? 0) * 100).toFixed(0)}%</Badge>
                       </div>
                       <p className="line-clamp-2 text-xs leading-5 text-muted-foreground">{source.content}</p>
                     </CardContent>
@@ -504,7 +507,7 @@ export default function KnowledgePage() {
                   <CardHeader className="border-b border-border pb-2">
                     <CardTitle className="flex items-center gap-2 text-sm">
                       <GitCompareArrows className="size-3.5 text-warning" />{t("kb.contradictionTitle")}
-                      <Badge variant="warning" className="h-4 px-1.5 text-[11px]">{contradictions.length}</Badge>
+                      <Badge variant="warning" className="h-4 px-1.5 text-label">{contradictions.length}</Badge>
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-2 pt-4">
@@ -513,13 +516,13 @@ export default function KnowledgePage() {
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <p className="min-w-0 truncate text-xs font-semibold">{c.new_title}</p>
                           <div className="flex shrink-0 items-center gap-1.5">
-                            <Button variant="outline" size="sm" className="h-6 gap-1 px-2 text-[11px]"
+                            <Button variant="outline" size="sm" className="h-6 gap-1 px-2 text-label"
                               onClick={() => void handleContradiction(c.id, "resolve")}
                               disabled={workingContradictionId === c.id}>
                               {workingContradictionId === c.id ? <Loader2 className="size-3 animate-spin" /> : <Check className="size-3" />}
                               {t("kb.contradictionResolve")}
                             </Button>
-                            <Button variant="ghost" size="sm" className="h-6 gap-1 px-2 text-[11px] text-muted-foreground"
+                            <Button variant="ghost" size="sm" className="h-6 gap-1 px-2 text-label text-muted-foreground"
                               onClick={() => void handleContradiction(c.id, "dismiss")}
                               disabled={workingContradictionId === c.id}>
                               <X className="size-3" />{t("kb.contradictionDismiss")}
@@ -529,12 +532,12 @@ export default function KnowledgePage() {
                         <div className="mt-2 space-y-1.5">
                           {c.items.map((item, i) => (
                             <div key={i} className="grid gap-1.5 sm:grid-cols-2">
-                              <p className="rounded border border-border/60 bg-background/60 px-2 py-1 text-[11px] leading-relaxed">
+                              <p className="rounded border border-border/60 bg-background/60 px-2 py-1 text-label leading-relaxed">
                                 <span className="font-medium text-success">{t("kb.contradictionNew")}：</span>{item.new_claim}
                               </p>
-                              <p className="rounded border border-border/60 bg-background/60 px-2 py-1 text-[11px] leading-relaxed">
+                              <p className="rounded border border-border/60 bg-background/60 px-2 py-1 text-label leading-relaxed">
                                 <span className="font-medium text-muted-foreground">{t("kb.contradictionOld")}：</span>{item.old_claim}
-                                {item.old_doc_title && <span className="block text-[10px] text-muted-foreground">{item.old_doc_title}</span>}
+                                {item.old_doc_title && <span className="block text-label text-muted-foreground">{item.old_doc_title}</span>}
                               </p>
                             </div>
                           ))}
@@ -560,7 +563,7 @@ export default function KnowledgePage() {
                       .map((q) => (
                         <div key={q.doc_id} className="flex items-center justify-between gap-2 rounded-lg border border-border/60 px-3 py-1.5">
                           <p className="min-w-0 truncate text-xs font-medium">{q.title}</p>
-                          <div className="flex shrink-0 items-center gap-2 text-[11px] text-muted-foreground">
+                          <div className="flex shrink-0 items-center gap-2 text-label text-muted-foreground">
                             <span>{tf("kb.qualityUses", { n: q.uses })}</span>
                             <span className="text-success">👍{q.thumbs_up}</span>
                             <span className={q.thumbs_down > 0 ? "font-medium text-danger" : ""}>👎{q.thumbs_down}</span>
@@ -585,11 +588,11 @@ export default function KnowledgePage() {
                       <div key={gap.query} className="flex items-center justify-between gap-2 rounded-lg border border-border/60 px-3 py-1.5">
                         <p className="min-w-0 truncate text-xs">{gap.query}</p>
                         <div className="flex shrink-0 items-center gap-2">
-                          <Badge variant="secondary" className="h-4 px-1.5 text-[11px]">{tf("kb.qualityUses", { n: gap.hits })}</Badge>
+                          <Badge variant="secondary" className="h-4 px-1.5 text-label">{tf("kb.qualityUses", { n: gap.hits })}</Badge>
                           <Button
                             variant="outline"
                             size="sm"
-                            className="h-6 gap-1 px-2 text-[11px]"
+                            className="h-6 gap-1 px-2 text-label"
                             onClick={() => { void handleDraft(gap.query); }}
                             disabled={drafting !== null}
                           >
@@ -608,7 +611,7 @@ export default function KnowledgePage() {
           <section className="space-y-4 pt-2">
             <div className="flex items-end justify-between gap-3">
               <div>
-                <p className="text-xs font-bold uppercase tracking-[0.1em] text-muted-foreground">{t("kb.savedKnowledge")}</p>
+                <p className="text-xs font-bold uppercase tracking-[0.12em] text-muted-foreground">{t("kb.savedKnowledge")}</p>
                 <h2 className="mt-1 text-lg font-semibold tracking-tight">{t("kb.docLibrary")}</h2>
               </div>
               <div className="flex items-center gap-2">
@@ -616,7 +619,7 @@ export default function KnowledgePage() {
                   <button
                     type="button"
                     onClick={() => router.replace("/knowledge")}
-                    className="flex items-center gap-1.5 rounded-full border border-border/70 bg-muted/40 px-2.5 py-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+                    className="flex items-center gap-1.5 rounded-full border border-border/70 bg-muted/40 px-2.5 py-1 text-label text-muted-foreground transition-colors hover:text-foreground"
                   >
                     {tf("kb.filterActive", { q: urlQuery })}
                     <X className="size-3" />
@@ -683,25 +686,25 @@ export default function KnowledgePage() {
                                   <div className={cn("flex size-9 shrink-0 items-center justify-center rounded-lg", metadata.iconClass)}>
                                     <DocumentIcon className="size-4" />
                                   </div>
-                                  {metadata.extension && <Badge variant="outline" className="h-5 px-1.5 font-mono text-[10px]">{metadata.extension}</Badge>}
+                                  {metadata.extension && <Badge variant="outline" className="h-5 px-1.5 font-mono text-label">{metadata.extension}</Badge>}
                                 </div>
                                 <p className="line-clamp-2 min-h-10 text-sm font-semibold leading-5">{doc.title}</p>
                                 {doc.origin === "compiled" && doc.compiled_from_title && (
-                                  <p className="mt-0.5 truncate text-[10px] text-muted-foreground">{tf("kb.compiledFrom", { title: doc.compiled_from_title })}</p>
+                                  <p className="mt-0.5 truncate text-label text-muted-foreground">{tf("kb.compiledFrom", { title: doc.compiled_from_title })}</p>
                                 )}
                                 <p className="mt-2 text-xs text-muted-foreground">{tf("kb.created", { date: formatDate(doc.created_at, t("kb.dateUnavailable")) })}</p>
                                 <div className="mt-3 flex flex-wrap items-center gap-1.5">
                                   <IndexStatusBadge status={doc.index_status} />
                                   {doc.origin === "compiled" && (
-                                    <Badge variant="info" className="h-4 gap-1 px-1.5 text-[11px]">
+                                    <Badge variant="info" className="h-4 gap-1 px-1.5 text-label">
                                       <Wand2 className="size-2.5" />{t("kb.compiledBadge")}
                                     </Badge>
                                   )}
                                   {doc.compile_status === "failed" && (
-                                    <Badge variant="secondary" className="h-4 px-1.5 text-[11px]">{t("kb.compileFailed")}</Badge>
+                                    <Badge variant="secondary" className="h-4 px-1.5 text-label">{t("kb.compileFailed")}</Badge>
                                   )}
-                                  {doc.category && <Badge variant="secondary" className="h-4 px-1.5 text-[11px]">{doc.category}</Badge>}
-                                  <span className="text-[11px] text-muted-foreground">{tf("kb.chunks", { n: doc.chunk_count })}</span>
+                                  {doc.category && <Badge variant="secondary" className="h-4 px-1.5 text-label">{doc.category}</Badge>}
+                                  <span className="text-label text-muted-foreground">{tf("kb.chunks", { n: doc.chunk_count })}</span>
                                 </div>
                               </button>
                               <button
@@ -718,7 +721,7 @@ export default function KnowledgePage() {
                                 <Button
                                   variant="outline"
                                   size="sm"
-                                  className="absolute bottom-3 right-3 h-6 px-2 text-[11px]"
+                                  className="absolute bottom-3 right-3 h-6 px-2 text-label"
                                   onClick={() => { void handleRetry(doc.doc_id); }}
                                   disabled={retryingDocId === doc.doc_id}
                                 >
@@ -761,7 +764,7 @@ export default function KnowledgePage() {
                                       className="min-w-0 flex-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                                     >
                                       <p className="truncate text-xs font-medium">{doc.title}</p>
-                                      <p className="truncate text-[10px] text-muted-foreground">
+                                      <p className="truncate text-label text-muted-foreground">
                                         {doc.compiled_from_title ? tf("kb.compiledFrom", { title: doc.compiled_from_title }) : ""}
                                         {doc.compiled_from_title ? " · " : ""}
                                         {tf("kb.chunks", { n: doc.chunk_count })}
@@ -816,7 +819,7 @@ export default function KnowledgePage() {
             ) : previewDoc ? (
               <div className="space-y-4">
                 <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                  {previewGroup.extension && <Badge variant="outline" className="h-5 px-1.5 font-mono text-[10px]">{previewGroup.extension}</Badge>}
+                  {previewGroup.extension && <Badge variant="outline" className="h-5 px-1.5 font-mono text-label">{previewGroup.extension}</Badge>}
                   <span>{tf("kb.created", { date: formatDate(previewDoc.created_at, t("kb.dateUnavailable")) })}</span>
                   <span>{tf("kb.chunks", { n: previewDoc.chunk_count })}</span>
                   <IndexStatusBadge status={previewDoc.index_status} />
@@ -901,5 +904,5 @@ function IndexStatusBadge({ status }: { status: KnowledgeDocument["index_status"
     failed: ["kb.statusFailed", "destructive"],
   };
   const [labelKey, variant] = labels[status] ?? ["kb.statusUnknown", "secondary"];
-  return <Badge variant={variant} className="h-4 px-1.5 text-[11px]">{t(labelKey)}</Badge>;
+  return <Badge variant={variant} className="h-4 px-1.5 text-label">{t(labelKey)}</Badge>;
 }

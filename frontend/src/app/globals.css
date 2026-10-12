@@ -12,7 +12,7 @@
    Brand hue ≈ 270 (violet-indigo from logo gradient #8b5cf6→#4f46e5). */
 :root {
   /* Larger base radius: the reference dashboard language is generous rounding
-     (cards ~16px, pills full) — see docs/DEVELOPMENT.md 前端样式审查. */
+     (cards ≈ 22px via rounded-2xl, pills full) — see docs/DEVELOPMENT.md 前端样式审查. */
   --radius: 0.75rem;
   /* Canvas is a warm near-white; cards stay pure white so the app reads as a
      white frame floating on a faint gray page (the shell adds the frame). */
@@ -27,7 +27,9 @@
   --secondary: oklch(0.97 0.005 270);
   --secondary-foreground: oklch(0.22 0.02 270);
   --muted: oklch(0.968 0.002 106);
-  --muted-foreground: oklch(0.556 0 0);
+  /* 0.545 而非 0.556: 在暖灰画布(oklch .977)上 0.556 只有 4.42:1, 略低于
+     AA 4.5; 压深一档后所有 text-muted-foreground 说明文字回到 ~4.7:1. */
+  --muted-foreground: oklch(0.545 0 0);
   --accent: oklch(0.965 0.01 270);
   --accent-foreground: oklch(0.22 0.02 270);
   --destructive: oklch(0.577 0.245 27.325);
@@ -52,12 +54,14 @@
   --brand: oklch(0.45 0.18 270);
   --brand-foreground: oklch(0.985 0 0);
   --brand-muted: oklch(0.45 0.18 270 / 12%);
-  /* App semantic extensions (status colors used across the product). */
-  --success: oklch(0.55 0.13 155);
+  /* App semantic extensions (status colors used across the product).
+     Text uses these same tokens on a /10–/15 tint, so the light values must
+     clear 4.5:1 on their own tint (2026-10-12 审查: 0.62/0.55/0.6 只有 3.2–3.8). */
+  --success: oklch(0.47 0.12 155);
   --success-foreground: oklch(0.985 0 0);
-  --warning: oklch(0.62 0.16 55);
+  --warning: oklch(0.52 0.13 55);
   --warning-foreground: oklch(0.985 0 0);
-  --info: oklch(0.6 0.14 250);
+  --info: oklch(0.5 0.13 250);
   --info-foreground: oklch(0.985 0 0);
   --danger: oklch(0.55 0.2 27);
   --danger-foreground: oklch(0.985 0 0);
@@ -160,8 +164,9 @@
   --text-body: 0.875rem;      /* 14px — default body */
   --text-subtitle: 0.9375rem; /* 15px — card titles, brand name */
   --text-title: 1.125rem;     /* 18px — page section titles */
-  --text-heading: 1.25rem;    /* 20px — page headers */
-  --text-display: 1.5rem;     /* 24px — hero / login title */
+  --text-heading: 1.25rem;    /* 20px — card/dialog headings */
+  --text-display: 1.5rem;     /* 24px — KPI values, login title */
+  --text-hero: 1.875rem;      /* 30px — the page title in PageHeader */
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -182,6 +187,11 @@
   --color-brand-whatsapp: #25d366;
   --color-brand-line: #06c755;
   --color-brand-zalo: #0068ff;
+
+  /* Code blocks render with highlight.js's github-dark palette in BOTH
+     themes, so the backdrop is a fixed near-black token (matches the
+     stylesheet's own #0d1117) instead of a raw zinc value in the component. */
+  --color-code: #0d1117;
 
   --animate-fade-up: fade-up 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
   --animate-fade-in: fade-in 0.3s ease both;

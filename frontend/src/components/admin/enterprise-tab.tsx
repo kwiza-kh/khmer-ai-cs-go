@@ -36,7 +36,7 @@ const EVENT_OPTIONS = [
 function LabeledField({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label className="flex min-w-0 flex-col gap-1">
-      <span className="truncate text-[11px] font-medium text-muted-foreground">{label}</span>
+      <span className="truncate text-label font-medium text-muted-foreground">{label}</span>
       {children}
     </label>
   );
@@ -246,7 +246,7 @@ function WebhooksPanel() {
         <Input placeholder={t("ent.secretPh")} value={secret} onChange={(e) => setSecret(e.target.value)} className="h-8 text-xs" />
         <div className="flex flex-wrap gap-1.5">
           {EVENT_OPTIONS.map((e) => (
-            <Badge key={e} variant={events.includes(e) ? "info" : "outline"} onClick={() => toggle(e)} className="cursor-pointer text-[10px]">{e}</Badge>
+            <Badge key={e} variant={events.includes(e) ? "info" : "outline"} onClick={() => toggle(e)} className="cursor-pointer text-label">{e}</Badge>
           ))}
         </div>
         <Button size="sm" onClick={submit} className="h-8 gap-1.5 text-xs"><Plus className="size-3" />{t("ent.createSub")}</Button>
@@ -328,7 +328,7 @@ function AnalyticsPanel() {
             {([["Email", status.email], ["Voice/SMS", status.voice], ["SSO", status.sso]] as const).map(([label, s]) => (
               <div key={label} className="rounded-lg border border-border p-3">
                 <p className="text-xs font-medium">{label}</p>
-                <Badge variant={s.configured ? "success" : s.enabled ? "secondary" : "outline"} className="mt-1 text-[10px]">
+                <Badge variant={s.configured ? "success" : s.enabled ? "secondary" : "outline"} className="mt-1 text-label">
                   {s.configured ? t("ent.configured") : s.enabled ? t("ent.enabledPending") : t("ent.notEnabled")}
                 </Badge>
               </div>

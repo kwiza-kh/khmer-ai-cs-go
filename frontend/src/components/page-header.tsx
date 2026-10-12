@@ -36,25 +36,27 @@ export function PageHeader({
       )}
     >
       <div className="flex min-w-0 items-center gap-3">
+        {/* Icon chip radius matches StatCard's chip (rounded-lg): the two
+            header components must read as one family. */}
         {Icon && (
-          <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-muted text-foreground ring-1 ring-foreground/[0.06]">
+          <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted text-foreground ring-1 ring-foreground/[0.06]">
             <Icon className="size-[18px]" />
           </div>
         )}
         <div className="min-w-0">
           {kicker && (
-            <p className="text-muted-foreground text-[11px] leading-none font-semibold uppercase tracking-[0.16em]">
+            <p className="text-muted-foreground text-label leading-none font-semibold uppercase tracking-[0.12em]">
               {kicker}
             </p>
           )}
           <h1 className={cn(
-            "text-[26px] sm:text-[30px] font-semibold tracking-[-0.025em] leading-[1.1] text-foreground truncate",
+            "text-hero font-semibold tracking-[-0.025em] leading-[1.1] text-foreground truncate",
             kicker && "mt-1.5"
           )}>
             {title}
           </h1>
           {description != null && (
-            <p className="mt-1.5 text-[13px] text-muted-foreground truncate">{description}</p>
+            <p className="mt-1.5 text-body-sm text-muted-foreground truncate">{description}</p>
           )}
         </div>
       </div>

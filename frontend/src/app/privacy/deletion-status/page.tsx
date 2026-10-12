@@ -41,8 +41,8 @@ const LABEL: Record<Status, string> = {
 };
 
 const TONE: Record<Status, string> = {
-  completed: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
-  unresolved: "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400",
+  completed: "border-success/40 bg-success/10 text-success",
+  unresolved: "border-warning/40 bg-warning/10 text-warning",
   failed: "border-destructive/40 bg-destructive/10 text-destructive",
   pending: "border-border bg-muted text-muted-foreground",
 };

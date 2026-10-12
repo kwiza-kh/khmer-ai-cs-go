@@ -113,7 +113,7 @@ export default function BillingPage() {
           <div className="flex items-center gap-2 rounded-xl border border-primary/40 bg-primary/5 px-4 py-3 text-sm">
             <Check className="size-4 text-primary" />
             {capture.already ? t("bl.paidAlready") : t("bl.paidToast")}
-            <Badge variant="secondary" className="ml-1 h-5 px-2 text-[11px] uppercase">{capture.current?.plan ?? ""}</Badge>
+            <Badge variant="secondary" className="ml-1 h-5 px-2 text-label uppercase">{capture.current?.plan ?? ""}</Badge>
           </div>
         )}
         {captureError && (
@@ -147,7 +147,7 @@ export default function BillingPage() {
                 { label: t("bl.limitSeats"), used: current?.seats_used, quota: current?.seats_quota },
               ].map((row) => (
                 <div key={row.label}>
-                  <div className="flex justify-between text-[11px]">
+                  <div className="flex justify-between text-label">
                     <span>{row.label}</span>
                     <span className="tabular-nums">
                       {usedText(row.used)} / {limit(row.quota)}
@@ -180,7 +180,7 @@ export default function BillingPage() {
           ))}
         </div>
 
-        <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+        <p className="flex items-center gap-1.5 text-label text-muted-foreground">
           <ShieldCheck className="size-3.5" />
           {data?.checkout_ready ? t("bl.checkoutHint") : t("bl.notConfigured")}
         </p>
@@ -215,15 +215,15 @@ function PlanCard({
       )}
     >
       {recommended && (
-        <Badge className="absolute -top-2.5 left-5 h-5 gap-1 px-2 text-[10px]">
+        <Badge className="absolute -top-2.5 left-5 h-5 gap-1 px-2 text-label">
           <Sparkles className="size-2.5" />
           {t("bl.recommended")}
         </Badge>
       )}
 
       <div className="flex items-center justify-between">
-        <h3 className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">{offer.plan}</h3>
-        {isCurrent && <Badge variant="secondary" className="h-5 px-2 text-[10px]">{t("bl.current")}</Badge>}
+        <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">{offer.plan}</h3>
+        {isCurrent && <Badge variant="secondary" className="h-5 px-2 text-label">{t("bl.current")}</Badge>}
       </div>
 
       <p className="mt-3 flex items-baseline gap-1.5">
@@ -238,7 +238,7 @@ function PlanCard({
             {t("bl.buy")}
           </Button>
         ) : (
-          <p className="rounded-lg bg-muted/40 px-3 py-2.5 text-[11px] leading-5 text-muted-foreground">
+          <p className="rounded-lg bg-muted/40 px-3 py-2.5 text-label leading-5 text-muted-foreground">
             {offer.plan === "free" ? t("bl.freeNote") : t("bl.notForSale")}
           </p>
         )}
@@ -255,7 +255,7 @@ function PlanCard({
       </dl>
 
       <div className="mt-4 flex-1 border-t border-border/70 pt-4">
-        <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">{t("bl.included")}</p>
+        <p className="text-label font-semibold uppercase tracking-[0.12em] text-muted-foreground">{t("bl.included")}</p>
         <ul className="mt-2.5 space-y-2">
           {(offer.included ?? []).map((key) => (
             <li key={key} className="flex items-start gap-2 text-xs leading-5">

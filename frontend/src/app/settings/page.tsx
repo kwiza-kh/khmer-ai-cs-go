@@ -78,6 +78,9 @@ export default function SettingsPage() {
         description={t("settings.description")}
       />
       <div className="flex-1 overflow-auto p-5 sm:p-8">
+        {/* 内容列屏幕居中（mx-auto）是产品要求：所有界面居中显示。
+            ⚠️ 不要以"与页头同轴/对齐"为由去掉 mx-auto —— 2026-10-12 去掉过一版，
+            当即被要求还原；页头保持左对齐是既定现状，不要再动这个容器。 */}
         <div className="mx-auto w-full max-w-3xl space-y-5">
 
           {/* Personal profile */}
@@ -126,7 +129,7 @@ export default function SettingsPage() {
           {/* Tenant settings — every user manages their own schedule + quick replies */}
           <div className="pt-1">
             <p className="text-xs font-medium text-muted-foreground flex items-center gap-1.5 mb-3">
-              <Clock className="size-3.5" /> {t("settings.csSettings")} <span className="text-[10px]">({t("settings.yoursOnly")})</span>
+              <Clock className="size-3.5" /> {t("settings.csSettings")} <span className="text-label">({t("settings.yoursOnly")})</span>
             </p>
             <div className="space-y-5">
               <BusinessHoursCard />
@@ -337,7 +340,7 @@ function TwoFactorCard() {
                     title={t("settings.totpCopyHint")}
                   >{secret}</button>
                 </div>
-                <p className="text-[11px] text-muted-foreground">{t("settings.totpScanOrManual")}</p>
+                <p className="text-label text-muted-foreground">{t("settings.totpScanOrManual")}</p>
               </div>
             </div>
             <div>

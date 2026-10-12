@@ -205,8 +205,8 @@ export function CannedResponsesCard() {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5">
                       <p className="text-xs font-medium truncate">{r.title}</p>
-                      {r.category && <Badge variant="outline" className="h-4 px-1 text-[11px]">{r.category}</Badge>}
-                      <Badge variant="secondary" className="h-4 px-1 text-[11px] uppercase">{r.language}</Badge>
+                      {r.category && <Badge variant="outline" className="h-4 px-1 text-label">{r.category}</Badge>}
+                      <Badge variant="secondary" className="h-4 px-1 text-label uppercase">{r.language}</Badge>
                     </div>
                     <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{r.body}</p>
                   </div>

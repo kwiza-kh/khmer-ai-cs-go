@@ -47,7 +47,7 @@ export function ThemeToggle({ className }: { className?: string }) {
       variant="ghost"
       size="sm"
       onClick={() => setTheme(next)}
-      className={cn("h-8 justify-start gap-2 px-2 text-[13px]", className)}
+      className={cn("h-8 justify-start gap-2 px-2 text-body-sm", className)}
       title={tf("theme.title", { cur: t(LABEL_KEY[current]), next: t(LABEL_KEY[next]) })}
       aria-label={tf("theme.aria", { cur: t(LABEL_KEY[current]) })}
     >

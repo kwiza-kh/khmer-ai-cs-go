@@ -17,6 +17,8 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { useI18n } from "@/lib/i18n";
+import { cn } from "@/lib/utils";
+import { ROLE_PILL } from "@/lib/role-pill";
 
 export function ProfileCard() {
   const { t } = useI18n();
@@ -134,15 +136,17 @@ export function ProfileCard() {
                   {profile.job_title || t("settings.noJobTitle")}
                 </p>
                 <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                  {/* 与用户表共用 ROLE_PILL（2026-10-12 审查: 这里曾单独走
+                      浅蓝 info variant，与用户表的 ink 胶囊不一致）。 */}
                   <Badge
-                    variant={profile.role === "platform_admin" || profile.role === "admin" ? "info" : "secondary"}
-                    className="text-[10px]"
+                    variant="secondary"
+                    className={cn("border-transparent text-label", ROLE_PILL[profile.role] ?? ROLE_PILL.user)}
                   >
                     {profile.role}
                   </Badge>
-                  {profile.has_google && <Badge variant="outline" className="text-[10px]">Google</Badge>}
+                  {profile.has_google && <Badge variant="outline" className="text-label">Google</Badge>}
                   {profile.has_password && (
-                    <Badge variant="outline" className="text-[10px]">{t("settings.passwordLogin")}</Badge>
+                    <Badge variant="outline" className="text-label">{t("settings.passwordLogin")}</Badge>
                   )}
                 </div>
               </div>
@@ -280,7 +284,7 @@ export function ProfileCard() {
                         </Button>
                       )}
                     </div>
-                    <p className="text-[11px] text-muted-foreground">{t("settings.avatarHint")}</p>
+                    <p className="text-label text-muted-foreground">{t("settings.avatarHint")}</p>
                   </div>
                   <input
                     ref={fileRef}

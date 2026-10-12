@@ -349,7 +349,9 @@ function WidgetInner() {
   };
 
   if (!token || !apiBase) {
-    return <div style={{ padding: 16, fontFamily: "system-ui", color: "#666", fontSize: 13 }}>Widget not configured.</div>;
+    // 自包含的兜底样式: 不依赖 app 主题令牌 (访客页可能在任意宿主里), 但固定
+    // 白底深灰字保证两种系统主题下都可读 (#666 在深色宿主里只有 3.5:1)。
+    return <div style={{ padding: 16, fontFamily: "system-ui", color: "#52525b", background: "#fff", fontSize: 13 }}>Widget not configured.</div>;
   }
 
   const title = cfg?.name || s.title;

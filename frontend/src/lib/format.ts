@@ -19,6 +19,18 @@ export function fmtMoney(value: number | null | undefined, digits = 2): string {
   return `$${Number(value ?? 0).toFixed(digits)}`;
 }
 
+/**
+ * USD amount with precision chosen by magnitude: under $1 keeps 4 decimals
+ * (token accounting is sub-cent), $1+ shows 2. Every dollar figure on a page
+ * goes through this so `$0.0042` never sits next to a differently-rounded
+ * sibling (2026-10-12 审查: 平台页同一行两种精度). `fmtMoney` stays for
+ * columns with a deliberate fixed precision (e.g. captured payments, always 2).
+ */
+export function fmtMoneyAuto(value: number | null | undefined): string {
+  const v = Number(value ?? 0);
+  return `$${(Math.abs(v) < 1 ? v.toFixed(4) : v.toFixed(2))}`;
+}
+
 const pad = (n: number) => String(n).padStart(2, "0");
 
 /** `YYYY-MM-DD` in local time — sortable and zero-padded (was `2026/9/3`). */

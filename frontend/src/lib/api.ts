@@ -1009,9 +1009,11 @@ export async function updateSessionStatus(sessionId: string, status: SessionStat
   });
 }
 
-/** Agent sends a reply in a handoff session. Returns the stored message. */
+/** Agent sends a reply in a handoff session (returns the new message id). */
 export async function agentReply(sessionId: string, request: AgentReplyRequest) {
-  return apiFetch<ChatMessageItem>(`/inbox/sessions/${sessionId}/reply`, {
+  // The endpoint answers {"message_id","message"} — NOT the persisted row.
+  // The full row arrives through the transcript refetch/realtime path.
+  return apiFetch<{ message_id: number; message: string }>(`/inbox/sessions/${sessionId}/reply`, {
     method: "POST",
     body: JSON.stringify(request),
   });

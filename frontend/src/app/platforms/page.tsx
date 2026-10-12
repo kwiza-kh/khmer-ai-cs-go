@@ -384,7 +384,7 @@ function StatusMetric({ icon: Icon, label, value, tone }: { icon: LucideIcon; la
     <div className="flex min-w-0 items-center gap-3 border-b border-border px-4 py-3 last:border-b-0 sm:border-b-0 sm:border-r sm:last:border-r-0">
       <Icon className={`size-4 shrink-0 ${tone}`} />
       <div className="min-w-0">
-        <p className="text-[11px] font-medium text-muted-foreground">{label}</p>
+        <p className="text-label font-medium text-muted-foreground">{label}</p>
         <p className="mt-0.5 text-lg font-semibold tabular-nums text-foreground">{value}</p>
       </div>
     </div>
@@ -408,12 +408,12 @@ function PlatformGroup({ meta, configs }: { meta: PlatformMeta; configs: Platfor
               <GroupConnectionBadge configs={configs} />
             </div>
             <p className="mt-0.5 text-xs text-muted-foreground">{t(`pf.${meta.label}.desc`)}</p>
-            <div className="mt-3 grid gap-2 text-[11px] sm:grid-cols-3">
+            <div className="mt-3 grid gap-2 text-label sm:grid-cols-3">
               <CapabilityGroup label={t("pf.capInbound")} values={t(`pf.${meta.label}.inbound`).split("|")} />
               <CapabilityGroup label={t("pf.capOutbound")} values={t(`pf.${meta.label}.outbound`).split("|")} />
               <CapabilityGroup label={t("pf.capReceipts")} values={[t(`pf.${meta.label}.receipts`)]} />
             </div>
-            <p className="mt-1 text-[11px] leading-4 text-muted-foreground">{t(`pf.${meta.label}.limitation`)}</p>
+            <p className="mt-1 text-label leading-4 text-muted-foreground">{t(`pf.${meta.label}.limitation`)}</p>
             <Button size="sm" variant="outline" onClick={() => setAdding(true)} disabled={adding} className="mt-3 h-8 gap-1.5 text-xs">
               <Plus className="size-3.5" /> {t("pf.addAccount")}
             </Button>
@@ -441,7 +441,7 @@ function GroupConnectionBadge({ configs }: { configs: PlatformConfig[] }) {
   const active = configs.filter((c) => c.is_active);
   if (active.length === 0) {
     return (
-      <Badge variant="outline" className="h-5 gap-1.5 px-1.5 text-[10px] font-normal text-muted-foreground">
+      <Badge variant="outline" className="h-5 gap-1.5 px-1.5 text-label font-normal text-muted-foreground">
         <span className="size-1.5 rounded-full bg-muted-foreground/40" /> {t("pf.notConnected")}
       </Badge>
     );
@@ -450,20 +450,20 @@ function GroupConnectionBadge({ configs }: { configs: PlatformConfig[] }) {
   const errored = active.filter((c) => c.health?.status === "error").length;
   if (errored > 0) {
     return (
-      <Badge variant="outline" className="h-5 gap-1.5 border-destructive/40 px-1.5 text-[10px] font-medium text-danger">
+      <Badge variant="outline" className="h-5 gap-1.5 border-destructive/40 px-1.5 text-label font-medium text-danger">
         <span className="size-1.5 rounded-full bg-destructive animate-pulse" /> {t("pf.needsAttention")}
       </Badge>
     );
   }
   if (connected === active.length) {
     return (
-      <Badge variant="outline" className="h-5 gap-1.5 border-success/40 px-1.5 text-[10px] font-medium text-success">
+      <Badge variant="outline" className="h-5 gap-1.5 border-success/40 px-1.5 text-label font-medium text-success">
         <span className="size-1.5 rounded-full bg-success" /> {t("pf.connectedBadge")}
       </Badge>
     );
   }
   return (
-    <Badge variant="outline" className="h-5 gap-1.5 border-warning/40 px-1.5 text-[10px] font-medium text-warning">
+    <Badge variant="outline" className="h-5 gap-1.5 border-warning/40 px-1.5 text-label font-medium text-warning">
       <span className="size-1.5 rounded-full bg-warning animate-pulse" /> {t("pf.awaitingVerification")}
     </Badge>
   );
@@ -472,9 +472,9 @@ function GroupConnectionBadge({ configs }: { configs: PlatformConfig[] }) {
 function CapabilityGroup({ label, values }: { label: string; values: string[] }) {
   return (
     <div className="min-w-0 border-l-2 border-border pl-2">
-      <p className="mb-1 text-[10px] font-semibold uppercase text-muted-foreground">{label}</p>
+      <p className="mb-1 text-label font-semibold uppercase text-muted-foreground">{label}</p>
       <div className="flex flex-wrap gap-1">
-        {values.map((value) => <Badge key={value} variant="outline" className="h-5 max-w-full px-1.5 text-[10px] font-normal">{value}</Badge>)}
+        {values.map((value) => <Badge key={value} variant="outline" className="h-5 max-w-full px-1.5 text-label font-normal">{value}</Badge>)}
       </div>
     </div>
   );
@@ -489,7 +489,7 @@ function ConnectionBadge({ healthy }: { healthy?: boolean }) {
   const { t } = useI18n();
   if (healthy === undefined) return null;
   return (
-    <span className={`inline-flex items-center gap-1 text-[10px] font-medium ${healthy ? "text-success" : "text-warning"}`}>
+    <span className={`inline-flex items-center gap-1 text-label font-medium ${healthy ? "text-success" : "text-warning"}`}>
       <span className={`size-1.5 rounded-full ${healthy ? "bg-success" : "bg-warning animate-pulse"}`} />
       {healthy ? t("pf.verifiedBadge") : t("pf.awaitingFirstWebhook")}
     </span>
@@ -544,7 +544,7 @@ function MetaOAuthConnectCard({
             <div className="flex flex-wrap items-center gap-2">
               <p className="text-sm font-medium">{t("pf.metaTitle")}</p>
               {hasConnections && (
-                <Badge variant="outline" className="h-5 border-success/40 px-1.5 text-[10px] font-medium text-success">
+                <Badge variant="outline" className="h-5 border-success/40 px-1.5 text-label font-medium text-success">
                   {t("pf.connectedBadge")}
                 </Badge>
               )}
@@ -696,7 +696,7 @@ function WhatsAppEmbeddedSignupCard({ connected }: { connected: ConnectedAccount
             <div className="flex flex-wrap items-center gap-2">
               <p className="text-sm font-medium">{t("pf.whatsapp.name")}</p>
               {connected.length > 0 && (
-                <Badge variant="outline" className="h-5 border-success/40 px-1.5 text-[10px] font-medium text-success">
+                <Badge variant="outline" className="h-5 border-success/40 px-1.5 text-label font-medium text-success">
                   {t("pf.connectedBadge")}
                 </Badge>
               )}
@@ -932,9 +932,9 @@ function PlatformCard({ meta, initial, onClose }: { meta: PlatformMeta; initial?
           <div className="min-w-0">
             <p className="truncate text-sm font-semibold text-foreground">{health?.account_name || initial?.page_id || initial?.instagram_business_id || (initial?.config_id ? tf("pf.accountN", { id: initial.config_id }) : t("pf.newAccount"))}</p>
             <p className="mt-0.5 text-xs text-muted-foreground">{health?.checked_at ? tf("pf.lastChecked", { time: fmtDateTime(health.checked_at) }) : t("pf.notVerifiedLine")}</p>
-            {initial?.last_inbound_at && <p className="mt-1 text-[11px] text-muted-foreground">{tf("pf.lastCustomerMsg", { time: fmtDateTime(initial.last_inbound_at) })}</p>}
+            {initial?.last_inbound_at && <p className="mt-1 text-label text-muted-foreground">{tf("pf.lastCustomerMsg", { time: fmtDateTime(initial.last_inbound_at) })}</p>}
           </div>
-          <Badge variant={statusVariant} className="h-5 shrink-0 px-1.5 text-[10px]">
+          <Badge variant={statusVariant} className="h-5 shrink-0 px-1.5 text-label">
             {status}
           </Badge>
         </div>
@@ -951,11 +951,11 @@ function PlatformCard({ meta, initial, onClose }: { meta: PlatformMeta; initial?
         {/* Guided setup — shown while creating a new account. */}
         {!initial?.config_id && meta.guide && (
           <div className="mb-4 rounded-lg border border-info/25 bg-info/5 px-3 py-2.5">
-            <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-info">{t("pf.guideTitle")}</p>
+            <p className="mb-1.5 text-label font-semibold uppercase tracking-[0.12em] text-info">{t("pf.guideTitle")}</p>
             <ol className="space-y-1.5">
               {meta.guide.map((key, index) => (
                 <li key={key} className="flex items-start gap-2 text-xs leading-relaxed text-foreground">
-                  <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full bg-info/15 text-[10px] font-bold text-info">{index + 1}</span>
+                  <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full bg-info/15 text-label font-bold text-info">{index + 1}</span>
                   <span className="min-w-0">{t(key)}</span>
                 </li>
               ))}
@@ -973,7 +973,7 @@ function PlatformCard({ meta, initial, onClose }: { meta: PlatformMeta; initial?
                     href={meta.fieldHelp[String(f.key)]!.url}
                     target="_blank"
                     rel="noreferrer"
-                    className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline"
+                    className="inline-flex items-center gap-1 text-label text-primary hover:underline"
                   >
                     <ExternalLink className="size-3" /> {t(meta.fieldHelp[String(f.key)]!.labelKey)}
                   </a>
@@ -994,19 +994,19 @@ function PlatformCard({ meta, initial, onClose }: { meta: PlatformMeta; initial?
         {!initial?.config_id && (meta.label === "telegram" || meta.label === "line" || meta.label === "zalo" || meta.label === "meta") && (
           <div className="mt-3 rounded-lg border border-border bg-muted/30 px-2.5 py-2">
             <div className="flex items-center justify-between gap-2">
-              <p className="text-[11px] font-medium text-muted-foreground">{t("pf.webhookUrl")}</p>
+              <p className="text-label font-medium text-muted-foreground">{t("pf.webhookUrl")}</p>
               {meta.webhookMode === "auto" ? (
-                <Badge variant="outline" className="h-4 gap-1 border-success/40 px-1.5 text-[11px] text-success">
+                <Badge variant="outline" className="h-4 gap-1 border-success/40 px-1.5 text-label text-success">
                   <CheckCircle2 className="size-2.5" /> {t("pf.webhookAuto")}
                 </Badge>
               ) : (
-                <button type="button" onClick={() => { void navigator.clipboard.writeText(platformWebhookURL(meta.label)); toast.success(t("widget.copiedToast")); }} className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline">
+                <button type="button" onClick={() => { void navigator.clipboard.writeText(platformWebhookURL(meta.label)); toast.success(t("widget.copiedToast")); }} className="inline-flex items-center gap-1 text-label text-primary hover:underline">
                   <Copy className="size-3" /> {t("pf.copyWebhook")}
                 </button>
               )}
             </div>
-            <code className="mt-1 block truncate text-[10px] text-muted-foreground">{platformWebhookURL(meta.label)}</code>
-            {meta.webhookMode === "manual" && <p className="mt-1 text-[10px] leading-relaxed text-warning">{t("pf.webhookManual")}</p>}
+            <code className="mt-1 block truncate text-label text-muted-foreground">{platformWebhookURL(meta.label)}</code>
+            {meta.webhookMode === "manual" && <p className="mt-1 text-label leading-relaxed text-warning">{t("pf.webhookManual")}</p>}
           </div>
         )}
 
@@ -1057,7 +1057,7 @@ function PlatformCard({ meta, initial, onClose }: { meta: PlatformMeta; initial?
             )}
             {!initial?.config_id && onClose && <Button variant="ghost" size="sm" onClick={onClose} className="h-8 text-xs">{t("common.cancel")}</Button>}
           </div>
-          <span className="hidden max-w-md text-right text-[11px] text-muted-foreground sm:block">
+          <span className="hidden max-w-md text-right text-label text-muted-foreground sm:block">
             {t(`pf.${meta.label}.webhookInfo`)}
           </span>
         </div>
@@ -1072,7 +1072,7 @@ function ConnectionReadiness({ health }: { health?: PlatformHealth }) {
   const credentialsReady = Boolean(health?.checked_at) && health?.status !== "error";
   const webhookReady = health?.status === "connected";
   return (
-    <div className="mb-4 grid grid-cols-2 divide-x divide-border border-y border-border text-[11px]">
+    <div className="mb-4 grid grid-cols-2 divide-x divide-border border-y border-border text-label">
       <ReadinessStep label={t("pf.credentials")} ready={credentialsReady} readyText={t("pf.verifiedText")} pendingText={t("pf.notVerifiedText")} />
       <ReadinessStep label={t("pf.webhook")} ready={webhookReady} readyText={t("pf.receiving")} pendingText={t("pf.waiting")} />
     </div>
@@ -1091,7 +1091,7 @@ function ReadinessStep({ label, ready, readyText, pendingText }: { label: string
 function WorkMetric({ label, value, destructive = false }: { label: string; value: number; destructive?: boolean }) {
   return (
     <div className="bg-card px-2.5 py-2">
-      <span className="block text-[10px] text-muted-foreground">{label}</span>
+      <span className="block text-label text-muted-foreground">{label}</span>
       <span className={`font-semibold tabular-nums ${destructive && value > 0 ? "text-danger" : ""}`}>{value}</span>
     </div>
   );
@@ -1176,8 +1176,8 @@ function CancelledDeliverySection({ items }: { items: PlatformDelivery[] }) {
           {items.map((item) => (
             <div key={item.delivery_id} className="space-y-2 px-3 py-3">
               <p className="break-words text-xs text-foreground">{item.content}</p>
-              <p className="break-words text-[11px] text-muted-foreground">{item.last_error || t("pf.heldDefaultError")}</p>
-              <p className="text-[10px] tabular-nums text-muted-foreground">{fmtDateTime(item.created_at)}</p>
+              <p className="break-words text-label text-muted-foreground">{item.last_error || t("pf.heldDefaultError")}</p>
+              <p className="text-label tabular-nums text-muted-foreground">{fmtDateTime(item.created_at)}</p>
             </div>
           ))}
         </div>
@@ -1223,12 +1223,12 @@ function FailureSection<T extends { attempts: number; created_at: string }>({
             return <div key={id} className="space-y-2 px-3 py-3">
               <div className="flex items-start justify-between gap-3">
                 <p className="min-w-0 flex-1 break-words text-xs text-foreground">{getContent(item)}</p>
-                <Button size="sm" variant="outline" onClick={() => onRetry(id)} disabled={retrying !== null} className="h-7 shrink-0 gap-1 text-[11px]">
+                <Button size="sm" variant="outline" onClick={() => onRetry(id)} disabled={retrying !== null} className="h-7 shrink-0 gap-1 text-label">
                   {retrying === retryKey ? <Loader2 className="size-3 animate-spin" /> : <RotateCcw className="size-3" />} {t("pf.retry")}
                 </Button>
               </div>
-              <p className="break-words text-[11px] text-danger">{getError(item) || t("pf.noProviderError")}</p>
-              <p className="text-[10px] tabular-nums text-muted-foreground">{tf("pf.attempts", { n: getAttempts(item), time: fmtDateTime(getCreated(item)) })}</p>
+              <p className="break-words text-label text-danger">{getError(item) || t("pf.noProviderError")}</p>
+              <p className="text-label tabular-nums text-muted-foreground">{tf("pf.attempts", { n: getAttempts(item), time: fmtDateTime(getCreated(item)) })}</p>
             </div>;
           })}
         </div>

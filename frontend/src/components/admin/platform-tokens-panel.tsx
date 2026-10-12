@@ -77,10 +77,10 @@ export function PlatformTokensPanel() {
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h3 className="text-sm font-semibold text-foreground">{t("pt.title")}</h3>
-          <p className="text-[11px] text-muted-foreground">{t("pt.hint")}</p>
+          <p className="text-label text-muted-foreground">{t("pt.hint")}</p>
         </div>
         <div className="flex items-center gap-2">
-          <Badge variant="outline" className="h-6 px-2 text-[11px] font-normal text-muted-foreground">
+          <Badge variant="outline" className="h-6 px-2 text-label font-normal text-muted-foreground">
             {tf("pt.days", { days })}
           </Badge>
           {RANGES.map((d) => (
@@ -88,13 +88,13 @@ export function PlatformTokensPanel() {
               key={d}
               size="sm"
               variant={days === d ? "default" : "outline"}
-              className="h-7 px-2 text-[11px]"
+              className="h-7 px-2 text-label"
               onClick={() => setDays(d)}
             >
               {d}d
             </Button>
           ))}
-          <Button size="sm" variant="outline" className="h-7 gap-1 px-2 text-[11px]" onClick={() => void mutate()} disabled={isLoading}>
+          <Button size="sm" variant="outline" className="h-7 gap-1 px-2 text-label" onClick={() => void mutate()} disabled={isLoading}>
             <RefreshCw className={isLoading ? "size-3 animate-spin" : "size-3"} />
           </Button>
         </div>
@@ -109,7 +109,7 @@ export function PlatformTokensPanel() {
                 <k.icon className={`size-[15px] ${k.tone}`} />
               </div>
               <div className="min-w-0">
-                <p className="truncate text-[11px] font-medium uppercase tracking-[0.1em] text-muted-foreground">{k.label}</p>
+                <p className="truncate text-label font-medium uppercase tracking-[0.12em] text-muted-foreground">{k.label}</p>
                 <p className="text-lg font-semibold leading-tight tabular-nums">{k.value}</p>
               </div>
             </CardContent>
@@ -258,7 +258,7 @@ export function PlatformTokensPanel() {
             <div className="overflow-x-auto">
               <table className="w-full min-w-[640px] border-collapse text-xs">
                 <thead>
-                  <tr className="text-left text-[11px] uppercase tracking-wider text-muted-foreground">
+                  <tr className="text-left text-label uppercase tracking-[0.12em] text-muted-foreground">
                     <th className="py-1.5 pr-3">{t("pt.tenant")}</th>
                     <th className="py-1.5 pr-3">{t("pt.plan")}</th>
                     <th className="py-1.5 pr-3 text-right">{t("pt.tokens")}</th>
@@ -273,7 +273,7 @@ export function PlatformTokensPanel() {
                     <tr key={row.user_id} className="border-t border-border/60">
                       <td className="py-1.5 pr-3 font-medium text-foreground">{row.username}</td>
                       <td className="py-1.5 pr-3">
-                        <Badge variant="outline" className="h-5 px-1.5 text-[10px] font-normal">
+                        <Badge variant="outline" className="h-5 px-1.5 text-label font-normal">
                           {row.role === "platform_admin" ? t("role.platformAdmin") : row.plan}
                         </Badge>
                       </td>
@@ -290,7 +290,7 @@ export function PlatformTokensPanel() {
                   ))}
                 </tbody>
               </table>
-              <p className="mt-2 text-[11px] text-muted-foreground">{t("pt.zeroHint")}</p>
+              <p className="mt-2 text-label text-muted-foreground">{t("pt.zeroHint")}</p>
             </div>
           )}
         </CardContent>

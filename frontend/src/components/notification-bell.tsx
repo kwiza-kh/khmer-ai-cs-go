@@ -79,7 +79,7 @@ export function NotificationBell() {
       <DropdownMenuTrigger className="relative h-7 w-7 rounded-md hover:bg-sidebar-accent/50 transition-colors flex items-center justify-center text-sidebar-foreground" title={t("notif.title")}>
         <Bell className="size-4" />
         {unreadCount > 0 && (
-          <span className="absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[11px] leading-none font-bold text-white">
+          <span className="absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-label leading-none font-bold text-white">
             {unreadCount > 99 ? "99+" : unreadCount}
           </span>
         )}
@@ -87,7 +87,7 @@ export function NotificationBell() {
       <DropdownMenuContent align="start" side="top" className="w-80 max-h-96 overflow-auto p-0">
         <div className="flex items-center justify-between px-3 py-2 border-b border-border sticky top-0 bg-popover z-10">
           <p className="text-xs font-semibold">{t("notif.title")}</p>
-          <Button variant="ghost" size="sm" className="h-6 text-[11px] gap-1 text-muted-foreground" onClick={markAll}>
+          <Button variant="ghost" size="sm" className="h-6 text-label gap-1 text-muted-foreground" onClick={markAll}>
             <CheckCheck className="size-3" /> {t("notif.markAllRead")}
           </Button>
         </div>
@@ -112,8 +112,8 @@ export function NotificationBell() {
                       <p className="text-xs font-medium truncate">{n.title}</p>
                       {!n.is_read && <span className="size-1.5 rounded-full bg-primary shrink-0" />}
                     </div>
-                    <p className="text-[11px] text-muted-foreground line-clamp-2 mt-0.5">{n.body}</p>
-                    <p className="text-[10px] text-muted-foreground/70 mt-0.5">
+                    <p className="text-label text-muted-foreground line-clamp-2 mt-0.5">{n.body}</p>
+                    <p className="text-label text-muted-foreground mt-0.5">
                       {fmtDateTime(n.created_at)}
                     </p>
                   </div>

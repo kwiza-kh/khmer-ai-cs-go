@@ -18,7 +18,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { AlertTriangle, BarChart3, Bot, Clock, Copy, Cpu, Headset, KeyRound, MessageSquare, Pencil, Plus, RefreshCw, Send, SlidersHorizontal, Sparkles, Trash2, TrendingUp, Users, X, Zap, Download, ShieldCheck, Search, UserCheck, UserPlus, Lock, History, RotateCcw, type LucideIcon } from "lucide-react";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "sonner";
 
@@ -27,6 +26,8 @@ import { useI18n } from "@/lib/i18n";
 import { getBillingCatalog } from "@/lib/billing-api";
 import { useAuth } from "@/lib/auth-client";
 import { fmtDate, fmtDateTime, fmtInt } from "@/lib/format";
+import { StatCard } from "@/components/stat-card";
+import { ROLE_PILL } from "@/lib/role-pill";
 import { EmptyState } from "@/components/empty-state";
 import { confirmDelete } from "@/lib/confirm-delete";
 import { PageHeader } from "@/components/page-header";
@@ -195,7 +196,7 @@ export function PersonasAdminPage() {
                 onChange={(event) => setForm({ ...form, systemPrompt: event.target.value })}
                 placeholder={t("personas.systemPromptPlaceholder")}
               />
-              <p className="text-[11px] text-muted-foreground">{t("personas.systemPromptHint")}</p>
+              <p className="text-label text-muted-foreground">{t("personas.systemPromptHint")}</p>
             </div>
             <div className="space-y-1.5">
               <label className="text-xs font-medium">{t("personas.beginDialogs")}</label>
@@ -205,7 +206,7 @@ export function PersonasAdminPage() {
                 onChange={(event) => setForm({ ...form, beginDialogs: event.target.value })}
                 placeholder={t("personas.beginDialogsPlaceholder")}
               />
-              <p className="text-[11px] text-muted-foreground">{t("personas.beginDialogsHint")}</p>
+              <p className="text-label text-muted-foreground">{t("personas.beginDialogsHint")}</p>
             </div>
             <div className="space-y-1.5">
               <label className="text-xs font-medium">{t("personas.errorReply")}</label>
@@ -287,15 +288,15 @@ function PersonaCard({
           <div className="min-w-0 space-y-1.5">
             <CardTitle className="text-sm">{persona.name}</CardTitle>
             <div className="flex flex-wrap items-center gap-1.5">
-              <Badge variant="secondary" className="font-mono text-[10px]">{persona.persona_id}</Badge>
+              <Badge variant="secondary" className="font-mono text-label">{persona.persona_id}</Badge>
               {persona.bindings.length === 0 ? (
-                <span className="text-[11px] text-muted-foreground">{t("personas.unbound")}</span>
+                <span className="text-label text-muted-foreground">{t("personas.unbound")}</span>
               ) : (
                 persona.bindings.map((binding) => (
                   <Badge
                     key={`${binding.scope}:${binding.target}`}
                     variant="outline"
-                    className="gap-1 text-[10px]"
+                    className="gap-1 text-label"
                   >
                     {binding.scope}{binding.target ? `:${binding.target}` : ""}
                     <button
@@ -356,47 +357,68 @@ function PersonaCard({
   );
 }
 
-export function DashboardPage() {
+// 原仪表盘（页内 Tab 版）于 2026-10-12 拆分为六个独立导航入口：每个视图
+// 一个管理分区条目（/admin/analytics … /admin/enterprise），页面壳统一走
+// AdminPageFrame（与 Users/Personas 同一套骨架）。仪表盘壳退役，/admin 由
+// src/app/admin/page.tsx 重定向到第一个入口。Tab 顺序即入口顺序。
+export function AnalyticsAdminPage() {
   const { t } = useI18n();
-  const [tab, setTab] = useState("analytics");
-
   return (
-    <AdminPageFrame icon={BarChart3} title={t("admin.dashTitle")}>
-      <Tabs value={tab} onValueChange={(value) => setTab(value || "analytics")}>
-        <TabsList className="h-auto w-auto flex-wrap">
-          <TabsTrigger value="analytics" className="gap-1.5 text-xs"><BarChart3 className="size-3" />{t("admin.tabAnalytics")}</TabsTrigger>
-          <TabsTrigger value="feedback" className="gap-1.5 text-xs"><TrendingUp className="size-3" />{t("admin.tabFeedback")}</TabsTrigger>
-          <TabsTrigger value="operations" className="gap-1.5 text-xs"><Clock className="size-3" />{t("admin.tabOperations")}</TabsTrigger>
-          <TabsTrigger value="growth" className="gap-1.5 text-xs"><Sparkles className="size-3" />{t("admin.tabGrowth")}</TabsTrigger>
-          <TabsTrigger value="reports" className="gap-1.5 text-xs"><Download className="size-3" />{t("admin.tabReports")}</TabsTrigger>
-          <TabsTrigger value="enterprise" className="gap-1.5 text-xs"><ShieldCheck className="size-3" />{t("admin.tabEnterprise")}</TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="analytics" className="mt-4">
-          <AnalyticsPanel days={30} />
-        </TabsContent>
-        <TabsContent value="feedback" className="mt-4">
-          <FeedbackTab />
-        </TabsContent>
-        <TabsContent value="operations" className="mt-4">
-          <OperationsTab />
-        </TabsContent>
-        <TabsContent value="growth" className="mt-4">
-          <GrowthTab />
-        </TabsContent>
-        <TabsContent value="reports" className="mt-4">
-          <ReportsTab />
-        </TabsContent>
-        <TabsContent value="enterprise" className="mt-4">
-          <EnterpriseTab />
-        </TabsContent>
-      </Tabs>
+    <AdminPageFrame icon={BarChart3} title={t("nav.analytics")}>
+      <AnalyticsPanel days={30} />
     </AdminPageFrame>
   );
 }
 
+export function FeedbackAdminPage() {
+  const { t } = useI18n();
+  return (
+    <AdminPageFrame icon={TrendingUp} title={t("nav.feedback")}>
+      <FeedbackTab />
+    </AdminPageFrame>
+  );
+}
+
+export function OperationsAdminPage() {
+  const { t } = useI18n();
+  return (
+    <AdminPageFrame icon={Clock} title={t("nav.operations")}>
+      <OperationsTab />
+    </AdminPageFrame>
+  );
+}
+
+export function GrowthAdminPage() {
+  const { t } = useI18n();
+  return (
+    <AdminPageFrame icon={Sparkles} title={t("nav.growth")}>
+      <GrowthTab />
+    </AdminPageFrame>
+  );
+}
+
+export function ReportsAdminPage() {
+  const { t } = useI18n();
+  return (
+    <AdminPageFrame icon={Download} title={t("nav.reports")}>
+      <ReportsTab />
+    </AdminPageFrame>
+  );
+}
+
+export function EnterpriseAdminPage() {
+  const { t } = useI18n();
+  return (
+    <AdminPageFrame icon={ShieldCheck} title={t("nav.enterprise")}>
+      <EnterpriseTab />
+    </AdminPageFrame>
+  );
+}
+
+// 席位统计卡直接渲染共享的 StatCard —— KPI 全站只保留一种视觉语言
+// (2026-10-12 样式审查: 同一产品的数字看板曾有四种长相)。
 function UserStatCard({
-  icon: Icon,
+  icon,
   label,
   value,
   prefix = "",
@@ -408,39 +430,17 @@ function UserStatCard({
   prefix?: string;
   tone?: "default" | "success" | "primary" | "warning";
 }) {
-  const toneClass = {
-    default: "bg-muted text-muted-foreground ring-border/60",
-    success: "bg-success/10 text-success ring-success/20",
-    primary: "bg-primary/10 text-primary ring-primary/15",
-    warning: "bg-warning/10 text-warning ring-warning/20",
-  }[tone];
   return (
-    <Card>
-      <CardContent className="flex items-center gap-3 p-4">
-        <div className={cn("flex size-9 shrink-0 items-center justify-center rounded-xl ring-1 ring-inset", toneClass)}>
-          <Icon className="size-4" />
-        </div>
-        <div className="min-w-0">
-          <p className="truncate text-[11px] font-medium text-muted-foreground">{label}</p>
-          <p className="text-xl font-semibold tabular-nums text-foreground">
-            {value == null ? "—" : `${prefix}${fmtInt(value)}`}
-          </p>
-        </div>
-      </CardContent>
-    </Card>
+    <StatCard
+      icon={icon}
+      label={label}
+      tone={tone}
+      value={value == null ? "—" : `${prefix}${fmtInt(value)}`}
+    />
   );
 }
 
-// 最高权限用 primary 实心胶囊, 不再借用 warning(琥珀) —— 那会让“最高权限”读成“警告”。
-//
-// ⚠️ 必须成对写 light / dark: SelectTrigger 基类带 `dark:bg-input/30`, 它在
-// 构建产物里的顺序晚于基础 `bg-*`, 深色下会直接盖掉只写了 light 的写法
-// (曾导致 platform_admin 变成深底 + 深字, 对比度 1.01:1 完全不可见)。
-const ROLE_PILL: Record<string, string> = {
-  platform_admin: "bg-primary text-primary-foreground dark:bg-primary dark:text-primary-foreground",
-  admin: "bg-primary/12 text-primary dark:bg-primary/15 dark:text-primary",
-  user: "bg-muted text-muted-foreground dark:bg-muted/60 dark:text-muted-foreground",
-};
+// ROLE_PILL 已移到 @/lib/role-pill —— 资料卡渲染同一个胶囊，两份定义会漂移。
 
 // Sign-in methods an account can carry. A user may have several at once — a
 // passwordless Google or Telegram account can set an initial password later —
@@ -676,14 +676,14 @@ export function UsersAdminPage() {
             <CardTitle className="flex items-center gap-2 text-sm">
               <Headset className="text-primary size-4" />
               {t("admin.seatCardTitle")}
-              <span className="text-[11px] font-normal tabular-nums text-muted-foreground">
+              <span className="text-label font-normal tabular-nums text-muted-foreground">
                 {tf("admin.seatUsage", {
                   used: seatsUsed === null ? "—" : seatsUsed,
                   limit: seatsQuota === null ? t("bl.unlimited") : seatsQuota,
                 })}
               </span>
             </CardTitle>
-            <CardDescription className="text-[11px]">{t("admin.seatOwnerNote")}</CardDescription>
+            <CardDescription className="text-label">{t("admin.seatOwnerNote")}</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             {seatsUsed !== null && seatsQuota !== null && (
@@ -692,7 +692,7 @@ export function UsersAdminPage() {
               </div>
             )}
             {seatsFull && (
-              <p className="flex items-center gap-1 text-[11px] text-warning">
+              <p className="flex items-center gap-1 text-label text-warning">
                 <AlertTriangle className="size-3" />
                 {t("admin.seatFull")}
                 <Link href="/billing" className="text-primary hover:underline">{t("bl.title")}</Link>
@@ -736,7 +736,7 @@ export function UsersAdminPage() {
               {creating ? <RefreshCw className="size-3 animate-spin" /> : <UserPlus className="size-3" />}
               {t("admin.inviteCreate")}
             </Button>
-            <p className="text-[11px] text-muted-foreground">{t("admin.inviteHint")}</p>
+            <p className="text-label text-muted-foreground">{t("admin.inviteHint")}</p>
             {inviteUrl && (
               <div className="space-y-1.5 rounded-md border border-border bg-muted/30 p-2">
                 <div className="flex items-center gap-2">
@@ -750,7 +750,7 @@ export function UsersAdminPage() {
                     <Copy className="size-3" />{t("admin.inviteCopy")}
                   </Button>
                 </div>
-                <p className="flex items-center gap-2 text-[11px] text-warning">
+                <p className="flex items-center gap-2 text-label text-warning">
                   <AlertTriangle className="size-3" />
                   {t("admin.inviteOnce")}
                   <button
@@ -765,9 +765,9 @@ export function UsersAdminPage() {
             )}
             {(invites ?? []).length > 0 && (
               <div className="space-y-1 border-t border-border pt-2">
-                <p className="text-[11px] font-medium text-muted-foreground">{t("admin.invitePending")}</p>
+                <p className="text-label font-medium text-muted-foreground">{t("admin.invitePending")}</p>
                 {(invites ?? []).map((invite) => (
-                  <div key={invite.invite_id} className="flex items-center justify-between gap-2 text-[11px]">
+                  <div key={invite.invite_id} className="flex items-center justify-between gap-2 text-label">
                     <span className="truncate text-muted-foreground">
                       {invite.display_name ? `${invite.display_name} · ` : ""}
                       {tf("admin.inviteJoinedCount", { used: invite.use_count, max: invite.max_uses })}
@@ -796,7 +796,7 @@ export function UsersAdminPage() {
               <History className="text-primary size-4" />
               {t("admin.inviteHistory")}
             </CardTitle>
-            <CardDescription className="text-[11px]">{t("admin.inviteHistoryHint")}</CardDescription>
+            <CardDescription className="text-label">{t("admin.inviteHistoryHint")}</CardDescription>
           </CardHeader>
           <CardContent>
             {(history ?? []).length === 0 ? (
@@ -819,27 +819,27 @@ export function UsersAdminPage() {
                     return (
                       <TableRow key={entry.invite_id}>
                         <TableCell>
-                          <Badge variant="outline" className={cn("h-5 px-1.5 text-[11px] font-normal", meta.className)}>
+                          <Badge variant="outline" className={cn("h-5 px-1.5 text-label font-normal", meta.className)}>
                             {t(meta.key)}
                           </Badge>
                         </TableCell>
-                        <TableCell className="font-mono text-[11px] text-muted-foreground">#{entry.fingerprint}</TableCell>
-                        <TableCell className="text-[11px] whitespace-nowrap text-muted-foreground">
+                        <TableCell className="font-mono text-label text-muted-foreground">#{entry.fingerprint}</TableCell>
+                        <TableCell className="text-label whitespace-nowrap text-muted-foreground">
                           {fmtDateTime(entry.created_at)}
                         </TableCell>
-                        <TableCell className="text-[11px] whitespace-nowrap text-muted-foreground">
+                        <TableCell className="text-label whitespace-nowrap text-muted-foreground">
                           {fmtDateTime(entry.expires_at)}
                         </TableCell>
-                        <TableCell className="text-[11px] tabular-nums">
+                        <TableCell className="text-label tabular-nums">
                           {entry.use_count}/{entry.max_uses}
                         </TableCell>
                         <TableCell>
                           {entry.invited.length === 0 ? (
-                            <span className="text-[11px] text-muted-foreground">—</span>
+                            <span className="text-label text-muted-foreground">—</span>
                           ) : (
                             <div className="space-y-0.5">
                               {entry.invited.map((invited) => (
-                                <p key={`${invited.username}-${invited.used_at}`} className="text-[11px] whitespace-nowrap text-muted-foreground">
+                                <p key={`${invited.username}-${invited.used_at}`} className="text-label whitespace-nowrap text-muted-foreground">
                                   <span className="text-foreground">{invited.display_name || invited.username}</span>
                                   {" · "}{invited.username}{" · "}{fmtDateTime(invited.used_at)}
                                 </p>
@@ -898,18 +898,18 @@ export function UsersAdminPage() {
                                 <Badge
                                   key={method}
                                   variant="outline"
-                                  className="h-4 shrink-0 gap-1 px-1.5 text-[11px] font-normal text-muted-foreground"
+                                  className="h-4 shrink-0 gap-1 px-1.5 text-label font-normal text-muted-foreground"
                                 >
                                   {AUTH_LABEL[method] ? t(AUTH_LABEL[method]) : method}
                                 </Badge>
                               ))}
                             </p>
-                            <p className="truncate text-[11px] text-muted-foreground">{user.email}</p>
+                            <p className="truncate text-label text-muted-foreground">{user.email}</p>
                             {member && (member.display_name || member.skills.length > 0) && (
-                              <p className="mt-0.5 flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
+                              <p className="mt-0.5 flex flex-wrap items-center gap-1 text-label text-muted-foreground">
                                 {member.display_name && <span className="truncate">{member.display_name}</span>}
                                 {member.skills.map((skill) => (
-                                  <Badge key={skill} variant="outline" className="h-4 px-1 text-[11px] font-normal">
+                                  <Badge key={skill} variant="outline" className="h-4 px-1 text-label font-normal">
                                     {skill}
                                   </Badge>
                                 ))}
@@ -922,7 +922,7 @@ export function UsersAdminPage() {
                                 type="button"
                                 onClick={() => void copyUserId(user.user_id)}
                                 title={t("admin.copyUserId")}
-                                className="mt-0.5 inline-flex items-center gap-1 text-[11px] text-muted-foreground/80 transition-colors hover:text-primary"
+                                className="mt-0.5 inline-flex items-center gap-1 text-label text-muted-foreground/80 transition-colors hover:text-primary"
                               >
                                 <Copy className="size-2.5" />#{user.user_id}
                               </button>
@@ -932,7 +932,7 @@ export function UsersAdminPage() {
                       </TableCell>
                       <TableCell>
                         <Select value={user.role} onValueChange={(value) => handleUpdateRole(user.user_id, value || "user")}>
-                          <SelectTrigger className={cn("h-6 w-auto min-w-24 gap-1.5 rounded-full border-transparent px-2.5 text-[11px] font-medium shadow-none", ROLE_PILL[user.role] ?? ROLE_PILL.user)}>
+                          <SelectTrigger className={cn("h-6 w-auto min-w-24 gap-1.5 rounded-full border-transparent px-2.5 text-label font-medium shadow-none", ROLE_PILL[user.role] ?? ROLE_PILL.user)}>
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
@@ -946,7 +946,7 @@ export function UsersAdminPage() {
                         {user.role === "platform_admin" ? (
                           <span
                             title={t("admin.platformAdminLockHint")}
-                            className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-full bg-success/10 px-2 py-0.5 text-[11px] font-medium text-success"
+                            className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-full bg-success/10 px-2 py-0.5 text-label font-medium text-success"
                           >
                             <Lock className="size-2.5" />
                             {t("admin.statusActive")}
@@ -958,7 +958,7 @@ export function UsersAdminPage() {
                           <span
                             title={t("admin.statusTenantLockHint")}
                             className={cn(
-                              "inline-flex cursor-not-allowed items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium",
+                              "inline-flex cursor-not-allowed items-center gap-1.5 rounded-full px-2 py-0.5 text-label font-medium",
                               user.is_active ? "bg-success/10 text-success" : "bg-muted text-muted-foreground",
                             )}
                           >
@@ -971,7 +971,7 @@ export function UsersAdminPage() {
                           onClick={() => handleToggleActive(user.user_id, !user.is_active)}
                           title={t("admin.statusToggleHint")}
                           className={cn(
-                            "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium transition-colors",
+                            "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-label font-medium transition-colors",
                             user.is_active ? "bg-success/10 text-success hover:bg-success/15" : "bg-muted text-muted-foreground hover:bg-muted/70",
                           )}
                         >
@@ -982,9 +982,9 @@ export function UsersAdminPage() {
                       </TableCell>
                       <TableCell>
                         {isPlatformAdmin ? (
-                          <span className="text-[11px] text-muted-foreground">—</span>
+                          <span className="text-label text-muted-foreground">—</span>
                         ) : user.user_id === ownerId ? (
-                          <Badge variant="outline" className="h-5 px-1.5 text-[11px] font-normal text-muted-foreground">
+                          <Badge variant="outline" className="h-5 px-1.5 text-label font-normal text-muted-foreground">
                             {t("admin.seatOwner")}
                           </Badge>
                         ) : teamIdByAgent.has(user.user_id) ? (
@@ -992,7 +992,7 @@ export function UsersAdminPage() {
                             <Button
                               variant="ghost"
                               size="sm"
-                              className="h-6 gap-1 px-1.5 text-[11px] text-muted-foreground hover:text-foreground"
+                              className="h-6 gap-1 px-1.5 text-label text-muted-foreground hover:text-foreground"
                               onClick={() => {
                                 const member = memberByAgent.get(user.user_id);
                                 if (member) openPermissions(member);
@@ -1003,7 +1003,7 @@ export function UsersAdminPage() {
                             <Button
                               variant="ghost"
                               size="sm"
-                              className="h-6 gap-1 px-1.5 text-[11px] text-muted-foreground hover:text-destructive"
+                              className="h-6 gap-1 px-1.5 text-label text-muted-foreground hover:text-destructive"
                               onClick={() => {
                                 const teamId = teamIdByAgent.get(user.user_id);
                                 if (teamId) void handleRemoveSeat(teamId);
@@ -1013,10 +1013,10 @@ export function UsersAdminPage() {
                             </Button>
                           </div>
                         ) : (
-                          <span className="text-[11px] text-muted-foreground">—</span>
+                          <span className="text-label text-muted-foreground">—</span>
                         )}
                       </TableCell>
-                      <TableCell className="whitespace-nowrap text-[11px] text-muted-foreground">
+                      <TableCell className="whitespace-nowrap text-label text-muted-foreground">
                         {user.created_at ? fmtDate(user.created_at) : "—"}
                       </TableCell>
                     </TableRow>
@@ -1035,7 +1035,7 @@ export function UsersAdminPage() {
               {t("admin.permTitle")}
               {permMember ? <span className="text-muted-foreground"> · {permMember.display_name || permMember.username}</span> : null}
             </DialogTitle>
-            <DialogDescription className="text-[11px]">{t("admin.permHint")}</DialogDescription>
+            <DialogDescription className="text-label">{t("admin.permHint")}</DialogDescription>
           </DialogHeader>
           <div className="space-y-1.5">
             {MEMBER_PERMISSIONS.map((perm) => {
@@ -1052,12 +1052,12 @@ export function UsersAdminPage() {
                 >
                   <span className="min-w-0">
                     <span className="block text-xs font-medium">{t(perm.label)}</span>
-                    <span className="block text-[11px] text-muted-foreground">{t(perm.hint)}</span>
+                    <span className="block text-label text-muted-foreground">{t(perm.hint)}</span>
                   </span>
                   <Badge
                     variant="outline"
                     className={cn(
-                      "mt-0.5 h-5 shrink-0 px-1.5 text-[11px] font-normal",
+                      "mt-0.5 h-5 shrink-0 px-1.5 text-label font-normal",
                       enabled ? "bg-success/10 text-success" : "text-muted-foreground",
                     )}
                   >
@@ -1157,13 +1157,13 @@ function PromptHistory({ configId, onRestored }: { configId: number; onRestored:
             return (
               <div
                 key={version.version_id}
-                className={`rounded-md border p-2 ${isCurrent ? "border-emerald-500/40 bg-emerald-500/5" : "border-border"}`}
+                className={`rounded-md border p-2 ${isCurrent ? "border-success/40 bg-success/5" : "border-border"}`}
               >
                 <div className="flex flex-wrap items-center gap-2 text-xs">
                   <span className="font-medium text-foreground">#{version.version_id}</span>
-                  <Badge variant="outline" className="text-[10px]">{sourceLabel(version.source)}</Badge>
+                  <Badge variant="outline" className="text-label">{sourceLabel(version.source)}</Badge>
                   {isCurrent && (
-                    <Badge variant="outline" className="border-emerald-500/40 bg-emerald-500/10 text-[10px] text-emerald-700 dark:text-emerald-400">
+                    <Badge variant="outline" className="border-success/40 bg-success/10 text-label text-success">
                       {t("admin.promptCurrent")}
                     </Badge>
                   )}
@@ -1179,7 +1179,7 @@ function PromptHistory({ configId, onRestored }: { configId: number; onRestored:
                   <Button
                     size="sm"
                     variant="outline"
-                    className="h-6 px-2 text-[11px]"
+                    className="h-6 px-2 text-label"
                     onClick={() => setExpanded(isOpen ? null : version.version_id)}
                   >
                     {isOpen ? t("admin.promptCollapse") : t("admin.promptExpand")}
@@ -1187,7 +1187,7 @@ function PromptHistory({ configId, onRestored }: { configId: number; onRestored:
                   <Button
                     size="sm"
                     variant="outline"
-                    className="h-6 gap-1 px-2 text-[11px]"
+                    className="h-6 gap-1 px-2 text-label"
                     disabled={isCurrent || restoring === version.version_id}
                     onClick={() => handleRestore(version.version_id)}
                   >
@@ -1196,7 +1196,7 @@ function PromptHistory({ configId, onRestored }: { configId: number; onRestored:
                   </Button>
                 </div>
                 {isOpen && (
-                  <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded border border-border bg-muted/40 p-2 text-[11px] leading-relaxed text-muted-foreground">
+                  <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded border border-border bg-muted/40 p-2 text-label leading-relaxed text-muted-foreground">
                     {isDefault ? t("admin.promptBuiltinDefaultExplain") : version.system_prompt}
                   </pre>
                 )}
@@ -1809,7 +1809,7 @@ export function ModelsAdminPage() {
                           {selectedStage && (
                             <Badge
                               variant={selectedStageKey === "admin.modelStageGa" ? "outline" : "info"}
-                              className="h-4 px-1.5 text-[10px]"
+                              className="h-4 px-1.5 text-label"
                             >
                               {selectedStageKey ? t(selectedStageKey) : selectedStage}
                             </Badge>
@@ -1836,7 +1836,7 @@ export function ModelsAdminPage() {
                                         {optionStage && (
                                           <Badge
                                             variant={optionStageKey === "admin.modelStageGa" ? "outline" : "info"}
-                                            className="h-4 shrink-0 px-1.5 text-[10px]"
+                                            className="h-4 shrink-0 px-1.5 text-label"
                                           >
                                             {optionStageKey ? t(optionStageKey) : optionStage}
                                           </Badge>
@@ -1844,7 +1844,7 @@ export function ModelsAdminPage() {
                                         {/* Flagged, not disabled: the operator
                                             may still pick it and test it. */}
                                         {option.available === false && (
-                                          <Badge variant="warning" className="h-4 shrink-0 px-1.5 text-[10px]">
+                                          <Badge variant="warning" className="h-4 shrink-0 px-1.5 text-label">
                                             {t("admin.modelUnavailableHere")}
                                           </Badge>
                                         )}
@@ -1928,7 +1928,7 @@ export function ModelsAdminPage() {
                         variant="outline"
                         className={
                           promptSameAsDefault
-                            ? "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400"
+                            ? "border-warning/40 bg-warning/10 text-warning"
                             : promptOverridden
                               ? "border-border bg-muted text-foreground"
                               : "border-border bg-muted text-muted-foreground"
@@ -1949,7 +1949,7 @@ export function ModelsAdminPage() {
                       className="resize-none text-xs"
                       placeholder={t("admin.promptEmptyPh")}
                     />
-                    <p className={`text-xs ${promptSameAsDefault ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground"}`}>
+                    <p className={`text-xs ${promptSameAsDefault ? "text-warning" : "text-muted-foreground"}`}>
                       {defaultPromptError
                         ? t("admin.promptDefaultUnavailable")
                         : promptSameAsDefault

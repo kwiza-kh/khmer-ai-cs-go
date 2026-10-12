@@ -14,7 +14,8 @@ import { RelayChatLogo } from "@/components/relaychat-logo";
 import { cn } from "@/lib/utils";
 import {
   BookOpen, Globe, Users, Settings, LogOut, Menu, Search, Loader2,
-  Gauge, HelpCircle, Inbox, UserCheck, ShieldCheck, Coins, FlaskConical,
+  BarChart3, TrendingUp, Clock, Sparkles, Download,
+  HelpCircle, Inbox, UserCheck, ShieldCheck, Coins, FlaskConical,
   MessageCircle, ChevronRight, Bot, type LucideIcon,
 } from "lucide-react";
 import { useState } from "react";
@@ -58,21 +59,21 @@ function NavItem({
         href={href}
         onClick={onNavigate}
         className={cn(
-          "group flex items-center gap-2.5 rounded-[10px] px-3 py-2 text-[13px] transition-colors",
+          "group flex items-center gap-2.5 rounded-md px-3 py-2 text-body-sm transition-colors",
           active
-            ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground ring-1 ring-foreground/[0.07] shadow-[0_1px_2px_rgb(0_0_0/0.04)]"
+            ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground ring-1 ring-foreground/[0.07] shadow-xs"
             : "font-medium text-sidebar-foreground/70 hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground"
         )}
       >
         <Icon className={cn("size-4 shrink-0 transition-colors", active ? "text-sidebar-primary" : "text-sidebar-foreground/60 group-hover:text-sidebar-accent-foreground")} />
         <span className="flex-1 truncate">{label}</span>
         {count != null && count > 0 && (
-          <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[11px] font-bold tabular-nums text-white">
+          <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-label font-bold tabular-nums text-white">
             {count > 99 ? "99+" : count}
           </span>
         )}
         {badge && (
-          <span className="rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-semibold text-primary-foreground">
+          <span className="rounded-full bg-primary px-1.5 py-0.5 text-label font-semibold text-primary-foreground">
             {badge}
           </span>
         )}
@@ -86,7 +87,7 @@ function NavItem({
 function NavSection({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="pt-5">
-      <p className="px-3 pb-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/70">
+      <p className="px-3 pb-1.5 text-label font-semibold uppercase tracking-[0.12em] text-muted-foreground">
         {label}
       </p>
       <div className="space-y-0.5">{children}</div>
@@ -108,6 +109,12 @@ const BREADCRUMBS: { match: string; section: string; page: string }[] = [
   { match: "/widget-admin", section: "nav.groupContent", page: "nav.widget" },
   { match: "/knowledge", section: "nav.groupContent", page: "nav.knowledge" },
   { match: "/platforms", section: "nav.groupContent", page: "nav.platforms" },
+  { match: "/admin/analytics", section: "nav.administration", page: "nav.analytics" },
+  { match: "/admin/feedback", section: "nav.administration", page: "nav.feedback" },
+  { match: "/admin/operations", section: "nav.administration", page: "nav.operations" },
+  { match: "/admin/growth", section: "nav.administration", page: "nav.growth" },
+  { match: "/admin/reports", section: "nav.administration", page: "nav.reports" },
+  { match: "/admin/enterprise", section: "nav.administration", page: "nav.enterprise" },
   { match: "/admin/users", section: "nav.administration", page: "nav.users" },
   { match: "/admin", section: "nav.administration", page: "nav.dashboard" },
   { match: "/platform-admin", section: "nav.superAdmin", page: "nav.platformAdmin" },
@@ -124,7 +131,7 @@ function Brand({ iconOnly = false }: { iconOnly?: boolean }) {
         <span aria-hidden className="absolute inset-0 rounded-lg bg-brand/30 blur-md opacity-60 transition-opacity group-hover:opacity-100" />
         <RelayChatLogo gradient className="relative size-6 transition-transform duration-300 group-hover:scale-105 group-hover:rotate-3" />
       </span>
-      {!iconOnly && <span className="text-[15px] font-semibold tracking-tight text-foreground">RelayChat</span>}
+      {!iconOnly && <span className="text-subtitle font-semibold tracking-tight text-foreground">RelayChat</span>}
     </Link>
   );
 }
@@ -300,7 +307,7 @@ function AppLayoutShell({ children }: { children: React.ReactNode }) {
        page — the reference layout's defining gesture. Edge-to-edge on small
        screens where the frame would only cost usable width. */
     <div className="flex h-screen flex-col overflow-hidden bg-background lg:p-3">
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-card lg:rounded-2xl lg:ring-1 lg:ring-foreground/[0.08] lg:shadow-[0_1px_3px_rgb(0_0_0/0.04)]">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-card lg:rounded-2xl lg:ring-1 lg:ring-foreground/[0.08] lg:shadow-xs">
         {/* ===== Top bar ===== */}
         <header className="relative z-30 flex h-14 shrink-0 items-center gap-3 border-b border-border/70 px-4">
           <button type="button" className="rounded-md p-1.5 hover:bg-foreground/[0.06] lg:hidden" onClick={() => setSidebarOpen(true)}>
@@ -313,11 +320,11 @@ function AppLayoutShell({ children }: { children: React.ReactNode }) {
           {/* Breadcrumb (desktop) — section › page, mirroring the reference. */}
           {crumb && (
             <nav aria-label="Breadcrumb" className="hidden items-center gap-2 lg:flex">
-              <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/70">
+              <span className="text-label font-semibold uppercase tracking-[0.12em] text-muted-foreground">
                 {t(crumb.section)}
               </span>
               <ChevronRight className="size-3.5 text-muted-foreground/40" />
-              <span className="text-[13px] font-medium text-foreground">{t(crumb.page)}</span>
+              <span className="text-body-sm font-medium text-foreground">{t(crumb.page)}</span>
             </nav>
           )}
           {/* Search + actions */}
@@ -343,9 +350,9 @@ function AppLayoutShell({ children }: { children: React.ReactNode }) {
                 aria-expanded={searchOpen && searchLive}
                 aria-controls="global-search-results"
                 aria-keyshortcuts="Meta+k Control+k"
-                className="h-9 w-full rounded-[10px] border border-border/80 bg-background/60 pl-9 pr-12 text-[13px] text-foreground placeholder:text-muted-foreground/50 transition-all focus:outline-none focus:border-ring/50 focus:ring-2 focus:ring-ring/25"
+                className="h-9 w-full rounded-md border border-border/80 bg-background/60 pl-9 pr-12 text-body-sm text-foreground placeholder:text-muted-foreground/50 transition-all focus:outline-none focus:border-ring/50 focus:ring-2 focus:ring-ring/25"
               />
-              <span className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-md border border-border/70 bg-muted/80 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">⌘K</span>
+              <span className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-md border border-border/70 bg-muted/80 px-1.5 py-0.5 text-label font-medium text-muted-foreground">⌘K</span>
 
               {searchOpen && searchLive && (
                 <div id="global-search-results" className="absolute right-0 top-full z-50 mt-2 w-96 overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground shadow-lg">
@@ -359,7 +366,7 @@ function AppLayoutShell({ children }: { children: React.ReactNode }) {
                   )}
                   {searchResults.sessions.length > 0 && (
                     <div>
-                      <p className="border-b border-border/70 bg-muted/30 px-3.5 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                      <p className="border-b border-border/70 bg-muted/30 px-3.5 py-1.5 text-label font-semibold uppercase tracking-[0.12em] text-muted-foreground">
                         {t("nav.inbox")}
                       </p>
                       {searchResults.sessions.map((session) => (
@@ -375,7 +382,7 @@ function AppLayoutShell({ children }: { children: React.ReactNode }) {
                               {session.user_display_name || session.title || session.platform_user_id || t("inbox.anonymous")}
                             </span>
                             {session.last_message && (
-                              <span className="block truncate text-[10px] text-muted-foreground">{session.last_message}</span>
+                              <span className="block truncate text-label text-muted-foreground">{session.last_message}</span>
                             )}
                           </span>
                         </button>
@@ -384,7 +391,7 @@ function AppLayoutShell({ children }: { children: React.ReactNode }) {
                   )}
                   {searchResults.docs.length > 0 && (
                     <div className="border-t border-border/70">
-                      <p className="border-b border-border/70 bg-muted/30 px-3.5 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                      <p className="border-b border-border/70 bg-muted/30 px-3.5 py-1.5 text-label font-semibold uppercase tracking-[0.12em] text-muted-foreground">
                         {t("nav.knowledge")}
                       </p>
                       {searchResults.docs.map((doc) => (
@@ -398,7 +405,7 @@ function AppLayoutShell({ children }: { children: React.ReactNode }) {
                           <span className="min-w-0 flex-1">
                             <span className="block truncate text-xs font-medium">{doc.title}</span>
                             {doc.category && (
-                              <span className="block truncate text-[10px] text-muted-foreground">{doc.category}</span>
+                              <span className="block truncate text-label text-muted-foreground">{doc.category}</span>
                             )}
                           </span>
                         </button>
@@ -406,7 +413,7 @@ function AppLayoutShell({ children }: { children: React.ReactNode }) {
                       <button
                         type="button"
                         onClick={() => { closeSearch(); router.push(`/knowledge?q=${encodeURIComponent(searchTerm)}`); }}
-                        className="flex w-full items-center justify-between gap-2 border-t border-border/70 px-3.5 py-2 text-[11px] font-medium text-primary transition-colors hover:bg-muted/50"
+                        className="flex w-full items-center justify-between gap-2 border-t border-border/70 px-3.5 py-2 text-label font-medium text-primary transition-colors hover:bg-muted/50"
                       >
                         {t("nav.searchAllInKb")}
                         <ChevronRight className="size-3" />
@@ -447,7 +454,14 @@ function AppLayoutShell({ children }: { children: React.ReactNode }) {
 
               {isAdmin && (
                 <NavSection label={t("nav.administration")}>
-                  <NavItem href="/admin" icon={Gauge} label={t("nav.dashboard")} active={isActive("/admin")} onNavigate={close} />
+                  {/* 原仪表盘页内 Tab 的六个视图（2026-10-12 拆分）：每个视图一个
+                      独立入口，顺序沿用拆分前的 Tab 顺序。 */}
+                  <NavItem href="/admin/analytics" icon={BarChart3} label={t("nav.analytics")} active={isActive("/admin/analytics")} onNavigate={close} />
+                  <NavItem href="/admin/feedback" icon={TrendingUp} label={t("nav.feedback")} active={isActive("/admin/feedback")} onNavigate={close} />
+                  <NavItem href="/admin/operations" icon={Clock} label={t("nav.operations")} active={isActive("/admin/operations")} onNavigate={close} />
+                  <NavItem href="/admin/growth" icon={Sparkles} label={t("nav.growth")} active={isActive("/admin/growth")} onNavigate={close} />
+                  <NavItem href="/admin/reports" icon={Download} label={t("nav.reports")} active={isActive("/admin/reports")} onNavigate={close} />
+                  <NavItem href="/admin/enterprise" icon={ShieldCheck} label={t("nav.enterprise")} active={isActive("/admin/enterprise")} onNavigate={close} />
                   <NavItem href="/admin/users" icon={Users} label={t("nav.users")} active={isActive("/admin/users")} onNavigate={close} />
                   <NavItem href="/admin/personas" icon={Bot} label={t("nav.personas")} active={isActive("/admin/personas")} onNavigate={close} />
                 </NavSection>
@@ -468,13 +482,13 @@ function AppLayoutShell({ children }: { children: React.ReactNode }) {
             <div className="shrink-0 border-t border-sidebar-border/80 p-2.5">
               <div className="flex items-center gap-2.5 rounded-xl bg-sidebar-accent/60 px-2 py-2 ring-1 ring-foreground/[0.05]">
                 <Avatar className="size-8">
-                  <AvatarFallback className="text-[12px] font-semibold">
+                  <AvatarFallback className="text-caption font-semibold">
                     {user?.username?.charAt(0).toUpperCase()}
                   </AvatarFallback>
                 </Avatar>
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-[13px] font-medium leading-tight">{user?.username}</p>
-                  <p className="truncate text-[11px] text-muted-foreground leading-tight">
+                  <p className="truncate text-body-sm font-medium leading-tight">{user?.username}</p>
+                  <p className="truncate text-label text-muted-foreground leading-tight">
                     {t(ROLE_KEYS[user?.role ?? "user"] ?? "role.member")}
                   </p>
                 </div>

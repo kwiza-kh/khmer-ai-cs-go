@@ -79,13 +79,13 @@ function CodeBlock({ children, ...props }: React.HTMLAttributes<HTMLPreElement>)
       <button
         type="button"
         onClick={onCopy}
-        className="absolute top-2 right-2 z-10 inline-flex items-center gap-1 rounded-md bg-background/80 border border-border px-1.5 py-1 text-[10px] text-muted-foreground opacity-0 group-hover/code:opacity-100 transition-opacity hover:text-foreground"
+        className="absolute top-2 right-2 z-10 inline-flex items-center gap-1 rounded-md bg-background/80 border border-border px-1.5 py-1 text-label text-muted-foreground opacity-0 group-hover/code:opacity-100 transition-opacity hover:text-foreground"
         aria-label={t("md.copyAria")}
       >
         {copied ? <CheckIcon className="size-3" /> : <CopyIcon className="size-3" />}
         {copied ? t("md.copied") : t("md.copy")}
       </button>
-      <pre {...props} className="overflow-x-auto rounded-lg bg-zinc-950 p-3 text-xs leading-relaxed">
+      <pre {...props} className="overflow-x-auto rounded-lg bg-code p-3 text-xs leading-relaxed">
         {children}
       </pre>
     </div>

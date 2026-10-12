@@ -116,7 +116,7 @@ export function TelegramNotifyCard() {
               {linking ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
               {t("settings.tgConnect")}
             </Button>
-            <p className="text-[11px] leading-4 text-muted-foreground">{t("settings.tgConnectHint")}</p>
+            <p className="text-label leading-4 text-muted-foreground">{t("settings.tgConnectHint")}</p>
             <p className="text-xs text-muted-foreground">{t("settings.tgNotConnected")}</p>
           </>
         ) : (
@@ -164,7 +164,7 @@ export function TelegramNotifyCard() {
                 {t("settings.tgTest")}
               </Button>
             </div>
-            <p className="text-[11px] leading-4 text-muted-foreground">{t("settings.tgUnlinkHint")}</p>
+            <p className="text-label leading-4 text-muted-foreground">{t("settings.tgUnlinkHint")}</p>
           </>
         )}
       </CardContent>

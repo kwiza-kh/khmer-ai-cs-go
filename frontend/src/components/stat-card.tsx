@@ -20,6 +20,7 @@ const toneVariants = cva(
         warning: "bg-warning/10 text-warning",
         info: "bg-info/10 text-info",
         danger: "bg-danger/10 text-danger",
+        primary: "bg-primary/10 text-primary",
       },
     },
     defaultVariants: {
@@ -91,19 +92,19 @@ export function StatCard({
           <div className={cn(toneVariants({ tone }))}>
             <Icon className="size-[15px]" />
           </div>
-          <p className="min-w-0 flex-1 truncate text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+          <p className="min-w-0 flex-1 truncate text-label font-medium uppercase tracking-[0.12em] text-muted-foreground">
             {label}
           </p>
           {menu && <div className="shrink-0 text-muted-foreground/60">{menu}</div>}
         </div>
         <div className="flex flex-wrap items-baseline gap-2">
-          <p className="text-[27px] font-semibold leading-none tracking-[-0.02em] tabular-nums">
+          <p className="text-display font-semibold leading-none tracking-[-0.02em] tabular-nums">
             {value ?? "—"}
           </p>
           {hasDelta && (
             <span
               className={cn(
-                "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] font-semibold tabular-nums",
+                "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-label font-semibold tabular-nums",
                 good ? "bg-success/10 text-success" : "bg-danger/10 text-danger"
               )}
             >
@@ -114,7 +115,7 @@ export function StatCard({
           )}
         </div>
         {hint != null && (
-          <p className="truncate text-[12px] leading-none text-muted-foreground">{hint}</p>
+          <p className="truncate text-caption leading-none text-muted-foreground">{hint}</p>
         )}
       </CardContent>
     </Card>

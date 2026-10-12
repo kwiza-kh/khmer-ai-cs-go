@@ -8,6 +8,7 @@ import {
   type PaginatedTenants,
 } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ModelsAdminPage } from "@/components/admin/admin-pages";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,10 +18,12 @@ import { PageHeader } from "@/components/page-header";
 import {
   Building2, Search, Power, ShieldCheck, Loader2, Plus, Users, MessageSquare, FileText,
   Coins, BarChart3, Eye, ScrollText, ChevronLeft, ChevronRight, Cpu, Zap, Headset, CreditCard, Activity,
+  type LucideIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useI18n } from "@/lib/i18n";
-import { fmtDateTime, fmtInt, fmtMoney } from "@/lib/format";
+import { fmtDateTime, fmtInt, fmtMoneyAuto } from "@/lib/format";
+import { StatCard } from "@/components/stat-card";
 import { PlatformTokensPanel } from "@/components/admin/platform-tokens-panel";
 import { ChannelsPanel, KnowledgeGapsPanel, RevenuePanel, SupportPanel, TodoCard, type PlatformSection } from "@/components/admin/platform-ops-panels";
 
@@ -48,39 +51,49 @@ export default function PlatformAdminPage() {
         description={t("pa.desc")}
       />
       <div className="flex-1 overflow-auto p-5 sm:p-8">
-        <div className="max-w-5xl mx-auto space-y-4">
-          <div className="flex flex-wrap gap-2">
-            {[
-              { key: "overview", labelKey: "pa.overview", icon: BarChart3 },
-              { key: "tenants", labelKey: "pa.tenants", icon: Building2 },
-              { key: "create", labelKey: "pa.createTenant", icon: Plus },
-              // Operations: who is waiting on us, who owes us, what is broken.
-              { key: "support", labelKey: "po.support.title", icon: Headset },
-              { key: "revenue", labelKey: "po.revenue.title", icon: CreditCard },
-              { key: "channels", labelKey: "po.channels.title", icon: Activity },
-              { key: "gaps", labelKey: "po.gaps.title", icon: MessageSquare },
-              // Model config and its metering live here: both are
-              // platformAdminOnly APIs, so the console that owns the platform
-              // owns them (they used to be tenant-area pages that answered 403).
-              { key: "models", labelKey: "nav.models", icon: Cpu },
-              { key: "tokens", labelKey: "nav.tokens", icon: Coins },
-              { key: "audit", labelKey: "pa.audit", icon: ScrollText },
-            ].map((s) => (
-              <Button key={s.key} size="sm" variant={section === s.key ? "default" : "outline"} className="gap-1.5 text-xs" onClick={() => setSection(s.key)}>
-                <s.icon className="size-3" /> {t(s.labelKey)}
+        {/* 内容列居中（mx-auto）—— 产品要求所有界面居中，勿去掉。
+            导航用页面级 Tabs —— 与 /admin 同一实现；"Create tenant" 是要执行
+            的动作、不是目的地，拆出导航行放在右侧（2026-10-12 审查）。 */}
+        <div className="mx-auto max-w-5xl space-y-4">
+          <Tabs value={section} onValueChange={(value) => setSection(value || "overview")}>
+            <div className="flex flex-wrap items-center gap-2">
+              <TabsList className="h-auto w-auto flex-wrap">
+                {[
+                  { key: "overview", labelKey: "pa.overview", icon: BarChart3 },
+                  { key: "tenants", labelKey: "pa.tenants", icon: Building2 },
+                  // Operations: who is waiting on us, who owes us, what is broken.
+                  { key: "support", labelKey: "po.support.title", icon: Headset },
+                  { key: "revenue", labelKey: "po.revenue.title", icon: CreditCard },
+                  { key: "channels", labelKey: "po.channels.title", icon: Activity },
+                  { key: "gaps", labelKey: "po.gaps.title", icon: MessageSquare },
+                  // Model config and its metering live here: both are
+                  // platformAdminOnly APIs, so the console that owns the platform
+                  // owns them (they used to be tenant-area pages that answered 403).
+                  { key: "models", labelKey: "nav.models", icon: Cpu },
+                  { key: "tokens", labelKey: "nav.tokens", icon: Coins },
+                  { key: "audit", labelKey: "pa.audit", icon: ScrollText },
+                ].map((s) => (
+                  <TabsTrigger key={s.key} value={s.key} className="gap-1.5 text-xs">
+                    <s.icon className="size-3" /> {t(s.labelKey)}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+              <Button size="sm" variant="outline" className="ml-auto gap-1.5 text-xs" onClick={() => setSection("create")}>
+                <Plus className="size-3" /> {t("pa.createTenant")}
               </Button>
-            ))}
-          </div>
-          {section === "overview" && <OverviewPanel onNavigate={setSection} />}
-          {section === "tenants" && <TenantsPanel />}
-          {section === "create" && <CreateTenantPanel />}
-          {section === "support" && <SupportPanel />}
-          {section === "revenue" && <RevenuePanel />}
-          {section === "channels" && <ChannelsPanel />}
-          {section === "gaps" && <KnowledgeGapsPanel />}
-          {section === "models" && <ModelsAdminPage />}
-          {section === "tokens" && <PlatformTokensPanel />}
-          {section === "audit" && <AuditLogsPanel />}
+            </div>
+            <TabsContent value="overview" className="mt-4"><OverviewPanel onNavigate={setSection} /></TabsContent>
+            <TabsContent value="tenants" className="mt-4"><TenantsPanel /></TabsContent>
+            <TabsContent value="support" className="mt-4"><SupportPanel /></TabsContent>
+            <TabsContent value="revenue" className="mt-4"><RevenuePanel /></TabsContent>
+            <TabsContent value="channels" className="mt-4"><ChannelsPanel /></TabsContent>
+            <TabsContent value="gaps" className="mt-4"><KnowledgeGapsPanel /></TabsContent>
+            <TabsContent value="models" className="mt-4"><ModelsAdminPage /></TabsContent>
+            <TabsContent value="tokens" className="mt-4"><PlatformTokensPanel /></TabsContent>
+            <TabsContent value="audit" className="mt-4"><AuditLogsPanel /></TabsContent>
+            {/* create 由右侧按钮进入，没有对应 trigger —— Panel 只认 value。 */}
+            <TabsContent value="create" className="mt-4"><CreateTenantPanel /></TabsContent>
+          </Tabs>
         </div>
       </div>
     </div>
@@ -91,12 +104,12 @@ function OverviewPanel({ onNavigate }: { onNavigate: (s: PlatformSection) => voi
   const { t, tf } = useI18n();
   const { data } = useSWR<PlatformAnalytics>("platform-analytics", getPlatformAnalytics);
   if (!data) return <EmptyState icon={BarChart3} title={t("pa.loadingStats")} />;
-  const stats = [
-    { label: t("pa.statTenants"), value: fmtInt(data.total_tenants), icon: Building2, sub: tf("pa.activeCount", { n: data.active_tenants }) },
+  const stats: { label: string; value: string; icon: LucideIcon; hint?: string }[] = [
+    { label: t("pa.statTenants"), value: fmtInt(data.total_tenants), icon: Building2, hint: tf("pa.activeCount", { n: data.active_tenants }) },
     { label: t("pa.statSessions"), value: fmtInt(data.total_sessions), icon: MessageSquare },
     { label: t("pa.statMessages"), value: fmtInt(data.total_messages), icon: MessageSquare },
     { label: t("pt.totalTokens"), value: fmtInt(data.total_tokens), icon: Coins },
-    { label: t("pt.totalCost"), value: fmtMoney(data.total_cost, 4), icon: Coins },
+    { label: t("pt.totalCost"), value: fmtMoneyAuto(data.total_cost), icon: Coins },
     { label: t("pt.cacheHit"), value: `${(data.cache_hit_rate ?? 0).toFixed(1)}%`, icon: Zap },
     { label: t("pa.statKbDocs"), value: fmtInt(data.total_documents), icon: FileText },
   ];
@@ -107,20 +120,17 @@ function OverviewPanel({ onNavigate }: { onNavigate: (s: PlatformSection) => voi
     <div className="space-y-4">
       {/* First thing on this page: what needs the operator today. */}
       <TodoCard onNavigate={onNavigate} />
+      {/* KPI 用共享 StatCard（2026-10-12 审查: 平台页曾是全站第四种 KPI 长相）。 */}
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+        {stats.map((s) => (
+          <StatCard key={s.label} icon={s.icon} label={s.label} value={s.value} hint={s.hint} />
+        ))}
+      </div>
       <Card>
       <CardHeader className="pb-2">
         <CardTitle className="text-sm flex items-center gap-2"><BarChart3 className="size-4 text-primary" /> {t("pa.overviewTitle")}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
-          {stats.map((s) => (
-            <div key={s.label} className="rounded-md border border-border p-3">
-              <s.icon className="size-4 text-muted-foreground" />
-              <p className="text-lg font-semibold mt-1">{s.value}</p>
-              <p className="text-[11px] text-muted-foreground">{s.label}{s.sub ? ` · ${s.sub}` : ""}</p>
-            </div>
-          ))}
-        </div>
         <div>
           <p className="text-xs font-medium text-muted-foreground mb-1.5">{t("pa.planDistribution")}</p>
           <div className="flex gap-2 flex-wrap">
@@ -132,7 +142,7 @@ function OverviewPanel({ onNavigate }: { onNavigate: (s: PlatformSection) => voi
         <div>
           <p className="text-xs font-medium text-muted-foreground mb-1.5">{t("pa.messages14")}</p>
           {data.daily_messages.length === 0 ? (
-            <p className="text-[11px] text-muted-foreground">{t("pa.noActivity")}</p>
+            <p className="text-label text-muted-foreground">{t("pa.noActivity")}</p>
           ) : (
             <div className="flex items-end gap-1.5 h-24">
               {window14.map((d) => {
@@ -149,7 +159,7 @@ function OverviewPanel({ onNavigate }: { onNavigate: (s: PlatformSection) => voi
                       style={{ height: `${height}%` }}
                       title={tf("pa.chartTitle", { date: d.date, n: d.messages })}
                     />
-                    <span className="text-[10px] text-muted-foreground tabular-nums">{d.date.slice(5)}</span>
+                    <span className="text-label text-muted-foreground tabular-nums">{d.date.slice(5)}</span>
                   </div>
                 );
               })}
@@ -233,7 +243,7 @@ function TenantsPanel() {
                 key={f.key || "all"}
                 size="sm"
                 variant={auth === f.key ? "default" : "outline"}
-                className="h-6 px-2 text-[11px]"
+                className="h-6 px-2 text-label"
                 onClick={() => setAuth(f.key)}
               >
                 {t(f.labelKey)}
@@ -254,25 +264,25 @@ function TenantsPanel() {
                       <p className="flex flex-wrap items-center gap-1.5 text-xs font-medium">
                         <span className="truncate">{tenant.username}</span>
                         {(tenant.auth_methods ?? []).map((m) => (
-                          <Badge key={m} variant="outline" className="h-4 shrink-0 px-1.5 text-[10px] font-normal text-muted-foreground">
+                          <Badge key={m} variant="outline" className="h-4 shrink-0 px-1.5 text-label font-normal text-muted-foreground">
                             {AUTH_LABEL[m] ? t(AUTH_LABEL[m]) : m}
                           </Badge>
                         ))}
                       </p>
                       {(tenant.display_name || tenant.phone || tenant.email) && (
-                        <p className="truncate text-[11px] text-muted-foreground">
+                        <p className="truncate text-label text-muted-foreground">
                           {[tenant.display_name, tenant.phone, tenant.email].filter(Boolean).join(" · ")}
                         </p>
                       )}
                     </div>
-                    <Badge variant={tenant.is_active ? "success" : "destructive"} className="h-4 px-1.5 text-[11px]">{tenant.is_active ? t("pa.badgeActive") : t("pa.badgeDisabled")}</Badge>
+                    <Badge variant={tenant.is_active ? "success" : "destructive"} className="h-4 px-1.5 text-label">{tenant.is_active ? t("pa.badgeActive") : t("pa.badgeDisabled")}</Badge>
                   </div>
                   <div className="flex items-center gap-1.5 flex-wrap">
-                    <select value={tenant.plan} onChange={(e) => changePlan(tenant, e.target.value)} className="h-6 text-[11px] rounded border border-input bg-transparent px-1.5 capitalize">
+                    <select value={tenant.plan} onChange={(e) => changePlan(tenant, e.target.value)} className="h-6 text-label rounded border border-input bg-transparent px-1.5 capitalize">
                       <option value="free">free</option><option value="pro">pro</option><option value="enterprise">enterprise</option>
                     </select>
-                    <Badge variant="outline" className="h-4 px-1 text-[11px]">{tf("pa.msgsBadge", { used: tenant.messages_used, quota: tenant.message_quota })}</Badge>
-                    <Badge variant="outline" className="h-4 px-1 text-[11px]">{tf("pa.docsBadge", { used: tenant.docs_used, quota: tenant.doc_quota })}</Badge>
+                    <Badge variant="outline" className="h-4 px-1 text-label">{tf("pa.msgsBadge", { used: tenant.messages_used, quota: tenant.message_quota })}</Badge>
+                    <Badge variant="outline" className="h-4 px-1 text-label">{tf("pa.docsBadge", { used: tenant.docs_used, quota: tenant.doc_quota })}</Badge>
                     <div className="flex-1" />
                     <Button size="icon-sm" variant="ghost" className="h-6 w-6" title={t("pa.view")} onClick={() => openDetail(tenant)}><Eye className="size-3.5" /></Button>
                     <Button size="icon-sm" variant="ghost" className="h-6 w-6" title={tenant.is_active ? t("pa.disable") : t("pa.enable")} onClick={() => toggle(tenant)}>
@@ -299,7 +309,7 @@ function TenantsPanel() {
                   channel, documents that failed to index, and whether anyone is
                   actually using the tenant at all. */}
               {detail.health && (
-                <div className="space-y-1.5 rounded border border-border p-2 text-[11px]">
+                <div className="space-y-1.5 rounded border border-border p-2 text-label">
                   <p className="font-medium text-muted-foreground">{t("po.health.title")}</p>
                   <div className="flex flex-wrap items-center gap-1.5">
                     <span>{t("po.health.channels")}:</span>
@@ -309,7 +319,7 @@ function TenantsPanel() {
                         <Badge
                           key={c.config_id}
                           variant={c.status === "connected" ? "success" : "secondary"}
-                          className="h-4 px-1 text-[10px] font-normal"
+                          className="h-4 px-1 text-label font-normal"
                           title={c.checked_at ?? undefined}
                         >
                           {c.platform}
@@ -349,19 +359,19 @@ function TenantsPanel() {
                 {(["total_sessions", "total_messages", "total_documents", "messages_used"] as const).map((k) => (
                   <div key={k} className="rounded bg-muted/40 py-1.5">
                     <p className="text-sm font-semibold">{detail.tenant[k]}</p>
-                    <p className="text-[10px] text-muted-foreground">{t(`pa.field${k.replace(/(^|_)([a-z])/g, (_, __, c: string) => c.toUpperCase())}`)}</p>
+                    <p className="text-label text-muted-foreground">{t(`pa.field${k.replace(/(^|_)([a-z])/g, (_, __, c: string) => c.toUpperCase())}`)}</p>
                   </div>
                 ))}
               </div>
               <div className="space-y-1">
-                <p className="text-[11px] font-medium text-muted-foreground">{t("pa.recentSessions")}</p>
-                {detail.sessions.length === 0 && <p className="text-[11px] text-muted-foreground">{t("pa.noSessions")}</p>}
+                <p className="text-label font-medium text-muted-foreground">{t("pa.recentSessions")}</p>
+                {detail.sessions.length === 0 && <p className="text-label text-muted-foreground">{t("pa.noSessions")}</p>}
                 {detail.sessions.slice(0, 8).map((sess) => (
                   <div key={sess.session_id} className="rounded border border-border p-2 flex items-center gap-2">
-                    <p className="text-[11px] truncate flex-1">{sess.title || sess.platform || t("gr.untitled")}</p>
-                    {sess.sentiment === "negative" && <Badge variant="destructive" className="h-3.5 px-1 text-[10px]">{t("inbox.angry")}</Badge>}
-                    <Badge variant="outline" className="h-3.5 px-1 text-[10px]">{sess.status}</Badge>
-                    <span className="text-[10px] text-muted-foreground">{tf("pa.msgsCount", { n: sess.user_message_count + sess.model_message_count })}</span>
+                    <p className="text-label truncate flex-1">{sess.title || sess.platform || t("gr.untitled")}</p>
+                    {sess.sentiment === "negative" && <Badge variant="destructive" className="h-4 px-1 text-label">{t("inbox.angry")}</Badge>}
+                    <Badge variant="outline" className="h-4 px-1 text-label">{sess.status}</Badge>
+                    <span className="text-label text-muted-foreground">{tf("pa.msgsCount", { n: sess.user_message_count + sess.model_message_count })}</span>
                   </div>
                 ))}
               </div>
@@ -484,7 +494,7 @@ function AuditLogsPanel() {
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
               <thead>
-                <tr className="border-b border-border text-[10px] uppercase tracking-[0.1em] text-muted-foreground">
+                <tr className="border-b border-border text-label uppercase tracking-[0.12em] text-muted-foreground">
                   <th className="py-2 pr-3 font-medium">{t("pa.colTime")}</th>
                   <th className="py-2 pr-3 font-medium">{t("pa.colAdmin")}</th>
                   <th className="py-2 pr-3 font-medium">{t("pa.colAction")}</th>
@@ -503,17 +513,17 @@ function AuditLogsPanel() {
                       </td>
                       <td className="py-2 pr-3 font-medium">{row.username || <span className="text-muted-foreground">{t("pa.system")}</span>}</td>
                       <td className="py-2 pr-3">
-                        <span className="font-mono text-[11px]">{row.action}</span>
+                        <span className="font-mono text-label">{row.action}</span>
                         {d.path && d.path !== row.action && (
                           <span className="ml-1 text-muted-foreground">{d.path}</span>
                         )}
                       </td>
                       <td className="py-2 pr-3">
-                        <Badge variant={ok ? "success" : "destructive"} className="h-5 px-1.5 text-[10px]">
+                        <Badge variant={ok ? "success" : "destructive"} className="h-5 px-1.5 text-label">
                           {d.status ?? "?"}
                         </Badge>
                       </td>
-                      <td className="py-2 pr-3 font-mono text-[11px] text-muted-foreground">{row.ip_address || "—"}</td>
+                      <td className="py-2 pr-3 font-mono text-label text-muted-foreground">{row.ip_address || "—"}</td>
                     </tr>
                   );
                 })}

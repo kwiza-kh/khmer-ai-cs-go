@@ -18,6 +18,7 @@ export default function HelpPage() {
       />
 
       <div className="flex-1 overflow-auto p-5 sm:p-8">
+        {/* 居中列（mx-auto），产品要求所有界面居中 —— 勿去掉（见 settings/page.tsx 注释）。 */}
         <div className="mx-auto w-full max-w-3xl space-y-5">
 
           {/* Quickstart */}
@@ -26,7 +27,7 @@ export default function HelpPage() {
             <CardContent>
               <ol className="space-y-2 text-sm">
                 <Step n={1} title={t("help.step1t")}>
-                  {t("help.step1a")}<code className="text-xs bg-muted px-1.5 py-0.5 rounded">admin</code>{t("help.step1b")}<code className="text-xs bg-muted px-1.5 py-0.5 rounded">INITIAL_ADMIN_PASSWORD</code>{t("help.step1c")}
+                  {t("help.step1a")}<code className="text-xs bg-muted px-1.5 py-0.5 rounded text-foreground">admin</code>{t("help.step1b")}<code className="text-xs bg-muted px-1.5 py-0.5 rounded text-foreground">INITIAL_ADMIN_PASSWORD</code>{t("help.step1c")}
                 </Step>
                 <Step n={2} title={t("help.step2t")}>
                   {t("help.step2a")}<b>{t("nav.dashboard")} → {t("nav.models")}</b>{t("help.step2b")}<Badge variant="warning" className="h-4 px-1.5">mock</Badge>{t("help.step2c")}
