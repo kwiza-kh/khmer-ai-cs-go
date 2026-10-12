@@ -268,11 +268,19 @@ func (a *App) agentReply(w http.ResponseWriter, r *http.Request, sessionID strin
 	if err != nil {
 		mapped = false
 	}
-	// Persist the agent message.
+	// Persist the agent message. message_type carries the composer mode, so the
+	// transcript says what was actually sent without joining the delivery queue:
+	// a buttons message used to be stored as plain 'text', which left the inbox
+	// unable to show that the message carried reply options at all (found on
+	// 2026-10-12 while tracing why a tapped button produced no reply).
+	messageType := "text"
+	if kind, ok := req.Payload["kind"].(string); ok && kind != "" {
+		messageType = kind
+	}
 	var msgID int64
 	if err := a.DB.QueryRow(r.Context(),
-		"INSERT INTO chat_messages (session_id, role, message_type, content, created_at) VALUES ($1,'agent','text',$2,$3) RETURNING message_id",
-		sessionID, req.Content, time.Now()).Scan(&msgID); err != nil {
+		"INSERT INTO chat_messages (session_id, role, message_type, content, created_at) VALUES ($1,'agent',$2,$3,$4) RETURNING message_id",
+		sessionID, messageType, req.Content, time.Now()).Scan(&msgID); err != nil {
 		return nil, ErrInternal("保存回复失败")
 	}
 	// Enqueue delivery via the platform pipeline (platform sessions only).

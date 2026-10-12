@@ -58,6 +58,37 @@ type InboundRoute struct {
 // re-measure from the host without a rebuild.
 var routeBudget = config.EnvMillis("JEV_ROUTE_BUDGET_MS", 4*time.Second)
 
+// ButtonSelectionPrefix marks an inbound message that is a customer TAPPING one
+// of the operator's configured reply buttons, not typing text.
+//
+// Every provider hands the tap back as plain text and nothing else — Meta puts
+// the button title in message.text (payload in quick_reply), WhatsApp puts it in
+// button_reply.title, Telegram returns only our callback_data — so without a
+// marker the tap is indistinguishable from the customer typing that string.
+//
+// That is not a theoretical loss. 2026-10-12: an operator sent a single button
+// titled "1", the customer tapped it, and Jev routed the bare "1" as junk at
+// p=0.90 — exactly the JEV_ROUTE_JUNK_MIN default — so the turn was silenced
+// (no generation, no delivery, no owner ping). The customer saw a button that
+// did nothing. A tap is always a real, operator-authored request, so the router
+// is not allowed to call it junk or chit-chat; the marker is how it knows.
+const ButtonSelectionPrefix = buttonSelectionTag + " "
+
+// buttonSelectionTag is the marker without its separator. IsButtonSelection
+// tests against the tag, not the prefix, so a tap whose label arrived empty is
+// still a tap and cannot fall back into the junk route.
+const buttonSelectionTag = "[Button selected]"
+
+// ButtonSelection renders one tapped-button label as an inbound message body.
+func ButtonSelection(label string) string {
+	return ButtonSelectionPrefix + strings.TrimSpace(label)
+}
+
+// IsButtonSelection reports whether an inbound body is a tapped button.
+func IsButtonSelection(text string) bool {
+	return strings.HasPrefix(strings.TrimSpace(text), buttonSelectionTag)
+}
+
 // RouteInbound asks Jev what a message needs — route and urgency, judged in
 // one batch — before any retrieval or generation. ok=false when Jev is
 // disabled, unavailable, or answers out of vocabulary: every caller then
@@ -133,7 +164,11 @@ func routeDecision(route string, prob float64, content string) (escalate, skipGr
 	if route == RouteHandoff && prob >= config.EnvFloat("JEV_ROUTE_HANDOFF_MIN", 0.80) {
 		return true, false, false
 	}
-	if route == RouteSmallTalk && prob >= config.EnvFloat("JEV_ROUTE_CHITCHAT_MIN", 0.80) {
+	// The handoff route above is deliberately NOT exempted: a button labelled
+	// "talk to a human" is still a human request. Everything below is an
+	// absence-of-request verdict, and a tap is never that.
+	selection := IsButtonSelection(content)
+	if !selection && route == RouteSmallTalk && prob >= config.EnvFloat("JEV_ROUTE_CHITCHAT_MIN", 0.80) {
 		// A question is never chit-chat.
 		//
 		// skipGround means "the router is confident this carries no request, so
@@ -156,7 +191,7 @@ func routeDecision(route string, prob float64, content string) (escalate, skipGr
 	// than on English (jeveval -mode khmer), and a wrongly-silenced Khmer
 	// customer is a worse outcome than one wasted generation. Raise the bar
 	// until there is Khmer-route accuracy data justifying a lower one.
-	if route == RouteJunk && prob >= config.EnvFloat("JEV_ROUTE_JUNK_MIN", 0.90) {
+	if !selection && route == RouteJunk && prob >= config.EnvFloat("JEV_ROUTE_JUNK_MIN", 0.90) {
 		// A question is never silenced either — and this veto matters more than the
 		// chit-chat one, because silence is the router's only irreversible action:
 		// no reply, no generation, no delivery. The customer sees a bot that ignored

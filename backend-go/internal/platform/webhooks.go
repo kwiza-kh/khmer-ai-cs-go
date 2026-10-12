@@ -149,11 +149,33 @@ func (wh *Webhooks) handleMetaMessaging(ctx context.Context, cfg *webhookConfig,
 	if senderObj, ok := msg["sender"].(map[string]any); ok {
 		sender, _ = senderObj["id"].(string)
 	}
+	// Template postback buttons arrive as their own event with no `message` at
+	// all. The webhook is subscribed to messaging_postbacks, so these were being
+	// delivered and then dropped before they could reach the pipeline — the same
+	// "customer tapped something and nothing happened" failure the quick-reply
+	// branch below fixes.
+	if label, payload, ok := metaPostbackLabel(msg); ok {
+		if sender == "" {
+			return nil
+		}
+		// No message id exists for a postback; payload+timestamp is the pair Meta
+		// repeats on a redelivery and only there, which is what dedupe needs.
+		ts, _ := msg["timestamp"].(float64)
+		externalID := "postback:" + payload + ":" + jsonNumberString(ts)
+		return wh.Pipe.EnqueueInboundEvent(ctx, cfg.ConfigID, cfg.Platform, externalID, sender, "", ButtonSelection(label), nil)
+	}
 	message, _ := msg["message"].(map[string]any)
 	if message == nil || sender == "" {
 		return nil
 	}
 	text, _ := message["text"].(string)
+	// A quick-reply tap carries the button title in message.text and the machine
+	// payload beside it. Marking it is what stops the router from reading a
+	// short label as gibberish (2026-10-12: a button titled "1" was routed junk
+	// at p=0.90 and the customer got no reply).
+	if label, ok := metaQuickReplyLabel(message); ok {
+		text = ButtonSelection(label)
+	}
 	mid, _ := message["mid"].(string)
 	if mid == "" {
 		mid = sender
@@ -169,6 +191,83 @@ func (wh *Webhooks) handleMetaMessaging(ctx context.Context, cfg *webhookConfig,
 		return nil
 	}
 	return wh.Pipe.EnqueueInboundEvent(ctx, cfg.ConfigID, cfg.Platform, mid, sender, "", text, media)
+}
+
+// metaQuickReplyLabel returns the label of a quick-reply tap.
+//
+// Meta sends the button title in message.text and the machine payload beside it
+// in quick_reply; the title is what the customer read, so it wins. The caller
+// marks the result with ButtonSelectionPrefix, because a bare "1" is otherwise
+// indistinguishable from the customer typing it — and the router silenced one
+// at p=0.90 on 2026-10-12.
+func metaQuickReplyLabel(message map[string]any) (string, bool) {
+	qr, ok := message["quick_reply"].(map[string]any)
+	if !ok {
+		return "", false
+	}
+	title, _ := message["text"].(string)
+	label := strings.TrimSpace(title)
+	if label == "" {
+		payload, _ := qr["payload"].(string)
+		label = strings.TrimSpace(payload)
+	}
+	return label, label != ""
+}
+
+// metaPostbackLabel returns the label and payload of a template postback button
+// tap. A postback arrives as its own event with no `message` object at all, so
+// without this branch the tap never reached the pipeline (the webhook is
+// subscribed to messaging_postbacks).
+func metaPostbackLabel(msg map[string]any) (label, payload string, ok bool) {
+	postback, isPostback := msg["postback"].(map[string]any)
+	if !isPostback {
+		return "", "", false
+	}
+	payload, _ = postback["payload"].(string)
+	title, _ := postback["title"].(string)
+	label = strings.TrimSpace(title)
+	if label == "" {
+		label = strings.TrimSpace(payload)
+	}
+	return label, payload, label != ""
+}
+
+// whatsAppReplyLabel returns the label of a reply-button or list tap for one
+// WhatsApp message object. WhatsApp does send the chosen reply's id back, but it
+// sends the title too and the title is what the customer read; the id is only the
+// fallback for a tap that carries no title.
+func whatsAppReplyLabel(msgType string, msg map[string]any) (string, bool) {
+	if msgType == "button" {
+		b, ok := msg["button"].(map[string]any)
+		if !ok {
+			return "", false
+		}
+		title, _ := b["text"].(string)
+		if label := strings.TrimSpace(title); label != "" {
+			return label, true
+		}
+		payload, _ := b["payload"].(string)
+		label := strings.TrimSpace(payload)
+		return label, label != ""
+	}
+	ia, ok := msg["interactive"].(map[string]any)
+	if !ok {
+		return "", false
+	}
+	reply, ok := ia["button_reply"].(map[string]any)
+	if !ok {
+		reply, ok = ia["list_reply"].(map[string]any)
+	}
+	if !ok {
+		return "", false
+	}
+	title, _ := reply["title"].(string)
+	if label := strings.TrimSpace(title); label != "" {
+		return label, true
+	}
+	id, _ := reply["id"].(string)
+	label := strings.TrimSpace(id)
+	return label, label != ""
 }
 
 func extractMetaMedia(message map[string]any) map[string]any {
@@ -211,9 +310,19 @@ func (wh *Webhooks) TelegramWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	wh.recordHealth(r.Context(), cfg.ConfigID, "connected", "", "Receiving Telegram webhook events")
 
-	// Inline keyboard presses (👍/👎 on AI replies) before message handling.
+	// Inline keyboard presses carry no message, so they are handled first — and
+	// TWO kinds arrive here: the 👍/👎 vote the platform attaches to an AI reply,
+	// and a customer tapping a reply button the operator sent. The second kind
+	// used to be swallowed whole: the branch handed every callback to the CSAT
+	// handler, which returned early on any data that was not "fb:…", so the tap
+	// produced no inbound event, no reply and no inbox line (2026-10-12).
 	if callback, ok := update["callback_query"].(map[string]any); ok {
-		wh.handleTelegramCallback(r.Context(), cfg, callback)
+		data, _ := callback["data"].(string)
+		if isFeedbackCallback(data) {
+			wh.handleTelegramCallback(r.Context(), cfg, callback)
+		} else {
+			wh.enqueueTelegramButtonSelection(r.Context(), cfg, callback)
+		}
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -270,9 +379,32 @@ func (wh *Webhooks) TelegramWebhook(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// handleTelegramCallback processes an inline-keyboard press ("fb:<msgID>:<±1>")
-// on an AI reply: stores the rating on the message, escalates 👎 to the
-// handoff queue, and answers the callback so Telegram clears the button state.
+// parseFeedbackCallback splits an inline-keyboard CSAT vote ("fb:<msgID>:<±1>")
+// into its parts. ok=false means the callback_data is not a vote — which is how
+// the operator's own reply buttons are recognised, so a caller must never read a
+// false as "nothing happened".
+func parseFeedbackCallback(data string) (int64, int, bool) {
+	parts := strings.Split(data, ":")
+	if len(parts) != 3 || parts[0] != "fb" {
+		return 0, 0, false
+	}
+	msgID, err1 := strconv.ParseInt(parts[1], 10, 64)
+	rating, err2 := strconv.Atoi(parts[2])
+	if err1 != nil || err2 != nil || (rating != 1 && rating != -1) {
+		return 0, 0, false
+	}
+	return msgID, rating, true
+}
+
+func isFeedbackCallback(data string) bool {
+	_, _, ok := parseFeedbackCallback(data)
+	return ok
+}
+
+// handleTelegramCallback processes an inline-keyboard CSAT press
+// ("fb:<msgID>:<±1>") on an AI reply: stores the rating on the message,
+// escalates 👎 to the handoff queue, and answers the callback so Telegram clears
+// the button state.
 func (wh *Webhooks) handleTelegramCallback(ctx context.Context, cfg *webhookConfig, callback map[string]any) {
 	cbID, _ := callback["id"].(string)
 	data, _ := callback["data"].(string)
@@ -282,13 +414,8 @@ func (wh *Webhooks) handleTelegramCallback(ctx context.Context, cfg *webhookConf
 			chatID = jsonNumberString(id)
 		}
 	}
-	parts := strings.Split(data, ":")
-	if len(parts) != 3 || parts[0] != "fb" {
-		return
-	}
-	msgID, err1 := strconv.ParseInt(parts[1], 10, 64)
-	rating, err2 := strconv.Atoi(parts[2])
-	if err1 != nil || err2 != nil || (rating != 1 && rating != -1) || chatID == "" {
+	msgID, rating, ok := parseFeedbackCallback(data)
+	if !ok || chatID == "" {
 		return
 	}
 
@@ -324,6 +451,101 @@ func (wh *Webhooks) handleTelegramCallback(ctx context.Context, cfg *webhookConf
 		}[strconv.Itoa(rating)]
 		_ = NewTelegramClient(botToken).AnswerCallback(ctx, cbID, thanks)
 	}
+}
+
+// enqueueTelegramButtonSelection turns a reply-button tap into a normal inbound
+// customer message.
+//
+// Telegram gives a bot only callback_data — the operator's machine payload, not
+// the label the customer read — so the label is recovered from the outbound row
+// that carried the keyboard. The result goes into the pipeline as
+// "[Button selected] <label>", which is what keeps the router from judging the
+// tap on its raw text (see ButtonSelectionPrefix) and what gives the model
+// something to answer.
+func (wh *Webhooks) enqueueTelegramButtonSelection(ctx context.Context, cfg *webhookConfig, callback map[string]any) {
+	cbID, _ := callback["id"].(string)
+	data, _ := callback["data"].(string)
+	if strings.TrimSpace(data) == "" {
+		return
+	}
+	chatID := ""
+	messageID := ""
+	if msg, ok := callback["message"].(map[string]any); ok {
+		if chat, ok := msg["chat"].(map[string]any); ok {
+			if id, ok := chat["id"].(float64); ok {
+				chatID = jsonNumberString(id)
+			}
+		}
+		if id, ok := msg["message_id"].(float64); ok {
+			messageID = jsonNumberString(id)
+		}
+	}
+	if chatID == "" {
+		// No chat on the callback: fall back to the sender, which is the same id
+		// in a private chat (the only kind that identifies a person).
+		if from, ok := callback["from"].(map[string]any); ok {
+			if id, ok := from["id"].(float64); ok {
+				chatID = jsonNumberString(id)
+			}
+		}
+	}
+	if chatID == "" {
+		return
+	}
+
+	label := ""
+	if messageID != "" {
+		label = wh.telegramButtonLabel(ctx, cfg.ConfigID, TelegramProviderMessageID(chatID, messageID), data)
+	}
+	if label == "" {
+		// Lookup missed (button from a message older than the outbox retention,
+		// or a hand-built keyboard): the payload is worse than the title but
+		// still better than silence.
+		label = data
+	}
+
+	// external_id = the callback id. Telegram only reuses it for a redelivery of
+	// the same press, so this keeps the enqueue idempotent without collapsing two
+	// different taps on the same button.
+	_ = wh.Pipe.EnqueueInboundEvent(ctx, cfg.ConfigID, "telegram", cbID, chatID, "", ButtonSelection(label), nil)
+
+	// Clear the button spinner. The answer arrives as its own chat message, so
+	// the toast itself stays empty.
+	if cbID != "" {
+		if botToken := wh.telegramBotToken(ctx, cfg.ConfigID); botToken != "" {
+			_ = NewTelegramClient(botToken).AnswerCallback(ctx, cbID, "")
+		}
+	}
+}
+
+// telegramButtonLabel recovers the human-readable title of the button a customer
+// tapped, from the outbox row holding the keyboard we sent. Telegram returns only
+// callback_data, and that is the operator's payload field — often a code like
+// "2" — so without this the model would be asked to answer "2".
+// Best-effort: an empty return means the caller falls back to the raw payload.
+func (wh *Webhooks) telegramButtonLabel(ctx context.Context, configID int32, providerMessageID, payload string) string {
+	var raw *string
+	if err := wh.DB.QueryRow(ctx,
+		"SELECT payload::text FROM platform_outbox WHERE config_id = $1 AND provider_message_id = $2 "+
+			"ORDER BY delivery_id DESC LIMIT 1",
+		configID, providerMessageID).Scan(&raw); err != nil || raw == nil {
+		return ""
+	}
+	var stored struct {
+		Buttons []struct {
+			Title   string `json:"title"`
+			Payload string `json:"payload"`
+		} `json:"buttons"`
+	}
+	if json.Unmarshal([]byte(*raw), &stored) != nil {
+		return ""
+	}
+	for _, b := range stored.Buttons {
+		if b.Payload == payload {
+			return strings.TrimSpace(b.Title)
+		}
+	}
+	return ""
 }
 
 // telegramBotToken decrypts the bot token for answering callbacks.
@@ -589,24 +811,19 @@ func (wh *Webhooks) WhatsAppWebhook(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				text := ""
+				fromButton := false
 				var media map[string]any
 				switch msgType {
 				case "text":
 					if bodyObj, ok := msg["text"].(map[string]any); ok {
 						text, _ = bodyObj["body"].(string)
 					}
-				case "button":
-					// Quick-reply / template button press carries the title.
-					if b, ok := msg["button"].(map[string]any); ok {
-						text, _ = b["text"].(string)
-					}
-				case "interactive":
-					if ia, ok := msg["interactive"].(map[string]any); ok {
-						if br, ok := ia["button_reply"].(map[string]any); ok {
-							text, _ = br["title"].(string)
-						} else if lr, ok := ia["list_reply"].(map[string]any); ok {
-							text, _ = lr["title"].(string)
-						}
+				case "button", "interactive":
+					// A reply-button / list tap. The label is what the customer read;
+					// fromButton is what keeps the router off its raw text.
+					if label, ok := whatsAppReplyLabel(msgType, msg); ok {
+						text = label
+						fromButton = true
 					}
 				case "location":
 					if loc, ok := msg["location"].(map[string]any); ok {
@@ -641,6 +858,13 @@ func (wh *Webhooks) WhatsAppWebhook(w http.ResponseWriter, r *http.Request) {
 				}
 				if text == "" && media == nil {
 					continue
+				}
+				// A reply-button / list tap is an option the store itself authored, so
+				// it reaches the router marked as one (see ButtonSelectionPrefix).
+				// Unmarked, a label like "1" is indistinguishable from spam and the
+				// junk route silences it.
+				if fromButton {
+					text = ButtonSelection(text)
 				}
 				if err := wh.Pipe.EnqueueInboundEvent(r.Context(), cfg.ConfigID, "whatsapp", msgID, from, "", text, media); err != nil {
 					wh.failInboundEnqueue(w, cfg.ConfigID, "whatsapp", err)
