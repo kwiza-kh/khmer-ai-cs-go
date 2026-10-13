@@ -18,6 +18,16 @@ import { cn } from "@/lib/utils";
 import { LANGS, useI18n } from "@/lib/i18n";
 import { TelegramIcon } from "@/components/platform-icons";
 
+// One line that names the host the browser was talking to. A screenshot of it
+// separates "the bundle calls the wrong API base" from "the browser blocked the
+// request" from "no network" — three failures that otherwise all read as
+// "cannot reach the server".
+function diagLine(what: string, err: unknown): string {
+  const e = err as { name?: string; message?: string } | undefined;
+  const origin = typeof window === "undefined" ? "(ssr)" : window.location.origin;
+  return `${what} — ${e?.name ?? "Error"}: ${e?.message ?? String(err)} · API=${API_BASE} · origin=${origin}`;
+}
+
 export default function LoginPage() {
   const { login, register, completeGoogleLogin, completeTelegramLogin } = useAuth();
   const router = useRouter();
@@ -35,6 +45,8 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [googleEnabled, setGoogleEnabled] = useState(false);
   const [telegramEnabled, setTelegramEnabled] = useState(false);
+  // Set when an API call fails at the transport level (see diagLine).
+  const [diag, setDiag] = useState("");
 
   const [loginUser, setLoginUser] = useState("");
   const [loginPass, setLoginPass] = useState("");
@@ -76,7 +88,7 @@ export default function LoginPage() {
       : completeGoogleLogin(googleCode!, state);
     void exchange
       .then(() => router.push(afterAuthPath()))
-      .catch((err: unknown) => setError((err as Error).message))
+      .catch((err: unknown) => { setError((err as Error).message); setDiag(diagLine("oauth/exchange", err)); })
       .finally(() => setLoading(false));
   }, [completeGoogleLogin, completeTelegramLogin, router, t]);
 
@@ -84,13 +96,18 @@ export default function LoginPage() {
   useEffect(() => {
     let cancelled = false;
     void fetch(`${API_BASE}/auth/methods`)
-      .then((res) => res.json())
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
       .then((data: { google?: boolean; telegram?: boolean }) => {
         if (cancelled) return;
         setGoogleEnabled(Boolean(data.google));
         setTelegramEnabled(Boolean(data.telegram));
+        setDiag("");
       })
-      .catch(() => { /* keep the buttons hidden */ });
+      .catch((err: unknown) => {
+        // Keep the sign-in buttons hidden, but say why they are missing.
+        if (cancelled) return;
+        setDiag(diagLine("auth/methods", err));
+      });
     return () => { cancelled = true; };
   }, []);
 
@@ -105,14 +122,14 @@ export default function LoginPage() {
         router.push(afterAuthPath());
       }
     }
-    catch (err: unknown) { setError((err as Error).message); }
+    catch (err: unknown) { setError((err as Error).message); setDiag(diagLine("auth/login", err)); }
     finally { setLoading(false); }
   };
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault(); setError(""); setLoading(true);
     try { await register(regUser, regEmail, regPass); router.push(afterAuthPath()); }
-    catch (err: unknown) { setError((err as Error).message); }
+    catch (err: unknown) { setError((err as Error).message); setDiag(diagLine("auth/register", err)); }
     finally { setLoading(false); }
   };
 
@@ -178,6 +195,20 @@ export default function LoginPage() {
                 </motion.div>
               )}
             </AnimatePresence>
+
+            {/* Connection diagnostics. Load-bearing: this is how a user who
+                cannot sign in tells us which host their browser was calling
+                without needing devtools. */}
+            {diag && (
+              <div className="rounded-lg border border-border bg-muted/60 px-3 py-2">
+                <p className="text-xs text-muted-foreground">
+                  连接诊断（请截图发给我们）· Connection diagnostics
+                </p>
+                <pre className="mt-1 max-h-24 overflow-auto whitespace-pre-wrap break-all text-[11px] leading-relaxed text-muted-foreground">
+                  {diag}
+                </pre>
+              </div>
+            )}
 
             <AnimatePresence mode="wait">
               {tab === "login" ? (
