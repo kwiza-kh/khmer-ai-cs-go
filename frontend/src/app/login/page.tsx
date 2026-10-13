@@ -47,6 +47,11 @@ export default function LoginPage() {
   const [telegramEnabled, setTelegramEnabled] = useState(false);
   // Set when an API call fails at the transport level (see diagLine).
   const [diag, setDiag] = useState("");
+  // Rendered as soon as the page's JavaScript runs. A screenshot where this
+  // line is missing means the browser never executed our code at all (stale
+  // cache, a blocked script, or JavaScript turned off) - which is a different
+  // bug from "the request went to the wrong host".
+  const [env, setEnv] = useState("");
 
   const [loginUser, setLoginUser] = useState("");
   const [loginPass, setLoginPass] = useState("");
@@ -95,6 +100,13 @@ export default function LoginPage() {
   // Probe which sign-in providers this deployment has configured.
   useEffect(() => {
     let cancelled = false;
+    // Report the environment on the next tick rather than synchronously: the
+    // react-hooks/set-state-in-effect rule forbids setState in the effect body,
+    // and this line only has to appear once the page is live.
+    const envTimer = setTimeout(
+      () => setEnv(`API=${API_BASE} · origin=${window.location.origin} · UA=${navigator.userAgent}`),
+      0,
+    );
     void fetch(`${API_BASE}/auth/methods`)
       .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
       .then((data: { google?: boolean; telegram?: boolean }) => {
@@ -108,7 +120,7 @@ export default function LoginPage() {
         if (cancelled) return;
         setDiag(diagLine("auth/methods", err));
       });
-    return () => { cancelled = true; };
+    return () => { cancelled = true; clearTimeout(envTimer); };
   }, []);
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -208,6 +220,14 @@ export default function LoginPage() {
                   {diag}
                 </pre>
               </div>
+            )}
+
+            {/* Always visible once the page's JavaScript has run: proves the
+                code executed and shows which API host this browser will call. */}
+            {env && (
+              <pre className="whitespace-pre-wrap break-all text-[10px] leading-relaxed text-muted-foreground/70">
+                {`JS ✓ · ${env}`}
+              </pre>
             )}
 
             <AnimatePresence mode="wait">
