@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 // signRequest builds a Meta-shaped signed_request the way Meta does: the
@@ -27,7 +28,59 @@ func validPayload() map[string]any {
 	return map[string]any{
 		"algorithm": "HMAC-SHA256",
 		"user_id":   "1234567890123456",
-		"issued_at": 1790000000,
+		// Fresh, not a fixed epoch: parseSignedRequest refuses a request whose
+		// issued_at is older than the acceptance window, so a hard-coded value
+		// would fail every test the day after it was written.
+		"issued_at": time.Now().Unix(),
+	}
+}
+
+// A captured signed_request must not be a permanent delete primitive: the
+// payload carries issued_at/expires and both are enforced.
+func TestParseSignedRequestRejectsStaleAndExpiredRequests(t *testing.T) {
+	secret := "s3cr3t-app-secret"
+
+	stale := validPayload()
+	stale["issued_at"] = time.Now().Add(-time.Hour).Unix()
+	if _, err := parseSignedRequest(secret, signRequest(t, secret, stale)); err == nil {
+		t.Fatal("a request issued an hour ago was accepted")
+	}
+
+	expired := validPayload()
+	expired["expires"] = time.Now().Add(-time.Minute).Unix()
+	if _, err := parseSignedRequest(secret, signRequest(t, secret, expired)); err == nil {
+		t.Fatal("an expired request was accepted")
+	}
+
+	// issued_at absent + a live expires: accepted, because a legally-required
+	// callback that is refused forever deletes nothing. The expires bound is then
+	// the only replay bound there is.
+	undated := validPayload()
+	delete(undated, "issued_at")
+	undated["expires"] = time.Now().Add(5 * time.Minute).Unix()
+	if _, err := parseSignedRequest(secret, signRequest(t, secret, undated)); err != nil {
+		t.Fatalf("an undated request with a live expires was rejected: %v", err)
+	}
+
+	// Undated *and* without an expiry leaves no replay bound at all — refused.
+	undated["expires"] = 0
+	if _, err := parseSignedRequest(secret, signRequest(t, secret, undated)); err == nil {
+		t.Fatal("a request with neither issued_at nor expires was accepted; a replay could never be refused")
+	}
+
+	// A far-future issued_at passed the one-sided age check forever, which is the
+	// same permanent delete primitive the age check exists to close.
+	future := validPayload()
+	future["issued_at"] = time.Now().Add(48 * time.Hour).Unix()
+	if _, err := parseSignedRequest(secret, signRequest(t, secret, future)); err == nil {
+		t.Fatal("a request dated two days in the future was accepted")
+	}
+
+	// Skew tolerance, not a ban: a minute ahead is accepted.
+	skewed := validPayload()
+	skewed["issued_at"] = time.Now().Add(signedRequestMaxSkewSeconds / 2).Unix()
+	if _, err := parseSignedRequest(secret, signRequest(t, secret, skewed)); err != nil {
+		t.Fatalf("a clock-skewed request was rejected: %v", err)
 	}
 }
 

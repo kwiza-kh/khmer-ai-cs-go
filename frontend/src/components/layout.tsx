@@ -14,7 +14,7 @@ import { RelayChatLogo } from "@/components/relaychat-logo";
 import { cn } from "@/lib/utils";
 import {
   BookOpen, Globe, Users, Settings, LogOut, Menu, Search, Loader2,
-  BarChart3, TrendingUp, Clock, Sparkles, Download,
+  BarChart3, Clock, Sparkles, Download,
   HelpCircle, Inbox, UserCheck, ShieldCheck, Coins, FlaskConical,
   MessageCircle, ChevronRight, Bot, type LucideIcon,
 } from "lucide-react";
@@ -110,7 +110,6 @@ const BREADCRUMBS: { match: string; section: string; page: string }[] = [
   { match: "/knowledge", section: "nav.groupContent", page: "nav.knowledge" },
   { match: "/platforms", section: "nav.groupContent", page: "nav.platforms" },
   { match: "/admin/analytics", section: "nav.administration", page: "nav.analytics" },
-  { match: "/admin/feedback", section: "nav.administration", page: "nav.feedback" },
   { match: "/admin/operations", section: "nav.administration", page: "nav.operations" },
   { match: "/admin/growth", section: "nav.administration", page: "nav.growth" },
   { match: "/admin/reports", section: "nav.administration", page: "nav.reports" },
@@ -454,10 +453,9 @@ function AppLayoutShell({ children }: { children: React.ReactNode }) {
 
               {isAdmin && (
                 <NavSection label={t("nav.administration")}>
-                  {/* 原仪表盘页内 Tab 的六个视图（2026-10-12 拆分）：每个视图一个
+                  {/* 原仪表盘页内 Tab 的五个视图（2026-10-12 拆分反馈页 2026-10-13 移除）：每个视图一个
                       独立入口，顺序沿用拆分前的 Tab 顺序。 */}
                   <NavItem href="/admin/analytics" icon={BarChart3} label={t("nav.analytics")} active={isActive("/admin/analytics")} onNavigate={close} />
-                  <NavItem href="/admin/feedback" icon={TrendingUp} label={t("nav.feedback")} active={isActive("/admin/feedback")} onNavigate={close} />
                   <NavItem href="/admin/operations" icon={Clock} label={t("nav.operations")} active={isActive("/admin/operations")} onNavigate={close} />
                   <NavItem href="/admin/growth" icon={Sparkles} label={t("nav.growth")} active={isActive("/admin/growth")} onNavigate={close} />
                   <NavItem href="/admin/reports" icon={Download} label={t("nav.reports")} active={isActive("/admin/reports")} onNavigate={close} />

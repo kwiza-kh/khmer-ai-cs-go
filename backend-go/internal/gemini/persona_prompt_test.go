@@ -66,6 +66,11 @@ func TestChatAsSendsThePersonaPromptInsteadOfTheContextCache(t *testing.T) {
 	if strings.Contains(text, "persona-prompt-test") {
 		t.Error("the tenant prompt leaked into a persona turn")
 	}
+	// A persona replaces the house prompt, but never the safety rules: they are
+	// what the RAG fence and the reply guard stand on.
+	if !strings.Contains(text, SafetyRules) {
+		t.Error("a persona turn dropped the safety rules")
+	}
 }
 
 // TestSystemInstructionForFallsBackToTheConfiguredPrompt — an empty override has
@@ -80,5 +85,27 @@ func TestSystemInstructionForFallsBackToTheConfiguredPrompt(t *testing.T) {
 	}
 	if got := s.systemInstructionFor("km", "persona prompt"); !strings.HasPrefix(got, "persona prompt") {
 		t.Errorf("override = %q, want the persona prompt first", got)
+	}
+	if got := s.systemInstructionFor("km", "persona prompt"); !strings.Contains(got, SafetyRules) {
+		t.Errorf("override = %q, want the safety rules appended", got)
+	}
+}
+
+// The house prompt must carry the safety block exactly once, in the place it has
+// always been: the persona path appends SafetyRules, and a prompt that already
+// ended with a copy would send it twice on every persona turn.
+func TestDefaultSystemPromptCarriesTheSafetyRulesOnce(t *testing.T) {
+	if n := strings.Count(DefaultSystemPrompt, SafetyRules); n != 1 {
+		t.Fatalf("DefaultSystemPrompt contains SafetyRules %d times, want 1", n)
+	}
+	escalation := strings.Index(DefaultSystemPrompt, "## Escalation to a human agent")
+	safety := strings.Index(DefaultSystemPrompt, SafetyRules)
+	formatting := strings.Index(DefaultSystemPrompt, "## Formatting")
+	if !(escalation < safety && safety < formatting) {
+		t.Errorf("safety rules sit at %d, want between escalation (%d) and formatting (%d)", safety, escalation, formatting)
+	}
+	s := New("k", "gemini-3.5-flash", 0)
+	if n := strings.Count(s.systemInstruction("km"), SafetyRules); n != 1 {
+		t.Errorf("the configured-prompt path sends SafetyRules %d times, want 1", n)
 	}
 }

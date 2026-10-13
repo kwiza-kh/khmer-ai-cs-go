@@ -4,9 +4,8 @@ import * as React from "react";
 import useSWR, { mutate as globalMutate } from "swr";
 import {
   listCustomers, getCustomer360, updateCustomerNotes, listFaqSuggestions, acceptFaqSuggestion,
-  dismissFaqSuggestion, listCampaigns, createCampaign,
-  cancelCampaign, getBilling, setPlan,
-  CustomerProfile, FaqSuggestion, CampaignItem, BillingInfo,
+  dismissFaqSuggestion, getBilling, setPlan,
+  CustomerProfile, FaqSuggestion, BillingInfo,
 } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -16,8 +15,8 @@ import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/empty-state";
 import { useAuth } from "@/lib/auth-client";
 import {
-  Users, Lightbulb, Megaphone, CreditCard, Loader2, Search,
-  BookOpenCheck, XCircle, CheckCircle2, Send,
+  Users, Lightbulb, CreditCard, Loader2, Search,
+  BookOpenCheck, XCircle, CheckCircle2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useI18n } from "@/lib/i18n";
@@ -26,8 +25,8 @@ import { fmtDate, fmtDateTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 /**
- * Growth tab: customers 360 (F1/F6), FAQ mining (F3), marketing campaigns (F5),
- * and billing/quota (F9). The agent team moved to the user management page —
+ * Growth tab: customers 360 (F1/F6), FAQ mining (F3) and billing/quota (F9).
+ * The agent team moved to the user management page —
  * that page's roster and a seat are the same people, and a second entry point
  * only ever disagreed with it.
  */
@@ -42,7 +41,6 @@ export function GrowthTab() {
         {[
           { key: "customers", labelKey: "gr.customers", icon: Users },
           { key: "faq", labelKey: "gr.faq", icon: Lightbulb },
-          { key: "campaigns", labelKey: "gr.campaigns", icon: Megaphone },
           { key: "billing", labelKey: "gr.billing", icon: CreditCard },
         ].map((s) => (
           <TabsTrigger key={s.key} value={s.key} className="gap-1.5 text-xs">
@@ -52,7 +50,6 @@ export function GrowthTab() {
       </TabsList>
       <TabsContent value="customers" className="mt-4"><CustomersCard /></TabsContent>
       <TabsContent value="faq" className="mt-4"><FaqCard /></TabsContent>
-      <TabsContent value="campaigns" className="mt-4"><CampaignsCard /></TabsContent>
       <TabsContent value="billing" className="mt-4"><BillingCard /></TabsContent>
     </Tabs>
   );
@@ -206,86 +203,6 @@ function FaqCard() {
                     <XCircle className="size-3" /> {t("gr.dismiss")}
                   </Button>
                 </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-// ============================================
-// Campaigns
-// ============================================
-function CampaignsCard() {
-  const { t, tf } = useI18n();
-  const { data, mutate } = useSWR("campaigns", listCampaigns);
-  const [name, setName] = React.useState("");
-  const [configId, setConfigId] = React.useState("");
-  const [template, setTemplate] = React.useState("");
-  const [params, setParams] = React.useState("");
-  const [scheduled, setScheduled] = React.useState("");
-  const [creating, setCreating] = React.useState(false);
-
-  const handleCreate = async () => {
-    if (!configId || !template || !scheduled) return;
-    setCreating(true);
-    try {
-      await createCampaign({
-        name: name || template, platform: "whatsapp", config_id: Number(configId),
-        template_name: template, template_language: "km",
-        body_params: params.split(",").map((s) => s.trim()).filter(Boolean),
-        recipient_filter: "all", scheduled_at: new Date(scheduled).toISOString(),
-      });
-      setName(""); setConfigId(""); setTemplate(""); setParams(""); setScheduled("");
-      toast.success(t("gr.scheduled"));
-      void mutate();
-    } catch (e) { toast.error((e as Error).message); }
-    finally { setCreating(false); }
-  };
-  const handleCancel = async (id: number) => {
-    try { await cancelCampaign(id); void mutate(); } catch (e) { toast.error((e as Error).message); }
-  };
-
-  return (
-    <Card>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm flex items-center gap-2">
-          <Megaphone className="size-4 text-primary" /> {t("gr.campaigns")} <span className="text-label text-muted-foreground">{t("gr.campaignsNote")}</span>
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <div className="rounded-md border border-border p-3 space-y-2 bg-muted/30">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-            <Input placeholder={t("gr.campaignNamePh")} value={name} onChange={(e) => setName(e.target.value)} className="h-8 text-xs" />
-            <Input placeholder={t("gr.configIdPh")} value={configId} onChange={(e) => setConfigId(e.target.value)} className="h-8 text-xs" />
-            <Input placeholder={t("gr.templateNamePh")} value={template} onChange={(e) => setTemplate(e.target.value)} className="h-8 text-xs" />
-            <Input placeholder={t("gr.bodyParamsPh")} value={params} onChange={(e) => setParams(e.target.value)} className="h-8 text-xs" />
-          </div>
-          <Input type="datetime-local" value={scheduled} onChange={(e) => setScheduled(e.target.value)} className="h-8 text-xs" />
-          <Button size="sm" className="h-7 text-xs gap-1" onClick={handleCreate} disabled={creating || !configId || !template || !scheduled}>
-            {creating ? <Loader2 className="size-3 animate-spin" /> : <Send className="size-3" />} {t("gr.schedule")}
-          </Button>
-        </div>
-        {!data || data.length === 0 ? (
-          <EmptyState icon={Megaphone} title={t("gr.noCampaigns")} />
-        ) : (
-          <div className="space-y-1.5">
-            {(data as CampaignItem[]).map((c) => (
-              <div key={c.campaign_id} className="rounded-md border border-border p-2.5 flex items-center gap-2">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-1.5">
-                    <p className="text-xs font-medium truncate">{c.name}</p>
-                    <Badge variant={c.status === "done" ? "success" : c.status === "scheduled" ? "secondary" : "outline"} className="h-4 px-1 text-label">{c.status}</Badge>
-                  </div>
-                  <p className="text-label text-muted-foreground mt-0.5">
-                    {c.template_name} · {fmtDateTime(c.scheduled_at)} · {tf("gr.sentCount", { n: c.sent_count })}
-                  </p>
-                </div>
-                {c.status === "scheduled" && (
-                  <button onClick={() => handleCancel(c.campaign_id)} className="text-muted-foreground hover:text-danger" title={t("common.cancel")}><XCircle className="size-3.5" /></button>
-                )}
               </div>
             ))}
           </div>

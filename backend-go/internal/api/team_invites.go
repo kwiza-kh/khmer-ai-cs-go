@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -81,9 +80,9 @@ const (
 // handle whose only job is to be unguessable.
 func generateTeamInviteToken() string {
 	b := make([]byte, 24)
-	if _, err := rand.Read(b); err != nil {
-		return fmt.Sprintf("ti_%x", time.Now().UnixNano())
-	}
+	// No clock-based fallback: an invite token that anyone can guess is worse than
+	// a failed create (see platform.NewUUID).
+	_, _ = rand.Read(b)
 	return "ti_" + hex.EncodeToString(b)
 }
 

@@ -1,0 +1,12 @@
+-- 078 — drop the marketing campaigns feature (table from 026).
+--
+-- The feature is gone end to end: the Growth page's campaigns tab, the
+-- /api/v1/campaigns endpoints, the 30s dispatch loop and the campaign_dispatch
+-- scheduler entry were all removed with it. marketing_campaigns has no reader
+-- left, and the table only ever held scheduling state (name, template, filter,
+-- sent_count) that is meaningless without the dispatcher that used it.
+--
+-- IF EXISTS keeps this idempotent: a database that never ran 026 (or a shadow
+-- database built by replaying migrations after 026 was already superseded)
+-- still applies cleanly.
+DROP TABLE IF EXISTS marketing_campaigns;

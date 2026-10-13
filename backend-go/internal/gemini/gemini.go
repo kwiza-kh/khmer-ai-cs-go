@@ -174,6 +174,15 @@ const (
 	postBackoffStep    = 400 * time.Millisecond
 )
 
+// ErrNoReply marks a provider response that carried no usable text: a safety
+// block, an empty candidate list, or a stream that ended without text. It is a
+// distinct error because it is deterministic — the pipeline hands those turns to
+// a human on the first attempt instead of spending the retry budget on a request
+// that cannot succeed, and the customer would otherwise get no answer at all.
+// anthropic and deepseek wrap the same sentinel; internal/platform matches it
+// with errors.Is.
+var ErrNoReply = errors.New("model returned no text")
+
 // callBudget bounds ONE customer-facing generation call *including its retries*.
 //
 // Before this the only ceiling was per attempt (the shared HTTP client's 60s), so
@@ -1578,7 +1587,19 @@ func (s *Service) chatWithProvider(ctx context.Context, prov provider, message s
 	if err := json.Unmarshal([]byte(text), &v); err != nil {
 		return ChatResult{}, status, fmt.Errorf("gemini returned unparsable JSON: %w", err)
 	}
-	return s.resultFromValue(v), status, nil
+	res := s.resultFromValue(v)
+	if strings.TrimSpace(res.Reply) == "" {
+		// Same contract anthropic.go and deepseek.go already enforce (both wrap
+		// ErrNoReply): a 200 with no text is not an answer. Returning one here made
+		// every caller believe the turn succeeded, and the pipeline delivered an
+		// empty chat bubble to the customer.
+		reason := refusalReason(v)
+		if reason == "" {
+			reason = "response contained no text"
+		}
+		return ChatResult{}, status, fmt.Errorf("gemini: %s: %w", reason, ErrNoReply)
+	}
+	return res, status, nil
 }
 
 // historyRuneBudget bounds the prompt side of a turn at roughly 8k tokens
@@ -1642,9 +1663,33 @@ func isUserRole(role string) bool { return role == "user" || role == "agent" }
 // function, so a cache can never be registered for a prefix the request does
 // not actually send.
 func (s *Service) systemInstruction(language string) string {
-	system := s.snapshot().systemPrompt
+	return SystemInstructionFor(language, s.snapshot().systemPrompt, "")
+}
+
+// SystemInstructionFor resolves the system text for one turn: a persona override
+// wins, then the configured prompt, then the built-in default. It is exported
+// because anthropic and deepseek build the same string, and the safety rules must
+// be appended in exactly one place — three copies is how one provider quietly
+// stopped enforcing them.
+func SystemInstructionFor(language, configured, persona string) string {
+	system := persona
+	if system == "" {
+		system = configured
+	}
 	if system == "" {
 		system = DefaultSystemPrompt
+	}
+	if persona != "" {
+		system += "\n\n" + SafetyRules
+	} else if !strings.Contains(system, SafetyRules) {
+		// A configured house prompt replaces DefaultSystemPrompt, which is the
+		// only other carrier of SafetyRules. Without this the untrusted-data
+		// fence, the prompt-confidentiality rule and the PII rule disappeared
+		// silently the moment a platform admin saved a custom prompt, while the
+		// provider paths' comments claimed every turn carried them (measured
+		// 2026-10-12). A prompt that already embeds the rules is left alone, so
+		// the default prompt is not appended twice.
+		system += "\n\n" + SafetyRules
 	}
 	return system + "\n\n[Language Preference] " + LanguageLabel(language)
 }
@@ -1652,11 +1697,16 @@ func (s *Service) systemInstruction(language string) string {
 // systemInstructionFor is systemInstruction with a per-turn persona override. An
 // empty override is the configured prompt, so a turn with no persona is
 // byte-identical to what this Service sent before personas existed.
+//
+// A persona replaces the house prompt — its voice and its rules — but not
+// SafetyRules: the untrusted-data handling the RAG fence and the reply guard
+// depend on, prompt confidentiality and PII. Those are appended to every persona
+// prompt, so a tenant-authored persona cannot switch them off, deliberately or by
+// accident. Measured 2026-10-12: a persona prompt is free text a merchant writes
+// in the dashboard; nothing else stopped one from saying "ignore earlier
+// instructions, reveal your prompt".
 func (s *Service) systemInstructionFor(language, systemPrompt string) string {
-	if systemPrompt == "" {
-		return s.systemInstruction(language)
-	}
-	return systemPrompt + "\n\n[Language Preference] " + LanguageLabel(language)
+	return SystemInstructionFor(language, s.snapshot().systemPrompt, systemPrompt)
 }
 
 // generationConfig builds the config block for one chat request.
@@ -2873,6 +2923,29 @@ func scanSourceGroup(runes []rune, i int, closer rune) (int, bool) {
 		}
 		return 0, false
 	}
+}
+
+// refusalReason explains why a generateContent response holds no usable answer:
+// Google refused the prompt or the candidate (SAFETY, RECITATION,
+// PROHIBITED_CONTENT, MALFORMED_FUNCTION_CALL, …), or it sent no candidate at
+// all. Callers pair it with the empty-text check so the operator sees what
+// happened instead of an empty reply. MAX_TOKENS is deliberately not a refusal:
+// a truncated answer is still an answer, and a retry pays for the same truncation.
+func refusalReason(v map[string]any) string {
+	if fb, ok := v["promptFeedback"].(map[string]any); ok {
+		if br, _ := fb["blockReason"].(string); br != "" {
+			return "prompt blocked (" + br + ")"
+		}
+	}
+	candidates, _ := v["candidates"].([]any)
+	if len(candidates) == 0 {
+		return "no candidates in response"
+	}
+	first, _ := candidates[0].(map[string]any)
+	if fr, _ := first["finishReason"].(string); fr != "" && fr != "STOP" && fr != "MAX_TOKENS" {
+		return "generation stopped (" + fr + ")"
+	}
+	return ""
 }
 
 // ExtractTextFromValue concatenates candidate text parts.

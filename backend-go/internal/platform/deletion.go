@@ -81,8 +81,46 @@ func parseSignedRequest(secret, signed string) (*signedRequestPayload, error) {
 	if p.UserID == "" {
 		return nil, errSignedRequest
 	}
+	// Meta's signed_requests carry issued_at/expires and a short window. Without
+	// this check one captured request (webhook bodies reach logs and the outbox)
+	// is a permanent, repeatable delete primitive.
+	//
+	// The window is two-sided: a timestamp in the future means a forged or
+	// badly-skewed payload (a one-sided check let `issued_at: 99999999999`
+	// through forever, which is the same permanent primitive by another door).
+	now := time.Now().Unix()
+	if p.IssuedAt > now+signedRequestMaxSkewSeconds {
+		return nil, errSignedRequest
+	}
+	if p.IssuedAt > 0 && now-p.IssuedAt > signedRequestMaxAgeSeconds {
+		return nil, errSignedRequest
+	}
+	if p.IssuedAt == 0 {
+		// Meta documents issued_at, but a deletion callback that is refused
+		// forever deletes nothing, and this is a legally-required endpoint that
+		// our tenants depend on. When issued_at is absent, fall back to the
+		// expires bound (and refuse only if that is absent too, which leaves no
+		// replay bound at all) instead of rejecting outright.
+		if p.Expires == 0 {
+			return nil, errSignedRequest
+		}
+		slog.Default().Warn("meta deletion signed_request has no issued_at",
+			"expires_at", p.Expires)
+	}
+	if p.Expires > 0 && now > p.Expires {
+		return nil, errSignedRequest
+	}
 	return &p, nil
 }
+
+// signedRequestMaxAgeSeconds is the acceptance window for issued_at. Meta's own
+// is minutes; five is generous enough for clock skew and webhook retries.
+const signedRequestMaxAgeSeconds = 300
+
+// signedRequestMaxSkewSeconds bounds how far into the future issued_at may sit.
+// Meta's clock and ours are independent; a minute absorbs the skew without
+// accepting a timestamp that would never expire.
+const signedRequestMaxSkewSeconds = 60
 
 // subjectIDIsSafe guards the delete path. Everything downstream matches on
 // exact string equality, but a short or empty id could still collide with a
@@ -151,7 +189,11 @@ func (o deletionOutcome) String() string {
 // sessions are deleted so the ON DELETE CASCADE tables follow. Everything runs
 // in one transaction: a partial deletion that leaves the trail behind is the
 // exact failure this is meant to prevent.
-func (wh *Webhooks) deleteMetaSubject(ctx context.Context, metaUserID string) (deletionOutcome, error) {
+//
+// configID is the config whose secret verified the request, and it is the
+// tenant boundary: everything is scoped to that config's owner. It is nil only
+// when the platform's own app secret matched, which only the operator holds.
+func (wh *Webhooks) deleteMetaSubject(ctx context.Context, configID *int32, metaUserID string) (deletionOutcome, error) {
 	var out deletionOutcome
 	if !subjectIDIsSafe(metaUserID) {
 		return out, fmt.Errorf("refusing to delete for implausible subject id (len=%d)", len(metaUserID))
@@ -163,11 +205,30 @@ func (wh *Webhooks) deleteMetaSubject(ctx context.Context, metaUserID string) (d
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	// Scope the deletion to the tenant that owns the config whose secret
+	// verified the request. verifyAgainstAnySecret tries *every* active
+	// Meta-family tenant secret, so a valid signature proves "some tenant", not
+	// "this tenant": without a tenant filter, tenant A could sign a request
+	// naming a customer of tenant B and erase B's conversations and CRM rows.
+	var tenantID *int32
+	if configID != nil {
+		// user_id is nullable on platform_configs (the platform's own Meta app has
+		// none); scanning it into an int32 failed the whole callback for a
+		// platform-owned config instead of taking the platform-owned path.
+		var owner *int32
+		if err := tx.QueryRow(ctx,
+			"SELECT user_id FROM platform_configs WHERE config_id = $1", *configID).Scan(&owner); err != nil {
+			return out, fmt.Errorf("resolve deletion tenant: %w", err)
+		}
+		tenantID = owner
+	}
+
 	// Snapshot the session ids first: they are needed for the tables that have
 	// no foreign key, and they disappear in the final step.
 	rows, err := tx.Query(ctx,
-		"SELECT session_id FROM sessions WHERE platform::text = ANY($1::text[]) AND platform_user_id = $2",
-		metaFamily, metaUserID)
+		"SELECT session_id FROM sessions WHERE platform::text = ANY($1::text[]) AND platform_user_id = $2 "+
+			"AND ($3::int IS NULL OR user_id = $3)",
+		metaFamily, metaUserID, tenantID)
 	if err != nil {
 		return out, fmt.Errorf("collect sessions: %w", err)
 	}
@@ -186,9 +247,17 @@ func (wh *Webhooks) deleteMetaSubject(ctx context.Context, metaUserID string) (d
 	}
 
 	// 1. Rows carrying the raw message text, which SET NULL would preserve.
+	//
+	// Scoped to every config the tenant owns, not to the single config whose
+	// secret verified the request. Step 6 deletes this subject's sessions across
+	// all of the tenant's configs, and platform_inbound_events.session_id is ON
+	// DELETE SET NULL: scoping here to one config left the other config's raw
+	// customer message text in the database after its session was gone, while
+	// the callback reported a completed deletion (measured 2026-10-12).
 	tag, err := tx.Exec(ctx,
-		"DELETE FROM platform_inbound_events WHERE platform::text = ANY($1::text[]) AND platform_user_id = $2",
-		metaFamily, metaUserID)
+		"DELETE FROM platform_inbound_events WHERE platform::text = ANY($1::text[]) AND platform_user_id = $2 "+
+			"AND ($3::int IS NULL OR config_id IN (SELECT config_id FROM platform_configs WHERE user_id = $3))",
+		metaFamily, metaUserID, tenantID)
 	if err != nil {
 		return out, fmt.Errorf("delete inbound events: %w", err)
 	}
@@ -214,27 +283,40 @@ func (wh *Webhooks) deleteMetaSubject(ctx context.Context, metaUserID string) (d
 	}
 
 	// 3. Outbox rows addressed to this subject (the cascade covers session-bound
-	//    ones; this catches any already unbound).
+	//    ones; this catches any already unbound). Same tenant-wide scope as step
+	//    1, for the same reason.
 	tag, err = tx.Exec(ctx,
-		"DELETE FROM platform_outbox WHERE platform::text = ANY($1::text[]) AND recipient_id = $2",
-		metaFamily, metaUserID)
+		"DELETE FROM platform_outbox WHERE platform::text = ANY($1::text[]) AND recipient_id = $2 "+
+			"AND ($3::int IS NULL OR config_id IN (SELECT config_id FROM platform_configs WHERE user_id = $3))",
+		metaFamily, metaUserID, tenantID)
 	if err != nil {
 		return out, fmt.Errorf("delete outbox: %w", err)
 	}
 	out.Outbox = tag.RowsAffected()
 
 	// 4. The identity map itself, and the CRM row.
+	//    006 dropped the (platform, platform_user_id) primary key and left only a
+	//    partial unique index on (config_id, platform_user_id), so a subject can
+	//    hold one row per config — several of this tenant's, and rows of other
+	//    tenants that this request must not reach. The tenant's config set is
+	//    therefore the correct scope here (an early version of this comment
+	//    claimed the map "keeps the other configs", which the statement it
+	//    described does not do). Step 6's cascade would remove the session-bound
+	//    rows anyway (session_id is ON DELETE CASCADE); deleting them here first
+	//    keeps the per-step counts in the audit row meaningful.
 	tag, err = tx.Exec(ctx,
-		"DELETE FROM platform_user_sessions WHERE platform::text = ANY($1::text[]) AND platform_user_id = $2",
-		metaFamily, metaUserID)
+		"DELETE FROM platform_user_sessions WHERE platform::text = ANY($1::text[]) AND platform_user_id = $2 "+
+			"AND ($3::int IS NULL OR config_id IN (SELECT config_id FROM platform_configs WHERE user_id = $3))",
+		metaFamily, metaUserID, tenantID)
 	if err != nil {
 		return out, fmt.Errorf("delete user sessions: %w", err)
 	}
 	out.UserSessions = tag.RowsAffected()
 
 	tag, err = tx.Exec(ctx,
-		"DELETE FROM customer_profiles WHERE platform::text = ANY($1::text[]) AND platform_user_id = $2",
-		metaFamily, metaUserID)
+		"DELETE FROM customer_profiles WHERE platform::text = ANY($1::text[]) AND platform_user_id = $2 "+
+			"AND ($3::int IS NULL OR user_id = $3)",
+		metaFamily, metaUserID, tenantID)
 	if err != nil {
 		return out, fmt.Errorf("delete customer profiles: %w", err)
 	}
@@ -254,8 +336,9 @@ func (wh *Webhooks) deleteMetaSubject(ctx context.Context, metaUserID string) (d
 	//    human_handoff_requests, message_notes, session_assignments,
 	//    sla_breaches, platform_user_sessions and platform_outbox.
 	tag, err = tx.Exec(ctx,
-		"DELETE FROM sessions WHERE platform::text = ANY($1::text[]) AND platform_user_id = $2",
-		metaFamily, metaUserID)
+		"DELETE FROM sessions WHERE platform::text = ANY($1::text[]) AND platform_user_id = $2 "+
+			"AND ($3::int IS NULL OR user_id = $3)",
+		metaFamily, metaUserID, tenantID)
 	if err != nil {
 		return out, fmt.Errorf("delete sessions: %w", err)
 	}
@@ -305,7 +388,8 @@ func (wh *Webhooks) recordDeletionRequest(ctx context.Context, code, source, met
 // candidate app secret is tried in turn: the platform's own app first, then
 // every active Meta-family config (tenants may bring their own app). A request
 // verifying against none of them is rejected — an unauthenticated caller must
-// never be able to name a subject and have data deleted.
+// never be able to name a subject and have data deleted. A non-nil configID
+// also scopes the deletion to that tenant (see deleteMetaSubject).
 func (wh *Webhooks) MetaDataDeletion(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -335,7 +419,7 @@ func (wh *Webhooks) MetaDataDeletion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, err := wh.deleteMetaSubject(ctx, payload.UserID)
+	out, err := wh.deleteMetaSubject(ctx, configID, payload.UserID)
 	status := "completed"
 	detail := "all matching records removed"
 	switch {

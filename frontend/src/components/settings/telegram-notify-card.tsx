@@ -10,6 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Loader2, Send, Bot, ExternalLink, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 import { useI18n } from "@/lib/i18n";
+import { openExternalURL } from "@/lib/open-external";
 
 export function TelegramNotifyCard() {
   const { t, tf } = useI18n();
@@ -68,12 +69,15 @@ export function TelegramNotifyCard() {
 
   // One-tap binding through the platform bot. Opens in a new tab so the
   // dashboard stays put — on mobile t.me hands off to the Telegram app.
+  // The link is https://t.me/<bot>?start=<one-time token> from our own API;
+  // openExternalURL refuses anything else and reports back so the toast matches.
   const connectTelegram = async () => {
     setLinking(true);
     try {
       const res = await postTelegramNotifyLink();
-      window.open(res.link, "_blank", "noopener,noreferrer");
-      toast.success(t("settings.tgLinkOpened"));
+      if (openExternalURL(res.link, () => toast.error(t("settings.tgSaveFailed")))) {
+        toast.success(t("settings.tgLinkOpened"));
+      }
     } catch (err: unknown) {
       toast.error((err as Error).message || t("settings.tgSaveFailed"));
     } finally {

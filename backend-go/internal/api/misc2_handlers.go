@@ -640,9 +640,15 @@ func (a *App) setPlan(w http.ResponseWriter, r *http.Request) (any, error) {
 
 func (a *App) listTeam(w http.ResponseWriter, r *http.Request) (any, error) {
 	user, _ := UserFrom(r)
+	// Owner-only: this lists the tenant's seats and their permission sets, and
+	// binding user.UserID kept a seat safe only by accident (it returned the
+	// seat's own empty set). Bind the tenant and refuse the seat outright.
+	if err := requireOwnerOfTenant(user); err != nil {
+		return nil, err
+	}
 	rows, err := a.DB.Query(r.Context(),
 		"SELECT t.team_id, t.agent_user_id, t.display_name, t.skills, t.is_active, u.username, COALESCE(u.email,''), t.permissions "+
-			"FROM agent_teams t JOIN users u ON u.user_id = t.agent_user_id WHERE t.owner_user_id = $1 ORDER BY t.team_id", user.UserID)
+			"FROM agent_teams t JOIN users u ON u.user_id = t.agent_user_id WHERE t.owner_user_id = $1 ORDER BY t.team_id", user.Tenant())
 	if err != nil {
 		return nil, ErrInternal("查询失败")
 	}
@@ -709,11 +715,9 @@ func (a *App) addTeamAgent(w http.ResponseWriter, r *http.Request) (any, error) 
 		return nil, ErrConflict("该用户已在客服团队中")
 	}
 	// Plan limit: seats are a live count, not a consumed counter (see
-	// plan_limits.go). Checked after the role guard so an unauthorised caller
-	// still gets 403 rather than a limit message.
-	if err := a.checkSeatLimit(r.Context(), user.UserID); err != nil {
-		return nil, err
-	}
+	// plan_limits.go). The check runs inside the locked transaction below, after
+	// the role guard, so an unauthorised caller still gets 403 rather than a
+	// limit message.
 	// Verify the agent user exists and can join this tenant. Membership is
 	// exclusive: agent_teams doubles as the tenant boundary for every
 	// foreign-user-id handler (see userInCallerTenant), so a user already
@@ -760,8 +764,23 @@ func (a *App) addTeamAgent(w http.ResponseWriter, r *http.Request) (any, error) 
 	if req.Skills == nil {
 		req.Skills = []string{}
 	}
+	// Seat cap and INSERT share one transaction that locks the tenant's users row:
+	// counting on the pool and inserting on the pool lets two concurrent claims
+	// both pass the cap. The guards above stay outside — they are reads that the
+	// race cannot consume.
+	tx, err := a.DB.Begin(r.Context())
+	if err != nil {
+		return nil, ErrInternal("添加失败")
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
+	if _, err := tx.Exec(r.Context(), "SELECT 1 FROM users WHERE user_id = $1 FOR UPDATE", user.UserID); err != nil {
+		return nil, ErrInternal("添加失败")
+	}
+	if err := a.checkSeatLimitFrom(r.Context(), tx, user.UserID); err != nil {
+		return nil, err
+	}
 	var teamID int
-	if err := a.DB.QueryRow(r.Context(),
+	if err := tx.QueryRow(r.Context(),
 		"INSERT INTO agent_teams (owner_user_id, agent_user_id, display_name, skills, is_active) VALUES ($1,$2,$3,$4::text[],true) RETURNING team_id",
 		user.UserID, req.AgentUserID, req.DisplayName, req.Skills).Scan(&teamID); err != nil {
 		// The checks above and this INSERT are a check-then-act pair, so the
@@ -776,6 +795,9 @@ func (a *App) addTeamAgent(w http.ResponseWriter, r *http.Request) (any, error) 
 		if errors.As(err, &pge) && pge.Code == "23505" {
 			return nil, ErrConflict("该用户已属于其他商家")
 		}
+		return nil, ErrInternal("添加失败")
+	}
+	if err := tx.Commit(r.Context()); err != nil {
 		return nil, ErrInternal("添加失败")
 	}
 	return map[string]any{"team_id": teamID, "message": "已添加"}, nil

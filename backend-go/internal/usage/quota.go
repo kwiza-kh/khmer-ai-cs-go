@@ -6,8 +6,17 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/pgconn"
 )
+
+// Querier is the slice of pgx the quota statements need. *pgxpool.Pool and pgx.Tx
+// both satisfy it, which is what lets a caller consume the quota inside the same
+// transaction that records the charge — see Pipeline.chargeInboundTurn, where
+// splitting those two writes cost a customer message its charge.
+type Querier interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
 
 // Plan names live here because two layers have to agree on them: the api layer
 // enforces the document quota, the pipeline enforces the message quota.
@@ -61,7 +70,7 @@ func messageQuotaIsMetered(plan string) bool { return plan != PlanEnterprise }
 // one means nobody ever configured this tenant, and locking them out of their own
 // bot would be the wrong failure. A row whose quota is zero is a deliberate
 // setting ("no messages"), so it blocks.
-func ConsumeMessageQuota(ctx context.Context, db *pgxpool.Pool, userID int32) error {
+func ConsumeMessageQuota(ctx context.Context, db Querier, userID int32) error {
 	if _, err := db.Exec(ctx, sqlMessageQuotaInit, userID); err != nil {
 		return fmt.Errorf("message quota init: %w", err)
 	}

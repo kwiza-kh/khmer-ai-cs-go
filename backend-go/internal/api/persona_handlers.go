@@ -24,7 +24,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -353,11 +352,10 @@ func validPersonaID(id string) bool {
 // collides in exactly the cases the console cannot explain to the operator.
 func mintPersonaID() string {
 	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		// crypto/rand does not fail on the platforms this ships on; the fallback
-		// keeps create working rather than failing the request outright.
-		return fmt.Sprintf("p_%d", time.Now().UnixNano())
-	}
+	// crypto/rand.Read is infallible on Go >= 1.24, so the clock-based fallback
+	// that used to live here was unreachable — and if it had been reachable it
+	// would have minted a guessable id (see platform.NewUUID).
+	_, _ = rand.Read(b[:])
 	return "p_" + hex.EncodeToString(b[:])
 }
 

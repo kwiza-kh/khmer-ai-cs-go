@@ -114,7 +114,7 @@ type Capabilities struct {
 	TemplateExempt bool
 
 	// ProactiveSend is true when the channel may be messaged with no inbound
-	// context at all (campaigns). It is deliberately separate from Windowless:
+	// context at all (marketing templates). It is deliberately separate from Windowless:
 	// Meta channels are not windowless, yet a template is still a valid send.
 	ProactiveSend bool
 

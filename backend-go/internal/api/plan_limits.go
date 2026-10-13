@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"khmer-ai-cs-go/internal/usage"
 )
@@ -29,9 +30,11 @@ const (
 
 // querier is the slice of pgxpool.Pool / pgx.Tx the plan gates need. Invite
 // acceptance re-checks the seat count inside its transaction (with the owner row
-// locked), so the same SQL has to run on either.
+// locked), and the PayPal capture writes the plan row there too, so the same SQL
+// has to run on either.
 type querier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
 // tenantPlan resolves the tenant's plan. A missing billing row means free: the
@@ -65,12 +68,18 @@ func planByName(name string) usage.Plan {
 
 // checkChannelLimit refuses a new channel once the plan's allowance is in use.
 func (a *App) checkChannelLimit(ctx context.Context, userID int32) error {
-	spec := a.tenantPlan(ctx, userID)
+	return a.checkChannelLimitFrom(ctx, a.DB, userID)
+}
+
+// checkChannelLimitFrom runs the same gate on an open transaction, so a count
+// and the INSERT that consumes it see one snapshot (createChannelConfig).
+func (a *App) checkChannelLimitFrom(ctx context.Context, q querier, userID int32) error {
+	spec := a.tenantPlanFrom(ctx, q, userID)
 	if spec.Channels >= usage.Unlimited {
 		return nil
 	}
 	var used int64
-	if err := a.DB.QueryRow(ctx, sqlCountActiveChannels, userID).Scan(&used); err != nil {
+	if err := q.QueryRow(ctx, sqlCountActiveChannels, userID).Scan(&used); err != nil {
 		// Counting is an auxiliary read: a failed count must not block connecting
 		// a channel the tenant may well be entitled to (fail open, like the other
 		// auxiliary paths — the money paths are the counters, and those fail loud).
@@ -82,6 +91,35 @@ func (a *App) checkChannelLimit(ctx context.Context, userID int32) error {
 			fmt.Sprintf("当前套餐（%s）最多连接 %d 个渠道，请升级套餐", spec.Name, spec.Channels)}
 	}
 	return nil
+}
+
+// createChannelConfig inserts a new platform config under the plan's channel
+// allowance, in one transaction that first locks the tenant's own users row.
+// Counting on the pool and inserting on the pool is a check-then-act pair: two
+// concurrent connects (two tabs, or Meta + Instagram inside one signup) both
+// read "one slot free" and both insert, so the tenant silently runs one channel
+// past the plan it paid for. The row lock serialises connects per tenant, and
+// the count runs on the same transaction so it sees the winner's row.
+func (a *App) createChannelConfig(ctx context.Context, userID int32, query string, args ...any) (int32, error) {
+	tx, err := a.DB.Begin(ctx)
+	if err != nil {
+		return 0, ErrInternal("创建失败")
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, "SELECT 1 FROM users WHERE user_id = $1 FOR UPDATE", userID); err != nil {
+		return 0, ErrInternal("创建失败")
+	}
+	if err := a.checkChannelLimitFrom(ctx, tx, userID); err != nil {
+		return 0, err
+	}
+	var configID int32
+	if err := tx.QueryRow(ctx, query, args...).Scan(&configID); err != nil {
+		return 0, ErrInternal("创建失败")
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, ErrInternal("创建失败")
+	}
+	return configID, nil
 }
 
 // checkSeatLimit refuses a new agent seat once the plan's allowance is in use.

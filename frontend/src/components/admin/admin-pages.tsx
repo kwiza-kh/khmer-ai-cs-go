@@ -17,7 +17,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { AlertTriangle, BarChart3, Bot, Clock, Copy, Cpu, Headset, KeyRound, MessageSquare, Pencil, Plus, RefreshCw, Send, SlidersHorizontal, Sparkles, Trash2, TrendingUp, Users, X, Zap, Download, ShieldCheck, Search, UserCheck, UserPlus, Lock, History, RotateCcw, type LucideIcon } from "lucide-react";
+import { AlertTriangle, BarChart3, Bot, Clock, Copy, Cpu, Headset, KeyRound, MessageSquare, Pencil, Plus, RefreshCw, Send, SlidersHorizontal, Sparkles, Trash2, Users, X, Zap, Download, ShieldCheck, Search, UserCheck, UserPlus, Lock, History, RotateCcw, type LucideIcon } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "sonner";
 
@@ -32,7 +32,6 @@ import { EmptyState } from "@/components/empty-state";
 import { confirmDelete } from "@/lib/confirm-delete";
 import { PageHeader } from "@/components/page-header";
 import { AnalyticsPanel } from "@/components/admin/analytics-panel";
-import { FeedbackTab } from "@/components/admin/feedback-tab";
 import { OperationsTab } from "@/components/admin/operations-tab";
 import { GrowthTab } from "@/components/admin/growth-tab";
 import { ReportsTab } from "@/components/admin/reports-tab";
@@ -366,15 +365,6 @@ export function AnalyticsAdminPage() {
   return (
     <AdminPageFrame icon={BarChart3} title={t("nav.analytics")}>
       <AnalyticsPanel days={30} />
-    </AdminPageFrame>
-  );
-}
-
-export function FeedbackAdminPage() {
-  const { t } = useI18n();
-  return (
-    <AdminPageFrame icon={TrendingUp} title={t("nav.feedback")}>
-      <FeedbackTab />
     </AdminPageFrame>
   );
 }

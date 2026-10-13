@@ -66,9 +66,9 @@ type widgetTokenRow struct {
 
 func generateWidgetToken() string {
 	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		return fmt.Sprintf("wt_%x", time.Now().UnixNano())
-	}
+	// No fallback on a rand failure: crypto/rand.Read is infallible on Go >= 1.24,
+	// and a clock-derived token is not an unguessable one (see platform.NewUUID).
+	_, _ = rand.Read(b)
 	return "wt_" + hex.EncodeToString(b)
 }
 
@@ -594,6 +594,13 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 				a.Pipe.AlertQuotaExhausted(persistCtx, cerr)
 			}
 			webEscalate("ai_decision", "Gemini 配额/余额耗尽，AI 无法生成回复", inboundUrgency)
+			return
+		}
+		if errors.Is(cerr, gemini.ErrNoReply) {
+			// Refused, blocked, or empty: same rule as the platform pipeline
+			// (stageGenerate). The visitor gets the acknowledgement and the owner
+			// gets paged, instead of a bare error with nobody waiting.
+			webEscalate("ai_decision", "Model returned no usable reply (blocked or empty)", inboundUrgency)
 			return
 		}
 		sendEvent("error", map[string]string{"message": "生成回答失败"})

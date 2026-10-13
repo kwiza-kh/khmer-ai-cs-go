@@ -55,7 +55,7 @@ func oldestGeminiRow(t *testing.T, tx pgx.Tx) int32 {
 	t.Helper()
 	var id int32
 	if err := tx.QueryRow(context.Background(),
-		"SELECT min(config_id) FROM model_configs WHERE provider NOT IN ('anthropic', 'deepseek')").Scan(&id); err != nil {
+		"SELECT min(config_id) FROM model_configs WHERE provider NOT IN ('anthropic', 'deepseek', 'anthropic-vertex')").Scan(&id); err != nil {
 		t.Fatalf("oldest gemini row: %v", err)
 	}
 	return id
@@ -146,5 +146,48 @@ func TestLoadProviderFindsARowForProvidersThatAreNotServing(t *testing.T) {
 	}
 	if _, ok := LoadProvider(ctx, tx, "openai"); ok {
 		t.Error("LoadProvider found a row for a provider that has none")
+	}
+}
+
+// The retired 'anthropic-vertex' value must be skipped like any other Claude row. It
+// used to be missing from LoadGemini's NOT IN list, so a row still carrying it was read
+// as a Gemini row — the operator saw "Claude on Vertex" in the console while every
+// embedding call ran with that row's key and model. The row is skipped, not rewritten:
+// see LoadGemini's comment for why rewriting would only swap one failure for another.
+func TestGeminiNeverReadsARetiredAnthropicVertexRow(t *testing.T) {
+	tx := openRolledBackTx(t)
+	ctx := context.Background()
+	retired := insertTestRow(t, tx, "claude on vertex", "anthropic-vertex", true)
+
+	if def, ok := LoadDefault(ctx, tx); !ok || def.ConfigID != retired {
+		t.Fatalf("LoadDefault = %+v, %v; want the retired row marked default", def, ok)
+	}
+	g, ok := LoadGemini(ctx, tx)
+	if ok && g.ConfigID == retired {
+		t.Fatal("LoadGemini returned the retired anthropic-vertex row: its key would become the Gemini credential")
+	}
+	if ok {
+		if want := oldestGeminiRow(t, tx); g.ConfigID != want {
+			t.Errorf("LoadGemini = config %d, want the oldest Gemini row %d", g.ConfigID, want)
+		}
+	}
+}
+
+// The retired value must stay out of the console's vocabulary: Providers() is what
+// Valid() checks, and a console that could store 'anthropic-vertex' again would create
+// exactly the row LoadGemini now has to skip.
+func TestRetiredAnthropicVertexIsNotStorable(t *testing.T) {
+	if Valid("anthropic-vertex") {
+		t.Error("Valid(\"anthropic-vertex\") is true; the console could store a provider nothing serves")
+	}
+	for _, p := range Providers() {
+		if p == "anthropic-vertex" {
+			t.Error("Providers() still lists the retired anthropic-vertex value")
+		}
+	}
+	for _, p := range Providers() {
+		if !Valid(p) {
+			t.Errorf("Providers() lists %q but Valid rejects it", p)
+		}
 	}
 }

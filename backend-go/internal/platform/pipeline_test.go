@@ -289,3 +289,60 @@ func TestReplyClaimsHandoff(t *testing.T) {
 		}
 	}
 }
+
+// handoffLanguageMismatch decides whether the model's handoff text is replaced by the
+// one sentence the guard can act on. The matrix below is exhaustive across the three
+// languages and the three scripts: the reported bug was a pairing nobody had written
+// down — a Chinese reply to an English customer passed as fine, because the comparison
+// only ever looked at the customer's script going the other way.
+func TestHandoffLanguageMismatchAcrossScripts(t *testing.T) {
+	const (
+		khmerText  = "សូមអរគុណ"
+		hanText    = "感谢您的消息"
+		latinText  = "Thanks, one moment"
+		mixedKhmer = "EPS-P 50mm តម្លៃ $9.80"
+	)
+	cases := []struct {
+		name, reply, lang string
+		want              bool
+	}{
+		{"khmer customer, khmer reply", khmerText, "km", false},
+		{"khmer customer, latin-heavy khmer reply", mixedKhmer, "km", false},
+		{"khmer customer, chinese reply", hanText, "km", true},
+		// A reply with no Khmer at all is not a Khmer reply: the canned sentence is
+		// the only thing this customer is guaranteed to read. ASCII prices and
+		// product codes are fine — they arrive mixed with Khmer (mixedKhmer above).
+		{"khmer customer, english-only reply", latinText, "km", true},
+		{"english customer, english reply", latinText, "en", false},
+		{"english customer, khmer reply", khmerText, "en", true},
+		{"english customer, chinese reply", hanText, "en", true},
+		{"chinese customer, chinese reply", hanText, "zh", false},
+		{"chinese customer, khmer reply", khmerText, "zh", true},
+		{"chinese customer, english reply", latinText, "zh", true},
+		// No letters at all is not an answer in any language: a bare phone number
+		// is replaced by the handoff sentence, which at least tells the customer
+		// what happens next.
+		{"no letters at all", "📞 012 345 678", "km", true},
+	}
+	for _, tc := range cases {
+		if got := handoffLanguageMismatch(tc.reply, tc.lang); got != tc.want {
+			t.Errorf("%s: handoffLanguageMismatch(%q, %q) = %v, want %v",
+				tc.name, tc.reply, tc.lang, got, tc.want)
+		}
+	}
+}
+
+// Cross-script replies must reach the customer as the customer's own language: the
+// model's text is replaced, not kept with the right sentence glued on the end.
+func TestCanonicalHandoffReplyReplacesCrossScriptReplies(t *testing.T) {
+	cases := []struct{ reply, lang string }{
+		{"已为您转接人工客服，客服人员将尽快回复您", "en"},
+		{"Sure, connecting you to a human now.", "zh"},
+		{"សូមអរគុណ។ ខ្ញុំនឹងភ្ជាប់អ្នកទៅភ្នាក់ងារមនុស្ស។", "en"},
+	}
+	for _, tc := range cases {
+		if got, want := CanonicalHandoffReply(tc.reply, tc.lang), HandoffSentence(tc.lang); got != want {
+			t.Errorf("CanonicalHandoffReply(%q, %q) = %q, want %q", tc.reply, tc.lang, got, want)
+		}
+	}
+}

@@ -116,8 +116,11 @@ func TestChatMapsOurTurnOntoChatCompletions(t *testing.T) {
 
 	// system is the first message and carries the language directive; the staff
 	// reply keeps the Gemini client's marker and joins the preceding user turn.
+	// A configured house prompt no longer replaces the safety rules: the rules have
+	// no other carrier, so gemini.SystemInstructionFor appends them whenever the
+	// resolved prompt does not already contain them.
 	want := []struct{ role, content string }{
-		{"system", "You are a shop assistant.\n\n[Language Preference] " + gemini.LanguageLabel("km")},
+		{"system", "You are a shop assistant.\n\n" + gemini.SafetyRules + "\n\n[Language Preference] " + gemini.LanguageLabel("km")},
 		{"user", "hello\n\n[Human agent reply] three left"},
 		{"assistant", "thanks"},
 		{"user", "how much?"},

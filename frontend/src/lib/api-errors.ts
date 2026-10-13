@@ -3,6 +3,8 @@
 // table maps it to English / Khmer at the API boundary. Unmapped or dynamic
 // messages pass through unchanged, so a stale entry degrades gracefully.
 
+import { storageGet } from "./storage";
+
 interface ErrTranslation {
   en: string;
   km: string;
@@ -151,8 +153,7 @@ const PREFIX_MAP: [string, string, string][] = [
 
 /** Map a message using the persisted interface language (localStorage). */
 export function localizeCurrentLang(message: string): string {
-  const lang = typeof window !== "undefined" ? localStorage.getItem("lang") : null;
-  return localizeApiMessage(message, lang);
+  return localizeApiMessage(message, storageGet("lang"));
 }
 
 /** Map a backend message to the given interface language. */

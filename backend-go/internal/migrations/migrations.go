@@ -1,12 +1,16 @@
-// Package migrations applies the embedded SQL migrations in lexical order,
-// each in its own transaction, and bootstraps the admin account — a faithful
-// port of the Rust runner (itself a port of the original Go cmd/migrate).
+// Package migrations applies the embedded SQL migrations in lexical order —
+// each in its own transaction, except a file containing CONCURRENTLY, which the
+// server refuses inside a transaction block — and bootstraps the admin account:
+// a faithful port of the Rust runner (itself a port of the original Go
+// cmd/migrate).
 package migrations
 
 import (
 	"context"
 	"embed"
 	"fmt"
+	"log/slog"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -72,10 +76,32 @@ func Applied(ctx context.Context, pool *pgxpool.Pool) (map[string]bool, error) {
 	return applied, rows.Err()
 }
 
-// Run applies all pending migrations (each in its own transaction) and returns
-// the list of applied names. The simple query protocol is used so
-// multi-statement DDL and DO blocks work.
+// Run applies all pending migrations and returns the list of applied names.
+// The simple query protocol is used so multi-statement DDL and DO blocks work.
 func Run(ctx context.Context, pool *pgxpool.Pool) ([]string, error) {
+	// Serialise the whole run on one session-scoped advisory lock. Nothing did
+	// this before, and since 075/077 a concurrent run is destructive rather than
+	// merely wasteful: two cmd/migrate invocations (a redeploy racing an operator,
+	// or two hosts against one database) both read Applied and both execute, so
+	// run B's `DROP INDEX CONCURRENTLY IF EXISTS` can remove the index run A just
+	// finished building — and if B is killed before its CREATE, the index stays
+	// gone until a later run, with the version already recorded.
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("acquire migration lock connection: %w", err)
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", migrationsAdvisoryLockKey); err != nil {
+		return nil, fmt.Errorf("acquire migration lock: %w", err)
+	}
+	defer func() {
+		// Detached: the caller's context may be cancelled (a failed migration),
+		// and the lock must still be handed back on this connection.
+		if _, err := conn.Exec(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock($1)", migrationsAdvisoryLockKey); err != nil {
+			slog.Default().Warn("migration advisory lock not released", "error", err.Error())
+		}
+	}()
+
 	applied, err := Applied(ctx, pool)
 	if err != nil {
 		return nil, err
@@ -97,7 +123,30 @@ func Run(ctx context.Context, pool *pgxpool.Pool) ([]string, error) {
 	return newly, nil
 }
 
+// migrationsAdvisoryLockKey is arbitrary but fixed: every process that migrates
+// this database must agree on it.
+const migrationsAdvisoryLockKey = 741852963
+
 func applyOne(ctx context.Context, pool *pgxpool.Pool, name, content string) error {
+	// CONCURRENTLY is the one statement kind Postgres refuses inside a
+	// transaction block, and the simple query protocol wraps a multi-statement
+	// message in an implicit one. Such a file therefore goes statement by
+	// statement, each in its own implicit transaction. That is safe only because
+	// a migration that needs CONCURRENTLY is idempotent on its own terms
+	// (IF [NOT] EXISTS): a failure part-way leaves earlier statements applied,
+	// and the next run re-executes them harmlessly before retrying the failed
+	// one. The version is recorded only after every statement succeeded.
+	stmts := splitStatements(content)
+	if needsConcurrentIndex(stmts) {
+		for _, stmt := range stmts {
+			if _, err := pool.Exec(ctx, stmt); err != nil {
+				return err
+			}
+		}
+		_, err := pool.Exec(ctx, "INSERT INTO schema_migrations (version) VALUES ($1)", name)
+		return err
+	}
+
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -110,6 +159,159 @@ func applyOne(ctx context.Context, pool *pgxpool.Pool, name, content string) err
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// needsConcurrentIndex reports whether any statement of a migration asks for a
+// concurrent build. Comments are already stripped by splitStatements, so a file
+// that merely mentions the word in a note is not affected. The match is anchored
+// at the statement head: a raw substring test moved a file onto the
+// statement-by-statement path (losing its all-or-nothing transaction) as soon as
+// any statement merely contained the word — a help-text row or a column comment
+// would have done it.
+func needsConcurrentIndex(stmts []string) bool {
+	for _, stmt := range stmts {
+		if concurrentIndexStmt.MatchString(stmt) {
+			return true
+		}
+	}
+	return false
+}
+
+var concurrentIndexStmt = regexp.MustCompile(`(?is)^\s*(DROP|CREATE|REINDEX)\s+(UNIQUE\s+)?INDEX\s+CONCURRENTLY\b`)
+
+// splitStatements splits migration SQL into individual statements, dropping
+// comments and ignoring semicolons inside string literals, dollar-quoted blocks
+// and comments. It is only consulted for the CONCURRENTLY path above; every
+// other migration still reaches the server as one untouched multi-statement
+// message.
+func splitStatements(content string) []string {
+	var (
+		stmts    []string
+		b        strings.Builder
+		i, n     = 0, len(content)
+		inSingle bool
+		inDouble bool
+		escapes  bool // inside E'...', where a backslash escapes the next byte
+		dollar   string
+	)
+	emit := func() {
+		if s := strings.TrimSpace(b.String()); s != "" {
+			stmts = append(stmts, s)
+		}
+		b.Reset()
+	}
+	for i < n {
+		c := content[i]
+		switch {
+		case inSingle:
+			b.WriteByte(c)
+			if c == '\\' && escapes && i+1 < n {
+				b.WriteByte(content[i+1])
+				i += 2
+				continue
+			}
+			if c == '\'' {
+				if i+1 < n && content[i+1] == '\'' {
+					b.WriteByte('\'')
+					i += 2
+					continue
+				}
+				inSingle = false
+			}
+			i++
+		case inDouble:
+			b.WriteByte(c)
+			if c == '"' {
+				if i+1 < n && content[i+1] == '"' {
+					b.WriteByte('"')
+					i += 2
+					continue
+				}
+				inDouble = false
+			}
+			i++
+		case dollar != "":
+			if c == '$' && strings.HasPrefix(content[i:], dollar) {
+				b.WriteString(dollar)
+				i += len(dollar)
+				dollar = ""
+				continue
+			}
+			b.WriteByte(c)
+			i++
+		case c == '-' && i+1 < n && content[i+1] == '-':
+			for i < n && content[i] != '\n' {
+				i++
+			}
+			b.WriteByte(' ')
+		case c == '/' && i+1 < n && content[i+1] == '*':
+			// Postgres block comments nest. i must be the outer index: a shadowed
+			// copy here would leave the scanner on the same byte forever.
+			depth := 1
+			i += 2
+			for i < n && depth > 0 {
+				if strings.HasPrefix(content[i:], "/*") {
+					depth++
+					i += 2
+					continue
+				}
+				if strings.HasPrefix(content[i:], "*/") {
+					depth--
+					i += 2
+					continue
+				}
+				i++
+			}
+			b.WriteByte(' ')
+		case c == '\'':
+			escapes = i > 0 && (content[i-1] == 'e' || content[i-1] == 'E')
+			inSingle = true
+			b.WriteByte(c)
+			i++
+		case c == '"':
+			inDouble = true
+			b.WriteByte(c)
+			i++
+		case c == '$':
+			if tag := dollarTagAt(content, i); tag != "" {
+				dollar = tag
+				b.WriteString(tag)
+				i += len(tag)
+				continue
+			}
+			b.WriteByte(c)
+			i++
+		case c == ';':
+			emit()
+			i++
+		default:
+			b.WriteByte(c)
+			i++
+		}
+	}
+	emit()
+	return stmts
+}
+
+// dollarTagAt returns the dollar-quote tag starting at i ("$$", "$fn$"), or ""
+// when the dollar sign starts something else such as a $1 parameter.
+func dollarTagAt(s string, i int) string {
+	j := i + 1
+	for j < len(s) {
+		c := s[j]
+		digit := c >= '0' && c <= '9'
+		if c != '_' && !digit && !(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') {
+			break
+		}
+		if digit && j == i+1 { // a tag cannot start with a digit ($1 is a parameter)
+			break
+		}
+		j++
+	}
+	if j < len(s) && s[j] == '$' {
+		return s[i : j+1]
+	}
+	return ""
 }
 
 // MarkApplied records a version as applied without running it (bootstrap).

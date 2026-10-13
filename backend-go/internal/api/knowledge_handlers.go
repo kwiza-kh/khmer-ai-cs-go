@@ -90,7 +90,17 @@ func (a *App) uploadKnowledge(w http.ResponseWriter, r *http.Request) (any, erro
 	if tags == nil {
 		tags = []string{}
 	}
-	return a.RAG.UploadDocument(r.Context(), user.Tenant(), strings.TrimSpace(req.Title), req.Content, language, category, tags, nil)
+	doc, err := a.RAG.UploadDocument(r.Context(), user.Tenant(), strings.TrimSpace(req.Title), req.Content, language, category, tags, nil)
+	if err != nil {
+		// The slot was taken for a document that does not exist: give it back.
+		// The refund runs on a context detached from the request: r.Context() is
+		// already cancelled when the client aborts the upload, so the refund's own
+		// UPDATE was cancelled with it and a paying tenant lost a document slot
+		// for an upload that never landed.
+		refundDocQuota(context.WithoutCancel(r.Context()), a.DB, a.Logger, user.Tenant())
+		return nil, err
+	}
+	return doc, nil
 }
 
 // UploadKnowledgeFile — multipart file upload (file/category/language fields).
@@ -164,6 +174,8 @@ func (a *App) uploadKnowledgeFile(w http.ResponseWriter, r *http.Request) (any, 
 	}
 	doc, err := a.RAG.UploadDocument(r.Context(), user.Tenant(), title, text, lang, category, []string{}, nil)
 	if err != nil {
+		// Detached from the request context: see uploadKnowledge.
+		refundDocQuota(context.WithoutCancel(r.Context()), a.DB, a.Logger, user.Tenant())
 		return nil, err
 	}
 	// Mark source = upload (Go parity).
@@ -254,8 +266,16 @@ func (a *App) ingestKnowledgeURL(w http.ResponseWriter, r *http.Request) (any, e
 		return nil, err
 	}
 	sourceURL := req.URL
+	doc, err := a.RAG.UploadDocument(r.Context(), user.Tenant(), title, text, language, category, []string{}, &sourceURL)
+	if err != nil {
+		// Detached from the request context: see uploadKnowledge.
+		refundDocQuota(context.WithoutCancel(r.Context()), a.DB, a.Logger, user.Tenant())
+		return nil, err
+	}
+	// Logged after the ingest, not before: the old line announced success for a
+	// document that had not been written yet.
 	a.Logger.Info("url ingest: success", "url", req.URL)
-	return a.RAG.UploadDocument(r.Context(), user.Tenant(), title, text, language, category, []string{}, &sourceURL)
+	return doc, nil
 }
 
 // AcceptedFileTypes — extension list + size cap for the UI.

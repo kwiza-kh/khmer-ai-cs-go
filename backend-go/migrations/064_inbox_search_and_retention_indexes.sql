@@ -36,13 +36,12 @@
 -- LOCKING NOTE: plain CREATE INDEX takes a SHARE lock that blocks writes to the
 -- table for the whole build. Every table here is empty or small on a fresh
 -- deploy and the migration runner holds one transaction per file, so this is
--- acceptable — but on a large production database build the trgm index on
--- chat_messages separately and CONCURRENTLY (outside the migration runner),
--- because that table grows with every message and the build can take minutes.
--- CREATE INDEX CONCURRENTLY cannot run inside the migration transaction.
-
-CREATE INDEX IF NOT EXISTS idx_chat_messages_content_trgm
-    ON chat_messages USING GIN (content gin_trgm_ops);
+-- acceptable for them.
+--
+-- The trgm index on chat_messages used to be here and has moved to 075, which
+-- the runner executes outside a transaction so the build can be CONCURRENT: that
+-- table grows with every message, and its build would otherwise block every
+-- insert for as long as it takes.
 
 -- Retention: the four always-on rules plus the opt-in outbox rule.
 CREATE INDEX IF NOT EXISTS idx_notifications_created_at

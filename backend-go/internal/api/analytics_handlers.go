@@ -1,12 +1,15 @@
 package api
 
 import (
+	"context"
 	"encoding/csv"
 	"fmt"
 	"net/http"
 	"regexp"
 	"strconv"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"khmer-ai-cs-go/internal/platform"
 	"khmer-ai-cs-go/internal/textutil"
@@ -220,65 +223,6 @@ func (a *App) languageBreakdown(w http.ResponseWriter, r *http.Request) (any, er
 }
 
 // ============================================
-// Feedback list
-// ============================================
-
-// feedbackList — rated model messages for the dashboard feedback tab.
-func (a *App) feedbackList(w http.ResponseWriter, r *http.Request) (any, error) {
-	user, _ := UserFrom(r)
-	page := parseIntOr(r.URL.Query().Get("page"), 1)
-	pageSize := parseIntOr(r.URL.Query().Get("page_size"), 50)
-	if pageSize > 200 {
-		pageSize = 200
-	}
-	rating := r.URL.Query().Get("rating")
-
-	where := "WHERE s.user_id=$1 AND cm.role='model' AND cm.feedback_rating IS NOT NULL"
-	args := []any{user.UserID}
-	if rating == "1" || rating == "-1" {
-		where += " AND cm.feedback_rating = $" + strconv.Itoa(len(args)+1)
-		args = append(args, rating)
-	}
-	var total int64
-	_ = a.DB.QueryRow(r.Context(),
-		"SELECT COUNT(*) FROM chat_messages cm JOIN sessions s ON s.session_id = cm.session_id "+where, args...).Scan(&total)
-	args = append(args, pageSize, (page-1)*pageSize)
-	rows, err := a.DB.Query(r.Context(),
-		"SELECT cm.message_id, cm.session_id::text, cm.content, cm.feedback_rating, cm.feedback_comment, cm.feedback_at, cm.role, cm.message_type, cm.created_at "+
-			"FROM chat_messages cm JOIN sessions s ON s.session_id = cm.session_id "+
-			where+" ORDER BY cm.feedback_at DESC NULLS LAST LIMIT $"+strconv.Itoa(len(args)-1)+" OFFSET $"+strconv.Itoa(len(args)), args...)
-	if err != nil {
-		return nil, ErrInternal("查询失败")
-	}
-	defer rows.Close()
-	items := make([]map[string]any, 0)
-	for rows.Next() {
-		var (
-			mid                       int64
-			sid, content, role, mtype string
-			ratingCol                 int16
-			comment                   *string
-			fbAt                      *time.Time
-			createdAt                 time.Time
-		)
-		if err := rows.Scan(&mid, &sid, &content, &ratingCol, &comment, &fbAt, &role, &mtype, &createdAt); err != nil {
-			continue
-		}
-		items = append(items, map[string]any{
-			"message_id": mid, "session_id": sid, "content": content,
-			"feedback_rating": int(ratingCol), "feedback_comment": textutil.DerefString(comment), "feedback_at": fbAt,
-			"role": role, "message_type": mtype, "created_at": createdAt,
-		})
-	}
-	// `total` is counted separately, so a short read here shows the page as
-	// complete while the pager offers rows that never arrive.
-	if err := rows.Err(); err != nil {
-		return nil, ErrInternal("查询失败")
-	}
-	return map[string]any{"data": items, "total": total, "page": page, "page_size": pageSize}, nil
-}
-
-// ============================================
 // Enterprise analytics
 // ============================================
 
@@ -386,6 +330,15 @@ func (a *App) integrationsStatus(w http.ResponseWriter, r *http.Request) (any, e
 // reportCSV streams GET /api/v1/reports/{sessions|messages|tokens}?from=&to=.
 func (a *App) reportCSV(w http.ResponseWriter, r *http.Request) {
 	user, _ := UserFrom(r)
+	// Owner-only, and stated rather than implied. This handler is registered raw
+	// (it streams CSV, so it cannot hand an error back to a.handle), and it used
+	// to bind user.UserID: for a seat that returned the seat's own empty rows,
+	// which looked safe but made "who may export" depend on a wrong column name.
+	// Bind the tenant and refuse the seat outright.
+	if err := requireOwnerOfTenant(user); err != nil {
+		WriteJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+		return
+	}
 	kind := r.PathValue("kind")
 	// The token export is the platform's cost basis: platformAdminOnly, like
 	// /platform/tokens. The conversation exports stay tenant-visible.
@@ -426,12 +379,13 @@ func (a *App) reportCSV(w http.ResponseWriter, r *http.Request) {
 	case "sessions":
 		_ = cw.Write([]string{"session_id", "platform", "status", "language", "title", "customer", "user_msgs", "model_msgs", "sentiment", "intent", "created_at", "first_response_at", "resolved_at", "escalated_at"})
 		cw.Flush()
-		rows, err := a.DB.Query(r.Context(), `SELECT s.session_id::text, COALESCE(s.platform::text,'web'), s.status::text, s.language, COALESCE(s.title,''),
+		rows, release, err := a.reportQuery(r.Context(), `SELECT s.session_id::text, COALESCE(s.platform::text,'web'), s.status::text, s.language, COALESCE(s.title,''),
 				COALESCE(pus.user_display_name, s.platform_user_id, ''), s.user_message_count, s.model_message_count,
 				COALESCE(s.sentiment,''), COALESCE(s.intent,''), s.created_at, s.first_response_at, s.resolved_at, s.escalated_at
 			FROM sessions s LEFT JOIN platform_user_sessions pus ON pus.session_id = s.session_id
 			WHERE s.user_id=$1 AND s.is_test=FALSE AND s.created_at BETWEEN $2 AND $3 ORDER BY s.created_at`,
-			user.UserID, from, to)
+			user.Tenant(), from, to)
+		defer release()
 		if err == nil {
 			for rows.Next() {
 				var sid, plat, status, lang, title, cust string
@@ -456,11 +410,12 @@ func (a *App) reportCSV(w http.ResponseWriter, r *http.Request) {
 		// No tokens/model columns: per-message model accounting is platform data.
 		_ = cw.Write([]string{"message_id", "session_id", "role", "type", "content", "used_mock", "feedback_rating", "feedback_comment", "created_at"})
 		cw.Flush()
-		rows, err := a.DB.Query(r.Context(), `SELECT cm.message_id, cm.session_id::text, cm.role, cm.message_type, cm.content,
+		rows, release, err := a.reportQuery(r.Context(), `SELECT cm.message_id, cm.session_id::text, cm.role, cm.message_type, cm.content,
 				COALESCE(cm.used_mock,false), cm.feedback_rating, COALESCE(cm.feedback_comment,''), cm.created_at
 			FROM chat_messages cm JOIN sessions s ON s.session_id = cm.session_id
 			WHERE s.user_id=$1 AND s.is_test=FALSE AND cm.created_at BETWEEN $2 AND $3 ORDER BY cm.message_id`,
-			user.UserID, from, to)
+			user.Tenant(), from, to)
+		defer release()
 		if err == nil {
 			for rows.Next() {
 				var (
@@ -491,8 +446,9 @@ func (a *App) reportCSV(w http.ResponseWriter, r *http.Request) {
 	case "tokens":
 		_ = cw.Write([]string{"date", "model", "prompt_tokens", "completion_tokens", "total_tokens", "cached_tokens", "cost_estimate"})
 		cw.Flush()
-		rows, err := a.DB.Query(r.Context(), `SELECT created_at, COALESCE(model,''), prompt_tokens, completion_tokens, total_tokens, COALESCE(cached_tokens,0), COALESCE(cost_estimate,0)
-			FROM token_usage WHERE user_id=$1 AND created_at BETWEEN $2 AND $3 ORDER BY usage_id`, user.UserID, from, to)
+		rows, release, err := a.reportQuery(r.Context(), `SELECT created_at, COALESCE(model,''), prompt_tokens, completion_tokens, total_tokens, COALESCE(cached_tokens,0), COALESCE(cost_estimate,0)
+			FROM token_usage WHERE user_id=$1 AND created_at BETWEEN $2 AND $3 ORDER BY usage_id`, user.Tenant(), from, to)
+		defer release()
 		if err == nil {
 			for rows.Next() {
 				var (
@@ -526,6 +482,48 @@ func fmtTime(t *time.Time) string {
 		return ""
 	}
 	return t.Format(time.RFC3339)
+}
+
+// reportQuery runs one export query under a longer statement timeout than the
+// pool default.
+//
+// The pool sets 120s (DATABASE_STATEMENT_TIMEOUT_MS) so one runaway query cannot
+// hold a connection; that bound is right for the request path, but an export has
+// no smaller unit than the whole scan, and a tenant a year into the product can
+// legitimately scan longer. Before this, the scan was cut off mid-stream: the
+// download was a 200 with a truncated CSV, and only the "scan incomplete" log
+// line said so.
+//
+// SET LOCAL, not SET: the connection returns to the pool afterwards, so the
+// longer bound cannot leak into the next request. idle_in_transaction is raised
+// with it because rows are streamed to a slow client while the snapshot is open.
+// The caller must call the returned release func when done (defer is fine).
+func (a *App) reportQuery(ctx context.Context, sql string, args ...any) (pgx.Rows, func(), error) {
+	tx, err := a.DB.Begin(ctx)
+	if err != nil {
+		a.Logger.Error("report CSV transaction failed", "error", err.Error())
+		return nil, func() {}, err
+	}
+	release := func() { _ = tx.Rollback(ctx) }
+	// 10 minutes: long enough for the largest export this product can produce,
+	// still finite so a runaway scan cannot hold a connection forever.
+	if _, err := tx.Exec(ctx, "SET LOCAL statement_timeout = '600s'"); err != nil {
+		release()
+		a.Logger.Error("report CSV timeout override failed", "error", err.Error())
+		return nil, func() {}, err
+	}
+	if _, err := tx.Exec(ctx, "SET LOCAL idle_in_transaction_session_timeout = '600s'"); err != nil {
+		release()
+		a.Logger.Error("report CSV timeout override failed", "error", err.Error())
+		return nil, func() {}, err
+	}
+	rows, err := tx.Query(ctx, sql, args...)
+	if err != nil {
+		release()
+		a.Logger.Error("report CSV export failed", "error", err.Error())
+		return nil, func() {}, err
+	}
+	return rows, release, nil
 }
 
 // ============================================

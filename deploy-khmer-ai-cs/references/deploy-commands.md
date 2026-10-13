@@ -83,6 +83,7 @@ cat /tmp/khmer-deploy/SHA256SUMS
 cd <仓库>/frontend
 # ⚠️ 关键: API_BASE 是构建时烘焙进 bundle 的 (src/lib/auth-client.tsx:
 #    process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080/api/v1")
+#    2026-10-12 起该兜底已删除: 缺 NEXT_PUBLIC_API_URL 会在 npm run build 直接报错
 #    忘设 = 线上前端打用户本机的 localhost → 接口全挂
 NEXT_PUBLIC_API_URL=https://<部署域名>/api/v1 npm run build
 
@@ -205,7 +206,10 @@ chown -R khmerai:khmerai frontend && systemctl start khmer-ai-cs-web
 
 ## 8. nginx 配置全文（首次部署参考 / 现行生效版）
 
-`/etc/nginx/sites-enabled/khmer-ai-cs`:
+站点布局: `/etc/nginx/sites-enabled/khmer-ai-cs` 是**指向 `/etc/nginx/sites-available/khmer-ai-cs` 的软链**（与 `wms` 一样）。
+2026-10-12 之前这两份是各自独立的普通文件，`sites-available` 那份停留在 2026-09-01: `proxy_pass` 还指着已退役的 Rust 后端 `:8080`，且缺 `media-src` 与 `location = /widget` —— 谁按常规 `ln -sf` 启用 available 版就是全站 502。改配置一律改 `sites-available` 那一份（软链共享），改完 `nginx -t && systemctl reload nginx`。
+
+`/etc/nginx/sites-available/khmer-ai-cs`（= 生效内容）:
 
 ```nginx
 server {
@@ -231,7 +235,7 @@ server {
     proxy_hide_header X-Powered-By;
     ssl_protocols TLSv1.2 TLSv1.3;
 
-    location /api/v1/realtime/inbox {          # WebSocket: 必须排在 /api/ 之前
+    location /api/v1/realtime/inbox {          # WebSocket (nginx 选最长前缀匹配, 与书写顺序无关)
         proxy_pass http://127.0.0.1:8081;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
@@ -248,6 +252,18 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_buffering off;                    # chat/stream 流式必需
+    }
+    location = /widget {                        # 精确匹配: 嵌件页单独放松 CSP (无 frame-ancestors 'none')
+        proxy_pass http://127.0.0.1:3001;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        add_header Strict-Transport-Security "max-age=31536000" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; media-src 'self' blob: https:; font-src 'self' data:; connect-src 'self' https:; base-uri 'self'; form-action 'self'" always;
     }
     location / {                                # Next standalone
         proxy_pass http://127.0.0.1:3001;

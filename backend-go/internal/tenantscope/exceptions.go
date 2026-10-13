@@ -71,7 +71,6 @@ var exceptions = map[string]string{
 	"internal/api/chat_handlers.go|chatHistory":        "session id from an authorized turn (resolveChatSession)",
 	"internal/api/chat_handlers.go|persistModelReply":  "session id from an authorized turn (resolveChatSession / ensureSessionAccess)",
 	"internal/api/chat_handlers.go|persistSystemReply": "session id from an authorized turn (chatPlain/chatStream/widgetChat all resolved it first)",
-	"internal/api/chat_handlers.go|webHandoffCheck":    "session id from an authorized turn",
 	"internal/api/chat_handlers.go|customerLanguage":   "session id from an authorized turn",
 	"internal/api/chat_handlers.go|listSessions":       "scope lives in the constant `where` clause (WHERE user_id = $1), see the statement",
 
@@ -88,7 +87,6 @@ var exceptions = map[string]string{
 
 	// — analytics: the count/page pair shares one constant `where` clause
 	// (WHERE s.user_id=$1), which the extractor cannot see through the variable.
-	"internal/api/analytics_handlers.go|feedbackList": "scope lives in the constant `where` clause (WHERE s.user_id=$1), see the statement",
 
 	// — admin: listUsers builds its scope in a constant `where` clause that
 	// resolves the caller's tenant, an owner-plus-seats set (pinned by
@@ -113,11 +111,8 @@ var exceptions = map[string]string{
 	"internal/api/misc2_handlers.go|listHandoffs":         "scope lives in the concatenated where clause (h.user_id = user.Tenant()), see the statement",
 
 	// — background workers: cross-tenant scans whose per-row work is scoped by
-	// the row's own user_id/campaign id (never by a request).
-	"internal/api/tasks.go|StartBackgroundTasks": "crash recovery for campaigns left in 'sending' by a previous process",
-	"internal/api/tasks.go|dispatchDueCampaigns": "iterates due campaigns; each dispatch uses that campaign's own user_id and config_id",
-	"internal/api/tasks.go|dispatchOneCampaign":  "one campaign row's own config_id + platform_user_id address the session",
-	"internal/api/tasks.go|resetBillingCycles":   "monthly quota reset across every tenant, by cycle_end",
+	// the row's own user_id (never by a request).
+	"internal/api/tasks.go|resetBillingCycles": "monthly quota reset across every tenant, by cycle_end",
 
 	// — team invites: the invite token is the capability; the owner scopes the
 	// list, and the uses table is read through owner-scoped invite ids.

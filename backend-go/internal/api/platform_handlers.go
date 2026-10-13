@@ -316,14 +316,14 @@ func (a *App) upsertPlatformConfig(w http.ResponseWriter, r *http.Request) (any,
 		configID = existing.ConfigID
 	} else {
 		// New channel, not an update: the plan's channel allowance applies only to
-		// creating one (re-connecting an existing config must always be allowed).
-		if err := a.checkChannelLimit(r.Context(), user.UserID); err != nil {
-			return nil, err
-		}
-		if err := a.DB.QueryRow(r.Context(),
+		// creating one (re-connecting an existing config must always be allowed),
+		// and the check shares the INSERT's transaction so two concurrent connects
+		// cannot both squeeze past the cap.
+		configID, err = a.createChannelConfig(r.Context(), user.UserID,
 			"INSERT INTO platform_configs (user_id, platform, access_token, page_id, instagram_business_id, whatsapp_business_account_id, bot_token, bot_token_hash, webhook_secret, webhook_secret_hash, is_active) VALUES ($1,$2::platform_type,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING config_id",
-			user.UserID, req.Platform, encAccess, pageID, igID, wabaID, encBot, botHash, encSecret, secretHash, isActive).Scan(&configID); err != nil {
-			return nil, ErrInternal("创建失败")
+			user.UserID, req.Platform, encAccess, pageID, igID, wabaID, encBot, botHash, encSecret, secretHash, isActive)
+		if err != nil {
+			return nil, err
 		}
 	}
 

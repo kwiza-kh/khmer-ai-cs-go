@@ -29,7 +29,10 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"khmer-ai-cs-go/internal/gemini"
 	"khmer-ai-cs-go/internal/persona"
@@ -307,19 +310,17 @@ func (p *Pipeline) stageKeywordHandoff(ctx context.Context, t *inboundTurn) (boo
 // so the event is retried rather than answered for free.
 func (p *Pipeline) stageBillMessage(ctx context.Context, t *inboundTurn) (bool, error) {
 	userID := t.Config.UserID
-	if err := usage.ConsumeMessageQuota(ctx, p.DB, userID); err != nil {
-		if !errors.Is(err, usage.ErrMessageQuotaExhausted) {
-			return false, err
-		}
-		t.ReplyLang = p.turnReplyLang(ctx, userID, t.Content)
-		t.Reply = HandoffAcknowledgement(t.ReplyLang)
-		t.Canned = true
-		t.CannedLabel = "quota-notice"
-		t.ClaimsHandoff = true
-		t.HandoffReason = "Tenant message quota exhausted; customer handed to a human instead of answered"
-		p.Logger.Warn("tenant message quota exhausted; handing off instead of answering",
-			"user_id", userID, "session_id", t.SessionID)
+	err := p.chargeInboundTurn(ctx, userID, t.Event.EventID)
+	if err == nil {
+		return true, nil
 	}
+	if !errors.Is(err, usage.ErrMessageQuotaExhausted) {
+		return false, err
+	}
+	t.ReplyLang = p.turnReplyLang(ctx, userID, t.Content)
+	t.handOffWithoutReply("quota-notice", "Tenant message quota exhausted; customer handed to a human instead of answered")
+	p.Logger.Warn("tenant message quota exhausted; handing off instead of answering",
+		"user_id", userID, "session_id", t.SessionID)
 	return true, nil
 }
 
@@ -484,7 +485,17 @@ func (p *Pipeline) stageGenerate(ctx context.Context, t *inboundTurn) (bool, err
 				"AI 配额/余额耗尽，AI 无法生成回复", t.Urgency)
 			return false, nil
 		}
-		return false, fmt.Errorf("AI 响应失败: %w", err)
+		if !errors.Is(err, gemini.ErrNoReply) {
+			return false, fmt.Errorf("AI 响应失败: %w", err)
+		}
+		// A blocked or empty generation is deterministic — the provider will not
+		// produce text on the second attempt either — so retrying only delays the
+		// handoff, and the customer would otherwise receive no answer at all. Hand
+		// the turn to a human on the first refusal.
+		p.Logger.Warn("model returned no usable reply; handing off instead",
+			"session_id", t.SessionID, "model", p.serving().ModelName(), "error", err.Error())
+		t.handOffWithoutReply("no-reply", "Model returned no usable reply (blocked or empty); customer handed to a human instead of answered")
+		return true, nil
 	}
 	t.Result = result
 	sid := t.SessionID
@@ -492,6 +503,15 @@ func (p *Pipeline) stageGenerate(ctx context.Context, t *inboundTurn) (bool, err
 	t.Reply = result.Reply
 	if !result.UsedMock {
 		t.Reply = gemini.SanitizeReply(t.Reply)
+	}
+	if strings.TrimSpace(t.Reply) == "" {
+		// Belt and braces behind the providers' own empty-response errors: an empty
+		// chat bubble is worse than no answer, so hand the turn to a human rather
+		// than deliver one. Recorded rather than retried — a provider that answers
+		// 200 with no text has nothing to say on the second attempt either.
+		p.Logger.Warn("model returned an empty reply; handing off instead",
+			"session_id", sid, "model", p.serving().ModelName())
+		t.handOffWithoutReply("empty-reply", "Model returned an empty reply; customer handed to a human instead of answered")
 	}
 	return true, nil
 }
@@ -589,17 +609,10 @@ func (p *Pipeline) stagePersistAndDeliver(ctx context.Context, t *inboundTurn) (
 			modelName = t.CannedLabel
 		}
 	}
-	var modelMessageID int64
-	err := p.DB.QueryRow(ctx,
-		"INSERT INTO chat_messages (session_id, role, message_type, content, tokens_used, model_name, used_mock, sources_json, created_at) "+
-			"VALUES ($1,'model','text',$2,$3,$4,$5,$6,$7) RETURNING message_id",
-		t.SessionID, t.Reply, tokensUsed, modelName, t.Result.UsedMock,
-		sourcesJSON(t.GroundCtx), time.Now()).
-		Scan(&modelMessageID)
+	modelMessageID, created, err := p.persistModelReply(ctx, t, modelName, tokensUsed)
 	if err != nil {
-		return false, fmt.Errorf("persist model reply: %w", err)
+		return false, err
 	}
-	_, _ = p.DB.Exec(ctx, "UPDATE sessions SET model_message_count = model_message_count + 1, first_response_at = COALESCE(first_response_at, $1) WHERE session_id = $2", time.Now(), t.SessionID)
 	p.publishMessage(ctx, t.Config.UserID, t.SessionID, modelMessageID, "model")
 	feedbackPayload := map[string]any{"feedback": true}
 	if err := p.enqueueDelivery(ctx, t.Event, t.Config, t.SessionID, modelMessageID, t.Reply, feedbackPayload); err != nil {
@@ -607,11 +620,164 @@ func (p *Pipeline) stagePersistAndDeliver(ctx context.Context, t *inboundTurn) (
 	}
 
 	// Voice reply (opt-in): when the customer sent a voice note and TTS is
-	// active, deliver the same answer as playable audio too.
-	if mediaKind, _ := t.PlatformMedia["kind"].(string); p.Cfg.TTSActive() && (mediaKind == "voice" || mediaKind == "audio") {
-		p.enqueueVoiceReply(ctx, t.Event, t.Config, t.SessionID, t.Reply)
+	// active, deliver the same answer as playable audio too — but only on the
+	// attempt that wrote the reply. Re-synthesising on a retry would pay for TTS
+	// twice and send the customer a second voice note with the same words.
+	if created {
+		if mediaKind, _ := t.PlatformMedia["kind"].(string); p.Cfg.TTSActive() && (mediaKind == "voice" || mediaKind == "audio") {
+			p.enqueueVoiceReply(ctx, t.Event, t.Config, t.SessionID, t.Reply)
+		}
 	}
 	return true, nil
+}
+
+// handOffWithoutReply replaces the turn's answer with the handoff
+// acknowledgement and makes post-delivery raise the human handoff request. Every
+// path where the model cannot answer (quota exhausted, blocked generation, empty
+// reply) goes through here, so the turn still leaves a trace in the inbox.
+func (t *inboundTurn) handOffWithoutReply(label, reason string) {
+	t.Reply = HandoffAcknowledgement(t.ReplyLang)
+	t.Canned = true
+	t.CannedLabel = label
+	t.ClaimsHandoff = true
+	t.HandoffReason = reason
+}
+
+// The ledger names the tenant it charged (user_id): the row is keyed by event,
+// but "this tenant paid for this turn" is the fact it records, and the static
+// tenant gate needs a tenant column to check.
+const sqlClaimInboundTurn = "INSERT INTO inbound_turn_ledger (event_id, user_id, quota_charged) VALUES ($1, $2, true) ON CONFLICT (event_id) DO NOTHING"
+
+// chargeInboundTurn consumes one message from the tenant's monthly quota and
+// records the charge against the event in the same transaction.
+//
+// bill-message runs on every attempt, and an event is retried up to maxAttempts
+// times (claimInbound also re-claims a lock older than five minutes), so a bare
+// increment used to consume two or five messages from a paying tenant's quota for
+// one customer message. The ledger row makes it once per event. The row and the
+// increment share a transaction because that is what the row is for: inserting
+// the marker first and charging after let a transient billing error look like a
+// completed charge, so the retry answered for free and never billed.
+//
+// ErrMessageQuotaExhausted is committed, not rolled back: the row records that
+// this event's charge was decided (the quota was full), so a retry neither
+// charges again nor loops on the same refusal, and the caller answers with the
+// handoff acknowledgement. quota_charged = false is that record — a retry reads
+// it and repeats the handoff rather than answering for free. Any other error
+// rolls the whole thing back, so the retry charges properly.
+func (p *Pipeline) chargeInboundTurn(ctx context.Context, userID int32, eventID int64) error {
+	tx, err := p.DB.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("charge inbound turn: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	tag, err := tx.Exec(ctx, sqlClaimInboundTurn, eventID, userID)
+	if err != nil {
+		return fmt.Errorf("charge inbound turn: ledger: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		// An earlier attempt already decided this event's charge. Read the decision
+		// instead of assuming "charged": the row records a refusal too, and a
+		// retry that treated a refusal as a charge answered an over-quota tenant
+		// for free (the first attempt hit the quota wall, a later stage failed
+		// once, and the retry generated a real reply). Charged turns must not be
+		// billed twice, but a refusal has to be repeated.
+		var charged bool
+		if err := tx.QueryRow(ctx,
+			"SELECT quota_charged FROM inbound_turn_ledger WHERE event_id = $1 AND user_id = $2",
+			eventID, userID).Scan(&charged); err != nil {
+			return fmt.Errorf("charge inbound turn: ledger decision: %w", err)
+		}
+		if charged {
+			return nil
+		}
+		return usage.ErrMessageQuotaExhausted
+	}
+	err = usage.ConsumeMessageQuota(ctx, tx, userID)
+	if err != nil && !errors.Is(err, usage.ErrMessageQuotaExhausted) {
+		return fmt.Errorf("charge inbound turn: %w", err)
+	}
+	if errors.Is(err, usage.ErrMessageQuotaExhausted) {
+		// Record the decision, not just the claim: this is the flag the retry
+		// above reads to repeat the handoff instead of billing or answering.
+		if _, uerr := tx.Exec(ctx,
+			"UPDATE inbound_turn_ledger SET quota_charged = false WHERE event_id = $1 AND user_id = $2",
+			eventID, userID); uerr != nil {
+			return fmt.Errorf("charge inbound turn: record refusal: %w", uerr)
+		}
+	}
+	if cerr := tx.Commit(ctx); cerr != nil {
+		return fmt.Errorf("charge inbound turn: commit: %w", cerr)
+	}
+	return err
+}
+
+// persistModelReply writes the model row once per inbound event and reports
+// whether this attempt is the one that created it.
+//
+// stagePersistAndDeliver re-runs with every retry; a second INSERT used to mint a
+// second message_id, and platform_outbox dedupes on chat_message_id — so the new
+// id was also a new outbox row and the customer received the same reply twice.
+// The ledger row (locked FOR UPDATE) makes the pair of attempts that can exist
+// for one event — claimInbound re-claims a stale lock while the original turn is
+// still running — serialise on one message instead of racing to insert two.
+func (p *Pipeline) persistModelReply(ctx context.Context, t *inboundTurn, modelName string, tokensUsed int) (int64, bool, error) {
+	tx, err := p.DB.Begin(ctx)
+	if err != nil {
+		return 0, false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	// Lock the inbound event itself before touching the ledger. Two attempts for
+	// one event are possible (claimInbound re-claims a stale lock while the
+	// original turn still runs), and the ledger row's FOR UPDATE below only locks a
+	// row that already exists — so without this the pair could both find no row and
+	// both write a reply. Serialising on the event row is what makes "at most one
+	// model row" true rather than likely.
+	var eventLocked int
+	if err := tx.QueryRow(ctx,
+		"SELECT 1 FROM platform_inbound_events WHERE event_id = $1 AND config_id = $2 FOR UPDATE",
+		t.Event.EventID, t.Event.ConfigID).Scan(&eventLocked); err != nil {
+		return 0, false, fmt.Errorf("persist model reply: event lock: %w", err)
+	}
+	var existing int64
+	err = tx.QueryRow(ctx,
+		"SELECT COALESCE(model_message_id, 0) FROM inbound_turn_ledger WHERE event_id = $1 AND user_id = $2 FOR UPDATE",
+		t.Event.EventID, t.Config.UserID).Scan(&existing)
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return 0, false, fmt.Errorf("persist model reply: ledger: %w", err)
+		}
+		// No ledger row: the turn reached this stage without bill-message (a
+		// rename of the event table would be the alarm). Create it here so the
+		// reply is still written at most once. fails-vs-log below is "fail":
+		// a missing lock would be the duplicate this function exists to stop.
+		if _, err := tx.Exec(ctx, sqlClaimInboundTurn, t.Event.EventID, t.Config.UserID); err != nil {
+			return 0, false, fmt.Errorf("persist model reply: ledger: %w", err)
+		}
+	}
+	if existing != 0 {
+		return existing, false, nil
+	}
+	var modelMessageID int64
+	err = tx.QueryRow(ctx,
+		"INSERT INTO chat_messages (session_id, role, message_type, content, tokens_used, model_name, used_mock, sources_json, created_at) "+
+			"VALUES ($1,'model','text',$2,$3,$4,$5,$6,$7) RETURNING message_id",
+		t.SessionID, t.Reply, tokensUsed, modelName, t.Result.UsedMock,
+		sourcesJSON(t.GroundCtx), time.Now()).
+		Scan(&modelMessageID)
+	if err != nil {
+		return 0, false, fmt.Errorf("persist model reply: %w", err)
+	}
+	if _, err := tx.Exec(ctx, "UPDATE inbound_turn_ledger SET model_message_id = $2 WHERE event_id = $1 AND user_id = $3", t.Event.EventID, modelMessageID, t.Config.UserID); err != nil {
+		return 0, false, fmt.Errorf("persist model reply: ledger: %w", err)
+	}
+	if _, err := tx.Exec(ctx, "UPDATE sessions SET model_message_count = model_message_count + 1, first_response_at = COALESCE(first_response_at, $1) WHERE session_id = $2", time.Now(), t.SessionID); err != nil {
+		return 0, false, fmt.Errorf("persist model reply: session counter: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, false, fmt.Errorf("persist model reply: %w", err)
+	}
+	return modelMessageID, true, nil
 }
 
 // post-delivery — make a promised handoff true, then classify the turn in the

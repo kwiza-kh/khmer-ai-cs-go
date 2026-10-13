@@ -38,11 +38,14 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { RelayChatLogo } from "@/components/relaychat-logo";
 import VoiceMessageBubble from "@/components/ui/voice-message-bubble";
 import { cn } from "@/lib/utils";
+import { storageGet, storageSet } from "@/lib/storage";
 import { toast } from "sonner";
 import { useAuth } from "@/lib/auth-client";
 import { useRealtimeConnected, useRealtimeEvent } from "@/lib/realtime";
 import { Markdown } from "@/components/markdown";
 import { useI18n } from "@/lib/i18n";
+import { openExternalURL } from "@/lib/open-external";
+import { isSafeHTTPSURL } from "@/lib/safe-href";
 import {
 	Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
@@ -186,7 +189,7 @@ function lsKey(base: string, userId: number) {
 // hard-coded Chinese that suited exactly one deployment.
 function defaultReadLang(): TranslateTarget {
   if (typeof window === "undefined") return "zh";
-  const ui = window.localStorage.getItem("lang");
+  const ui = storageGet("lang");
   return isTranslateTarget(ui) ? ui : "zh";
 }
 
@@ -1258,11 +1261,21 @@ function ConversationDetail({
 
   // Transcript safety net: slow while the shared socket is up (events drive
   // the transcript), fast when it is down.
+  //
+  // A hidden tab polls nothing — nobody is reading this conversation — and the
+  // tab coming back triggers one pull straight away, so the transcript is current
+  // before the operator looks at it rather than up to a minute later.
   React.useEffect(() => {
-    const timer = window.setInterval(() => {
+    const pull = () => {
+      if (document.hidden) return;
       void pullMessages(maxMessageIdRef.current);
-    }, wsConnected ? 60_000 : 15_000);
-    return () => window.clearInterval(timer);
+    };
+    const timer = window.setInterval(pull, wsConnected ? 60_000 : 15_000);
+    window.addEventListener("visibilitychange", pull);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("visibilitychange", pull);
+    };
   }, [wsConnected, pullMessages]);
 
   // Backwards paging: prepend the page immediately older than the oldest
@@ -1306,9 +1319,9 @@ function ConversationDetail({
   const summaryLang = prefs?.language ?? "auto";
   const [summaryRefresh, setSummaryRefresh] = React.useState(0);
   const summaryForceRef = React.useRef(false);
-  const [panelOpen, setPanelOpen] = React.useState(() => typeof window !== "undefined" && window.localStorage.getItem(LS_PANEL) !== "0");
+  const [panelOpen, setPanelOpen] = React.useState(() => storageGet(LS_PANEL) !== "0");
   React.useEffect(() => {
-    try { window.localStorage.setItem(LS_PANEL, panelOpen ? "1" : "0"); } catch { /* ignore */ }
+    storageSet(LS_PANEL, panelOpen ? "1" : "0");
   }, [panelOpen]);
   const { data: summaryData, isValidating: summaryLoading } = useSWR(
     item.session_id && msgList.length > 0 && prefs
@@ -1400,10 +1413,21 @@ function ConversationDetail({
           : templateReady
   );
 
+  // The care-window countdown. A hidden tab does not need a minute tick, and the
+  // tab becoming visible recomputes the clock at once, so the countdown is right the
+  // instant it is read instead of up to a minute stale.
   React.useEffect(() => {
     if (!hasCustomerCareWindow || !replyWindowKnown) return;
-    const timer = window.setInterval(() => setCurrentTime(Date.now()), 60_000);
-    return () => window.clearInterval(timer);
+    const tick = () => {
+      if (document.hidden) return;
+      setCurrentTime(Date.now());
+    };
+    const timer = window.setInterval(tick, 60_000);
+    window.addEventListener("visibilitychange", tick);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("visibilitychange", tick);
+    };
   }, [hasCustomerCareWindow, replyWindowKnown]);
 
   // Canned-reply library for this conversation's language (operators curate
@@ -2174,17 +2198,17 @@ const LS_LASTSEENMSG = "khmer-inbox-lastseen-msg";
 const LS_COLLAPSED = "khmer-inbox-collapsed-platforms";
 
 function lsGetJSON<T>(key: string, fallback: T): T {
-  if (typeof window === "undefined") return fallback;
+  const raw = storageGet(key);
+  if (!raw) return fallback;
   try {
-    const raw = window.localStorage.getItem(key);
-    return raw ? (JSON.parse(raw) as T) : fallback;
+    return JSON.parse(raw) as T;
   } catch {
     return fallback;
   }
 }
 
 function lsSetJSON(key: string, value: unknown) {
-  try { window.localStorage.setItem(key, JSON.stringify(value)); } catch { /* storage unavailable */ }
+  storageSet(key, JSON.stringify(value));
 }
 
 /** Local calendar-day key used to group messages by day. */
@@ -2266,14 +2290,9 @@ function InboundPlatformMediaPreview({ messageID, media }: { messageID: number; 
         // Inline player — no new tab, no forced download.
         setAudioURL(response.url);
       } else {
-        // The URL comes from our own API (a signed object-store link), never
-        // from user input — but a scheme check costs nothing and refuses to
-        // open `javascript:`/`data:` if that source ever changes.
-        if (/^https:\/\//i.test(response.url)) {
-          window.open(response.url, "_blank", "noopener,noreferrer");
-        } else {
-          toast.error(t("inbox.couldNotOpenAttachment"));
-        }
+        // The URL comes from our own API (a signed object-store link) — openExternalURL
+        // still refuses anything that is not https, and reports back so the toast matches.
+        openExternalURL(response.url, () => toast.error(t("inbox.couldNotOpenAttachment")));
       }
     } catch (err) {
       toast.error((err as Error).message || t("inbox.couldNotOpenAttachment"));
@@ -2344,7 +2363,7 @@ function InboundPlatformMediaPreview({ messageID, media }: { messageID: number; 
           </Button>
         )}
       </div>
-      {previewURL && isImage && (
+      {previewURL && isImage && isSafeHTTPSURL(previewURL) && (
         <a href={previewURL} target="_blank" rel="noreferrer" className="mt-2 block overflow-hidden border border-border bg-muted/30">
           {/* Signed R2 hosts are runtime-only and cannot be safely allowlisted for next/image. */}
           {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -2386,7 +2405,13 @@ function MessagePayloadPreview({ messageID, content, metadata, payload }: { mess
       {inboundMedia && <InboundPlatformMediaPreview messageID={messageID} media={inboundMedia} />}
       {payload?.kind === "media" && payload.media_url && (
         <div className="mt-1.5">
-          {payload.media_type === "image" ? (
+          {!isSafeHTTPSURL(payload.media_url) ? (
+            // A payload is whatever an agent with inbox_reply handed us. The server
+            // rejects a non-https media_url on the way in (inbox_handlers.go
+            // agentReply); this is the last line, because a `javascript:` href here
+            // executed in the dashboard origin, where the session token is readable.
+            <span className="text-xs text-muted-foreground">{mediaLabel}</span>
+          ) : payload.media_type === "image" ? (
             <a href={payload.media_url} target="_blank" rel="noreferrer" className="block max-w-56 overflow-hidden rounded-md border border-border bg-muted/30">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={payload.media_url} alt={mediaLabel} className="max-h-44 w-full object-contain" />

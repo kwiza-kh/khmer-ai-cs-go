@@ -15,6 +15,7 @@ import type { Dict, Lang } from "./types";
 import { en } from "./dict-en";
 import { zh } from "./dict-zh";
 import { km } from "./dict-km";
+import { storageGet, storageSet } from "../storage";
 
 export type { Lang, Dict };
 
@@ -28,7 +29,7 @@ const STORAGE_KEY = "lang";
 
 export function detectLang(): Lang {
   if (typeof window === "undefined") return "en";
-  const saved = localStorage.getItem(STORAGE_KEY);
+  const saved = storageGet(STORAGE_KEY);
   if (saved === "km" || saved === "en" || saved === "zh") return saved;
   const nav = navigator.language?.toLowerCase() ?? "";
   if (nav.startsWith("zh")) return "zh";
@@ -65,7 +66,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const setLang = useCallback((next: Lang) => {
-    localStorage.setItem(STORAGE_KEY, next);
+    storageSet(STORAGE_KEY, next);
     document.documentElement.lang = next;
     setLangState(next);
   }, []);

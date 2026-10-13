@@ -171,19 +171,19 @@ func (a *App) Router() http.Handler {
 	authed.Handle("PUT /api/v1/admin/users/{id}/role", a.tenantAdminOnly(a.handleDoc(a.updateUserRole)))
 	authed.Handle("GET /api/v1/admin/analytics/overview", a.tenantAdminOnly(a.handle(a.analyticsOverview)))
 
-	// Analytics: timeline, breakdowns, top queries, feedback list.
+	// Analytics: timeline, breakdowns, top queries.
 	authed.Handle("GET /api/v1/admin/analytics/timeline", a.tenantAdminOnly(a.handle(a.analyticsTimeline)))
 	authed.Handle("GET /api/v1/admin/analytics/top-queries", a.tenantAdminOnly(a.handle(a.topQueries)))
 	authed.Handle("GET /api/v1/admin/analytics/languages", a.tenantAdminOnly(a.handle(a.languageBreakdown)))
 	// Token/cost board for every tenant lives on the platform console
 	// (/api/v1/platform/tokens); the own-tenant variant it replaced is gone, so
 	// there is exactly one place that shows model spend.
-	authed.Handle("GET /api/v1/admin/feedback", a.tenantAdminOnly(a.handle(a.feedbackList)))
 	authed.Handle("GET /api/v1/admin/agent-performance", a.tenantAdminOnly(a.handle(a.agentPerformance)))
 	authed.Handle("GET /api/v1/admin/intent-analytics", a.tenantAdminOnly(a.handle(a.intentAnalytics)))
 	authed.Handle("GET /api/v1/admin/integrations/status", a.tenantAdminOnly(a.handle(a.integrationsStatus)))
 
-	// CSV report export.
+	// CSV report export. Owner-only: the tenant columns are named in the
+	// statement and the handler gates seats out (requireOwnerOfTenant).
 	authed.HandleFunc("GET /api/v1/reports/{kind}", a.reportCSV)
 
 	// WhatsApp approved templates for a session.
@@ -216,11 +216,6 @@ func (a *App) Router() http.Handler {
 	authed.Handle("POST /api/v1/sla", a.handle(a.upsertSLA))
 	authed.HandleFunc("DELETE /api/v1/sla/{id}", a.handleDoc(a.deleteSLA))
 	authed.Handle("GET /api/v1/sla/breaches", a.handle(a.listSLABreaches))
-
-	// Marketing campaigns.
-	authed.Handle("GET /api/v1/campaigns", a.tenantAdminOnly(a.handle(a.listCampaigns)))
-	authed.Handle("POST /api/v1/campaigns", a.tenantAdminOnly(a.handle(a.createCampaign)))
-	authed.Handle("POST /api/v1/campaigns/{id}/cancel", a.tenantAdminOnly(a.handleDoc(a.cancelCampaign)))
 
 	// Routing rules.
 	authed.Handle("GET /api/v1/routing", a.handle(a.listRouting))
@@ -278,11 +273,12 @@ func (a *App) Router() http.Handler {
 	authed.Handle("POST /api/v1/billing/paypal/capture", a.handle(a.paypalCapture))
 
 	// Teams (agent management). The tenant boundary lives in each statement, not
-	// in a role check: listTeam filters on owner_user_id, removeTeamAgent deletes
-	// only rows it owns, and the claim path still requires a tenant owner — but
-	// "owner" now means the tenant's own account, not "role == admin", which no
-	// self-service or SSO signup ever satisfies (2026-10-05: user 10 could not
-	// add a single agent to its own team).
+	// in a role check: listTeam gates on requireOwnerOfTenant and filters on
+	// owner_user_id, removeTeamAgent deletes only rows it owns, and the claim path
+	// still requires a tenant owner — but "owner" now means the tenant's own
+	// account, not "role == admin", which no self-service or SSO signup ever
+	// satisfies (2026-10-05: user 10 could not add a single agent to its own
+	// team).
 	authed.Handle("GET /api/v1/team", a.handle(a.listTeam))
 	// The claim path is platform break-glass now (see addTeamAgent): binding a
 	// stranger's account with nothing but their user_id is what the invite flow

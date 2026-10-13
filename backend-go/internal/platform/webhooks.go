@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -76,6 +77,15 @@ func (wh *Webhooks) failInboundEnqueue(w http.ResponseWriter, configID int32, pl
 	_, _ = w.Write([]byte(`{"status":"error"}`))
 }
 
+// metaChallengeTokenMatches reports whether a provider's subscription handshake
+// carried the configured verify token. Constant time, and false when no token is
+// configured — an empty token would otherwise accept "subscribe" from anyone.
+// Shared by both handshake routes (meta and whatsapp) because they are the same
+// check: the first version of the constant-time fix landed on only one of them.
+func metaChallengeTokenMatches(configured, token string) bool {
+	return configured != "" && subtle.ConstantTimeCompare([]byte(token), []byte(configured)) == 1
+}
+
 // MetaWebhook handles GET (hub.challenge verification) + POST (events).
 func (wh *Webhooks) MetaWebhook(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
@@ -83,9 +93,7 @@ func (wh *Webhooks) MetaWebhook(w http.ResponseWriter, r *http.Request) {
 		mode := q.Get("hub.mode")
 		token := q.Get("hub.verify_token")
 		challenge := q.Get("hub.challenge")
-		// An unset verify token would accept "subscribe" + empty token —
-		// anyone could pass the challenge check.
-		if wh.MetaVerifyToken != "" && mode == "subscribe" && token == wh.MetaVerifyToken {
+		if mode == "subscribe" && metaChallengeTokenMatches(wh.MetaVerifyToken, token) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(challenge))
 			return
@@ -744,7 +752,7 @@ func (wh *Webhooks) ZaloWebhook(w http.ResponseWriter, r *http.Request) {
 func (wh *Webhooks) WhatsAppWebhook(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		q := r.URL.Query()
-		if wh.MetaVerifyToken != "" && q.Get("hub.mode") == "subscribe" && q.Get("hub.verify_token") == wh.MetaVerifyToken {
+		if q.Get("hub.mode") == "subscribe" && metaChallengeTokenMatches(wh.MetaVerifyToken, q.Get("hub.verify_token")) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(q.Get("hub.challenge")))
 			return

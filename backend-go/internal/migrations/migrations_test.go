@@ -143,3 +143,122 @@ func TestDefaultAdminHashIsTheExpectedPlaceholder(t *testing.T) {
 		t.Error("default admin hash must be the $2a$10$ placeholder")
 	}
 }
+
+// TestSplitStatements — the splitter exists so a migration containing
+// CONCURRENTLY can be sent one statement per message (Postgres refuses the
+// concurrent build inside a transaction block, and the simple protocol wraps a
+// multi-statement message in an implicit one). A semicolon it mistakes for a
+// statement boundary would split real SQL in half.
+func TestSplitStatements(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want []string
+	}{
+		{"trailing semicolon", "SELECT 1;", []string{"SELECT 1"}},
+		{"two statements", "SELECT 1;\nSELECT 2;\n", []string{"SELECT 1", "SELECT 2"}},
+		{"no semicolon", "SELECT 1", []string{"SELECT 1"}},
+		{"semicolon in string", "INSERT INTO t VALUES ('a;b');", []string{"INSERT INTO t VALUES ('a;b')"}},
+		{"escaped quote in string", "INSERT INTO t VALUES ('it''s; fine');", []string{"INSERT INTO t VALUES ('it''s; fine')"}},
+		{"backslash escape in E string", `SELECT E'\';'`, []string{`SELECT E'\';'`}},
+		{"plain string keeps backslash", `SELECT '\'`, []string{`SELECT '\'`}},
+		{"line comment", "SELECT 1; -- a ; comment\nSELECT 2;", []string{"SELECT 1", "SELECT 2"}},
+		{"block comment", "SELECT 1; /* a ; comment */ SELECT 2;", []string{"SELECT 1", "SELECT 2"}},
+		{"nested block comment", "SELECT 1; /* outer /* inner ; */ still */ SELECT 2;", []string{"SELECT 1", "SELECT 2"}},
+		{"dollar body", "DO $$ BEGIN PERFORM 1; END $$;", []string{"DO $$ BEGIN PERFORM 1; END $$"}},
+		{"tagged dollar body", "DO $fn$ BEGIN PERFORM 1; END $fn$;", []string{"DO $fn$ BEGIN PERFORM 1; END $fn$"}},
+		{"positional param is not a dollar quote", "SELECT $1; SELECT $2;", []string{"SELECT $1", "SELECT $2"}},
+		{"quoted identifier", `SELECT "a;b";`, []string{`SELECT "a;b"`}},
+		{"comment only", "-- nothing here\n", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := splitStatements(tc.in)
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %d statements %q, want %d %q", len(got), got, len(tc.want), tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("statement %d = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+// A file that only MENTIONS concurrently in a note must still run in one
+// transaction: the detection has to be about statements, not text.
+func TestNeedsConcurrentIndexIgnoresComments(t *testing.T) {
+	note := "-- build the index separately and CONCURRENTLY, outside the runner\nCREATE INDEX IF NOT EXISTS i ON t (c);\n"
+	if needsConcurrentIndex(splitStatements(note)) {
+		t.Error("a comment mentioning CONCURRENTLY must not switch the runner out of its transaction")
+	}
+	concurrent := "CREATE INDEX CONCURRENTLY IF NOT EXISTS i ON t (c);\n"
+	if !needsConcurrentIndex(splitStatements(concurrent)) {
+		t.Error("a CREATE INDEX CONCURRENTLY statement must switch the runner out of its transaction")
+	}
+}
+
+// The trgm index must live in a file the runner executes outside a transaction.
+func TestTrgmIndexMigrationIsConcurrent(t *testing.T) {
+	files, err := Files()
+	if err != nil {
+		t.Fatalf("Files: %v", err)
+	}
+	for _, f := range files {
+		if !strings.Contains(f[1], "idx_chat_messages_content_trgm") {
+			continue
+		}
+		stmts := splitStatements(f[1])
+		if strings.HasPrefix(f[0], "064_") {
+			t.Fatalf("%s still creates the trgm index inside the migration transaction", f[0])
+		}
+		if !needsConcurrentIndex(stmts) {
+			t.Errorf("%s creates the trgm index without CONCURRENTLY", f[0])
+		}
+		return
+	}
+	t.Fatal("no migration creates idx_chat_messages_content_trgm")
+}
+
+// TestConcurrentMigrationsCarryTheirOwnDrop — both CONCURRENTLY migrations begin
+// with `DROP INDEX CONCURRENTLY IF EXISTS`, and that DROP is the only reason an
+// interrupted build is repairable: the leftover index is INVALID, and
+// `CREATE INDEX CONCURRENTLY IF NOT EXISTS` sees the name, skips it forever, and
+// the version is recorded as applied. The rule lives in those files' comments,
+// which a future file will not remember, so it is enforced here.
+func TestConcurrentMigrationsCarryTheirOwnDrop(t *testing.T) {
+	files, err := Files()
+	if err != nil {
+		t.Fatalf("Files: %v", err)
+	}
+	checked := 0
+	for _, f := range files {
+		stmts := splitStatements(f[1])
+		creates, drop := -1, -1
+		for i, stmt := range stmts {
+			if !concurrentIndexStmt.MatchString(stmt) {
+				continue
+			}
+			if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(stmt)), "DROP") {
+				if drop < 0 {
+					drop = i
+				}
+				continue
+			}
+			if creates < 0 {
+				creates = i
+			}
+		}
+		if creates < 0 {
+			continue
+		}
+		checked++
+		if drop < 0 || drop > creates {
+			t.Errorf("%s: CREATE INDEX CONCURRENTLY without an earlier DROP INDEX CONCURRENTLY (the invalid-index trap)", f[0])
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no CONCURRENTLY migration found; this test asserted nothing")
+	}
+}

@@ -13,6 +13,7 @@ import {
   listWidgetTokens, createWidgetToken, deleteWidgetToken, type WidgetTokenItem,
 } from "@/lib/api";
 import { toast } from "sonner";
+import { apiBaseURL } from "@/lib/api-base";
 import { useI18n } from "@/lib/i18n";
 import { Globe2, Copy, Plus, Trash2, Code2, Loader2 } from "lucide-react";
 
@@ -26,7 +27,9 @@ export default function WidgetAdminPage() {
   const [busy, setBusy] = React.useState(false);
   const [showForm, setShowForm] = React.useState(false);
 
-  const apiBase = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080/api/v1").replace(/\/$/, "");
+  // No fallback: a missing NEXT_PUBLIC_API_URL throws at bundle load instead of
+  // quietly pointing the widget snippet at the retired Rust backend (api-base.ts).
+  const apiBase = apiBaseURL();
   const appHost = typeof window !== "undefined" ? window.location.origin : "";
 
   const create = async () => {

@@ -248,21 +248,13 @@ type call struct {
 	onToken     func(string)
 }
 
-// chatCall resolves the system text the way the Gemini client does: a persona
-// override wins, then the configured prompt, then the built-in default. The
-// language directive is appended to whichever one won.
+// chatCall resolves the system text the way the Gemini client does (one shared
+// resolver, so a persona override cannot drop the safety rules here either).
 func chatCall(cfg Config, message string, history []gemini.HistoryItem, language, systemPrompt string, stream bool, onToken func(string)) call {
-	system := systemPrompt
-	if system == "" {
-		system = cfg.SystemPrompt
-	}
-	if system == "" {
-		system = gemini.DefaultSystemPrompt
-	}
 	return call{
 		message:     message,
 		history:     history,
-		system:      system + "\n\n[Language Preference] " + gemini.LanguageLabel(language),
+		system:      gemini.SystemInstructionFor(language, cfg.SystemPrompt, systemPrompt),
 		maxTokens:   cfg.MaxTokens,
 		temperature: cfg.Temperature,
 		stream:      stream,
@@ -399,7 +391,7 @@ func (s *Service) send(ctx context.Context, sn snapshot, c call) (gemini.ChatRes
 		return res, err
 	}
 	if strings.TrimSpace(res.Reply) == "" {
-		return res, errors.New("anthropic: response contained no text")
+		return res, fmt.Errorf("anthropic: response contained no text: %w", gemini.ErrNoReply)
 	}
 	return res, nil
 }

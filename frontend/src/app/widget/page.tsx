@@ -9,6 +9,7 @@ import * as React from "react";
 import { useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 import { API_BASE } from "@/lib/auth-client";
+import { storageGet, storageSet } from "@/lib/storage";
 
 // The API base is the build-time NEXT_PUBLIC_API_URL, never a query
 // parameter: trusting ?api= let any page frame the widget with the tenant's
@@ -178,10 +179,7 @@ function WidgetInner() {
 
   // Persist the session id per token so a reload continues the conversation.
   React.useEffect(() => {
-    let saved: string | null = null;
-    try {
-      saved = localStorage.getItem(`khmer-widget-sid:${token}`);
-    } catch { /* ignore */ }
+    let saved = storageGet(`khmer-widget-sid:${token}`);
     if (!saved) saved = readWidgetSidCookie(token);
     // eslint-disable-next-line react-hooks/set-state-in-effect
     if (saved && SID_RE.test(saved)) setSessionId(saved);
@@ -259,10 +257,23 @@ function WidgetInner() {
   // Initial restore + ongoing agent-reply poll. The synchronous fetch is
   // kicked off async (setInterval fires the first tick after 6s), so the
   // effect body only subscribes to an external system.
+  //
+  // A hidden tab skips the tick: a customer leaves this page open in a background
+  // tab for hours, and polling for agent replies nobody is reading is pure load on
+  // the tenant's inbox. One immediate sync runs when the tab comes back, so a reply
+  // that arrived meanwhile shows up without waiting out the interval.
   React.useEffect(() => {
     if (!sessionId) return;
-    const timer = setInterval(() => void syncMessages(sessionId), 6000);
-    return () => clearInterval(timer);
+    const tick = () => {
+      if (document.hidden) return;
+      void syncMessages(sessionId);
+    };
+    const timer = setInterval(tick, 6000);
+    document.addEventListener("visibilitychange", tick);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", tick);
+    };
   }, [sessionId, syncMessages]);
 
   React.useEffect(() => {
@@ -309,7 +320,7 @@ function WidgetInner() {
           if (evt.event === "session") {
             sid = (evt.data as { session_id: string }).session_id;
             setSessionId(sid);
-            try { localStorage.setItem(`khmer-widget-sid:${token}`, sid); } catch { /* ignore */ }
+            storageSet(`khmer-widget-sid:${token}`, sid);
             writeWidgetSidCookie(token, sid);
           } else if (evt.event === "token") {
             streamAccRef.current += (evt.data as { text: string }).text;

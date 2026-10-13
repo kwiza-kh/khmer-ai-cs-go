@@ -46,7 +46,7 @@ type App struct {
 	PayPal *paypal.Client
 
 	// Pipe is the platform pipeline (used to wake outbound workers when an
-	// agent reply or campaign template is enqueued).
+	// agent reply is enqueued).
 	Pipe *platform.Pipeline
 	// Realtime is the WebSocket inbox hub (may be nil in tests).
 	Realtime *realtime.Hub

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"khmer-ai-cs-go/internal/gemini"
 	"khmer-ai-cs-go/internal/platform"
 	"khmer-ai-cs-go/internal/rag"
@@ -165,6 +167,48 @@ func (a *App) publishMessageEvent(ctx context.Context, userID int32, sessionID s
 	})
 }
 
+// escalateWebSession is the shared tail of an escalation on the console and
+// widget surfaces: queue the handoff, page the owner, and return the
+// acknowledgement to show the customer. webHandoffCheck used to hand-roll these
+// four writes, and the two AI-failure paths (chatPlain, chatStream) had no
+// handoff at all — a blocked or empty model reply surfaced as "生成回答失败"
+// with the customer left waiting for a human who was never paged.
+func (a *App) escalateWebSession(ctx context.Context, userID int32, sessionID, priority, trigger, note string) string {
+	// The acknowledgement is a promise ("a human will follow up"). It may only be
+	// made once the request actually exists: every write used to discard its error
+	// and the ack was returned unconditionally, so a transient DB failure (pool
+	// timeout, reset, an enum cast that stopped matching) told the customer a human
+	// was coming while nothing was queued and the owner was never paged.
+	var requestID string
+	err := a.DB.QueryRow(ctx,
+		"INSERT INTO human_handoff_requests (session_id, user_id, status, priority, trigger, reason, created_at) "+
+			"VALUES ($1,$2,'pending',$3,$4::human_handoff_trigger,$5,NOW()) ON CONFLICT DO NOTHING RETURNING request_id::text",
+		sessionID, userID, priority, trigger, note).Scan(&requestID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// A pending request already exists for this session (partial unique index):
+		// the handoff is real, it just is not ours. Nothing to insert.
+		err = nil
+	}
+	if err != nil {
+		a.Logger.Error("handoff request not recorded", "session_id", sessionID, "trigger", trigger, "error", err.Error())
+		return ""
+	}
+	updated, err := a.DB.Exec(ctx,
+		"UPDATE sessions SET status='handoff', escalated_at=COALESCE(escalated_at, NOW()) "+
+			"WHERE session_id=$1 AND user_id=$2 AND status='active'", sessionID, userID)
+	if err != nil {
+		a.Logger.Error("handoff session status not updated", "session_id", sessionID, "error", err.Error())
+	}
+	// Page the owner once per newly queued request: ON CONFLICT DO NOTHING skips
+	// the insert for a session that already escalated, and a customer who keeps
+	// messaging must not re-page the owner every turn.
+	if requestID != "" || (err == nil && updated.RowsAffected() > 0) {
+		a.notifyUser(ctx, userID, "handoff", "New human-handoff request", note, sessionID)
+	}
+	a.publishSessionEvent(ctx, userID, sessionID)
+	return platform.HandoffAcknowledgement(a.customerLanguage(ctx, userID, sessionID))
+}
+
 // webHandoffCheck applies the same customer-request keyword rule as the
 // platform pipeline to web/widget conversations: an explicit human request
 // lands the session in the handoff queue and the AI acks instead of answering.
@@ -173,15 +217,8 @@ func (a *App) webHandoffCheck(ctx context.Context, userID int32, sessionID, mess
 	if !matched {
 		return false, ""
 	}
-	_, _ = a.DB.Exec(ctx,
-		"INSERT INTO human_handoff_requests (session_id, user_id, status, priority, trigger, reason, created_at) "+
-			"VALUES ($1,$2,'pending','high','customer_request'::human_handoff_trigger,$3,NOW()) ON CONFLICT DO NOTHING",
-		sessionID, userID, "Customer asked for a human agent (matched: "+keyword+")")
-	_, _ = a.DB.Exec(ctx,
-		"UPDATE sessions SET status='handoff', escalated_at=COALESCE(escalated_at, NOW()) WHERE session_id=$1 AND status='active'", sessionID)
-	a.notifyUser(ctx, userID, "handoff", "New human-handoff request", "customer_request: customer asked for a human", sessionID)
-	a.publishSessionEvent(ctx, userID, sessionID)
-	return true, platform.HandoffAcknowledgement(a.customerLanguage(ctx, userID, sessionID))
+	return true, a.escalateWebSession(ctx, userID, sessionID, "high", "customer_request",
+		"customer_request: customer asked for a human (matched: "+keyword+")")
 }
 
 // chatPlain — synchronous chat turn (persisted).
@@ -266,6 +303,18 @@ func (a *App) chatPlain(w http.ResponseWriter, r *http.Request) (any, error) {
 			"grounded", groundCtx.HasMatch, "error", err.Error())
 		if a.Pipe != nil && platform.IsQuotaExhausted(err) {
 			a.Pipe.AlertQuotaExhausted(r.Context(), err)
+		}
+		if errors.Is(err, gemini.ErrNoReply) {
+			// Refused, blocked, or empty: the platform pipeline treats this as a
+			// handoff (stageGenerate), and this surface must not answer with a
+			// bare error while the customer waits for nobody.
+			ack := a.escalateWebSession(r.Context(), user.UserID, sessionID, platform.HandoffPriority("ai_decision", ""),
+				"ai_decision", "ai_decision: model returned no usable reply (blocked or empty)")
+			a.persistSystemReply(r.Context(), user.UserID, sessionID, ack)
+			return map[string]any{
+				"reply": ack, "session_id": sessionID, "tokens_used": 0, "cached_tokens": 0,
+				"used_mock": false, "escalated": true,
+			}, nil
 		}
 		return nil, ErrInternal("生成回答失败")
 	}
@@ -401,6 +450,17 @@ func (a *App) chatStream(w http.ResponseWriter, r *http.Request) {
 			"grounded", groundCtx.HasMatch, "error", err.Error())
 		if a.Pipe != nil && platform.IsQuotaExhausted(err) {
 			a.Pipe.AlertQuotaExhausted(r.Context(), err)
+		}
+		if errors.Is(err, gemini.ErrNoReply) {
+			// Same rule as chatPlain: a refused or empty reply is a handoff. The
+			// ack goes out as the turn's answer (persistCtx: the visitor may have
+			// already hung up, and the transcript must still show it).
+			ack := a.escalateWebSession(persistCtx, user.UserID, sessionID, platform.HandoffPriority("ai_decision", ""),
+				"ai_decision", "ai_decision: model returned no usable reply (blocked or empty)")
+			a.persistSystemReply(persistCtx, user.UserID, sessionID, ack)
+			sendEvent("token", map[string]string{"text": ack})
+			sendEvent("done", map[string]any{"reply": ack, "tokens_used": 0, "cached_tokens": 0, "used_mock": false, "escalated": true})
+			return
 		}
 		sendEvent("error", map[string]string{"message": "生成回答失败"})
 		if partial := strings.TrimSpace(streamed.String()); partial != "" {

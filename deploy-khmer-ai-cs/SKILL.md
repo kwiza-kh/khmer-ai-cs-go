@@ -142,9 +142,10 @@ RestartSec=3
 ```
 前端 unit 用 `Environment=PORT=3001` `Environment=HOSTNAME=127.0.0.1` + `ExecStart=/usr/bin/node server.js` (Workdir=`/opt/khmer-ai-cs/frontend`)。
 
-**nginx** `/etc/nginx/sites-enabled/khmer-ai-cs` 三个 location (完整文件见 references/deploy-commands.md §8):
+**nginx** `/etc/nginx/sites-enabled/khmer-ai-cs`（**指向 `sites-available/khmer-ai-cs` 的软链**）四个 location (完整文件见 references/deploy-commands.md §8):
 - `location /api/` → 8081, **`proxy_buffering off`** (chat/stream SSE 必需)
-- `location /api/v1/realtime/inbox` → 8081, WebSocket Upgrade 头 + `proxy_read/send_timeout 3600s` (**必须排在 /api/ 之前**)
+- `location /api/v1/realtime/inbox` → 8081, WebSocket Upgrade 头 + `proxy_read/send_timeout 3600s` (nginx 选最长前缀匹配, 与书写顺序无关)
+- `location = /widget` → 3001, 嵌件页专用：不继承 server 层的 `X-Frame-Options: DENY` / `frame-ancestors 'none'`（否则 widget 无法被商家页面 iframe 嵌入），其余安全头单独重列
 - `location /` → 3001 (Next standalone), 安全头含 CSP (`connect.facebook.net` 允许 Meta SDK; `media-src https:` 允许 R2 音频回放), 80 块 `return 301 https://`
 
 ## Vertex 区域与在用模型（生产已切完：`vertex` + `global`）

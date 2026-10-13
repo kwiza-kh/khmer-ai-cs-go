@@ -41,7 +41,10 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	pool, err := db.Connect(ctx, databaseURL)
+	// ConnectForMigrations: a migration file (index build, backfill) is allowed
+	// to run longer than any request would, so the pool here carries no
+	// statement_timeout — the 5-minute context above is the bound instead.
+	pool, err := db.ConnectForMigrations(ctx, databaseURL)
 	if err != nil {
 		logger.Error("postgres unavailable", "error", err.Error())
 		os.Exit(1)

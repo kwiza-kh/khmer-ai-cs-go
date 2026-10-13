@@ -1,0 +1,13 @@
+-- Drop reply_cache: the semantic reply cache was removed from the code (commit
+-- bedf0f1, "删除回复缓存" — the replycache package, its InvalidateTenant hook and
+-- the store path are all gone), and nothing in the tree has read or written this
+-- table since. 062_reply_cache.sql still describes the package it was built for;
+-- this file is the other half of that record, so a reader who follows 062 forward
+-- finds out the feature was deliberately removed rather than abandoned mid-way.
+--
+-- Dropping is safe for three reasons: no Go code names the table (the tenantscope
+-- exception that pointed at it is gone too), its rows are KB-derived answers that
+-- are rebuildable from the knowledge base, and it was only ever a cache — losing
+-- it costs a lookup, never an answer. IF EXISTS keeps the file idempotent for a
+-- database where the runner already recorded 062 but something dropped the table.
+DROP TABLE IF EXISTS reply_cache;

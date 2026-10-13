@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 
 	"github.com/jackc/pgx/v5"
@@ -25,6 +26,27 @@ const sqlBillingIncrement = "UPDATE tenant_billing SET docs_used = docs_used + 1
 // is the whole check-and-increment. The previous SELECT-then-UPDATE pair let
 // concurrent uploads all observe remaining quota and over-run the cap.
 const sqlBillingIncrementCapped = "UPDATE tenant_billing SET docs_used = docs_used + 1 WHERE user_id = $1 AND monthly_doc_quota > docs_used"
+
+// sqlBillingRefund returns one document slot. GREATEST(..., 0) because a plan
+// downgrade can leave docs_used at the floor already, and a refund must never
+// push the counter negative (which would hand out a free extra document).
+const sqlBillingRefund = "UPDATE tenant_billing SET docs_used = GREATEST(docs_used - 1, 0) WHERE user_id = $1"
+
+// refundDocQuota gives back the slot consumeDocQuota took when the ingest it paid
+// for did not happen. Without it, a failed upload consumed a document from the
+// tenant's monthly allowance and the retry consumed another: the user paid for
+// documents they never received.
+//
+// Best effort by design — the upload error is what the caller must report, so a
+// failed refund is logged rather than replacing it. logger may be nil.
+func refundDocQuota(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, userID int32) {
+	if _, err := pool.Exec(ctx, sqlBillingRefund, userID); err != nil {
+		if logger == nil {
+			logger = slog.Default()
+		}
+		logger.Warn("document quota refund failed", "user_id", userID, "error", err.Error())
+	}
+}
 
 // consumeDocQuota consumes one document from the tenant's monthly quota.
 // The gate is atomic for metered plans (RowsAffected of zero on the capped

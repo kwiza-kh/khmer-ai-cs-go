@@ -3,11 +3,17 @@
 import { PageHeader } from "@/components/page-header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { HelpCircle, MessageSquare, Bot, Webhook, Shield, BookOpen, Zap } from "lucide-react";
+import { HelpCircle, MessageSquare, Webhook, Shield, BookOpen, Zap } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
+import { apiBaseURL } from "@/lib/api-base";
 
 export default function HelpPage() {
   const { t } = useI18n();
+  // The webhook URLs below used to read https://YOUR_DOMAIN/... — a placeholder
+  // the deployment never replaced, so the page told operators to paste a
+  // non-existent host into Meta and Telegram. The public API origin is baked in
+  // at build time (NEXT_PUBLIC_API_URL), so derive it from there.
+  const webhookBase = `${apiBaseURL().replace(/\/api\/v1$/, "")}/api/v1/webhook`;
   return (
     <div className="flex h-full flex-col">
       <PageHeader
@@ -53,13 +59,13 @@ export default function HelpPage() {
               <div className="space-y-3">
                 <PlatformGuide
                   name="Meta Business & Instagram"
-                  webhookUrl="https://YOUR_DOMAIN/api/v1/webhook/meta"
+                  webhookUrl={`${webhookBase}/meta`}
                   fields={["META_APP_ID", "META_APP_SECRET", "META_OAUTH_REDIRECT_URL", "META_OAUTH_FRONTEND_URL", "META_VERIFY_TOKEN", "Platforms -> Connect Meta"]}
                   docsUrl="https://developers.facebook.com/docs/messenger-platform/instagram"
                 />
                 <PlatformGuide
                   name="Telegram"
-                  webhookUrl="https://YOUR_DOMAIN/api/v1/webhook/telegram"
+                  webhookUrl={`${webhookBase}/telegram`}
                   fields={["Bot Token (from @BotFather)", "Webhook secret token (set as secret_token in Telegram setWebhook)"]}
                   docsUrl="https://core.telegram.org/bots/api#setwebhook"
                 />
@@ -85,7 +91,6 @@ export default function HelpPage() {
           <Card>
             <CardHeader><CardTitle className="text-sm flex items-center gap-2"><BookOpen className="size-4 text-success" /> {t("help.features")}</CardTitle></CardHeader>
             <CardContent className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
-              <Feature icon={Bot} title={t("help.featStreamT")} desc={t("help.featStreamD")} />
               <Feature icon={BookOpen} title={t("help.featRagT")} desc={t("help.featRagD")} />
               <Feature icon={Shield} title={t("help.featRateT")} desc={t("help.featRateD")} />
               <Feature icon={Zap} title={t("help.featCacheT")} desc={t("help.featCacheD")} />

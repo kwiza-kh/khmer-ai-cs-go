@@ -1,4 +1,5 @@
 import { API_BASE, signalAuthExpired } from "./auth-client";
+import { sessionToken } from "./session-token";
 import { localizeCurrentLang } from "./api-errors";
 import { settle } from "./safe-fetch";
 
@@ -28,7 +29,7 @@ export async function apiFetch<T = unknown>(
   options: RequestInit & { onWarning?: (warning: string) => void } = {},
 ): Promise<T> {
   const { onWarning, ...init } = options;
-  const token = localStorage.getItem("token");
+  const token = sessionToken();
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...(init.headers as Record<string, string>),
@@ -58,6 +59,13 @@ export async function apiFetch<T = unknown>(
     // 原样丢进 toast. 这里显式拼接, 并把噪声正文截断.
     const raw = (await res.text().catch(() => "")).trim();
     const detail = raw ? localizeCurrentLang(raw.slice(0, 200)) : localizeCurrentLang("请求失败");
+    // A gateway 502 is HTML, but a 401 from a dead session can be too (an
+    // nginx auth_request page, a proxy that strips JSON). The logout signal
+    // used to sit after this throw, so exactly those responses left the UI
+    // "signed in" until a reload.
+    if (res.status === 401) {
+      signalAuthExpired();
+    }
     throw new ApiError(`${detail} (HTTP ${res.status})`, res.status);
   }
 
@@ -197,16 +205,6 @@ export interface ChatResponse {
   cached_tokens: number;
   sources?: RAGSource[];
   used_mock?: boolean;
-}
-
-/**
- * Over-the-wire form of an inline image attachment shipped to Gemini's
- * multimodal endpoint. `data` is base64-encoded image bytes with NO "data:"
- * prefix — the backend tolerates a stray prefix but prefers it stripped.
- */
-export interface ChatImageInput {
-  data: string;
-  mime_type: string; // image/png | image/jpeg | image/webp | image/gif | ...
 }
 
 export interface RAGSource {
@@ -449,7 +447,7 @@ export async function uploadKnowledgeFile(
   file: File,
   opts?: { category?: string; language?: string },
 ): Promise<KnowledgeDocument> {
-  const token = localStorage.getItem("token");
+  const token = sessionToken();
   const form = new FormData();
   form.append("file", file);
   if (opts?.category) form.append("category", opts.category);
@@ -820,123 +818,6 @@ export async function getInboundPlatformMediaURL(messageId: number) {
   return apiFetch<{ url: string; expires_at: string }>(`/inbox/messages/${messageId}/media-url`);
 }
 
-/**
- * streamChat opens an SSE connection to /chat/stream and invokes callbacks as
- * tokens arrive. Returns an AbortController so the caller can implement "Stop".
- *
- * The SSE wire format is:
- *   event: session\ndata: {"session_id":"..."}\n\n
- *   event: token\ndata: {"text":"..."}\n\n   (repeated)
- *   event: done\ndata: {"reply":"full text","tokens_used":N,...}\n\n
- *   event: error\ndata: {"message":"..."}\n\n
- */
-export function streamChat(
-  body: { message: string; session_id?: string; language?: string; images?: ChatImageInput[] },
-  handlers: {
-    onSession?: (sessionId: string) => void;
-    onSources?: (sources: RAGSource[]) => void;
-    onToken?: (chunk: string) => void;
-    onDone?: (final: { reply: string; tokens_used: number; cached_tokens: number; used_mock: boolean }) => void;
-    onError?: (message: string) => void;
-  },
-): AbortController {
-  const controller = new AbortController();
-  const token = localStorage.getItem("token");
-
-  (async () => {
-    let res: Response;
-    try {
-      res = await settle(fetch(`${API_BASE}/chat/stream`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ ...body, language: body.language || "km" }),
-        signal: controller.signal,
-      }));
-    } catch (err) {
-      if ((err as Error).name !== "AbortError") {
-        handlers.onError?.((err as Error).message);
-      }
-      return;
-    }
-
-    if (!res.ok || !res.body) {
-      if (res.status === 401) signalAuthExpired();
-      let msg = `HTTP ${res.status}`;
-      try { msg = (await res.json()).error || msg; } catch { /* ignore */ }
-      handlers.onError?.(msg);
-      return;
-    }
-
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let receivedTerminalEvent = false;
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-
-        // SSE events are separated by a blank line.
-        let sep: number;
-        while ((sep = buffer.indexOf("\n\n")) !== -1) {
-          const raw = buffer.slice(0, sep);
-          buffer = buffer.slice(sep + 2);
-          const evt = parseSSE(raw);
-          if (!evt) continue;
-          switch (evt.event) {
-            case "session":
-              handlers.onSession?.((evt.data as { session_id: string }).session_id);
-              break;
-            case "sources":
-              handlers.onSources?.(evt.data as RAGSource[]);
-              break;
-            case "token":
-              handlers.onToken?.((evt.data as { text: string }).text);
-              break;
-            case "done":
-              receivedTerminalEvent = true;
-              handlers.onDone?.(evt.data as { reply: string; tokens_used: number; cached_tokens: number; used_mock: boolean });
-              break;
-            case "error":
-              receivedTerminalEvent = true;
-              handlers.onError?.((evt.data as { message: string }).message);
-              break;
-          }
-        }
-      }
-      if (!receivedTerminalEvent && !controller.signal.aborted) {
-        handlers.onError?.("The response stream ended before completion.");
-      }
-    } catch (err) {
-      if ((err as Error).name !== "AbortError") {
-        handlers.onError?.((err as Error).message);
-      }
-    }
-  })();
-
-  return controller;
-}
-
-function parseSSE(raw: string): { event: string; data: unknown } | null {
-  let event = "message";
-  const dataLines: string[] = [];
-  for (const line of raw.split("\n")) {
-    if (line.startsWith("event:")) event = line.slice(6).trim();
-    else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
-  }
-  if (dataLines.length === 0) return null;
-  try {
-    return { event, data: JSON.parse(dataLines.join("\n")) };
-  } catch {
-    return { event, data: {} };
-  }
-}
-
 // ============================================
 // Analytics + Inbox (B4)
 // ============================================
@@ -955,12 +836,6 @@ export async function getTopQueries(days = 30, limit = 10) {
 
 export async function getLanguageBreakdown(days = 30) {
   return apiFetch<LanguageBreakdown[]>(`/admin/analytics/languages?days=${days}`);
-}
-
-export async function listFeedback(page = 1, pageSize = 50, rating?: -1 | 1) {
-  const qs = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
-  if (rating) qs.set("rating", String(rating));
-  return apiFetch<PaginatedResponse<ChatMessageItem>>(`/admin/feedback?${qs}`);
 }
 
 export async function listInbox(params?: { status?: SessionStatus; archived?: boolean; page?: number; pageSize?: number; q?: string }) {
@@ -1166,22 +1041,6 @@ export interface AgentMember {
   permissions?: Record<string, boolean>;
 }
 
-export interface CampaignItem {
-  campaign_id: number;
-  name: string;
-  platform: string;
-  config_id: number;
-  template_name: string;
-  template_language: string;
-  body_params: string[];
-  recipient_filter: string;
-  tag_filter?: string | null;
-  scheduled_at: string;
-  status: string;
-  sent_count: number;
-  created_at: string;
-}
-
 export interface BillingInfo {
   plan: string;
   monthly_message_quota: number;
@@ -1281,18 +1140,6 @@ export function revokeTeamInvite(inviteId: number) {
 /** Accepting binds the caller's own account — the body carries only the code. */
 export function acceptTeamInvite(code: string) {
   return apiFetch<{ message: string }>("/team/invites/accept", { method: "POST", body: JSON.stringify({ code }) });
-}
-export function listCampaigns() {
-  return apiFetch<CampaignItem[]>("/campaigns");
-}
-export function createCampaign(input: {
-  name: string; platform: string; config_id: number; template_name: string; template_language: string;
-  body_params?: string[]; recipient_filter: string; scheduled_at: string;
-}) {
-  return apiFetch<{ campaign_id: number }>("/campaigns", { method: "POST", body: JSON.stringify(input) });
-}
-export function cancelCampaign(id: number) {
-  return apiFetch<{ message: string }>(`/campaigns/${id}/cancel`, { method: "POST" });
 }
 export function getBilling() {
   return apiFetch<BillingInfo>("/billing");
@@ -1670,7 +1517,7 @@ export function notificationsReadAll() {
 /** Trigger a browser download of a CSV report. */
 export async function downloadReport(kind: "sessions" | "messages" | "tokens", from: string, to: string) {
   const qs = new URLSearchParams({ from, to });
-  const token = localStorage.getItem("token");
+  const token = sessionToken();
   // Use the same absolute API_BASE as every other call — the Next.js server has
   // no /api/v1 rewrite, so a relative path would hit the frontend (3000) and 404.
   const resp = await settle(fetch(`${API_BASE}/reports/${kind}?${qs}`, {
@@ -1901,72 +1748,6 @@ export function deleteWidgetToken(id: number) {
   return apiFetch<{ message: string }>(`/widgets/${id}`, { method: "DELETE" });
 }
 
-/**
- * streamWidgetChat posts a visitor message to the public widget SSE endpoint.
- * Token is passed in the body; the callbacks mirror streamChat's wire protocol.
- */
-export function streamWidgetChat(
-  body: { token: string; session_id?: string; message: string; language?: string },
-  handlers: {
-    onSession?: (sessionId: string) => void;
-    onSources?: (sources: RAGSource[]) => void;
-    onToken?: (chunk: string) => void;
-    onDone?: (final: { reply: string; tokens_used: number; cached_tokens?: number; used_mock?: boolean; escalated?: boolean }) => void;
-    onError?: (message: string) => void;
-  },
-): AbortController {
-  const controller = new AbortController();
-  (async () => {
-    let res: Response;
-    try {
-      res = await fetch(`${API_BASE}/widget/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-    } catch (err) {
-      if ((err as Error).name !== "AbortError") handlers.onError?.((err as Error).message);
-      return;
-    }
-    if (!res.ok || !res.body) {
-      let msg = `HTTP ${res.status}`;
-      try { msg = (await res.json()).error || msg; } catch { /* ignore */ }
-      handlers.onError?.(msg);
-      return;
-    }
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let terminal = false;
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        let sep: number;
-        while ((sep = buffer.indexOf("\n\n")) !== -1) {
-          const raw = buffer.slice(0, sep);
-          buffer = buffer.slice(sep + 2);
-          const evt = parseSSE(raw);
-          if (!evt) continue;
-          switch (evt.event) {
-            case "session": handlers.onSession?.((evt.data as { session_id: string }).session_id); break;
-            case "sources": handlers.onSources?.(evt.data as RAGSource[]); break;
-            case "token": handlers.onToken?.((evt.data as { text: string }).text); break;
-            case "done": terminal = true; handlers.onDone?.(evt.data as { reply: string; tokens_used: number }); break;
-            case "error": terminal = true; handlers.onError?.((evt.data as { message: string }).message); break;
-          }
-        }
-      }
-      if (!terminal && !controller.signal.aborted) handlers.onError?.("stream ended before completion");
-    } catch (err) {
-      if ((err as Error).name !== "AbortError") handlers.onError?.((err as Error).message);
-    }
-  })();
-  return controller;
-}
-
 // Personal profile
 //
 // is_tenant_owner is the server's answer to "does this account administer its
@@ -2005,7 +1786,7 @@ export async function putProfile(data: {
 
 // uploadAvatar — multipart image upload; returns the refreshed profile.
 export async function uploadAvatar(file: File) {
-  const token = localStorage.getItem("token");
+  const token = sessionToken();
   const form = new FormData();
   form.append("file", file);
   const res = await settle(fetch(`${API_BASE}/profile/avatar`, {

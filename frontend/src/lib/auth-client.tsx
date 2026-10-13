@@ -38,8 +38,13 @@ import { localizeCurrentLang } from "./api-errors";
 const AuthContext = createContext<AuthContextType | null>(null);
 
 import { settle } from "./safe-fetch";
+import { apiBaseURL } from "./api-base";
+import { clearSessionToken, clearSessionUser, sessionToken, sessionUser, setSessionToken, setSessionUser } from "./session-token";
 
-export const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080/api/v1";
+// Throws at module load when NEXT_PUBLIC_API_URL is missing — see api-base.ts: the
+// old fallback named the retired Rust backend's port, so a misconfigured build
+// failed silently at every request instead of failing once, loudly.
+export const API_BASE = apiBaseURL();
 
 /**
  * Called by apiFetch (and any raw fetch 401) when the JWT turns out to be
@@ -48,10 +53,20 @@ export const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:808
  * localStorage was cleared, leaving the UI "logged in" until a reload.
  */
 export function signalAuthExpired() {
-  localStorage.removeItem("token");
-  localStorage.removeItem("user");
+  // Idempotent: one user action fans out into several requests (SWR
+  // revalidation, the inbox poll), so a 401 storm used to dispatch this event
+  // once per failed request — several logout() runs and router.push("/login")
+  // calls for one expiry.
+  if (authExpiredSignalled) return;
+  authExpiredSignalled = true;
+  clearSessionToken();
+  clearSessionUser();
   window.dispatchEvent(new Event("khmer:auth-expired"));
 }
+
+// Re-armed when a session is adopted (login, refresh), so a later expiry still
+// signals once.
+let authExpiredSignalled = false;
 
 /**
  * Persist a token returned by an endpoint that changed a credential.
@@ -71,7 +86,8 @@ export function signalAuthExpired() {
  */
 export function adoptRefreshedToken(res: { token?: string } | null | undefined) {
   if (!res?.token) return;
-  localStorage.setItem("token", res.token);
+  authExpiredSignalled = false;
+  setSessionToken(res.token);
   window.dispatchEvent(new CustomEvent<string>("khmer:token-refreshed", { detail: res.token }));
 }
 
@@ -93,15 +109,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     clearSWRCache();
     setToken(nextToken);
     setUser(nextUser);
-    localStorage.setItem("token", nextToken);
-    localStorage.setItem("user", JSON.stringify(nextUser));
+    setSessionToken(nextToken);
+  authExpiredSignalled = false;
+    setSessionUser(JSON.stringify(nextUser));
   };
 
   // localStorage 是外部存储, 必须在客户端挂载后才能读取 (SSR 期间 window 不存在).
   // 这是 React 官方推荐的 "从外部系统同步状态" 用法, 因此显式关闭 set-state-in-effect 规则.
+  // 读写一律走 session-token.ts: 拒绝存储的浏览器 (Safari 隐私模式等) 在这里抛错
+  // 会让整个 App 卡在 loading (永远走不到 setIsLoading(false)).
   useEffect(() => {
-    const savedToken = localStorage.getItem("token");
-    const savedUser = localStorage.getItem("user");
+    const savedToken = sessionToken();
+    const savedUser = sessionUser();
     if (savedToken && savedUser) {
       try {
         const parsed = JSON.parse(savedUser) as User;
@@ -110,8 +129,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser(parsed);
       } catch {
         // localStorage 中的 user 数据损坏 (例如旧版本格式), 清理掉避免后续崩溃.
-        localStorage.removeItem("user");
-        localStorage.removeItem("token");
+        clearSessionUser();
+        clearSessionToken();
       }
     }
     setIsLoading(false);
@@ -174,8 +193,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     clearSWRCache();
     setToken(null);
     setUser(null);
-    localStorage.removeItem("token");
-    localStorage.removeItem("user");
+    clearSessionToken();
+    clearSessionUser();
     router.push("/login");
   };
 

@@ -302,13 +302,17 @@ func LoadDefault(ctx context.Context, db querier) (Row, bool) {
 // it. ok is false when no Gemini row exists, and the Gemini client then runs on its
 // environment.
 //
-// The NOT IN list must name every non-Gemini provider: a provider missing from it
-// would have its key and model handed to the Gemini client, and embeddings would
-// start failing with someone else's credential.
+// The NOT IN list must name every non-Gemini provider, including the retired
+// 'anthropic-vertex' value: a provider missing from it would have its key and
+// model handed to the Gemini client, and embeddings would start failing with
+// someone else's credential. Rows still carrying the retired value are only
+// skipped, not rewritten — rewriting a Claude row to 'gemini' would swap the
+// failure from "wrong credential" to "wrong model", and the console shows the
+// row so an operator can fix it.
 func LoadGemini(ctx context.Context, db querier) (Row, bool) {
 	return scanRow(db.QueryRow(ctx,
 		"SELECT config_id, provider, api_key, model_name, COALESCE(system_prompt,''), COALESCE(max_tokens,2048), COALESCE(vertex_region,''), temperature "+
-			"FROM model_configs WHERE provider NOT IN ('anthropic', 'deepseek') "+
+			"FROM model_configs WHERE provider NOT IN ('anthropic', 'deepseek', 'anthropic-vertex') "+
 			"ORDER BY is_default DESC, config_id LIMIT 1"))
 }
 

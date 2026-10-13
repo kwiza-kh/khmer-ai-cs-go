@@ -57,8 +57,9 @@ set -a; . ./.env-go; set +a   # 先导出真配置
 
 ## 9. 前端接口全挂、请求打到 localhost（构建时烘焙）
 
-- `API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080/api/v1"` — Next 把 `NEXT_PUBLIC_*` 编译进客户端 bundle
-- 发布时忘带 env 构建 = 用户浏览器请求自己的 localhost:8080, 页面能打开、接口全挂
+- `NEXT_PUBLIC_API_URL` 在构建时烘焙进客户端 bundle, Next 不会在运行时再读它
+- **旧症状（2026-10-12 前）**：`API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080/api/v1"`, 忘带 env 构建 = 用户浏览器请求自己的 localhost:8080（那是已退役的 Rust 后端端口）, 页面能打开、接口全挂、控制台只有「网络错误」
+- **现在的症状**：兜底已删（`frontend/src/lib/api-base.ts` 的 `apiBaseURL()` 缺变量直接 `throw`）, 所以忘带 env 的构建会**当场失败**在 `npm run build`, 而不是上线后静默打空端口
 - 修复: 带 `NEXT_PUBLIC_API_URL=https://<部署域名>/api/v1` 重新 build + 发布 (§5 流程)
 
 ## 10. standalone 缺静态资源 = 页面裸奔/白屏
@@ -125,3 +126,14 @@ set -a; . ./.env-go; set +a   # 先导出真配置
   ```
   本例两者都在 = 068/069 早已应用, 纯代码发布即可; 直接信工具输出会白跑一次迁移
 - 规矩: **每次发布先 `install` 本次构建的 `migrate-go`**, 再用它 `--status`
+
+## 19. nginx 站点文件不是软链 → 谁按常规启用 available 版就全站 502 (2026-10-12)
+
+- 症状（隐患，未触发前无任何征兆）: `/etc/nginx/sites-enabled/khmer-ai-cs` 曾是一个**普通文件**（不是指向 `sites-available` 的软链），
+  而 `/etc/nginx/sites-available/khmer-ai-cs` 那份停在 2026-09-01: `proxy_pass http://127.0.0.1:8080`（已退役的 Rust 后端）、
+  缺 `media-src 'self' blob: https:`、缺整个 `location = /widget`。同机 `wms` 站点是正常软链，只有 cs 是两份独立文件。
+- 后果: 任何一次 `ln -sf /etc/nginx/sites-available/khmer-ai-cs /etc/nginx/sites-enabled/`（标准启用动作）都会把 :8080 发布出去，
+  全站 API/SSE/WebSocket 立刻 502/504，而 `nginx -t` 完全通过——没有一处日志会指向真正的改动
+- 已修（2026-10-12）: available 内容同步为现行生效版后改为软链（与 wms 一致），备份在 `/root/nginx-backup-20261012162355/`
+- 现在的规矩: **改 nginx 只改 `/etc/nginx/sites-available/khmer-ai-cs`**（软链共享），`nginx -t && systemctl reload nginx`;
+  发布前后的体检命令里应包含 `readlink -f /etc/nginx/sites-enabled/khmer-ai-cs` 与 `grep -c 127.0.0.1:8081`

@@ -380,9 +380,6 @@ func (a *App) updateTelegramProfile(ctx context.Context, userID int32, c *telegr
 		c.Name, c.Picture, c.Phone, userID)
 }
 
-// nullIfEmpty maps "" to SQL NULL so an absent optional claim does not store a
-// misleading empty string.
-
 // telegramRedirectError sends the browser back to the login page with a reason.
 func (a *App) telegramRedirectError(w http.ResponseWriter, r *http.Request, reason string) {
 	target := a.Cfg.TelegramLogin.FrontendURL

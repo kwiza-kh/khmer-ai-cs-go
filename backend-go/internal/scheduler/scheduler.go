@@ -1,8 +1,8 @@
 // Package scheduler runs jobs that live in the database.
 //
-// Platform maintenance (campaign dispatch, SLA scan, billing reset, health
-// watchdog, retention) keeps its fixed loops in internal/api/tasks.go: those
-// cadences are properties of the deployment. What this package adds is the other
+// Platform maintenance (SLA scan, billing reset, health watchdog, retention)
+// keeps its fixed loops in internal/api/tasks.go: those cadences are
+// properties of the deployment. What this package adds is the other
 // half — a job a tenant or the operator can create, change or disable without a
 // deploy, which is what AstrBot's CronJobManager provides
 // (astrbot/core/cron/manager.py: sync_from_db, add_basic_job, add_active_job,

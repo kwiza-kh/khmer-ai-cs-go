@@ -18,6 +18,9 @@ import { toast } from "sonner";
 import { useI18n } from "@/lib/i18n";
 import { fmtDateTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { apiBaseURL } from "@/lib/api-base";
+import { openExternalURL } from "@/lib/open-external";
+import { isSafeHTTPSURL } from "@/lib/safe-href";
 
 type PlatformKey = "meta" | "instagram" | "telegram" | "whatsapp" | "line" | "zalo";
 
@@ -72,8 +75,7 @@ interface PlatformMeta {
 
 // Public webhook endpoint for a platform, derived from the baked API base.
 function platformWebhookURL(label: string): string {
-  const api = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080/api/v1").replace(/\/$/, "");
-  const origin = api.replace(/\/api\/v1$/, "");
+  const origin = apiBaseURL().replace(/\/api\/v1$/, "");
   return `${origin}/api/v1/webhook/${label}`;
 }
 
@@ -293,6 +295,12 @@ export default function PlatformsPage() {
     setStartingMetaOAuth(true);
     try {
       const response = await apiFetch<{ authorize_url: string }>("/platforms/meta/oauth/start", { method: "POST" });
+      // The URL comes from Meta through our API, but it is still a navigation: if it
+      // ever came back as `javascript:` (or http), location.assign would run it in
+      // this origin. https only — the one rule lives in lib/safe-href.ts.
+      if (!isSafeHTTPSURL(response.authorize_url)) {
+        throw new Error("Meta 授权地址不是 https 地址");
+      }
       window.location.assign(response.authorize_url);
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : (err as Error).message);
@@ -1045,7 +1053,7 @@ function PlatformCard({ meta, initial, onClose }: { meta: PlatformMeta; initial?
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => window.open(meta.docsUrl, "_blank")}
+              onClick={() => openExternalURL(meta.docsUrl)}
               className="h-8 text-xs gap-1 text-muted-foreground"
             >
               <ExternalLink className="size-3" />{t("pf.docs")}

@@ -368,8 +368,14 @@ func (a *App) saveMetaConfigTx(ctx context.Context, tx pgx.Tx, userID int32, pla
 		igVal = integrationID
 	}
 	// Only a new Meta/Instagram connection consumes the plan's channel allowance
-	// (the update path above returns early for an existing config).
-	if err := a.checkChannelLimit(ctx, userID); err != nil {
+	// (the update path above returns early for an existing config). Lock the
+	// tenant's users row and count on *this* transaction: counting on the pool
+	// while inserting here is a check-then-act pair, and two concurrent connects
+	// could both pass the cap.
+	if _, err := tx.Exec(ctx, "SELECT 1 FROM users WHERE user_id = $1 FOR UPDATE", userID); err != nil {
+		return 0, ErrInternal("save meta config")
+	}
+	if err := a.checkChannelLimitFrom(ctx, tx, userID); err != nil {
 		return 0, err
 	}
 	var configID int32
@@ -605,16 +611,13 @@ func (a *App) embeddedSignupComplete(w http.ResponseWriter, r *http.Request) (an
 	}
 	encSecret, _ := a.Sealer.Encrypt(c.AppSecret)
 	secretHash := sha256HexStr(c.AppSecret)
-	// Plan limit before saving: the embedded-signup path always creates a new
-	// config (there is no update branch here).
-	if err := a.checkChannelLimit(r.Context(), user.UserID); err != nil {
-		return nil, err
-	}
-	var configID int32
-	if err := a.DB.QueryRow(r.Context(),
+	// Plan limit and INSERT share one transaction (see createChannelConfig): this
+	// path always creates a new config, there is no update branch.
+	configID, err := a.createChannelConfig(r.Context(), user.UserID,
 		"INSERT INTO platform_configs (user_id, platform, access_token, page_id, whatsapp_business_account_id, webhook_secret, webhook_secret_hash, is_active) VALUES ($1,'whatsapp',$2,$3,$4,$5,$6,true) RETURNING config_id",
-		user.UserID, encToken, phone, waba, encSecret, secretHash).Scan(&configID); err != nil {
-		return nil, ErrInternal("Could not save WhatsApp connection")
+		user.UserID, encToken, phone, waba, encSecret, secretHash)
+	if err != nil {
+		return nil, err
 	}
 	_ = a.recordHealth(r.Context(), configID, "unknown", phone, "Embedded Signup completed; waiting for a signed WhatsApp event")
 	return map[string]any{"config_id": configID, "platform": "whatsapp", "user_id": user.UserID, "page_id": phone, "whatsapp_business_account_id": waba, "is_active": true}, nil
@@ -636,6 +639,9 @@ func validMetaObjectID(s string) bool {
 // helpers
 // ============================================
 
+// newOAuthState returns the CSRF state for a Meta OAuth round trip. There is
+// deliberately no fallback: crypto/rand.Read is infallible on Go >= 1.24, and a
+// predictable state is worse than a failed login.
 func newOAuthState() string {
 	buf := make([]byte, 32)
 	_, _ = rand.Read(buf)

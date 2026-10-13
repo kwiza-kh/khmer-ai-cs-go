@@ -31,7 +31,6 @@ type GeminiConfig struct {
 	APIKey    string
 	Model     string
 	MaxTokens int
-	CacheTTL  int
 }
 
 type R2Config struct {
@@ -181,8 +180,6 @@ type Config struct {
 	AllowedOrigins         []string
 	Meta                   MetaConfig
 	MetaVerifyToken        string
-	TelegramBotToken       string
-	InitialAdminPassword   string
 	Email                  EmailConfig
 	Voice                  VoiceConfig
 	SSO                    SSOConfig
@@ -222,7 +219,6 @@ func Load() (*Config, error) {
 			// tokens it saves. Once a model_configs row exists its max_tokens
 			// wins — set it there too (admin Models page).
 			MaxTokens: envInt("GEMINI_MAX_TOKENS", 1024),
-			CacheTTL:  envInt("GEMINI_CACHE_TTL", 3600),
 		},
 		R2: R2Config{
 			AccountID: env("R2_ACCOUNT_ID", ""),
@@ -245,9 +241,7 @@ func Load() (*Config, error) {
 			WhatsAppEmbeddedSignupConfigID: env("META_WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID", ""),
 			OAuthScopes:                    env("META_OAUTH_SCOPES", ""),
 		},
-		MetaVerifyToken:      env("META_VERIFY_TOKEN", ""),
-		TelegramBotToken:     env("TELEGRAM_BOT_TOKEN", ""),
-		InitialAdminPassword: env("INITIAL_ADMIN_PASSWORD", ""),
+		MetaVerifyToken: env("META_VERIFY_TOKEN", ""),
 		Email: EmailConfig{
 			Enabled:        envBool("EMAIL_ENABLED", false),
 			SMTPHost:       env("SMTP_HOST", ""),

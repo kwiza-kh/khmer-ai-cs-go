@@ -315,10 +315,13 @@ func (a *App) changePassword(w http.ResponseWriter, r *http.Request) (any, error
 		// Google-only account — allow setting an initial password without
 		// asking for a "current" one that does not exist.
 		if strings.TrimSpace(req.OldPassword) != "" {
-			return nil, ErrUnauthorized("该账号尚未设置密码，请留空原密码")
+			// 400, not 401: the session is valid, and the client logs out on any 401
+			// (apiFetch calls signalAuthExpired), so a mistyped old password used to
+			// throw the user back to /login with a still-valid session.
+			return nil, ErrBadRequest("该账号尚未设置密码，请留空原密码")
 		}
 	} else if !auth.VerifyPassword(req.OldPassword, *hashPtr) {
-		return nil, ErrUnauthorized("原密码错误")
+		return nil, ErrBadRequest("原密码错误")
 	}
 	newHash, err := auth.HashPassword(req.NewPassword)
 	if err != nil {

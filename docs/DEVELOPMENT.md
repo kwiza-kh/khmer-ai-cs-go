@@ -167,6 +167,14 @@ legacyJWTIssuer = "khmer-ai-cs"    // 旧 token 仍接受
 教训：**手测 SQL 用字面量会骗你，读到一条看似合理的根因也会。** 任何关于
 「这个写法在 Postgres 上行不行」的结论，都该在真库上 prepare 一次再说。
 
+> **2026-10-12 重写（形状，不是事故）**：`scanSLABreaches` 现在每个策略、每种违约类型
+> 只发一条 `INSERT ... SELECT ... ON CONFLICT (session_id, breach_type) DO NOTHING
+> RETURNING session_id`，租户仍以 `$1` 绑定（`s.user_id = $1`，静态租户门禁要求
+> 语句内出现租户列）。旧写法是「先查该策略下所有超时会话，再逐行 INSERT 并逐行
+> `notifyUser`」——策略一多就是 N×M 次往返。`RETURNING` 只在真正插入新行时返回行，
+> 所以通知语义不变：first_response 每行通知一次，resolution 依旧只记录不通知
+> （开放问题仍见本节末尾），扫描本身失败只 `Warn` 不再静默。
+
 ### F. 其他
 
 - **挂件高棉语文案** —— `frontend/src/app/widget/page.tsx` 的 `km` 语言槽曾是中文占位（与 `zh` 相同），已在 8d150e3 换成高棉语（当前为 `ជំនួយការអតិថិជន` 等）。这是流量最高的终端客户界面，文案仍需母语者过一遍
@@ -761,7 +769,7 @@ session/doc 作用域的。注意 VOLATILE 谓词默认并行不安全：这两�
   （`handoffPriority()`，schema 只有 normal|high）。v1 不落 session 列——
   只作用于当轮升级；后台轮次分类触发的升级（无路由上下文）传空串走静态表。
 
-### reply_cache：语义缓存已移除（表保留）
+### reply_cache：语义缓存已移除（表已删）
 
 2026-10-08 删除。生产库实测（30 天窗口）：
 
@@ -782,8 +790,14 @@ Gemini 切到 Claude，旧条目因此永不再命中 —— 所以「3 次」�
 
 删除范围：`internal/replycache/` 整包、平台管道与两条聊天路径的读写点、
 `rag.Service.KBChanged` 钩子（唯一订阅者就是缓存）、`inboundTurn.FromCache` 与
-`cache-lookup` 阶段。**`reply_cache` 表与 7 行历史数据保留**（不做回滚迁移；表在，
-无人读写），历史行的 `model_name='reply-cache'` 在收件箱照旧原样显示。
+`cache-lookup` 阶段。
+
+**2026-10-12 补记：表也删了（迁移 076，`DROP TABLE IF EXISTS reply_cache`）。** 当初
+"保留表以便回滚"的代价是：`internal/tenantscope` 的表映射里留着一个为死表准备的条目
+（静态租户门禁的例外清单会因此腐化），以及一份没人读的行。功能已在 2026-10-08 整体
+删除、全树无引用（grep 只剩 062 迁移本身提到它），行内容又可由知识库重建，所以
+`IF EXISTS` 的删除是安全的；已应用的 062 不改（已发布迁移只前向）。历史行的
+`model_name='reply-cache'` 在收件箱照旧原样显示——那只是 `chat_messages` 里的文本。
 
 ### API 变更
 

@@ -371,13 +371,20 @@ func main() {
 	whMux.HandleFunc("/api/v1/platforms/meta/oauth/callback", app.MetaOAuthCallbackRaw())
 	app.WebhookHandler = whMux
 
-	// Background periodic jobs (campaign dispatch, SLA scan, URL refresh, billing).
+	// Background periodic jobs (SLA scan, URL refresh, billing, digests).
 	app.StartBackgroundTasks(ctx)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Server.Port,
 		Handler:           app.Router(),
 		ReadHeaderTimeout: 10 * time.Second,
+		// IdleTimeout reaps keep-alive connections nginx stopped talking on.
+		// Deliberately no ReadTimeout/WriteTimeout: a 40MB knowledge upload and a
+		// streamed model reply both legitimately outlive any fixed deadline
+		// short enough to be useful, and a client that goes away is already
+		// handled by the request context. A read timeout here would cut off
+		// uploads; nginx owns the client-facing deadlines.
+		IdleTimeout: 120 * time.Second,
 	}
 
 	// Graceful shutdown: drain for up to 20s on SIGINT/SIGTERM.

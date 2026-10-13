@@ -336,3 +336,30 @@ func (p *Pipeline) alertOutboundFailures(ctx context.Context, platform, detail s
 		fmt.Sprintf("平台 %s 在 15 分钟内失败消息数已达 %d 条阈值，客户可能收不到回复。最近错误: %s",
 			platform, outboundAlertThreshold, textutil.TruncateRunes(detail, 300)))
 }
+
+// inboundAlertThreshold — final inbound failures within alertDedupTTL before the
+// operator is paged. One failed turn is noise; a run of them means customers are
+// writing and nobody is answering.
+const inboundAlertThreshold = 3
+
+// alertInboundFailures pages the operator when inbound turns exhaust their
+// retries. An inbound event only reaches 'failed' after maxAttempts, and until now
+// that row was written in silence: the retry ladder had already given up, so
+// nothing else in the system would ever mention the customer again.
+func (p *Pipeline) alertInboundFailures(ctx context.Context, platform, detail string) {
+	if p.Redis == nil {
+		return
+	}
+	c, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	ok, err := p.Redis.IncrWindow(c, "platform-alert:inbound:"+platform, inboundAlertThreshold-1, alertDedupTTL)
+	if err != nil {
+		return
+	}
+	if ok {
+		return
+	}
+	p.PlatformAlert(ctx, "inbound-failures-"+platform, "入站消息连续处理失败",
+		fmt.Sprintf("平台 %s 在 15 分钟内有 %d 条客户消息重试耗尽后仍未答复，客户可能在等回复。最近错误: %s",
+			platform, inboundAlertThreshold, textutil.TruncateRunes(detail, 300)))
+}

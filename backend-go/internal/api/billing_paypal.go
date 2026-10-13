@@ -405,17 +405,31 @@ func (a *App) activatePayment(ctx context.Context, orderID, captureID, capturedA
 		return false, &ApiError{http.StatusBadGateway, "支付金额与订单不一致，已拒绝开通"}
 	}
 	detail, _ := json.Marshal(map[string]string{"source": source, "capture_id": captureID})
-	tag, err := a.DB.Exec(ctx, sqlPaymentMarkCaptured, orderID, captureID, string(detail))
+	// One transaction for "record the capture, grant the plan, extend the paid
+	// window". Three statements on the pool meant a failure between them left the
+	// tenant paid and unprovisioned: the conditional UPDATE had already flipped the
+	// row to captured, so the retry (PayPal retries a 5xx, and its webhook races
+	// the browser routinely) found status='captured' and granted nothing — money
+	// in, plan never applied, and no error a human would ever see.
+	tx, err := a.DB.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	tag, err := tx.Exec(ctx, sqlPaymentMarkCaptured, orderID, captureID, string(detail))
 	if err != nil {
 		return false, err
 	}
 	if tag.RowsAffected() == 0 {
 		return false, nil // lost the race: the other caller grants
 	}
-	if err := a.applyPlan(ctx, userID, plan); err != nil {
+	if err := a.applyPlanFrom(ctx, tx, userID, plan); err != nil {
 		return false, err
 	}
-	if _, err := a.DB.Exec(ctx, sqlExtendPaidUntil, userID); err != nil {
+	if _, err := tx.Exec(ctx, sqlExtendPaidUntil, userID); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return false, err
 	}
 	a.Logger.Info("paid plan activated", "user_id", userID, "plan", plan, "amount", amount+" "+currency, "source", source)

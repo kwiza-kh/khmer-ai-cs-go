@@ -2,6 +2,7 @@ package platform
 
 import (
 	"regexp"
+	"sync"
 	"testing"
 	"time"
 )
@@ -108,37 +109,72 @@ func TestChatFallbackOnlyInPrivateChats(t *testing.T) {
 	}
 }
 
-// TestCriticalLaneOverflowCountsAndPages — the never-drop lane runs unbounded on
-// purpose (losing quota accounting or an owner alert is worse than a goroutine
-// spike), so the only thing to verify is that the spike is now VISIBLE: counted,
-// logged and paged once per threshold crossing — and that the droppable lane
-// still drops without being counted.
+// TestCriticalLaneOverflowCountsAndPages — the never-drop lane spills rather
+// than dropping an owner alert, but the spill is bounded (overflowSem) and past
+// both caps the task is dropped AND paged: the first drop pages, then every
+// criticalLaneOverflowPageAt-th, so the overload stays visible instead of
+// silently growing goroutines. The droppable lane still drops without a count.
 func TestCriticalLaneOverflowCountsAndPages(t *testing.T) {
+	// Zero the queue-for-a-slot wait: this test reproduces a permanently
+	// saturated lane, so every call would otherwise sit out the full wait.
+	oldWait := criticalLaneWait
+	criticalLaneWait = 0
+	defer func() { criticalLaneWait = oldWait }()
+
+	var mu sync.Mutex
 	var pages []int64
-	// The page is invoked synchronously from spawnAsync's overflow branch, which
-	// this test calls on its own goroutine.
-	criticalLaneOverflowPage.Store(func(overflow int64) { pages = append(pages, overflow) })
+	criticalLaneOverflowPage.Store(func(overflow int64) {
+		mu.Lock()
+		pages = append(pages, overflow)
+		mu.Unlock()
+	})
 	// atomic.Value cannot hold nil, so leave a benign hook behind rather than
 	// trying to restore "unset".
 	defer criticalLaneOverflowPage.Store(func(int64) {})
 
 	// A full local channel reproduces the saturated lane without touching the
-	// package-level criticalSem that other tests (and the real workers) use.
+	// package-level criticalSem that other tests (and the real workers) use, and
+	// the package-level overflow tier is filled so the spill has nowhere to go.
 	full := make(chan struct{}, 1)
 	full <- struct{}{}
+	for i := 0; i < cap(overflowSem); i++ {
+		overflowSem <- struct{}{}
+	}
+	defer func() {
+		for i := 0; i < cap(overflowSem); i++ {
+			<-overflowSem
+		}
+	}()
 
 	before := criticalLaneOverflow.Load()
 	for i := 0; i < criticalLaneOverflowPageAt; i++ {
 		spawnAsync(full, func() {}, false)
 	}
+	// The spill decision now happens in the spawned goroutine — the caller is
+	// never made to wait for a slot — so poll instead of asserting synchronously.
+	deadline := time.Now().Add(5 * time.Second)
+	for criticalLaneOverflow.Load()-before < criticalLaneOverflowPageAt && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
 	if got := criticalLaneOverflow.Load() - before; got != criticalLaneOverflowPageAt {
 		t.Fatalf("overflow count = %d, want %d", got, criticalLaneOverflowPageAt)
 	}
-	if len(pages) != 1 {
-		t.Fatalf("expected exactly 1 page per threshold crossing, got %d (%v)", len(pages), pages)
+	mu.Lock()
+	n := len(pages)
+	first := pages[0]
+	last := pages[n-1]
+	mu.Unlock()
+	// Two pages for 32 drops: the first drop always pages (a burst of 1–31 would
+	// otherwise be log-only), and every criticalLaneOverflowPageAt-th after that
+	// keeps a spike that lasts hours from going silent.
+	if n != 2 {
+		t.Fatalf("expected a page on the first drop and at the threshold, got %d (%v)", n, pages)
 	}
-	if want := before + criticalLaneOverflowPageAt; pages[0] != want {
-		t.Errorf("page reported overflow=%d, want %d", pages[0], want)
+	if want := before + 1; first != want {
+		t.Errorf("first page reported overflow=%d, want %d", first, want)
+	}
+	if want := before + criticalLaneOverflowPageAt; last != want {
+		t.Errorf("threshold page reported overflow=%d, want %d", last, want)
 	}
 
 	// The best-effort lane keeps dropping in silence: no work, no count, no page.
@@ -147,7 +183,10 @@ func TestCriticalLaneOverflowCountsAndPages(t *testing.T) {
 	if criticalLaneOverflow.Load() != countBefore {
 		t.Error("a dropped classification must not be counted as critical-lane overflow")
 	}
-	if len(pages) != 1 {
-		t.Errorf("droppable lane must not page, got %v", pages)
+	mu.Lock()
+	n = len(pages)
+	mu.Unlock()
+	if n != 2 {
+		t.Errorf("droppable lane must not page, got %d page(s)", n)
 	}
 }

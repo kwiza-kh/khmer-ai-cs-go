@@ -79,26 +79,49 @@ const (
 var (
 	classifySem = make(chan struct{}, 8)
 	criticalSem = make(chan struct{}, 64)
+	// overflowSem bounds the never-drop lane's spill. Only observability was added
+	// in the first pass, deliberately, because the unbounded run is the designed
+	// behaviour ("绝不丢弃") — but nothing bounded it either: a tenant's burst
+	// against a slow Telegram left thousands of goroutines, each holding an
+	// outbound HTTPS connection and a Redis round trip, on a host that also runs
+	// wms.service. A spilled task now runs inside this cap, and past both caps it is
+	// dropped and paged. Nothing on this lane is retried — the work is owner pings
+	// (a Telegram send with no DB row behind it) and handoff alerts — so a drop is
+	// lost, not recoverable; the page exists to say so, and no billing work runs
+	// here (review, 2026-10-12: the earlier "recoverable" wording was false).
+	overflowSem = make(chan struct{}, 256)
 )
 
-// criticalLaneOverflow counts how often the never-drop lane found no free slot
-// and ran the work unbounded.
+// criticalLaneOverflow counts how often the never-drop lane found no free slot,
+// waited criticalLaneWait, and found the overflow tier full as well.
 //
-// Only observability was added here, deliberately: the unbounded run is the
-// DESIGNED behaviour ("绝不丢弃"). Quota increments, owner notifications and
-// handoff alerts lose their meaning if they are queued behind a bounded buffer
-// and then dropped, so the overload is paid for in goroutines rather than in
-// lost work. What was missing was any way to SEE it: a sustained spike would
-// quietly run hundreds of goroutines against the pgx pool and the only trace
-// was a log line per task, buried in the same stream as everything else.
-//
-// criticalLaneOverflowPageAt is the page threshold. Paging on every multiple
-// (rather than once ever) keeps a spike that lasts hours from going silent
-// after the first page, while PlatformAlert's own 15-minute key dedup collapses
-// anything more frequent into one page per window.
+// The count is what makes the overload visible: a sustained spike otherwise runs
+// against the pgx pool with only a log line per task, buried in the same stream as
+// everything else. criticalLaneOverflowPageAt is the page threshold. Paging on
+// every multiple (rather than once ever) keeps a spike that lasts hours from going
+// silent after the first page, while PlatformAlert's own 15-minute key dedup
+// collapses anything more frequent into one page per window.
 const criticalLaneOverflowPageAt = 32
 
+// criticalLaneWait is how long a never-drop task queues for a free slot before
+// it spills to an unguarded goroutine. Long enough to absorb the burst that
+// happens when a whole tenant's inbox arrives at once, short enough that an
+// owner notification is not visibly delayed. A variable so tests can zero it.
+var criticalLaneWait = 500 * time.Millisecond
+
 var criticalLaneOverflow atomic.Int64
+
+// criticalLaneWaiterCap bounds the goroutines that wait for a never-drop slot.
+//
+// Each waiter lives up to criticalLaneWait, so without a cap a burst spawns
+// about (spawn rate × 0.5s) goroutines — the pile-up this lane exists to
+// prevent. Past the cap the task is dropped and counted like any other
+// overflow. 512 waiters is far above any real burst (a whole tenant's inbox
+// arriving at once) and still small enough to stay invisible next to the pgx
+// pool and wms.service on the same host.
+const criticalLaneWaiterCap = 512
+
+var criticalLaneWaiters atomic.Int64
 
 // criticalLaneOverflowPage holds the operator page (func(overflow int64)).
 //
@@ -118,42 +141,92 @@ func SpawnClassifier(fn func()) { spawnAsync(classifySem, fn, true) }
 // whose loss would be user-visible: quota accounting and owner notifications.
 func SpawnCritical(fn func()) { spawnAsync(criticalSem, fn, false) }
 
-// spawnAsync runs fn in a guarded goroutine holding a slot in sem. Droppable
-// lanes give up when saturated; non-droppable lanes run anyway and log the
-// overload, because losing the work is worse than a brief goroutine spike.
+// spawnAsync runs fn in a guarded goroutine holding a slot in sem.
+//
+// A droppable lane gives up as soon as it finds no slot. A never-drop lane waits
+// up to criticalLaneWait for one, then spills into overflowSem, and only past both
+// caps gives up and pages.
+//
+// The wait happens in the SPAWNED goroutine, never in the caller: SpawnCritical is
+// called from the inbound turn worker (which owes the visitor a typing indicator
+// and then an answer) and from HTTP request goroutines, so waiting there put a
+// 500ms delay on the customer-visible path exactly when the lane was hot.
 func spawnAsync(sem chan struct{}, fn func(), droppable bool) {
-	acquired := false
+	if droppable {
+		select {
+		case sem <- struct{}{}:
+			go runBackgroundTask(sem, fn)
+		default:
+			// Dropped by design: losing a classification costs an escalation, not a
+			// reply (see the lane comment above).
+		}
+		return
+	}
+	// Fast path: an idle slot, so a burst that clears immediately runs inside the
+	// cap without spawning a waiting goroutine at all.
 	select {
 	case sem <- struct{}{}:
-		acquired = true
+		go runBackgroundTask(sem, fn)
+		return
 	default:
-		if droppable {
-			return
-		}
-		overflow := criticalLaneOverflow.Add(1)
-		slog.Default().Warn("critical background lane saturated; running unbounded",
-			"overflow_total", overflow, "cap", cap(sem))
-		// Page only on a threshold crossing: this branch is taken once per
-		// spilled task. Re-entrancy is bounded by construction — the page
-		// itself lands on this lane, so it consumes one more spill, and the
-		// next crossing is a further criticalLaneOverflowPageAt spills away.
-		if overflow%criticalLaneOverflowPageAt == 0 {
-			if page, ok := criticalLaneOverflowPage.Load().(func(int64)); ok && page != nil {
-				page(overflow)
-			}
-		}
+	}
+	// A waiter costs a goroutine for up to criticalLaneWait; cap how many may be
+	// in flight, because the drop branch below (both lanes full) is exactly the
+	// condition under which the waiters would otherwise grow without bound.
+	if criticalLaneWaiters.Add(1) > criticalLaneWaiterCap {
+		criticalLaneWaiters.Add(-1)
+		dropCriticalTask("waiters capped", sem)
+		return
 	}
 	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				slog.Default().Warn("background task panic recovered", "panic", r)
+		defer criticalLaneWaiters.Add(-1)
+		timer := time.NewTimer(criticalLaneWait)
+		defer timer.Stop()
+		select {
+		case sem <- struct{}{}:
+			runBackgroundTask(sem, fn)
+		case <-timer.C:
+			select {
+			case overflowSem <- struct{}{}:
+				runBackgroundTask(overflowSem, fn)
+			default:
+				dropCriticalTask("overflow tier full", sem)
 			}
-			if acquired {
-				<-sem
-			}
-		}()
-		fn()
+		}
 	}()
+}
+
+// dropCriticalTask counts one dropped never-drop task and pages the operator on
+// a threshold crossing.
+//
+// The page is called from the spawning goroutine: the drop branch is reached once
+// per dropped task. The first drop always pages — a burst that drops 31 tasks is
+// exactly the burst the owner needs to hear about — and every
+// criticalLaneOverflowPageAt-th drop after it keeps a spike that lasts hours
+// from going silent, while PlatformAlert's own 15-minute key dedup collapses
+// anything more frequent into one page per window.
+func dropCriticalTask(reason string, sem chan struct{}) {
+	overflow := criticalLaneOverflow.Add(1)
+	slog.Default().Warn("critical background lane saturated; task dropped",
+		"reason", reason, "overflow_total", overflow, "cap", cap(sem), "overflow_cap", cap(overflowSem))
+	if overflow != 1 && overflow%criticalLaneOverflowPageAt != 0 {
+		return
+	}
+	if page, ok := criticalLaneOverflowPage.Load().(func(int64)); ok && page != nil {
+		page(overflow)
+	}
+}
+
+// runBackgroundTask runs fn while holding a slot of sem, releasing it (and
+// recovering a panic) when fn returns.
+func runBackgroundTask(sem chan struct{}, fn func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Default().Warn("background task panic recovered", "panic", r)
+		}
+		<-sem
+	}()
+	fn()
 }
 
 // Pipeline bundles pipeline dependencies.
@@ -262,7 +335,7 @@ func (p *Pipeline) signal() {
 }
 
 // SignalOutbound wakes the outbound workers immediately (a new delivery was
-// enqueued — agent reply, campaign template, etc.). Without it deliveries sit
+// enqueued — agent reply, template, etc.). Without it deliveries sit
 // in the outbox until the next 1s poll tick.
 func (p *Pipeline) SignalOutbound() {
 	p.initNotify()
@@ -278,16 +351,25 @@ func (p *Pipeline) SpawnWorkers(ctx context.Context) {
 	// Install the critical-lane overflow page. spawnAsync is a free function
 	// (that lane is also fed from package-level call sites), so it cannot reach
 	// a *Pipeline by itself; SpawnWorkers is the one entry point every
-	// deployment runs exactly once, before any traffic starts. Kept off the
-	// caller's goroutine by SpawnCritical — paging does Redis and HTTP I/O, and
-	// the overflow it reports is happening on a hot path.
+	// deployment runs exactly once, before any traffic starts.
+	//
+	// The page must not go back through SpawnCritical: its only trigger is that
+	// both lanes are full, so spawning it on the saturated lane made it droppable
+	// exactly when it was needed (spotted in review, 2026-10-12). Paging is Redis
+	// plus optional Telegram HTTP I/O, so it runs in its own guarded goroutine —
+	// at most one per threshold crossing, never on the caller's path.
 	criticalLaneOverflowPage.Store(func(overflow int64) {
-		SpawnCritical(func() {
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Default().Error("critical lane overflow page panicked", "panic", r)
+				}
+			}()
 			p.PlatformAlert(context.Background(), "critical-lane-overflow", "后台关键任务队列溢出",
-				fmt.Sprintf("关键后台通道（配额计费、商家通知、转人工告警）已无空闲槽位 %d 次，任务改为无界执行。"+
-					"不会丢任务，但进程 goroutine 与数据库连接正在被挤压，请检查出站投递是否变慢或数据库是否抖动。"+
-					"阈值 %d 次告警一次。", overflow, criticalLaneOverflowPageAt))
-		})
+				fmt.Sprintf("关键后台通道（商家通知、转人工告警）已无空闲槽位，超过上限的通知任务被丢弃 —— 这些任务是直接的 Telegram 发送，没有数据库记录、不会重试。"+
+					"本次已丢弃 %d 个（上限 %d 个槽位）。请检查 Telegram API 与 Redis 是否变慢、数据库是否抖动，并确认待处理的客户消息。"+
+					"每 %d 次丢弃告警一次。", overflow, cap(overflowSem), criticalLaneOverflowPageAt))
+		}()
 	})
 	for i := 0; i < workerCount; i++ {
 		go func() {
@@ -330,8 +412,17 @@ func (p *Pipeline) processInboundNext(ctx context.Context) {
 		if err := p.processInboundEvent(ctx, ev); err != nil {
 			p.Logger.Warn("inbound event failed", "event_id", ev.EventID, "error", err.Error())
 			p.retryInbound(ctx, ev.EventID)
-		} else {
-			_, _ = p.DB.Exec(ctx, "UPDATE platform_inbound_events SET status='completed', processed_at=$1, locked_at=NULL WHERE event_id=$2", time.Now(), ev.EventID)
+		} else if _, err := p.DB.Exec(ctx, "UPDATE platform_inbound_events SET status='completed', processed_at=$1, locked_at=NULL WHERE event_id=$2 AND status='processing'", time.Now(), ev.EventID); err != nil {
+			// The turn succeeded; only the marker did not land. This was discarded,
+			// and a missing marker means the stale-lock sweep claims the event again
+			// after five minutes and re-runs the whole turn. The ledger stops the
+			// re-run from double-charging or double-answering, but the lost fact is
+			// still worth a page — it is the difference between "processed" and a
+			// row that says 'processing' forever.
+			p.Logger.Error("inbound completion not recorded", "event_id", ev.EventID, "error", err.Error())
+			p.PlatformAlert(ctx, "inbound-completion-lost", "入站完成标记写入失败",
+				fmt.Sprintf("事件 %d 已处理成功，但 platform_inbound_events 状态未更新为 completed: %s。该事件会在租约过期后被重新处理。",
+					ev.EventID, textutil.TruncateRunes(err.Error(), 300)))
 		}
 	}
 }
@@ -376,6 +467,13 @@ func (p *Pipeline) retryInbound(ctx context.Context, eventID int64) {
 	_ = p.DB.QueryRow(ctx, "SELECT attempts FROM platform_inbound_events WHERE event_id = $1", eventID).Scan(&attempts)
 	if attempts >= maxAttempts {
 		_, _ = p.DB.Exec(ctx, "UPDATE platform_inbound_events SET status='failed', locked_at=NULL WHERE event_id=$1", eventID)
+		// A failed inbound event is a customer whose message was never answered.
+		// Outbound failures page; this path was silent — the row said 'failed' and
+		// nobody read it.
+		var platform string
+		_ = p.DB.QueryRow(ctx, "SELECT platform::text FROM platform_inbound_events WHERE event_id = $1", eventID).Scan(&platform)
+		p.alertInboundFailures(ctx, platform,
+			fmt.Sprintf("event %d exhausted %d attempts; the customer was not answered", eventID, attempts))
 		return
 	}
 	delay := retryDelay(int(attempts))
@@ -471,6 +569,23 @@ func (p *Pipeline) isOpenNow(ctx context.Context, userID int32, platform string)
 	}
 	if openTime == "" || closeTime == "" {
 		return false
+	}
+	return WithinWindow(openTime, closeTime, hm)
+}
+
+// WithinWindow reports whether hm (HH:MM) falls inside open–close. An empty open
+// or close time means "clocked out all day" — a row exists, so the tenant is not
+// treated as having no schedule at all. A close at or before the open is an
+// overnight shift (22:00–06:00), and the plain `hm >= open && hm < close`
+// comparison made every such window permanently closed: the after-hours preamble
+// answered a customer at noon who was in hours, and the SLA hold skipped the
+// tenant's whole night, which was the shift the policy existed for.
+func WithinWindow(openTime, closeTime, hm string) bool {
+	if openTime == "" || closeTime == "" {
+		return false
+	}
+	if closeTime <= openTime {
+		return hm >= openTime || hm < closeTime
 	}
 	return hm >= openTime && hm < closeTime
 }
@@ -764,6 +879,15 @@ func CanonicalHandoffReply(reply, language string) string {
 // does not read. Counting scripts, not words: a Khmer reply may legitimately contain
 // Latin product codes and an English one a Khmer address, so a stray character must not
 // trigger a replacement — only a majority decides.
+//
+// Every pairing is covered, not just the two the first bug report named: a Chinese reply
+// to an English customer and an English reply to a Chinese customer both used to pass as
+// "not mismatched", because the old single comparison found the expected script count at
+// zero and stayed quiet. The model's text was then kept and the enforced sentence
+// appended to a reply in a language the customer does not read.
+//
+// Latin stays tolerated for a Khmer customer on purpose: the prompt requires brand names,
+// product codes and prices in ASCII, so a Khmer reply is routinely latin-heavy.
 func handoffLanguageMismatch(reply, language string) bool {
 	var khmer, han, latin int
 	for _, r := range reply {
@@ -778,11 +902,21 @@ func handoffLanguageMismatch(reply, language string) bool {
 	}
 	switch language {
 	case "en":
-		return khmer > latin
+		// Latin-heavy replies are accepted (addresses, product names); a reply whose
+		// majority is Khmer or Han is not English and gets replaced.
+		return khmer > latin || han > latin
 	case "zh":
-		return khmer > han
+		// Latin is tolerated here for the same reason it is tolerated for Khmer: a
+		// Chinese handoff that quotes ASCII SKUs and prices is still Chinese. What
+		// makes it a mismatch is having no Han at all (an English answer) or being
+		// majority Khmer.
+		return han == 0 || khmer > han
 	default: // km
-		return han > khmer
+		// Han majority is the positive signal of a language the customer does not
+		// read. Latin stays tolerated on purpose: the prompt requires brand names,
+		// product codes and prices in ASCII, so a Khmer reply is routinely
+		// latin-heavy. A reply with no Khmer at all is the other mismatch.
+		return han > khmer || khmer == 0
 	}
 }
 
@@ -1685,14 +1819,7 @@ func (p *Pipeline) deliver(ctx context.Context, d *outboundDelivery) {
 
 	providerID, err := p.deliverToProvider(ctx, d, role == "agent")
 	if err == nil {
-		if providerID == "" {
-			_, _ = p.DB.Exec(ctx, "UPDATE platform_outbox SET status='sent', sent_at=$1, locked_at=NULL, last_error='' WHERE delivery_id=$2", time.Now(), d.DeliveryID)
-		} else {
-			_, _ = p.DB.Exec(ctx, "UPDATE platform_outbox SET status='sent', sent_at=$1, locked_at=NULL, last_error='', provider_message_id=$2, provider_status='sent' WHERE delivery_id=$3", time.Now(), providerID, d.DeliveryID)
-			// The row now carries the id a receipt needs, so any receipt that
-			// arrived while we were still sending can finally be applied.
-			p.flushDeliveryReceipts(ctx, d.ConfigID, providerID)
-		}
+		p.markDelivered(ctx, d, providerID)
 		return
 	}
 	p.Logger.Warn("delivery failed", "delivery_id", d.DeliveryID, "error", err.Error())
@@ -1707,6 +1834,47 @@ func (p *Pipeline) deliver(ctx context.Context, d *outboundDelivery) {
 	} else {
 		_, _ = p.DB.Exec(ctx, "UPDATE platform_outbox SET status='pending', next_attempt_at=$1, locked_at=NULL, last_error=$2, updated_at=NOW() WHERE delivery_id=$3", time.Now().Add(retryDelay(int(d.Attempts))), msg, d.DeliveryID)
 	}
+}
+
+// markDelivered records a delivery the provider accepted.
+//
+// The write matters more than its size suggests: the message is already in the
+// customer's chat, so a row left in 'processing' is re-claimed once the five
+// minute lock goes stale and the customer receives the same reply again — the one
+// failure in this file a customer notices. Two attempts cover a blip; past that
+// the operator is paged, with the delivery id, so the row can be cancelled before
+// the sweep repeats it.
+func (p *Pipeline) markDelivered(ctx context.Context, d *outboundDelivery, providerID string) {
+	mark := func() error {
+		if providerID == "" {
+			_, err := p.DB.Exec(ctx, "UPDATE platform_outbox SET status='sent', sent_at=$1, locked_at=NULL, last_error='' WHERE delivery_id=$2", time.Now(), d.DeliveryID)
+			return err
+		}
+		_, err := p.DB.Exec(ctx, "UPDATE platform_outbox SET status='sent', sent_at=$1, locked_at=NULL, last_error='', provider_message_id=$2, provider_status='sent' WHERE delivery_id=$3", time.Now(), providerID, d.DeliveryID)
+		return err
+	}
+	var err error
+	for attempt := 0; attempt < 2; attempt++ {
+		if err = mark(); err == nil {
+			if providerID != "" {
+				// The row now carries the id a receipt needs, so any receipt that
+				// arrived while we were still sending can finally be applied.
+				p.flushDeliveryReceipts(ctx, d.ConfigID, providerID)
+			}
+			return
+		}
+		if ctx.Err() != nil {
+			break
+		}
+		time.Sleep(time.Second)
+	}
+	p.Logger.Error("delivery sent but not marked; the row may be re-sent",
+		"delivery_id", d.DeliveryID, "error", err.Error())
+	alertCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	p.PlatformAlert(alertCtx, "delivery-mark-failed", "投递已发出但状态未写入",
+		fmt.Sprintf("投递 %d（平台 %s）已被渠道接受，但 platform_outbox 状态更新失败: %s。该行在租约过期后会被重新投递，客户可能收到重复消息。",
+			d.DeliveryID, d.Platform, textutil.TruncateRunes(err.Error(), 300)))
 }
 
 // flushDeliveryReceipts replays the provider receipts that arrived before the

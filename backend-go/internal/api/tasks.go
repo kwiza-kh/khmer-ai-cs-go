@@ -2,20 +2,18 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"khmer-ai-cs-go/internal/platform"
-	"khmer-ai-cs-go/internal/realtime"
 	"khmer-ai-cs-go/internal/scheduler"
 )
 
 // StartBackgroundTasks launches the periodic jobs that keep the platform
-// alive: campaign dispatch, SLA breach scanning, knowledge URL freshness, and
-// billing cycle rollover. These run for the lifetime of the process.
+// alive: SLA breach scanning, knowledge URL freshness, and billing cycle
+// rollover. These run for the lifetime of the process.
 //
 // Any job added here that fetches a URL must go through the SSRF-guarded
 // fetcher, rag.FetchURLContent (ValidateFetchURL + dial-time Control + a
@@ -26,11 +24,6 @@ import (
 // HTML stripper); both had zero callers and were deleted, because the only
 // thing left uncalled code does is tempt the next person to call it.
 func (a *App) StartBackgroundTasks(ctx context.Context) {
-	// Recover campaigns stranded in 'sending' by a crash/restart — the
-	// scanner only picks up 'scheduled', so without this reset they would be
-	// stuck forever.
-	_, _ = a.DB.Exec(ctx, "UPDATE marketing_campaigns SET status='scheduled' WHERE status='sending' AND updated_at < NOW() - INTERVAL '10 minutes'")
-	go a.loop(ctx, 30*time.Second, a.dispatchDueCampaigns)
 	go a.loop(ctx, 60*time.Second, a.scanSLABreaches)
 	go a.loop(ctx, 1*time.Hour, a.resetBillingCycles)
 	// Lapsed paid plans fall back to free. Entitlement is a timestamp on
@@ -59,17 +52,21 @@ func (a *App) StartBackgroundTasks(ctx context.Context) {
 	// changeable — or a per-tenant job possible at all — without a deploy.
 	//
 	// The loops above deliberately keep running unchanged. Moving platform
-	// maintenance into the table would make campaign dispatch and the SLA scan
-	// depend on a row existing, and a missing row would stop them silently.
+	// maintenance into the table would make the SLA scan depend on a row
+	// existing, and a missing row would stop it silently.
+	//
+	// Zero job types are seeded by any migration, so the map above exists for
+	// rows an operator adds by hand. sla_scan is deliberately absent: the SLA
+	// scan is global (it walks every tenant's policies; there is nothing
+	// per-tenant to schedule) and the 60s loop already runs it, so a row would
+	// only make the same scan run twice per tick.
 	a.Scheduler = scheduler.NewManager(scheduler.NewPostgresStore(a.DB), scheduleLocation())
 	for jobType, fn := range map[string]func(context.Context){
-		"campaign_dispatch": a.dispatchDueCampaigns,
-		"platform_health":   a.checkPlatformHealth,
-		"retention":         a.pruneStaleSupportRelays,
-		"billing_reset":     a.resetBillingCycles,
-		"billing_expiry":    a.expirePaidPlans,
-		"sla_scan":          a.scanSLABreaches,
-		"digest":            a.sendDueDigests,
+		"platform_health": a.checkPlatformHealth,
+		"retention":       a.pruneStaleSupportRelays,
+		"billing_reset":   a.resetBillingCycles,
+		"billing_expiry":  a.expirePaidPlans,
+		"digest":          a.sendDueDigests,
 	} {
 		fn := fn
 		a.Scheduler.Register(jobType, func(ctx context.Context, _ scheduler.Job) error {
@@ -217,130 +214,49 @@ func (a *App) loop(ctx context.Context, every time.Duration, fn func(context.Con
 	}
 }
 
-type campRow struct {
-	id, userID, configID                                                             int32
-	platform, templateName, templateLanguage, recipientFilter, tagFilter, bodyParams string
-}
-
-// dispatchDueCampaigns turns due scheduled campaigns into outbound template
-// deliveries for recipients that already have a session on the platform.
-// Idempotent: a campaign moves scheduled -> sending -> done.
-func (a *App) dispatchDueCampaigns(ctx context.Context) {
-	rows, err := a.DB.Query(ctx, `SELECT c.campaign_id, c.user_id, c.platform::text, c.config_id, c.template_name,
-		c.template_language, c.body_params, c.recipient_filter, c.tag_filter
-		FROM marketing_campaigns c JOIN users u ON u.user_id = c.user_id AND u.is_active
-		WHERE c.status='scheduled' AND c.scheduled_at <= NOW() LIMIT 10`)
-	if err != nil {
-		return
-	}
-	var due []campRow
-	for rows.Next() {
-		var c campRow
-		var tagFilter *string
-		if rows.Scan(&c.id, &c.userID, &c.platform, &c.configID, &c.templateName, &c.templateLanguage, &c.bodyParams, &c.recipientFilter, &tagFilter) == nil {
-			c.tagFilter = ""
-			if tagFilter != nil {
-				c.tagFilter = *tagFilter
-			}
-			due = append(due, c)
-		}
-	}
-	rows.Close()
-	// Same reasoning as sendDueDigests: a half-read batch would leave campaigns
-	// scheduled and silently skip them until the next tick, hiding the cause.
-	if err := rows.Err(); err != nil {
-		a.Logger.Warn("campaign scan failed", "error", err.Error())
-		return
-	}
-
-	for _, c := range due {
-		if _, err := a.DB.Exec(ctx, "UPDATE marketing_campaigns SET status='sending' WHERE campaign_id=$1 AND status='scheduled'", c.id); err != nil {
-			continue
-		}
-		sent := a.dispatchOneCampaign(ctx, c)
-		_, _ = a.DB.Exec(ctx, "UPDATE marketing_campaigns SET status='done', sent_count=$1, updated_at=NOW() WHERE campaign_id=$2", sent, c.id)
-	}
-}
-
-// dispatchOneCampaign enqueues a template delivery per recipient that has an
-// existing session on the platform. Returns the number enqueued.
-func (a *App) dispatchOneCampaign(ctx context.Context, c campRow) int {
-	q := "SELECT platform_user_id FROM customer_profiles WHERE user_id = $1 AND platform = $2"
-	args := []any{c.userID, c.platform}
-	if c.recipientFilter == "tagged" && c.tagFilter != "" {
-		q += " AND tags @> ARRAY[$3]::text[]"
-		args = append(args, c.tagFilter)
-	}
-	rows, err := a.DB.Query(ctx, q, args...)
-	if err != nil {
-		return 0
-	}
-	var recipients []string
-	for rows.Next() {
-		var puid string
-		if rows.Scan(&puid) == nil {
-			recipients = append(recipients, puid)
-		}
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		// Send nobody rather than a partial batch: the caller marks the
-		// campaign done with whatever count comes back, so half a recipient
-		// list would be recorded as a complete delivery.
-		a.Logger.Warn("campaign recipient scan failed", "campaign_id", c.id, "error", err.Error())
-		return 0
-	}
-
-	sent := 0
-	for _, puid := range recipients {
-		// Only reach recipients that already have a session (avoids inbox spam).
-		var sessionID string
-		err := a.DB.QueryRow(ctx, `SELECT s.session_id FROM sessions s JOIN platform_user_sessions pus ON pus.session_id = s.session_id
-			WHERE pus.config_id = $1 AND pus.platform_user_id = $2 LIMIT 1`, c.configID, puid).Scan(&sessionID)
-		if err != nil {
-			continue
-		}
-		var msgID int64
-		err = a.DB.QueryRow(ctx,
-			"INSERT INTO chat_messages (session_id, role, message_type, content, created_at) VALUES ($1,'system','template',$2,NOW()) RETURNING message_id",
-			sessionID, "Campaign: "+c.templateName).Scan(&msgID)
-		if err != nil {
-			continue
-		}
-		payload := map[string]any{
-			"kind": "template", "template_name": c.templateName, "template_language": c.templateLanguage,
-		}
-		var params []any
-		if err := json.Unmarshal([]byte(c.bodyParams), &params); err == nil {
-			payload["template_body_params"] = params
-		} else {
-			payload["template_body_params"] = []any{}
-		}
-		pj2, _ := json.Marshal(payload)
-		if _, err := a.DB.Exec(ctx, `INSERT INTO platform_outbox (config_id, session_id, chat_message_id, platform, recipient_id, content, payload, status, next_attempt_at, created_at, updated_at)
-			VALUES ($1,$2,$3,$4::platform_type,$5,$6,$7::jsonb,'pending',NOW(),NOW(),NOW()) ON CONFLICT (chat_message_id) DO NOTHING`,
-			c.configID, sessionID, msgID, c.platform, puid, "", pj2); err == nil {
-			sent++
-			realtime.Publish(ctx, a.Redis, realtime.Event{
-				Type:      realtime.EventMessage,
-				UserID:    c.userID,
-				SessionID: sessionID,
-				MessageID: msgID,
-				Role:      "system",
-			})
-		}
-	}
-	if sent > 0 && a.Pipe != nil {
-		a.Pipe.SignalOutbound()
-	}
-	return sent
-}
-
 type slaPol struct {
 	userID, slaID     int32
+	priority          string
 	firstSecs         int
 	resolutionSecs    *int
 	businessHoursOnly bool
+}
+
+// slaPriorityRank orders the values the enum actually allows (030:19):
+// high > normal > all. Comparing the names directly only ever distinguished
+// "high" from everything else, so 'normal' vs 'all' fell through to the clock
+// comparison — and then to sla_id scan order (review, 2026-10-12).
+func slaPriorityRank(priority string) int {
+	switch priority {
+	case "high":
+		return 3
+	case "normal":
+		return 2
+	default: // "all"
+		return 1
+	}
+}
+
+// preferSLA reports whether cand should represent the tenant for one clock
+// instead of cur: the higher-priority policy wins, then the tighter clock, then
+// the lower sla_id so the choice is stable across ticks.
+func preferSLA(cand, cur slaPol, clock func(slaPol) int) bool {
+	if c, u := slaPriorityRank(cand.priority), slaPriorityRank(cur.priority); c != u {
+		return c > u
+	}
+	if c, u := clock(cand), clock(cur); c != u {
+		return c < u
+	}
+	return cand.slaID < cur.slaID
+}
+
+func firstResponseClock(p slaPol) int { return p.firstSecs }
+
+func resolutionClock(p slaPol) int {
+	if p.resolutionSecs == nil {
+		return 0
+	}
+	return *p.resolutionSecs
 }
 
 // scanSLABreaches records first_response and resolution breaches for active
@@ -348,15 +264,41 @@ type slaPol struct {
 // (session_id, breach_type).
 func (a *App) scanSLABreaches(ctx context.Context) {
 	rows, err := a.DB.Query(ctx,
-		"SELECT p.user_id, p.sla_id, p.first_response_secs, p.resolution_secs, p.business_hours_only FROM sla_policies p JOIN users u ON u.user_id = p.user_id AND u.is_active WHERE p.is_active = true")
+		"SELECT p.user_id, p.sla_id, p.priority, p.first_response_secs, p.resolution_secs, p.business_hours_only FROM sla_policies p "+
+			"JOIN users u ON u.user_id = p.user_id AND u.is_active WHERE p.is_active = true "+
+			"ORDER BY p.user_id, p.sla_id")
 	if err != nil {
 		return
 	}
-	var pols []slaPol
+	// sla_breaches is UNIQUE (session_id, breach_type), so per session only ONE
+	// policy can own each breach type: a second active policy's INSERT ... SELECT
+	// conflicted on the first policy's row, returned nothing, and therefore never
+	// notified — silently, with sla_id recording whichever policy the planner
+	// happened to return first. Dedupe per (tenant, breach type) instead of per
+	// tenant: a tenant may legitimately run a first-response policy and a separate
+	// resolution policy, and the two rows can never collide.
+	first := map[int32]slaPol{}
+	resolution := map[int32]slaPol{}
+	order := []int32{}
+	seenUser := map[int32]bool{}
 	for rows.Next() {
 		var p slaPol
-		if rows.Scan(&p.userID, &p.slaID, &p.firstSecs, &p.resolutionSecs, &p.businessHoursOnly) == nil {
-			pols = append(pols, p)
+		if rows.Scan(&p.userID, &p.slaID, &p.priority, &p.firstSecs, &p.resolutionSecs, &p.businessHoursOnly) != nil {
+			continue
+		}
+		if !seenUser[p.userID] {
+			seenUser[p.userID] = true
+			order = append(order, p.userID)
+		}
+		if p.firstSecs > 0 {
+			if cur, ok := first[p.userID]; !ok || preferSLA(p, cur, firstResponseClock) {
+				first[p.userID] = p
+			}
+		}
+		if resolutionClock(p) > 0 {
+			if cur, ok := resolution[p.userID]; !ok || preferSLA(p, cur, resolutionClock) {
+				resolution[p.userID] = p
+			}
 		}
 	}
 	rows.Close()
@@ -368,75 +310,160 @@ func (a *App) scanSLABreaches(ctx context.Context) {
 		return
 	}
 
-	for _, p := range pols {
-		if p.firstSecs > 0 {
-			// make_interval, not ($2 || ' seconds')::interval: Postgres resolves
-			// the parameter of a `||` expression as text (OID 25), and pgx's
-			// extended protocol cannot encode a Go int into a text parameter —
-			// the query failed to send on every single scan
+	for _, userID := range order {
+		if p, ok := first[userID]; ok {
+			// A business-hours-only policy holds its clock outside the window. The
+			// window itself is not stored per session, so the clock cannot literally be
+			// paused; the effect at the customer-visible end is the same, because the
+			// still-unanswered session trips the same check at the first in-hours
+			// scan. Without this the flag was read out of sla_policies and never used,
+			// so a tenant who turned it on was still woken at 3am about a queue nobody
+			// could work.
+			if p.businessHoursOnly && !a.withinBusinessHours(ctx, userID) {
+				continue
+			}
+			// One INSERT ... SELECT per policy instead of one INSERT per overdue
+			// session: the old shape cost a round trip per session, per policy,
+			// every 60 seconds for a scan that is one statement's worth of work.
+			// RETURNING keeps the per-session notification, and only rows that
+			// are actually new come back (ON CONFLICT DO NOTHING returns nothing
+			// for a breach already recorded).
+			//
+			// make_interval(secs => $3), not ($3 || ' seconds')::interval:
+			// Postgres resolves the parameter of a `||` expression as text (OID
+			// 25), and pgx's extended protocol cannot encode a Go int into a text
+			// parameter — the query failed to send on every single scan
 			// ("unable to encode 300 into text format for text"). psql PREPARE
 			// and sqlcheck both pass, because neither exercises parameter
 			// encoding; only a real bound execution does. The `if err == nil`
-			// below used to swallow the failure, so the whole SLA engine was a
+			// swallowing below used to hide it, so the whole SLA engine was a
 			// silent no-op.
-			sess, err := a.DB.Query(ctx, `SELECT session_id FROM sessions WHERE user_id=$1 AND status IN ('active','handoff')
-				AND first_response_at IS NULL AND created_at < NOW() - make_interval(secs => $2)`, p.userID, p.firstSecs)
-			if err != nil {
-				a.Logger.Warn("sla first-response scan failed", "user_id", p.userID, "error", err.Error())
-			}
-			if err == nil {
-				for sess.Next() {
-					var sid string
-					if sess.Scan(&sid) == nil {
-						tag, ierr := a.DB.Exec(ctx,
-							"INSERT INTO sla_breaches (user_id, session_id, sla_id, breach_type) VALUES ($1,$2,$3,'first_response') ON CONFLICT (session_id, breach_type) DO NOTHING",
-							p.userID, sid, p.slaID)
-						if ierr != nil {
-							a.Logger.Warn("sla breach insert failed", "session_id", sid, "error", ierr.Error())
-							continue
-						}
-						if tag.RowsAffected() > 0 {
-							a.notifyUser(ctx, p.userID, "sla", "SLA 违约：首次响应超时", "A session breached the first-response SLA", sid)
-						}
-					}
-				}
-				if serr := sess.Err(); serr != nil {
-					// Breaches missed here are the expensive kind: an SLA clock
-					// nobody gets alerted about. The scan retries next tick, but
-					// the partial pass must not look clean.
-					a.Logger.Warn("sla first-response scan incomplete", "user_id", p.userID, "error", serr.Error())
-				}
-				sess.Close()
-			}
+			a.recordSLABreaches(ctx, userID, `INSERT INTO sla_breaches (user_id, session_id, sla_id, breach_type)
+				SELECT $1, s.session_id, $2, 'first_response' FROM sessions s
+				WHERE s.user_id = $1 AND s.status IN ('active','handoff')
+				  AND s.first_response_at IS NULL AND s.created_at < NOW() - make_interval(secs => $3)
+				  AND NOT EXISTS (SELECT 1 FROM sla_breaches b
+				                  WHERE b.session_id = s.session_id AND b.breach_type = 'first_response')
+				ON CONFLICT (session_id, breach_type) DO NOTHING
+				RETURNING session_id`,
+				"first_response", "SLA 违约：首次响应超时", "A session breached the first-response SLA", p.slaID, p.firstSecs)
 		}
-		if p.resolutionSecs != nil && *p.resolutionSecs > 0 {
-			// Same make_interval reasoning as the first-response scan above.
-			// NOTE: this branch records the breach but sends no notification —
-			// the first-response branch does. Asymmetric on purpose or not is
-			// an open question; see docs/DEVELOPMENT.md.
-			sess, err := a.DB.Query(ctx, `SELECT session_id FROM sessions WHERE user_id=$1 AND status IN ('active','handoff')
-				AND resolved_at IS NULL AND created_at < NOW() - make_interval(secs => $2)`, p.userID, *p.resolutionSecs)
-			if err != nil {
-				a.Logger.Warn("sla resolution scan failed", "user_id", p.userID, "error", err.Error())
-			}
-			if err == nil {
-				for sess.Next() {
-					var sid string
-					if sess.Scan(&sid) == nil {
-						_, ierr := a.DB.Exec(ctx,
-							"INSERT INTO sla_breaches (user_id, session_id, sla_id, breach_type) VALUES ($1,$2,$3,'resolution') ON CONFLICT (session_id, breach_type) DO NOTHING",
-							p.userID, sid, p.slaID)
-						if ierr != nil {
-							a.Logger.Warn("sla resolution breach insert failed", "session_id", sid, "error", ierr.Error())
-						}
-					}
-				}
-				if serr := sess.Err(); serr != nil {
-					a.Logger.Warn("sla resolution scan incomplete", "user_id", p.userID, "error", serr.Error())
-				}
-				sess.Close()
-			}
+		p, ok := resolution[userID]
+		if !ok || p.businessHoursOnly && !a.withinBusinessHours(ctx, userID) {
+			continue
 		}
+		// A 60-second scan must not re-read what it already recorded: without the
+		// NOT EXISTS above (and the record-only path that never notifies), every
+		// session that already breached is fetched and discarded again, every tick,
+		// forever.
+		// Same make_interval reasoning as the first-response scan above.
+		// The empty title/body mean "record only": this branch records the
+		// breach but sends no notification, while the first-response branch
+		// does. Asymmetric on purpose or not is an open question; see
+		// docs/DEVELOPMENT.md.
+		a.recordSLABreaches(ctx, userID, `INSERT INTO sla_breaches (user_id, session_id, sla_id, breach_type)
+			SELECT $1, s.session_id, $2, 'resolution' FROM sessions s
+			WHERE s.user_id = $1 AND s.status IN ('active','handoff')
+			  AND s.resolved_at IS NULL AND s.created_at < NOW() - make_interval(secs => $3)
+			  AND NOT EXISTS (SELECT 1 FROM sla_breaches b
+			                  WHERE b.session_id = s.session_id AND b.breach_type = 'resolution')
+			ON CONFLICT (session_id, breach_type) DO NOTHING
+			RETURNING session_id`,
+			"resolution", "", "", p.slaID, resolutionClock(p))
+	}
+}
+
+// withinBusinessHours reports whether the tenant is inside a configured
+// business-hours window right now. No rows configured means open, the same
+// default the pipeline's isOpenNow uses (a tenant who never set hours is not
+// silently exempted from SLA). Times are compared in Asia/Phnom_Penh, not the
+// server's zone.
+//
+// SLA policies are not platform-scoped while business_hours rows are, so a
+// tenant-wide answer does not always exist. Precedence: a tenant-wide row
+// (platform IS NULL) governs every platform and wins; otherwise, if the tenant
+// has exactly one distinct per-platform *window*, that window is unambiguous and
+// is used; otherwise the answer would be a coin toss between platforms (the old
+// query had no tiebreaker and took whichever tied row Postgres returned first),
+// so this reports open — failing toward paging the owner rather than silently
+// holding a clock on a guess. The honest fix is to let an SLA policy carry a
+// platform; see docs/DEVELOPMENT.md.
+func (a *App) withinBusinessHours(ctx context.Context, userID int32) bool {
+	now := time.Now().In(platform.PhnomPenhLoc())
+	rows, err := a.DB.Query(ctx,
+		"SELECT platform::text, open_time, close_time FROM business_hours "+
+			"WHERE user_id = $1 AND weekday = $2 AND is_active = true",
+		userID, int(now.Weekday()))
+	if err != nil {
+		return true
+	}
+	defer rows.Close()
+	var tenantWide *[2]string
+	// Keyed by window, not by platform name: "web 09:00-18:00 + telegram
+	// 09:00-18:00" is one window, and the old name-keyed map called it ambiguous
+	// and reported open around the clock (review, 2026-10-12).
+	windows := map[[2]string]struct{}{}
+	for rows.Next() {
+		var plat *string
+		// Nullable columns: a row without times has no window to match. Treating it
+		// as "absent" keeps the fail-open direction (never silently hold a clock),
+		// where a failed Scan used to drop the row for the same effect by accident.
+		var openTime, closeTime *string
+		if rows.Scan(&plat, &openTime, &closeTime) != nil {
+			continue
+		}
+		if openTime == nil || closeTime == nil {
+			continue
+		}
+		w := [2]string{*openTime, *closeTime}
+		if plat == nil {
+			tenantWide = &w
+			continue
+		}
+		windows[w] = struct{}{}
+	}
+	if rows.Err() != nil {
+		return true
+	}
+	hm := now.Format("15:04")
+	switch {
+	case tenantWide != nil:
+		return platform.WithinWindow(tenantWide[0], tenantWide[1], hm)
+	case len(windows) == 1:
+		for w := range windows {
+			return platform.WithinWindow(w[0], w[1], hm)
+		}
+		return true
+	default:
+		return true
+	}
+}
+
+// recordSLABreaches runs one policy's set-based breach insert and notifies the
+// owner for every session that was newly recorded. An empty notifyTitle means
+// record only. The tenant stays a bound parameter ($1 = sessions.user_id), so
+// the statement still names the tenant column next to the SELECT that scopes it.
+func (a *App) recordSLABreaches(ctx context.Context, userID int32, query, breachType, notifyTitle, notifyBody string, slaID int32, secs int) {
+	rows, err := a.DB.Query(ctx, query, userID, slaID, secs)
+	if err != nil {
+		a.Logger.Warn("sla "+breachType+" scan failed", "user_id", userID, "error", err.Error())
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var sid string
+		if rows.Scan(&sid) != nil {
+			continue
+		}
+		if notifyTitle != "" {
+			a.notifyUser(ctx, userID, "sla", notifyTitle, notifyBody, sid)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		// Breaches missed here are the expensive kind: an SLA clock nobody gets
+		// alerted about. The scan retries next tick, but the partial pass must
+		// not look clean.
+		a.Logger.Warn("sla "+breachType+" scan incomplete", "user_id", userID, "error", err.Error())
 	}
 }
 

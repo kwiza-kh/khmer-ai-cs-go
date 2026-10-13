@@ -325,7 +325,14 @@ Jev 判定 `small_talk` 且概率过阈时，不再调用模型，改由多语�
 盈亏平衡 ≈ 1.00 / 0.27 ≈ 3.7 次请求/小时（与前缀长度无关）
 ```
 
-当前生产是"一天几十条消息"，远低于该门槛，开着就是净亏；压测或活动期间（数百 RPM）则收益巨大。**需要时设 `GEMINI_CACHE_TTL=3600` 即可启用**，代码路径已就绪。
+当前生产是"一天几十条消息"，远低于该门槛，开着就是净亏；压测或活动期间（数百 RPM）则收益巨大。
+
+> **2026-10-12：`GEMINI_CACHE_TTL` 这个旋钮已经删掉了**（`internal/config` 的
+> `GeminiConfig.CacheTTL` 无任何读取者，全树 grep 只命中定义处）。所以本节"需要时设
+> `GEMINI_CACHE_TTL=3600` 即可启用"**不再成立** —— 现在设了也不会做任何事：显式上下文
+> 缓存的开关是 `GEMINI_CACHE_MIN_TOKENS` 与调用点，`reply_cache` 语义缓存则已在
+> 2026-10-08 删除、其表由迁移 076 `DROP TABLE IF EXISTS`。要重新启用显式缓存，先恢复
+> 一个读取该旋钮的路径，再按上表的盈亏平衡重新测量。
 
 ### 11.9 未做（有意排除）
 
@@ -335,7 +342,8 @@ Jev 判定 `small_talk` 且概率过阈时，不再调用模型，改由多语�
 
 ```bash
 # 生效中的旋钮
-grep -E "GEMINI_MAX_TOKENS|GEMINI_CACHE_TTL|GEMINI_SPEND_LIMIT_USD|JEV_CHITCHAT_CANNED" /opt/khmer-ai-cs/.env-go
+# 注意: GEMINI_CACHE_TTL 自 2026-10-12 起无读取者, 别再 grep 它当作开关
+grep -E "GEMINI_MAX_TOKENS|GEMINI_CACHE_MIN_TOKENS|GEMINI_SPEND_LIMIT_USD|JEV_CHITCHAT_CANNED" /opt/khmer-ai-cs/.env-go
 
 # 闸门当前状态（也可用 /api/v1/platform/spend）
 psql "$DATABASE_URL" -c "select round(sum(cost_estimate)::numeric,4) spent_10m from token_usage

