@@ -2362,3 +2362,65 @@ payload 变 `{kind:media, media_type:image, media_url}`；`chat_messages.media_u
   （`TestShouldRender`）随 Telegram 的图片分支一起更新。
 - 线上：迁移 080 后跑 `SQLCHECK_REQUIRED=1 go test ./internal/sqlcheck/`（指向生产库，
   PREPARE-only、事务回滚）；发布后 `/ready` 与真实轮次验证。
+
+## 二十八、Messenger 语音「要过很久才收到」（2026-10-16）
+
+### 症状与排除过程
+
+商家报：客户在 Messenger 发语音，机器人要 30~65 秒才回应；同一台机器上 Telegram 语音只要 4.5 秒。
+逐项排除（每条都有数据，不靠猜）：
+
+- Meta 的 webhook 是快的：`POST /api/v1/webhook/meta` 全程 3~16ms 返回 200。
+- 服务器到 Meta CDN 是通的：`cdn.fbsbx.com` 直连 IPv6，connect 12ms / TLS 30ms。
+- 代码里的超时本来就紧：媒体下载客户端 20s、资料查询 15s、上传 45s。
+- 注入一条音频事件（公开 CDN）整轮只要 2.6s；空昵称事件 3.2s。
+
+卡点不在任何一条链路上，而在于**日志里看不到一轮内部的时间去向**：事件表的
+`created_at`/`processed_at` 只给总数，65 秒里哪一段占满了无从判断。
+
+### 新增观测（长期保留）
+
+- 每轮固定一行 INFO `turn timing`：`total_s` + 最慢四个阶段（>=250ms 才记，避免噪音）。
+- 媒体消息再一行 INFO `media phases`：`download_s` / `extract_s` / `upload_s`
+  — 三者是三个不同的网络（CDN / 模型 / R2），混在一起无法归因。
+
+真实语音（事件 127）实测：`total 5.9s, download 0.2s, extract 3.5s, upload 0.7s`
+—— 下载与上传都很快，时间在模型转写上。
+
+### 根因：辅助「读」调用在用模型的默认思考预算
+
+语音转写、OCR、图片描述、快速生成这些**辅助调用完全没有 `generationConfig`**：
+主对话路径有 thinking budget，它们用的是 gemini-3.x 的默认值（默认会思考）。
+思考一旦放大就是 30~60 秒 —— 又小于单次 60s 的超时上限，所以既不报错也不超时，
+只表现为「慢」。
+
+证据：`token_usage` 里 ASR 的 `completion` 是 55~155 tokens，而转写文本只有几个词；
+多出来的正是 `thoughtsTokenCount`（`usageFromValue` 把它折进 completion，所以账本上看得到）。
+
+### 修复
+
+- `auxThinkingBudget()` / `auxGenerationConfig()`：辅助读调用 `temperature=0`、上限明确、
+  **thinkingBudget 默认 0**（`GEMINI_THINKING_BUDGET` 可覆盖）。
+  覆盖范围：`TranscribeAudio` / `DescribeImage` / `ExtractDocumentText` /
+  `ExtractProductImage` / `GenerateFastMax`（编译、翻译、改写）。
+  主对话路径**保持原样**（默认不发送，让模型自己决定）：对「回答」而言慢一点换更好是划算的，
+  对「转录」不是。TTS 请求体按原注释逐字节不变（生产 TTS 关闭）。
+- `asrTimeout = 30s`：转写是客户关键路径上的「读」，供应商卡住时一轮不再等满一分钟；
+  超时按「媒体不可读」处理，由 `stagePrepareMedia` 转人工（有记录，不静默）。
+
+### 验证（同一段真实 Messenger 语音，A/B）
+
+| 指标 | 修复前 | 修复后 |
+|---|---|---|
+| ASR completion tokens | **96** | **6** |
+| `extract_s` | 3.5 | 2.5 |
+| `prepare-media` | 4.5 | 3.0 |
+| 整轮 | 5.9s | 3.8s |
+
+### 教训
+
+- **辅助调用与主调用是两条不同的成本/延迟曲线**：能省掉的那次「思考」，就不要让它思考。
+- **「间歇性慢」必须有分布证据**：先加计时再谈修复。缺这一层，65 秒只能靠猜，
+  而猜出来的修复（超时/重试/换路径）通常打不中。
+- 同会话严格串行（消息顺序保证）会放大单轮慢：一条 65s 的轮次把后面所有消息一起挡住，
+  客户感知是「全都慢」。
