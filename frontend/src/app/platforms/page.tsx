@@ -279,7 +279,13 @@ export default function PlatformsPage() {
     const callbackError = params.get("meta_oauth_error");
     if (!sessionID && !callbackError) return;
 
-    window.history.replaceState({}, "", window.location.pathname);
+    // Best-effort URL cleanup; see login/page.tsx (Safari SecurityError,
+    // 2026-10-16) — the Meta callback result must render either way.
+    try {
+      window.history.replaceState({}, "", window.location.pathname);
+    } catch {
+      /* stale query params survive */
+    }
     if (callbackError) {
       toast.error(callbackError === "cancelled" ? t("pf.metaCancelled") : t("pf.metaFailed"));
       return;

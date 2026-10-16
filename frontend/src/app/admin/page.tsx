@@ -8,7 +8,14 @@ import { useRouter } from "next/navigation";
 export default function AdminIndexRedirect() {
   const router = useRouter();
   useEffect(() => {
-    router.replace("/admin/analytics");
+    // Guarded like the other boot-path redirects: a failed History call
+    // (Safari SecurityError, 2026-10-16) falls back to a real page load
+    // instead of crashing the segment.
+    try {
+      router.replace("/admin/analytics");
+    } catch {
+      window.location.replace("/admin/analytics");
+    }
   }, [router]);
   return null;
 }

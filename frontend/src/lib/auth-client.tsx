@@ -2,6 +2,7 @@
 
 import { createContext, useContext, useState, useEffect, ReactNode } from "react";
 import { useRouter } from "next/navigation";import { useSWRConfig } from "swr";
+import { installHistoryGuard } from "./history-guard";
 
 interface User {
   user_id: number;
@@ -45,6 +46,12 @@ import { clearSessionToken, clearSessionUser, sessionToken, sessionUser, setSess
 // old fallback named the retired Rust backend's port, so a misconfigured build
 // failed silently at every request instead of failing once, loudly.
 export const API_BASE = apiBaseURL();
+
+// Guarded History API, installed before hydration can reach it. Root layout
+// imports this module, so this line runs while the client bundle evaluates —
+// ahead of Next's internal HistoryUpdater effect. See history-guard.ts for
+// the 2026-10-16 Safari incident this closes.
+installHistoryGuard();
 
 /**
  * Called by apiFetch (and any raw fetch 401) when the JWT turns out to be
@@ -195,7 +202,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
     clearSessionToken();
     clearSessionUser();
-    router.push("/login");
+    // Reached from the logout button AND from the khmer:auth-expired window
+    // listener (outside React), where a History-API throw would surface as an
+    // unhandled window error — guard it and fall back to a real page load
+    // (Safari SecurityError, 2026-10-16).
+    try {
+      router.push("/login");
+    } catch {
+      window.location.replace("/login");
+    }
   };
 
   // 任何页面收到 401 (JWT 过期/失效) 时联动登出: signalAuthExpired 广播事件,

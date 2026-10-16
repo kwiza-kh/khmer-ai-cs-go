@@ -29,11 +29,21 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (isLoading) return;
-    if (!token && !isPublic) {
-      router.replace("/login");
-    }
-    if (token && pathname === "/login") {
-      router.replace("/ai-test");
+    // Navigation can fail outside our control: Safari throws
+    // SecurityError("The operation is insecure.") from history.replaceState
+    // when it throttles the History API, and before 2026-10-16 that throw
+    // escaped this effect and replaced the whole app with the global error
+    // screen (the owner's login report). A failed redirect is a degradation,
+    // not a crash — the user simply stays where they are.
+    try {
+      if (!token && !isPublic) {
+        router.replace("/login");
+      }
+      if (token && pathname === "/login") {
+        router.replace("/ai-test");
+      }
+    } catch {
+      /* navigation unavailable — stay on the current page */
     }
   }, [isLoading, token, pathname, isPublic, router]);
 

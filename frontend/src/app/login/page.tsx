@@ -71,7 +71,15 @@ export default function LoginPage() {
     const telegramCode = params.get("telegram_code");
     const errReason = params.get("google_error") || params.get("telegram_error");
     if (!googleCode && !telegramCode && !errReason) return;
-    window.history.replaceState({}, "", window.location.pathname);
+    // URL cleanup is best-effort: a browser that throttles the History API
+    // (Safari SecurityError, 2026-10-16) must still get the code exchange.
+    // If the params survive, the server's one-time-code check still refuses a
+    // replayed refresh — this strip is defense in depth, not the guard.
+    try {
+      window.history.replaceState({}, "", window.location.pathname);
+    } catch {
+      /* stale query params survive — exchange continues */
+    }
     if (errReason) {
       const key = `login.googleErr.${errReason}`;
       const msg = t(key);
