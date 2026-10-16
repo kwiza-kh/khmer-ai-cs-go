@@ -445,11 +445,20 @@ func (p *Pipeline) claimInbound(ctx context.Context) (*InboundEvent, error) {
 			"AND earlier.platform_user_id = platform_inbound_events.platform_user_id AND earlier.event_id < platform_inbound_events.event_id "+
 			"AND earlier.status IN ('pending','processing')) "+
 			"ORDER BY created_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED) "+
-			"RETURNING event_id, config_id, platform::text, platform_user_id, user_display_name, content, media_json",
+			"RETURNING event_id, config_id, platform::text, platform_user_id, COALESCE(user_display_name,''), content, media_json",
 		now, now, stale).Scan(&ev.EventID, &ev.ConfigID, &ev.Platform, &ev.PlatformUserID, &ev.UserDisplayName, &ev.Content, &mediaJSON)
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
+			// A claim/scan error stops EVERY inbound message on every channel: the
+			// claim takes the oldest pending row, so one unreadable row is
+			// head-of-line for the whole product. It used to be a WARN repeated
+			// every two seconds and nothing else — found live on 2026-10-16 when a
+			// single row with a NULL user_display_name (nullable column scanned
+			// into a string) stalled all four workers silently.
 			p.Logger.Warn("claim inbound failed", "error", err.Error())
+			p.PlatformAlert(ctx, "inbound-claim", "入站消息领取失败 —— 所有渠道停止处理",
+				fmt.Sprintf("claimInbound 报错: %s。入站按最早一条 pending 事件串行领取，一条不可读的行会阻塞全部客户消息；请检查 platform_inbound_events 里最早的那条 pending 记录。",
+					textutil.TruncateRunes(err.Error(), 300)))
 		}
 		return nil, nil
 	}
