@@ -28,6 +28,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -86,6 +87,9 @@ type inboundTurn struct {
 	HandoffReason string
 	Result        gemini.ChatResult
 	GroundCtx     rag.GroundingContext
+	// StageTimings collects the stages that cost real time (>= stageTimingFloor),
+	// recorded by runInboundStages and logged once per turn.
+	StageTimings []StageTiming
 	// AttachMediaKey is the picture of the document the answer grounded on
 	// (attach-doc-image stage). "" = deliver text only; persist-and-deliver
 	// resolves it to a URL and turns the payload into a media message.
@@ -135,12 +139,44 @@ func (p *Pipeline) inboundStages() []inboundStage {
 	}
 }
 
+// StageTiming is one stage's wall time inside a turn. Recorded for stages that
+// cost something (>= stageTimingFloor) so the per-turn timing line stays short.
+type StageTiming struct {
+	Name string
+	Dur  time.Duration
+}
+
+// stageTimingFloor keeps the timing line to stages a person would notice. A turn
+// of a dozen stages that each cost 5ms has nothing to say.
+const stageTimingFloor = 250 * time.Millisecond
+
+// formatStageTimings renders the slowest stages, biggest first.
+func formatStageTimings(timings []StageTiming, max int) string {
+	if len(timings) == 0 {
+		return "-"
+	}
+	sorted := append([]StageTiming(nil), timings...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Dur > sorted[j].Dur })
+	if len(sorted) > max {
+		sorted = sorted[:max]
+	}
+	parts := make([]string, 0, len(sorted))
+	for _, s := range sorted {
+		parts = append(parts, fmt.Sprintf("%s=%.1fs", s.Name, s.Dur.Seconds()))
+	}
+	return strings.Join(parts, " ")
+}
+
 // runInboundStages drives one turn. Kept as a free function so the driver's
 // semantics (order, short-circuit, error) are testable with arbitrary stages and
 // no database.
 func runInboundStages(ctx context.Context, stages []inboundStage, t *inboundTurn) error {
 	for _, st := range stages {
+		start := time.Now()
 		next, err := st.Run(ctx, t)
+		if d := time.Since(start); d >= stageTimingFloor {
+			t.StageTimings = append(t.StageTimings, StageTiming{Name: st.Name, Dur: d})
+		}
 		if err != nil {
 			return err
 		}

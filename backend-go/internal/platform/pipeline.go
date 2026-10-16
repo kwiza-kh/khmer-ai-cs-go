@@ -559,8 +559,21 @@ func (p *Pipeline) loadConfig(ctx context.Context, configID int32) (*configCred,
 // an inboundTurn, and a short-circuit that is an explicit `next=false` instead of
 // a bare return buried between a database write and an LLM call.
 func (p *Pipeline) processInboundEvent(ctx context.Context, ev *InboundEvent) error {
+	start := time.Now()
 	t := &inboundTurn{Event: ev, Content: ev.Content, Urgency: UrgencyUnknown}
-	return runInboundStages(ctx, p.inboundStages(), t)
+	err := runInboundStages(ctx, p.inboundStages(), t)
+	// One line per turn, always. A turn that takes a minute used to leave nothing
+	// behind but the gap between two other rows — the Messenger voice-note stall
+	// of 2026-10-16 was undiagnosable for exactly that reason. slow stages are
+	// listed biggest-first; "-" means every stage was below the floor.
+	if p.Logger != nil {
+		kind, _ := ev.Media["kind"].(string)
+		p.Logger.Info("turn timing",
+			"event_id", ev.EventID, "platform", ev.Platform, "media_kind", kind,
+			"total_s", fmt.Sprintf("%.1f", time.Since(start).Seconds()),
+			"slow_stages", formatStageTimings(t.StageTimings, 4))
+	}
+	return err
 }
 
 // publishMessage fans out an inbox.message realtime event (best-effort).
@@ -772,6 +785,7 @@ func (p *Pipeline) prepareMedia(ctx context.Context, ev *InboundEvent, cfg *conf
 	var data []byte
 	var mime string
 	var err error
+	dlStart := time.Now()
 	if ch, cerr := NewChannel(p, cfg); cerr == nil {
 		data, mime, err = ch.DownloadMedia(ctx, providerID, sourceURL, declaredMime)
 	} else if sourceURL != "" {
@@ -779,6 +793,7 @@ func (p *Pipeline) prepareMedia(ctx context.Context, ev *InboundEvent, cfg *conf
 		// provider handed us.
 		data, mime, err = downloadBytes(ctx, sourceURL)
 	}
+	dlDur := time.Since(dlStart)
 	if err != nil || len(data) == 0 {
 		p.Logger.Warn("media download failed", "error", fmt.Sprint(err))
 		return content, "", nil
@@ -795,6 +810,7 @@ func (p *Pipeline) prepareMedia(ctx context.Context, ev *InboundEvent, cfg *conf
 	// Image    → Gemini vision description so the AI can actually answer.
 	extracted := ""
 	extractFailed := ""
+	exStart := time.Now()
 	if isImage || kind == "audio" || kind == "voice" {
 		var text string
 		text, extractFailed = p.extractMediaText(ctx, ev, isImage, data, mime)
@@ -802,9 +818,11 @@ func (p *Pipeline) prepareMedia(ctx context.Context, ev *InboundEvent, cfg *conf
 			content, extracted = text, text
 		}
 	}
+	exDur := time.Since(exStart)
 
 	// Store for replay (best-effort; requires R2 config).
 	storageKey := ""
+	upStart := time.Now()
 	if p.Media.Enabled() {
 		storageKey = fmt.Sprintf("platform-media/%d/%d/%s", cfg.UserID, ev.EventID, safeFilename(filename, kind, ev.EventID))
 		uploadCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
@@ -813,6 +831,17 @@ func (p *Pipeline) prepareMedia(ctx context.Context, ev *InboundEvent, cfg *conf
 			storageKey = ""
 		}
 		cancel()
+	}
+	upDur := time.Since(upStart)
+	// One line per media message, always: download / model read / R2 are three
+	// different networks, and a slow voice turn is only diagnosable when they are
+	// told apart (asked for on 2026-10-16, when Messenger voice notes took 65s
+	// and the logs said nothing).
+	if p.Logger != nil {
+		p.Logger.Info("media phases", "event_id", ev.EventID, "kind", kind, "bytes", len(data), "mime", mime,
+			"download_s", fmt.Sprintf("%.1f", dlDur.Seconds()),
+			"extract_s", fmt.Sprintf("%.1f", exDur.Seconds()),
+			"upload_s", fmt.Sprintf("%.1f", upDur.Seconds()))
 	}
 	pm := map[string]any{"kind": kind, "filename": filename, "mime_type": mime}
 	if extractFailed != "" {

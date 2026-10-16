@@ -212,3 +212,31 @@ func TestPersonaHistoryAlternatesFromUser(t *testing.T) {
 		t.Errorf("after repair %d turns survive, want 3", n)
 	}
 }
+
+// The per-turn timing line is only useful if the recorded stages are the ones
+// that actually cost time, and only if the driver still stops where it should.
+func TestRunInboundStagesRecordsSlowStages(t *testing.T) {
+	fast := inboundStage{Name: "fast", Run: func(context.Context, *inboundTurn) (bool, error) { return true, nil }}
+	slow := inboundStage{Name: "slow", Run: func(context.Context, *inboundTurn) (bool, error) {
+		time.Sleep(stageTimingFloor + 50*time.Millisecond)
+		return true, nil
+	}}
+	stop := inboundStage{Name: "stop", Run: func(context.Context, *inboundTurn) (bool, error) { return false, nil }}
+	never := inboundStage{Name: "never", Run: func(context.Context, *inboundTurn) (bool, error) {
+		t.Error("a stage after next=false must not run")
+		return true, nil
+	}}
+	turn := &inboundTurn{}
+	if err := runInboundStages(t.Context(), []inboundStage{fast, slow, stop, never}, turn); err != nil {
+		t.Fatalf("runInboundStages: %v", err)
+	}
+	if len(turn.StageTimings) != 1 || turn.StageTimings[0].Name != "slow" {
+		t.Fatalf("timings = %+v, want only the stage above the floor", turn.StageTimings)
+	}
+	if got := formatStageTimings(turn.StageTimings, 4); !strings.Contains(got, "slow=") {
+		t.Fatalf("formatStageTimings = %q, want the slow stage named", got)
+	}
+	if got := formatStageTimings(nil, 4); got != "-" {
+		t.Fatalf("formatStageTimings(nil) = %q, want -", got)
+	}
+}
