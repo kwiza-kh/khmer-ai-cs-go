@@ -84,11 +84,25 @@ func (a *App) mediaURLFor(key string) string {
 
 // attachKnowledgeMediaURL adds the resolved media_url to one document JSON the
 // UI consumes (the stored key stays in the payload for support/debugging).
+//
+// The scanner hands media_key over as *string (a nullable column), while the
+// upload path has a plain string: both must resolve, or the library would show
+// the picture only for the upload that just happened and never again — which is
+// exactly what the first production smoke of this feature caught (2026-10-16:
+// doc list/detail returned media_key but no media_url).
 func (a *App) attachKnowledgeMediaURL(doc map[string]any) {
 	if doc == nil {
 		return
 	}
-	key, _ := doc["media_key"].(string)
+	var key string
+	switch v := doc["media_key"].(type) {
+	case string:
+		key = v
+	case *string:
+		if v != nil {
+			key = *v
+		}
+	}
 	if key == "" {
 		return
 	}

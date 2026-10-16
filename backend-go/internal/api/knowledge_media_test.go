@@ -73,6 +73,29 @@ func TestAttachKnowledgeMediaURLWithoutR2(t *testing.T) {
 	}
 }
 
+// The scanner hands the column over as *string (nullable); the upload path as a
+// plain string. Both must resolve, or the library shows the picture only in the
+// upload response and never again (caught by the first production smoke).
+func TestAttachKnowledgeMediaURLHandlesPointerKey(t *testing.T) {
+	key := "kb/3/abc.png"
+	a := &App{Media: storager2.New("acct", "key", "secret", "bucket", "https://cdn.example.com")}
+	for _, doc := range []map[string]any{
+		{"doc_id": int32(1), "media_key": &key},
+		{"doc_id": int32(1), "media_key": key},
+	} {
+		a.attachKnowledgeMediaURL(doc)
+		if doc["media_url"] != "https://cdn.example.com/kb/3/abc.png" {
+			t.Fatalf("media_url = %v for %T key", doc["media_url"], doc["media_key"])
+		}
+	}
+	// A NULL column (the common case for text documents) must not resolve.
+	doc := map[string]any{"doc_id": int32(2), "media_key": (*string)(nil)}
+	a.attachKnowledgeMediaURL(doc)
+	if _, ok := doc["media_url"]; ok {
+		t.Fatal("a NULL media_key must not produce a URL")
+	}
+}
+
 // With a public base configured the stored key resolves to a permanent URL —
 // the address the channel provider fetches when it sends the picture. With no
 // client there is nothing to send, and callers must degrade to text.
