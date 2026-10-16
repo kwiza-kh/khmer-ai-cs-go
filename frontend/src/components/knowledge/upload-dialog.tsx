@@ -1,10 +1,9 @@
 "use client";
 
 import * as React from "react";
-import { uploadKnowledge, uploadKnowledgeFile, ingestKnowledgeURL, getAcceptedFileTypes, type AcceptedFileTypes } from "@/lib/api";
+import { uploadKnowledgeFile, ingestKnowledgeURL, getAcceptedFileTypes, type AcceptedFileTypes } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger,
@@ -23,21 +22,21 @@ interface Props {
 }
 
 /**
- * Upload dialog with two tabs:
- *   - Paste text: title + content textarea (the original flow)
- *   - Upload file: drag-drop / browse for PDF, DOCX, TXT, MD, CSV
+ * Upload dialog with two sources:
+ *   - Upload file: drag-drop / browse; multipart to /knowledge/upload/file
+ *   - From URL: the backend fetches the page, strips it to text and runs it
+ *     through the same chunk → embed pipeline (/knowledge/upload/url)
  *
- * The file is sent as multipart/form-data to /knowledge/upload/file, where the
- * backend extracts text + chunks + embeds it through the same RAG pipeline.
+ * Pasting raw text deliberately lives in the Markdown editor ("New document")
+ * instead: it validates Markdown and keeps the document editable afterwards.
  */
 export function KnowledgeUploadDialog({ onUploaded, trigger }: Props) {
   const { t, tf } = useI18n();
   const [open, setOpen] = React.useState(false);
-  const [tab, setTab] = React.useState<"text" | "file" | "url">("file");
+  const [tab, setTab] = React.useState<"file" | "url">("file");
 
-  // Text-mode state
+  // Optional title override for URL ingests (defaults to the page's <title>).
   const [title, setTitle] = React.useState("");
-  const [content, setContent] = React.useState("");
 
   // File-mode state
   const [file, setFile] = React.useState<File | null>(null);
@@ -60,7 +59,7 @@ export function KnowledgeUploadDialog({ onUploaded, trigger }: Props) {
   }, [open, accepted]);
 
   const reset = () => {
-    setTitle(""); setContent(""); setFile(null); setCategory(""); setUrl("");
+    setTitle(""); setFile(null); setCategory(""); setUrl("");
     setUploading(false);
   };
 
@@ -95,21 +94,6 @@ export function KnowledgeUploadDialog({ onUploaded, trigger }: Props) {
     setDragOver(false);
     const f = e.dataTransfer.files?.[0];
     if (f) handleFile(f);
-  };
-
-  const submitText = async () => {
-    if (!title.trim() || !content.trim()) return;
-    setUploading(true);
-    try {
-      await uploadKnowledge({ title, content });
-      toast.success(t("kbup.queued"));
-      handleClose(false);
-      onUploaded();
-    } catch (err) {
-      toast.error((err as Error).message);
-    } finally {
-      setUploading(false);
-    }
   };
 
   const submitFile = async () => {
@@ -163,11 +147,10 @@ export function KnowledgeUploadDialog({ onUploaded, trigger }: Props) {
       <DialogContent className="max-w-lg">
         <DialogHeader><DialogTitle className="text-sm">{t("kbup.title")}</DialogTitle></DialogHeader>
 
-        <Tabs value={tab} onValueChange={(v) => setTab((v || "file") as "text" | "file" | "url")}>
+        <Tabs value={tab} onValueChange={(v) => setTab((v || "file") as "file" | "url")}>
           <TabsList className="w-full">
             <TabsTrigger value="file" className="flex-1 text-xs gap-1.5"><FileUp className="size-3" />{t("kbup.tabFile")}</TabsTrigger>
             <TabsTrigger value="url" className="flex-1 text-xs gap-1.5"><Globe className="size-3" />{t("kbup.tabUrl")}</TabsTrigger>
-            <TabsTrigger value="text" className="flex-1 text-xs gap-1.5"><FileText className="size-3" />{t("kbup.tabText")}</TabsTrigger>
           </TabsList>
 
           {/* ---------- File upload tab ---------- */}
@@ -175,7 +158,7 @@ export function KnowledgeUploadDialog({ onUploaded, trigger }: Props) {
             <input
               ref={inputRef}
               type="file"
-              accept={(accepted && Object.keys(accepted.extensions).join(",")) || ".txt,.md,.csv,.pdf,.docx"}
+              accept={(accepted && Object.keys(accepted.extensions).join(",")) || ".txt,.md,.csv,.pdf,.docx,.xlsx,.wps,.et,.jpg,.jpeg,.png,.webp"}
               onChange={(e) => handleFile(e.target.files?.[0] ?? null)}
               className="hidden"
             />
@@ -195,7 +178,9 @@ export function KnowledgeUploadDialog({ onUploaded, trigger }: Props) {
                 <FileUp className="mx-auto size-7 text-muted-foreground mb-2" />
                 <p className="text-sm font-medium">{t("kbup.dropHint")}</p>
                 <p className="text-xs text-muted-foreground mt-1">
-                  PDF · DOCX · TXT · MD · CSV
+                  {accepted
+                    ? Object.keys(accepted.extensions).map((ext) => ext.slice(1).toUpperCase()).join(" · ")
+                    : "PDF · DOCX · XLSX · WPS · ET · TXT · MD · CSV · JPG/PNG"}
                   {accepted && ` ${tf("kbup.upTo", { max: accepted.max_megabytes })}`}
                 </p>
               </button>
@@ -236,23 +221,6 @@ export function KnowledgeUploadDialog({ onUploaded, trigger }: Props) {
             <p className="text-xs text-muted-foreground text-center">
               {t("kbup.titleFromFilename")}
             </p>
-          </TabsContent>
-
-          {/* ---------- Paste text tab ---------- */}
-          <TabsContent value="text" className="mt-4 space-y-3">
-            <div>
-              <label className="text-xs text-muted-foreground block mb-1">{t("kbup.titleLabel")}</label>
-              <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder={t("kbup.titlePh")} className="h-9 text-sm" />
-            </div>
-            <div>
-              <label className="text-xs text-muted-foreground block mb-1">{t("kbup.contentLabel")}</label>
-              <Textarea value={content} onChange={(e) => setContent(e.target.value)} placeholder={t("kbup.contentPh")} rows={6} className="text-sm resize-none" />
-            </div>
-            <Button onClick={submitText} disabled={uploading || !title.trim() || !content.trim()} className="w-full h-9 text-xs gap-1.5">
-              {uploading
-                ? <><Loader2 className="size-3.5 animate-spin" /> {t("kbup.uploading")}</>
-                : <><UploadCloud className="size-3.5" /> {t("kbup.upload")}</>}
-            </Button>
           </TabsContent>
 
           {/* ---------- URL ingest tab ---------- */}

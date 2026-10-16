@@ -229,6 +229,9 @@ export interface KnowledgeDocument {
   category?: string;
   tags?: string[];
   source?: string;
+  /** Uploaded file's extension, lowercase without the dot ("pdf", "docx").
+   *  NULL for rows that predate migration 079 and for non-file origins. */
+  file_ext?: string | null;
   chunk_count: number;
   index_status: "pending" | "indexing" | "ready" | "failed";
   index_error?: string;

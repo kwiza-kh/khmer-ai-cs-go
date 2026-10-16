@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -148,7 +149,15 @@ func (a *App) uploadKnowledgeFile(w http.ResponseWriter, r *http.Request) (any, 
 		return nil, ErrBadRequest("缺少或无效的文件 (field name: file)")
 	}
 	if !rag.IsAccepted(filename) {
-		return nil, ErrBadRequest(fmt.Sprintf("不支持的文件类型,允许: .txt .md .csv .pdf .docx .jpg .jpeg .png .webp (got: %s)", filename))
+		// Built from the same table the upload dialog reads, so the message can
+		// never drift from the accepted set (it did while it was a literal).
+		accepted := rag.AcceptedExtensions()
+		keys := make([]string, 0, len(accepted))
+		for ext := range accepted {
+			keys = append(keys, ext)
+		}
+		sort.Strings(keys)
+		return nil, ErrBadRequest(fmt.Sprintf("不支持的文件类型,允许: %s (got: %s)", strings.Join(keys, " "), filename))
 	}
 	if len(data) > rag.MaxUploadBytes {
 		return nil, ErrBadRequest(fmt.Sprintf("文件超过 %d MB 上限", rag.MaxUploadBytes>>20))
@@ -178,12 +187,22 @@ func (a *App) uploadKnowledgeFile(w http.ResponseWriter, r *http.Request) (any, 
 		refundDocQuota(context.WithoutCancel(r.Context()), a.DB, a.Logger, user.Tenant())
 		return nil, err
 	}
-	// Mark source = upload (Go parity).
+	// Mark source = upload (Go parity) and record the file's type: the title at
+	// line 167 has the extension stripped, so file_ext is the only place the
+	// document library can read "PDF / DOCX / XLSX / …" from.
 	if docID, ok := doc["doc_id"].(int32); ok {
-		_, _ = a.DB.Exec(r.Context(), "UPDATE knowledge_documents SET source = 'upload' WHERE doc_id = $1", docID)
+		ext := uploadFileExt(filename)
+		_, _ = a.DB.Exec(r.Context(), "UPDATE knowledge_documents SET source = 'upload', file_ext = $2 WHERE doc_id = $1", docID, ext)
 		doc["source"] = "upload"
+		doc["file_ext"] = ext
 	}
 	return doc, nil
+}
+
+// uploadFileExt normalises the extension recorded for a file upload: lowercase,
+// without the leading dot, empty when the name carries none.
+func uploadFileExt(filename string) string {
+	return strings.ToLower(strings.TrimPrefix(filepath.Ext(filename), "."))
 }
 
 // extractKnowledgeText picks the extraction path for one KB upload. Images go
@@ -314,7 +333,14 @@ func (a *App) getKnowledgeDocument(w http.ResponseWriter, r *http.Request, docID
 	if err := requirePermission(user, PermKnowledgeView); err != nil {
 		return nil, err
 	}
-	return a.RAG.GetDocument(r.Context(), user.Tenant(), docID)
+	doc, err := a.RAG.GetDocument(r.Context(), user.Tenant(), docID)
+	if err != nil {
+		// A deleted (or never-existing) doc is a 404, not a scan failure. The
+		// raw error surfaced as a 500 — it was found while testing URL ingest
+		// (2026-10-16): delete a doc, refresh it, get "服务器错误".
+		return nil, knowledgeNotFoundOr(err)
+	}
+	return doc, nil
 }
 
 func (a *App) updateKnowledgeDocument(w http.ResponseWriter, r *http.Request, docID int32) (any, error) {
@@ -330,7 +356,22 @@ func (a *App) updateKnowledgeDocument(w http.ResponseWriter, r *http.Request, do
 	if req.Content != nil {
 		content = *req.Content
 	}
-	return a.RAG.UpdateDocument(r.Context(), user.Tenant(), docID, content, req.Title, req.Language, req.Category, req.Tags)
+	doc, err := a.RAG.UpdateDocument(r.Context(), user.Tenant(), docID, content, req.Title, req.Language, req.Category, req.Tags)
+	if err != nil {
+		return nil, knowledgeNotFoundOr(err)
+	}
+	return doc, nil
+}
+
+// knowledgeNotFoundOr maps the rag service's "document not found" sentinel to a
+// 404; every other error stays an internal failure. deleteKnowledge /
+// retryKnowledge carried the same mapping inline — this is the shared copy for
+// the read/update paths that were missing it.
+func knowledgeNotFoundOr(err error) error {
+	if strings.Contains(err.Error(), "not found") {
+		return ErrNotFound(err.Error())
+	}
+	return ErrInternal(err.Error())
 }
 
 func (a *App) deleteKnowledge(w http.ResponseWriter, r *http.Request, docID int32) (any, error) {

@@ -612,7 +612,7 @@ func (s *Service) UploadDocument(ctx context.Context, userID int32, title, conte
 	row := s.DB.QueryRow(ctx,
 		"INSERT INTO knowledge_documents (title, content, language, category, tags, uploaded_by, index_status, source, source_url, origin) "+
 			"VALUES ($1, $2, $3, $4, $5::text[], $6, 'pending', $7, $8, $9) "+
-			"RETURNING doc_id, title, language, category, chunk_count, source, index_status, index_error, created_at, updated_at, origin, compiled_from, compile_status",
+			"RETURNING doc_id, title, language, category, chunk_count, source, index_status, index_error, created_at, updated_at, origin, compiled_from, compile_status, file_ext",
 		title, content, lang, category, tags, userID, source, sourceURL, source)
 	doc, err := scanDocumentRow(row)
 	if err != nil {
@@ -1657,8 +1657,8 @@ func ChunkMarkdown(text string) []string {
 // 文档管理
 // ============================================
 
-const summaryCols = "kd.doc_id, kd.title, kd.language, kd.category, kd.chunk_count, kd.source, kd.index_status, kd.index_error, kd.created_at, kd.updated_at, kd.origin, kd.compiled_from, kd.compile_status, src.title"
-const fullCols = "doc_id, title, content, language, category, tags, chunk_count, source, index_status, index_error, created_at, updated_at, origin, compiled_from, compile_status"
+const summaryCols = "kd.doc_id, kd.title, kd.language, kd.category, kd.chunk_count, kd.source, kd.index_status, kd.index_error, kd.created_at, kd.updated_at, kd.origin, kd.compiled_from, kd.compile_status, src.title, kd.file_ext"
+const fullCols = "doc_id, title, content, language, category, tags, chunk_count, source, index_status, index_error, created_at, updated_at, origin, compiled_from, compile_status, file_ext"
 
 // ListDocuments — paginated document summaries.
 func (s *Service) ListDocuments(ctx context.Context, userID int32, page, pageSize int64) (map[string]any, error) {

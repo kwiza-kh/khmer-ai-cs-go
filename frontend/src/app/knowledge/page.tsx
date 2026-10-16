@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ComponentType } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   deleteKnowledge, dismissKnowledgeContradiction, getKnowledgeDocument, getRagSettings, knowledgeDocQuality,
@@ -18,10 +18,13 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
 import {
-  BookOpen, ChevronDown, ChevronUp, File, FileCode2, FileSpreadsheet, FileText,
-  FileType2, FolderOpen, GitCompareArrows, Loader2, Pencil, RotateCw, Save, Search, Sparkles, ThumbsUp,
-  Trash2, Plus, Wand2, Check, X, type LucideIcon,
+  BookOpen, ChevronDown, ChevronUp, FileText, FolderOpen, GitCompareArrows, Loader2, Pencil, RotateCw,
+  Save, Search, Sparkles, ThumbsUp, Trash2, Plus, Wand2, Check, X,
 } from "lucide-react";
+import {
+  AiSparkleIcon, FileCodeIcon, FileDocIcon, FileExcelIcon, FileImageIcon,
+  FilePdfIcon, FileSpreadsheetIcon, FileTextIcon, FileWordIcon, WebGlobeIcon,
+} from "@/components/file-icons";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/page-header";
 import { EmptyState } from "@/components/empty-state";
@@ -34,13 +37,13 @@ import { useAuth } from "@/lib/auth-client";
 
 interface SrcItem { title: string; score: number; content: string }
 
-type FileKind = "txt" | "md" | "csv" | "docx" | "pdf" | "other";
+type FileKind = "pdf" | "docx" | "xlsx" | "csv" | "md" | "txt" | "wps" | "et" | "img" | "url" | "ai" | "other";
 
-interface FileGroup {
+interface FileTypeMeta {
   kind: FileKind;
   labelKey: string;
   extension?: string;
-  icon: LucideIcon;
+  icon: ComponentType<{ className?: string }>;
   iconClass: string;
 }
 
@@ -48,23 +51,63 @@ interface FileGroup {
 // a value that cannot collide keeps uncategorized documents sorted last.
 const UNCATEGORIZED_KEY = "\u0000uncategorized";
 
-const FILE_GROUPS: FileGroup[] = [
-  // File-type colours come from the semantic tokens (info/brand/success/
-  // warning/danger) so they follow the theme on their own — the old
-  // hand-written `dark:` pairs were a second palette to keep in sync.
-  { kind: "txt", labelKey: "kb.groupTxt", extension: "TXT", icon: FileText, iconClass: "bg-info/10 text-info" },
-  { kind: "md", labelKey: "kb.groupMd", extension: "MD", icon: FileCode2, iconClass: "bg-brand/10 text-brand" },
-  { kind: "csv", labelKey: "kb.groupCsv", extension: "CSV", icon: FileSpreadsheet, iconClass: "bg-success/10 text-success" },
-  { kind: "docx", labelKey: "kb.groupDocx", extension: "DOCX", icon: FileType2, iconClass: "bg-warning/10 text-warning" },
-  { kind: "pdf", labelKey: "kb.groupPdf", extension: "PDF", icon: FileText, iconClass: "bg-danger/10 text-danger" },
-  { kind: "other", labelKey: "kb.groupOther", icon: File, iconClass: "bg-muted text-muted-foreground" },
+// One entry per document type the library can show. Every kind carries its own
+// icon glyph (Bootstrap Icons file-earmark family — see file-icons.tsx), so a
+// row's type reads even without the badge; colours stay on the semantic tokens
+// (info/brand/success/warning/danger) so they follow the theme.
+const FILE_TYPES: FileTypeMeta[] = [
+  { kind: "pdf", labelKey: "kb.groupPdf", extension: "PDF", icon: FilePdfIcon, iconClass: "bg-danger/10 text-danger" },
+  { kind: "docx", labelKey: "kb.groupDocx", extension: "DOCX", icon: FileWordIcon, iconClass: "bg-info/10 text-info" },
+  { kind: "xlsx", labelKey: "kb.groupXlsx", extension: "XLSX", icon: FileExcelIcon, iconClass: "bg-success/10 text-success" },
+  { kind: "csv", labelKey: "kb.groupCsv", extension: "CSV", icon: FileSpreadsheetIcon, iconClass: "bg-warning/10 text-warning" },
+  { kind: "md", labelKey: "kb.groupMd", extension: "MD", icon: FileCodeIcon, iconClass: "bg-brand/10 text-brand" },
+  { kind: "txt", labelKey: "kb.groupTxt", extension: "TXT", icon: FileTextIcon, iconClass: "bg-info/10 text-info" },
+  { kind: "wps", labelKey: "kb.groupWps", extension: "WPS", icon: FileWordIcon, iconClass: "bg-info/10 text-info" },
+  { kind: "et", labelKey: "kb.groupEt", extension: "ET", icon: FileExcelIcon, iconClass: "bg-success/10 text-success" },
+  { kind: "img", labelKey: "kb.groupImg", extension: "IMG", icon: FileImageIcon, iconClass: "bg-brand/10 text-brand" },
+  { kind: "url", labelKey: "kb.groupUrl", extension: "URL", icon: WebGlobeIcon, iconClass: "bg-success/10 text-success" },
+  { kind: "ai", labelKey: "kb.groupAi", extension: "AI", icon: AiSparkleIcon, iconClass: "bg-brand/10 text-brand" },
+  { kind: "other", labelKey: "kb.groupOther", icon: FileDocIcon, iconClass: "bg-muted text-muted-foreground" },
 ];
 
-function fileKindFromTitle(title: string): FileKind {
-  const extension = title.trim().split(".").pop()?.toLowerCase();
-  return extension === "txt" || extension === "md" || extension === "csv" || extension === "docx" || extension === "pdf"
-    ? extension
-    : "other";
+function fileTypeMeta(kind: FileKind): FileTypeMeta {
+  return FILE_TYPES.find((meta) => meta.kind === kind) ?? FILE_TYPES[FILE_TYPES.length - 1];
+}
+
+// The library shows every document's real type. file_ext (recorded at upload,
+// migration 079) is authoritative; rows from before that column fall back to a
+// "." suffix in the title. Derived rows are their own kinds: an AI summary is
+// not a file, and a fetched page was never a file on disk either. A pasted text
+// document (source=manual, no extension) is plain text.
+function knowledgeFileKind(doc: KnowledgeDocument): FileKind {
+  if (doc.origin === "compiled") return "ai";
+  if (doc.source === "url") return "url";
+  const dot = doc.title.lastIndexOf(".");
+  const titleExt = dot > 0 ? doc.title.slice(dot + 1) : "";
+  const ext = (doc.file_ext || titleExt).toLowerCase().replace(/^\.+/, "");
+  switch (ext) {
+    case "pdf": return "pdf";
+    case "doc": case "docx": return "docx";
+    case "xls": case "xlsx": return "xlsx";
+    case "csv": return "csv";
+    case "md": case "markdown": return "md";
+    case "txt": return "txt";
+    case "wps": return "wps";
+    case "et": return "et";
+    case "jpg": case "jpeg": case "png": case "webp": case "gif": return "img";
+    default: return doc.source === "manual" ? "txt" : "other";
+  }
+}
+
+// The badge text: images and unknown types show their recorded extension
+// (JPG, PNG, PPTX…), so a type the icon set does not know is still named;
+// "other" without a recorded extension shows no badge at all.
+function fileTypeLabel(doc: KnowledgeDocument, meta: FileTypeMeta): string | undefined {
+  if (meta.kind === "img" || meta.kind === "other") {
+    const ext = (doc.file_ext || "").toUpperCase();
+    return ext || meta.extension;
+  }
+  return meta.extension;
 }
 
 function formatDate(value: string | undefined, unavailable: string): string {
@@ -231,8 +274,8 @@ export default function KnowledgePage() {
 
   // The library groups by category. It used to group by file extension, which
   // told this tenant nothing: every document here is uploaded from a script with
-  // a slug title (SVN-011-panel-types), so fileKindFromTitle() put all 42 of them
-  // in one "other" bucket. Documents without a category keep their own group, and
+  // a slug title (SVN-011-panel-types), so a title-derived file type put all 42
+  // of them in one "other" bucket. Documents without a category keep their own group, and
   // the compiled summaries are split out of the grid — they are derived, they
   // outnumber nothing, and 12 rows of "· AI 编译摘要" beside their source is what
   // made the list look like a dump.
@@ -268,9 +311,10 @@ export default function KnowledgePage() {
   })();
 
   const readyCount = documents.filter((doc) => doc.index_status === "ready").length;
-  const previewKind = previewDoc ? fileKindFromTitle(previewDoc.title) : "other";
-  const previewGroup = FILE_GROUPS.find((group) => group.kind === previewKind) ?? FILE_GROUPS[5];
+  const previewKind = previewDoc ? knowledgeFileKind(previewDoc) : "other";
+  const previewGroup = fileTypeMeta(previewKind);
   const PreviewIcon = previewGroup.icon;
+  const previewLabel = previewDoc ? fileTypeLabel(previewDoc, previewGroup) : undefined;
   const previewCanEdit = isEditableFileKind(previewKind);
 
   const closePreview = () => {
@@ -672,9 +716,9 @@ export default function KnowledgePage() {
                     <CardContent className="p-3 sm:p-4">
                       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                         {group.sources.map((doc) => {
-                          const kind = fileKindFromTitle(doc.title);
-                          const metadata = FILE_GROUPS.find((entry) => entry.kind === kind) ?? FILE_GROUPS[5];
+                          const metadata = fileTypeMeta(knowledgeFileKind(doc));
                           const DocumentIcon = metadata.icon;
+                          const typeLabel = fileTypeLabel(doc, metadata);
                           return (
                             <div key={doc.doc_id} className="relative rounded-xl border border-border bg-background transition-colors hover:border-primary/35 hover:bg-muted/30">
                               <button
@@ -683,10 +727,12 @@ export default function KnowledgePage() {
                                 className="block w-full p-4 pr-11 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                               >
                                 <div className="mb-4 flex items-center gap-2.5">
-                                  <div className={cn("flex size-9 shrink-0 items-center justify-center rounded-lg", metadata.iconClass)}>
+                                  <div className={cn("flex size-9 shrink-0 items-center justify-center rounded-lg", metadata.iconClass)} title={t(metadata.labelKey)}>
                                     <DocumentIcon className="size-4" />
                                   </div>
-                                  {metadata.extension && <Badge variant="outline" className="h-5 px-1.5 font-mono text-label">{metadata.extension}</Badge>}
+                                  {typeLabel && (
+                                    <Badge variant="outline" className="h-5 px-1.5 font-mono text-label" title={t(metadata.labelKey)}>{typeLabel}</Badge>
+                                  )}
                                 </div>
                                 <p className="line-clamp-2 min-h-10 text-sm font-semibold leading-5">{doc.title}</p>
                                 {doc.origin === "compiled" && doc.compiled_from_title && (
@@ -751,11 +797,11 @@ export default function KnowledgePage() {
                           {compiledExpanded && (
                             <ul className="divide-y divide-border/60 border-t border-border/60">
                               {group.compiled.map((doc) => {
-                                const metadata = FILE_GROUPS.find((entry) => entry.kind === fileKindFromTitle(doc.title)) ?? FILE_GROUPS[5];
+                                const metadata = fileTypeMeta(knowledgeFileKind(doc));
                                 const DocumentIcon = metadata.icon;
                                 return (
                                   <li key={doc.doc_id} className="flex items-center gap-2.5 px-3.5 py-2">
-                                    <div className={cn("flex size-7 shrink-0 items-center justify-center rounded-md", metadata.iconClass)}>
+                                    <div className={cn("flex size-7 shrink-0 items-center justify-center rounded-md", metadata.iconClass)} title={t(metadata.labelKey)}>
                                       <DocumentIcon className="size-3.5" />
                                     </div>
                                     <button
@@ -801,7 +847,7 @@ export default function KnowledgePage() {
         <DialogContent className="max-h-[calc(100vh-2rem)] gap-0 overflow-hidden p-0 sm:max-w-4xl">
           <DialogHeader className="border-b border-border px-5 py-4 pr-12">
             <div className="flex items-center gap-3">
-              <div className={cn("flex size-9 shrink-0 items-center justify-center rounded-lg", previewGroup.iconClass)}>
+              <div className={cn("flex size-9 shrink-0 items-center justify-center rounded-lg", previewGroup.iconClass)} title={t(previewGroup.labelKey)}>
                 <PreviewIcon className="size-4" />
               </div>
               <div className="min-w-0">
@@ -819,7 +865,7 @@ export default function KnowledgePage() {
             ) : previewDoc ? (
               <div className="space-y-4">
                 <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                  {previewGroup.extension && <Badge variant="outline" className="h-5 px-1.5 font-mono text-label">{previewGroup.extension}</Badge>}
+                  {previewLabel && <Badge variant="outline" className="h-5 px-1.5 font-mono text-label" title={t(previewGroup.labelKey)}>{previewLabel}</Badge>}
                   <span>{tf("kb.created", { date: formatDate(previewDoc.created_at, t("kb.dateUnavailable")) })}</span>
                   <span>{tf("kb.chunks", { n: previewDoc.chunk_count })}</span>
                   <IndexStatusBadge status={previewDoc.index_status} />

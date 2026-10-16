@@ -7,6 +7,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"net"
@@ -14,6 +15,8 @@ import (
 	"net/netip"
 	"net/url"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -24,6 +27,10 @@ import (
 const MaxUploadBytes = 10 * 1024 * 1024
 
 // AcceptedExtensions maps extension → human-readable format label (UI).
+// The .wps/.et pair is WPS Office's writer/spreadsheet set; files written by
+// modern WPS are OOXML packages (same part layout as docx/xlsx), and genuinely
+// old binary files are refused at extraction with a re-save hint rather than
+// silently indexing nothing.
 func AcceptedExtensions() map[string]string {
 	return map[string]string{
 		".txt":  "Plain text",
@@ -31,6 +38,9 @@ func AcceptedExtensions() map[string]string {
 		".csv":  "CSV",
 		".pdf":  "PDF",
 		".docx": "Microsoft Word",
+		".xlsx": "Excel spreadsheet",
+		".wps":  "WPS Writer",
+		".et":   "WPS Spreadsheet",
 		".jpg":  "JPEG image (OCR)",
 		".jpeg": "JPEG image (OCR)",
 		".png":  "PNG image (OCR)",
@@ -56,8 +66,14 @@ func ExtractText(filename string, data []byte) (string, error) {
 		return extractPDF(data)
 	case ".docx":
 		return extractDocx(data)
+	case ".xlsx":
+		return extractXlsx(data)
+	case ".wps":
+		return extractWPSWriter(data)
+	case ".et":
+		return extractWPSSpreadsheet(data)
 	default:
-		return "", fmt.Errorf("unsupported file type: %s (allowed: txt, md, csv, pdf, docx)", filepath.Ext(filename))
+		return "", fmt.Errorf("unsupported file type: %s (allowed: txt, md, csv, pdf, docx, xlsx, wps, et)", filepath.Ext(filename))
 	}
 }
 
@@ -177,6 +193,251 @@ func extractDocx(data []byte) (string, error) {
 	text := strings.TrimSpace(out.String())
 	if text == "" {
 		return "", fmt.Errorf("docx contains no extractable text")
+	}
+	return text, nil
+}
+
+// ============================================
+// OOXML spreadsheets (.xlsx, WPS .et)
+//
+// The packages are zips whose text lives in the part XML. The walkers below
+// use encoding/xml's token stream — Go's decoder never resolves external
+// entities, so there is no XXE surface — under the same decompression cap as
+// the docx path.
+
+// maxZipDecompressed bounds one decompressed zip member: a <=10MB deflate
+// stream can expand ~1000:1, so the declared size and the actual read are both
+// capped before the bytes reach the XML walker.
+const maxZipDecompressed = 32 << 20
+
+// readZipEntry reads one zip member with that cap.
+func readZipEntry(f *zip.File) ([]byte, error) {
+	if f.UncompressedSize64 > maxZipDecompressed {
+		return nil, fmt.Errorf("%s too large (%d bytes declared)", f.Name, f.UncompressedSize64)
+	}
+	rc, err := f.Open()
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", f.Name, err)
+	}
+	defer rc.Close()
+	raw, err := io.ReadAll(io.LimitReader(rc, maxZipDecompressed+1))
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", f.Name, err)
+	}
+	if len(raw) > maxZipDecompressed {
+		return nil, fmt.Errorf("%s exceeds %d bytes", f.Name, maxZipDecompressed)
+	}
+	return raw, nil
+}
+
+// zipPartNumber extracts the trailing number of "sheet12.xml" / "slide12.xml"
+// so sheet2 sorts before sheet10 — plain string order flips them, which would
+// reorder the text of the document.
+func zipPartNumber(name string) int {
+	base := name
+	if i := strings.LastIndexByte(base, '/'); i >= 0 {
+		base = base[i+1:]
+	}
+	base = strings.TrimSuffix(base, ".xml")
+	i := len(base)
+	for i > 0 && base[i-1] >= '0' && base[i-1] <= '9' {
+		i--
+	}
+	n, err := strconv.Atoi(base[i:])
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// extractXlsx pulls cell text from an OOXML workbook: "s"-typed cells resolve
+// through xl/sharedStrings.xml; inlineStr and literal values are read in
+// place. Rows are tab-joined, sheets separated by a blank line. WPS 表格's
+// native .et container is the same package (see extractWPSSpreadsheet).
+func extractXlsx(data []byte) (string, error) {
+	archive, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return "", fmt.Errorf("open xlsx (unzip): %w", err)
+	}
+	shared, err := xlsxSharedStrings(archive)
+	if err != nil {
+		return "", err
+	}
+	var sheets []*zip.File
+	for _, f := range archive.File {
+		if strings.HasPrefix(f.Name, "xl/worksheets/") && strings.HasSuffix(f.Name, ".xml") {
+			sheets = append(sheets, f)
+		}
+	}
+	if len(sheets) == 0 {
+		return "", fmt.Errorf("xlsx: no worksheet parts found")
+	}
+	sort.Slice(sheets, func(i, j int) bool { return zipPartNumber(sheets[i].Name) < zipPartNumber(sheets[j].Name) })
+	var out strings.Builder
+	for _, f := range sheets {
+		text, err := xlsxSheetText(f, shared)
+		if err != nil {
+			return "", err
+		}
+		if text == "" {
+			continue
+		}
+		if out.Len() > 0 {
+			out.WriteString("\n\n")
+		}
+		out.WriteString(text)
+	}
+	text := strings.TrimSpace(out.String())
+	if text == "" {
+		return "", fmt.Errorf("xlsx contains no extractable text")
+	}
+	return text, nil
+}
+
+// xlsxSharedStrings returns the shared string table in index order. A workbook
+// may omit the part entirely (every cell then carries its own value).
+func xlsxSharedStrings(archive *zip.Reader) ([]string, error) {
+	for _, f := range archive.File {
+		if f.Name != "xl/sharedStrings.xml" {
+			continue
+		}
+		raw, err := readZipEntry(f)
+		if err != nil {
+			return nil, fmt.Errorf("xlsx sharedStrings: %w", err)
+		}
+		var out []string
+		var cur strings.Builder
+		inSI, inT := false, false
+		dec := xml.NewDecoder(bytes.NewReader(raw))
+		for {
+			tok, err := dec.Token()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return nil, fmt.Errorf("xlsx sharedStrings parse: %w", err)
+			}
+			switch t := tok.(type) {
+			case xml.StartElement:
+				switch t.Name.Local {
+				case "si":
+					inSI = true
+					cur.Reset()
+				case "t":
+					if inSI {
+						inT = true
+					}
+				}
+			case xml.EndElement:
+				switch t.Name.Local {
+				case "si":
+					if inSI {
+						out = append(out, cur.String())
+						inSI = false
+					}
+				case "t":
+					inT = false
+				}
+			case xml.CharData:
+				if inT {
+					cur.Write(t)
+				}
+			}
+		}
+		return out, nil
+	}
+	return nil, nil
+}
+
+func xlsxSheetText(f *zip.File, shared []string) (string, error) {
+	raw, err := readZipEntry(f)
+	if err != nil {
+		return "", fmt.Errorf("xlsx sheet: %w", err)
+	}
+	var out, row, cell strings.Builder
+	var cellType string
+	var inValue, inInlineText, firstCell bool
+	flushCell := func() {
+		val := cell.String()
+		if !firstCell {
+			row.WriteByte('\t')
+		}
+		firstCell = false
+		if cellType == "s" {
+			if idx, err := strconv.Atoi(strings.TrimSpace(val)); err == nil && idx >= 0 && idx < len(shared) {
+				val = shared[idx]
+			}
+		}
+		row.WriteString(val)
+		cell.Reset()
+	}
+	dec := xml.NewDecoder(bytes.NewReader(raw))
+	for {
+		tok, err := dec.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return "", fmt.Errorf("xlsx sheet parse: %w", err)
+		}
+		switch t := tok.(type) {
+		case xml.StartElement:
+			switch t.Name.Local {
+			case "row":
+				row.Reset()
+				firstCell = true
+			case "c":
+				cell.Reset()
+				cellType = ""
+				for _, a := range t.Attr {
+					if a.Name.Local == "t" {
+						cellType = a.Value
+					}
+				}
+			case "v":
+				inValue = true
+			case "t":
+				inInlineText = true
+			}
+		case xml.EndElement:
+			switch t.Name.Local {
+			case "c":
+				flushCell()
+			case "v":
+				inValue = false
+			case "t":
+				inInlineText = false
+			case "row":
+				out.WriteString(strings.TrimRight(row.String(), "\t"))
+				out.WriteByte('\n')
+			}
+		case xml.CharData:
+			if inValue || inInlineText {
+				cell.Write(t)
+			}
+		}
+	}
+	return strings.TrimSpace(out.String()), nil
+}
+
+// extractWPSWriter reads .wps (WPS 文字). Files written by modern WPS are
+// OOXML packages with the docx part layout, so the docx walker applies
+// unchanged; genuinely old binary .wps files fail with the re-save hint below
+// — the alternative (indexing nothing, or junk) would silently poison the
+// knowledge base.
+func extractWPSWriter(data []byte) (string, error) {
+	text, err := extractDocx(data)
+	if err != nil {
+		return "", fmt.Errorf("WPS 文字 (.wps) 读取失败：仅支持新版 WPS 保存的 OOXML 容器；旧版二进制文件请在 WPS 中另存为 .docx 后重传 (%v)", err)
+	}
+	return text, nil
+}
+
+// extractWPSSpreadsheet reads .et (WPS 表格) — the .xlsx package layout.
+func extractWPSSpreadsheet(data []byte) (string, error) {
+	text, err := extractXlsx(data)
+	if err != nil {
+		return "", fmt.Errorf("WPS 表格 (.et) 读取失败：仅支持新版 WPS 保存的 OOXML 容器；旧版二进制文件请在 WPS 中另存为 .xlsx 后重传 (%v)", err)
 	}
 	return text, nil
 }
