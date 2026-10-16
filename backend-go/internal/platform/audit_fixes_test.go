@@ -146,30 +146,52 @@ func TestCriticalLaneOverflowCountsAndPages(t *testing.T) {
 		}
 	}()
 
+	// The counter is process-wide and monotonic, but the pattern asserted below
+	// ("first drop pages, then every threshold") is only observable from a known
+	// origin — a second run of this test in the same process would start at 32 and
+	// see one page instead of two. Start at zero, the state a fresh process has,
+	// and hand the previous value back.
+	prevOverflow := criticalLaneOverflow.Load()
+	criticalLaneOverflow.Store(0)
+	defer criticalLaneOverflow.Store(prevOverflow)
+
 	before := criticalLaneOverflow.Load()
-	for i := 0; i < criticalLaneOverflowPageAt; i++ {
+	for range criticalLaneOverflowPageAt {
 		spawnAsync(full, func() {}, false)
 	}
 	// The spill decision now happens in the spawned goroutine — the caller is
 	// never made to wait for a slot — so poll instead of asserting synchronously.
+	//
+	// Poll for the PAGES, not just the counter: dropCriticalTask increments the
+	// counter before it calls the page hook, so a counter at the threshold says
+	// nothing about the hook having run yet. Reading pages right after the count
+	// check panicked here on 2026-10-16 (index out of range [0] with length 0):
+	// the gap is wide enough to be deterministic on Windows, where 32 goroutines
+	// contend for the same stderr fd before reaching the hook.
 	deadline := time.Now().Add(5 * time.Second)
-	for criticalLaneOverflow.Load()-before < criticalLaneOverflowPageAt && time.Now().Before(deadline) {
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(pages)
+		mu.Unlock()
+		if n >= 2 && criticalLaneOverflow.Load()-before >= criticalLaneOverflowPageAt {
+			break
+		}
 		time.Sleep(time.Millisecond)
 	}
 	if got := criticalLaneOverflow.Load() - before; got != criticalLaneOverflowPageAt {
 		t.Fatalf("overflow count = %d, want %d", got, criticalLaneOverflowPageAt)
 	}
 	mu.Lock()
-	n := len(pages)
-	first := pages[0]
-	last := pages[n-1]
+	recorded := append([]int64(nil), pages...)
 	mu.Unlock()
+	n := len(recorded)
 	// Two pages for 32 drops: the first drop always pages (a burst of 1–31 would
 	// otherwise be log-only), and every criticalLaneOverflowPageAt-th after that
 	// keeps a spike that lasts hours from going silent.
 	if n != 2 {
-		t.Fatalf("expected a page on the first drop and at the threshold, got %d (%v)", n, pages)
+		t.Fatalf("expected a page on the first drop and at the threshold, got %d (%v)", n, recorded)
 	}
+	first, last := recorded[0], recorded[n-1]
 	if want := before + 1; first != want {
 		t.Errorf("first page reported overflow=%d, want %d", first, want)
 	}
