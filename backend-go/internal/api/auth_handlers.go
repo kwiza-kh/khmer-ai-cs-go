@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -288,8 +289,27 @@ func (a *App) register(w http.ResponseWriter, r *http.Request) (any, error) {
 // bumpTokenVersion invalidates every JWT already issued for userID. Called
 // whenever a credential or privilege changes, so a token minted before the
 // change cannot outlive it.
-func (a *App) bumpTokenVersion(ctx context.Context, userID int32) {
-	_, _ = a.DB.Exec(ctx, "UPDATE users SET token_version = token_version + 1 WHERE user_id = $1", userID)
+//
+// It RETURNS the error, because this is a security guarantee rather than
+// housekeeping: a failed bump leaves a disabled or demoted account's token
+// working for up to 24 hours while the caller reports success. The old version
+// discarded the error (found 2026-10-16 while auditing swallowed writes), which
+// made "the role change took effect at once" a claim nobody could rely on.
+// changePassword shows the right shape — one statement that rotates the
+// credential and the version together.
+func (a *App) bumpTokenVersion(ctx context.Context, userID int32) error {
+	if _, err := a.DB.Exec(ctx, "UPDATE users SET token_version = token_version + 1 WHERE user_id = $1", userID); err != nil {
+		if a.Logger != nil {
+			a.Logger.Error("token version bump failed; pre-change JWTs stay valid",
+				"user_id", userID, "error", err.Error())
+		}
+		if a.Pipe != nil {
+			a.Pipe.PlatformAlert(ctx, "token-version-bump", "登录态未能失效（安全）",
+				fmt.Sprintf("用户 %d 的 token_version 自增失败: %s。凭据/权限变更前签发的 JWT 仍然有效（最长 24 小时），请重试或手动处理。", userID, err.Error()))
+		}
+		return err
+	}
+	return nil
 }
 
 func (a *App) changePassword(w http.ResponseWriter, r *http.Request) (any, error) {

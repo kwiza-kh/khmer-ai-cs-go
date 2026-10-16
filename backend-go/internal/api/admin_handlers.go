@@ -621,7 +621,12 @@ func (a *App) updateUserRole(w http.ResponseWriter, r *http.Request, userID int3
 	// demotion or disable takes effect at once rather than whenever their
 	// current JWT happens to expire. The role lives in the token, so without
 	// this the old privileges kept working for up to 24h.
-	a.bumpTokenVersion(r.Context(), userID)
+	if err := a.bumpTokenVersion(r.Context(), userID); err != nil {
+		// The account change is committed; only the revocation failed. Saying so
+		// is the difference between "offboarded now" and "offboarded whenever
+		// their token expires", and the admin can retry.
+		return nil, ErrInternal("账号已更新，但旧登录态未能失效（token_version 更新失败），该用户可能仍能用旧令牌访问；请重试")
+	}
 	return map[string]string{"message": "已更新"}, nil
 }
 

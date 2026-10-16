@@ -380,7 +380,7 @@ func (p *Pipeline) SpawnWorkers(ctx context.Context) {
 				case <-p.notify:
 				case <-time.After(2 * time.Second):
 				}
-				p.processInboundNext(ctx)
+				p.runTurnGuarded("inbound", func() { p.processInboundNext(ctx) })
 			}
 		}()
 		go func() {
@@ -391,10 +391,39 @@ func (p *Pipeline) SpawnWorkers(ctx context.Context) {
 				case <-p.notifyOutbound:
 				case <-time.After(1 * time.Second):
 				}
-				p.processOutboundNext(ctx)
+				p.runTurnGuarded("outbound", func() { p.processOutboundNext(ctx) })
 			}
 		}()
 	}
+}
+
+// runTurnGuarded runs one worker iteration so a panic inside a turn cannot take
+// the whole backend down.
+//
+// Go terminates the process on an unrecovered panic in ANY goroutine, and these
+// two loops are the only entry point for every tenant's messages and replies: a
+// deterministic panic (a bad type assertion on provider data, a nil map, an
+// index out of range) would not merely lose one turn — it would crash-loop the
+// service under systemd while the same event is re-claimed, i.e. an outage for
+// every tenant caused by one message. The background lanes have had this guard
+// from the start (runBackgroundTask); the workers had not (audited 2026-10-16
+// while hunting panic paths).
+//
+// A recovered turn leaves the claimed row in 'processing', so the stale-lock
+// sweep re-claims it after five minutes and the turn ledger keeps the re-run
+// from answering or charging twice.
+func (p *Pipeline) runTurnGuarded(worker string, fn func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			if p.Logger != nil {
+				p.Logger.Error("worker turn panicked; process kept alive", "worker", worker, "panic", fmt.Sprint(r))
+			}
+			p.PlatformAlert(context.Background(), "worker-panic-"+worker, "后台 worker panic（已恢复）",
+				fmt.Sprintf("%s worker 的一轮处理发生 panic: %s。进程未退出，该轮消息未完成，事件会在租约过期后重试；若是确定性 panic 会反复触发，请按事件内容定位。",
+					worker, textutil.TruncateRunes(fmt.Sprint(r), 300)))
+		}
+	}()
+	fn()
 }
 
 // ============================================

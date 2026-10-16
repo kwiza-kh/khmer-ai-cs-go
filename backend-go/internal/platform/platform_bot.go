@@ -31,7 +31,10 @@ const alertDedupTTL = 15 * time.Minute
 // send anything. Every platform-bot feature degrades to a no-op without it, so
 // a deployment that does not want them simply leaves the token blank.
 func (p *Pipeline) PlatformBotEnabled() bool {
-	return strings.TrimSpace(p.Cfg.PlatformBot.Token) != ""
+	// Nil-safe on purpose: this is the guard every alert path starts with, and it
+	// is reached from recover() handlers where a nil Cfg (tests, a half-built
+	// pipeline) must not turn "tell the operator" into a second panic.
+	return p.Cfg != nil && strings.TrimSpace(p.Cfg.PlatformBot.Token) != ""
 }
 
 // platformAlertChat resolves where operator alerts go: the configured chat, or

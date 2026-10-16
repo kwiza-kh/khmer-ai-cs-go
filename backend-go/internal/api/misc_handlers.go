@@ -148,7 +148,11 @@ func (a *App) totpDisable(w http.ResponseWriter, r *http.Request) (any, error) {
 // without signing out the person who made the change. Returns "" when the bump
 // or signing fails — callers treat that as "re-login required".
 func (a *App) refreshedToken(r *http.Request, user *CurrentUser) string {
-	a.bumpTokenVersion(r.Context(), user.UserID)
+	if err := a.bumpTokenVersion(r.Context(), user.UserID); err != nil {
+		// The whole point of the refreshed token is that the bump happened; a
+		// fresh JWT signed without it would keep every other session alive.
+		return ""
+	}
 	var version int
 	if err := a.DB.QueryRow(r.Context(),
 		"SELECT token_version FROM users WHERE user_id = $1", user.UserID).Scan(&version); err != nil {
