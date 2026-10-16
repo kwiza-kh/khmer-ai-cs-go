@@ -1744,6 +1744,38 @@ func thinkingBudget() int {
 	return -1
 }
 
+// auxThinkingBudget is the thinking budget for the auxiliary model calls:
+// transcription, OCR, image description, TTS, the ingest-time compile and the
+// fast helper generations.
+//
+// These are READS, not reasoning. The model either decoded the audio or it did
+// not; a thinking pass buys nothing here while spending exactly the latency the
+// customer is waiting in. Unset ⇒ 0, which is deliberately the opposite of the
+// chat default above (send nothing, let the model decide): for a reply a slower
+// better answer is a fair trade, for a transcript it is not.
+//
+// Measured 2026-10-16: a Messenger voice note intermittently took 60s end to end
+// through the same pipeline that answered another note in 3.5s (media phases:
+// download 0.2s, extract 3.5s, upload 0.7s), and the auxiliary calls were the
+// only ones in the turn running on the model's defaults — the chat path had a
+// thinking budget, transcription had no generationConfig at all.
+func auxThinkingBudget() int {
+	if b := thinkingBudget(); b >= 0 {
+		return b
+	}
+	return 0
+}
+
+// auxGenerationConfig is the config block for one auxiliary read call:
+// deterministic, capped, and not allowed to think.
+func auxGenerationConfig(maxTokens int, temperature float64) map[string]any {
+	return map[string]any{
+		"temperature":     temperature,
+		"maxOutputTokens": maxTokens,
+		"thinkingConfig":  map[string]any{"thinkingBudget": auxThinkingBudget()},
+	}
+}
+
 // embedBudget is the ceiling for the query-embedding hop
 // (GEMINI_EMBED_BUDGET_MS, default 5000). Read per call, like the other knobs
 // in this file, so a deploy can re-tune without a rebuild.
@@ -1984,7 +2016,7 @@ func (s *Service) DescribeImage(ctx context.Context, data []byte, mimeType strin
 				{"inlineData": map[string]any{"mimeType": mimeType, "data": base64.StdEncoding.EncodeToString(data)}},
 			},
 		}},
-		"generationConfig": map[string]any{"maxOutputTokens": 512},
+		"generationConfig": auxGenerationConfig(512, 0.0),
 	}
 	status, text, err := s.postWithRetry(ctx, s.generateURLFor(s.fastModelName()), body)
 	if err != nil {
@@ -2022,7 +2054,7 @@ func (s *Service) ExtractDocumentText(ctx context.Context, data []byte, mimeType
 				{"inlineData": map[string]any{"mimeType": mimeType, "data": base64.StdEncoding.EncodeToString(data)}},
 			},
 		}},
-		"generationConfig": map[string]any{"temperature": 0.0, "maxOutputTokens": 8192},
+		"generationConfig": auxGenerationConfig(8192, 0.0),
 	}
 	status, text, err := s.postWithRetry(ctx, s.generateURLFor(s.fastModelName()), body)
 	if err != nil {
@@ -2073,7 +2105,7 @@ func (s *Service) ExtractProductImage(ctx context.Context, data []byte, mimeType
 				{"inlineData": map[string]any{"mimeType": mimeType, "data": base64.StdEncoding.EncodeToString(data)}},
 			},
 		}},
-		"generationConfig": map[string]any{"temperature": 0.0, "maxOutputTokens": 8192},
+		"generationConfig": auxGenerationConfig(8192, 0.0),
 	}
 	status, text, err := s.postWithRetry(ctx, s.generateURLFor(s.fastModelName()), body)
 	if err != nil {
@@ -2248,7 +2280,7 @@ func (s *Service) GenerateFastMax(ctx context.Context, prompt string, timeout ti
 			"role":  "user",
 			"parts": []map[string]any{{"text": prompt}},
 		}},
-		"generationConfig": map[string]any{"temperature": 0.0, "maxOutputTokens": maxOutputTokens},
+		"generationConfig": auxGenerationConfig(maxOutputTokens, 0.0),
 	}
 	status, text, err := s.postWithRetry(ctx, s.generateURLFor(s.fastModelName()), body)
 	if err != nil || status != http.StatusOK {
@@ -2736,6 +2768,9 @@ func (s *Service) transcribeOnce(ctx context.Context, audio []byte, mimeType, pr
 				{"inlineData": map[string]any{"mimeType": mimeType, "data": base64.StdEncoding.EncodeToString(audio)}},
 			},
 		}},
+		// A transcript is a read: no thinking, a fixed temperature, and a budget
+		// that a long voice note still fits in.
+		"generationConfig": auxGenerationConfig(4096, 0.0),
 	}
 	cfg := s.snapshot()
 	status, text, err := s.postWithRetry(ctx, s.generateURLFor(cfg.modelName), body)

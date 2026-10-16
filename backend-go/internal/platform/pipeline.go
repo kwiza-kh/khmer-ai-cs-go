@@ -38,6 +38,12 @@ const (
 	maxAttempts = 5
 	workerCount = 4
 
+	// asrTimeout bounds one voice-note transcription. A 30s cap is generous for a
+	// read that answers in ~3s (measured) and still keeps the worst case inside a
+	// customer's patience — the alternative was a turn that waited a full minute
+	// on the provider and then answered anyway (2026-10-16).
+	asrTimeout = 30 * time.Second
+
 	// staleLockMinutes is how long a claimed-but-unfinished event may hold its
 	// lock before another worker is allowed to steal it. Both the inbound and
 	// the outbound claim re-take a row whose lock is older than this.
@@ -757,7 +763,16 @@ func (p *Pipeline) extractMediaText(ctx context.Context, ev *InboundEvent, isIma
 	// the customer spoke. Pinning it made Gemini render Khmer speech in the wrong
 	// script (e.g. Amharic) — let the model detect it, and the script guard inside
 	// TranscribeAudio retries as Khmer if it mis-decodes.
-	transcript, terr := transcribeAudio(ctx, p, data, mime, "")
+	//
+	// Bounded on purpose: a transcription is a read on the customer's critical
+	// path, and the turn must not sit behind a stalled provider. With the
+	// auxiliary thinking budget off it answers in seconds; past asrTimeout the
+	// media counts as unreadable, which stagePrepareMedia turns into a handoff
+	// (recorded, not silent). Before this bound, one Messenger voice note took 65s
+	// end to end while the identical pipeline answered another in 3.5s.
+	asrCtx, cancelASR := context.WithTimeout(ctx, asrTimeout)
+	defer cancelASR()
+	transcript, terr := transcribeAudio(asrCtx, p, data, mime, "")
 	switch {
 	case terr != nil:
 		p.Logger.Warn("voice transcription failed", "event_id", ev.EventID, "error", fmt.Sprint(terr))
