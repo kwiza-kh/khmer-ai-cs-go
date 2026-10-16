@@ -2333,8 +2333,13 @@ payload 变 `{kind:media, media_type:image, media_url}`；`chat_messages.media_u
   默认仍是关的）。caption 1024。
 - **Zalo**：`SendImage` 只吃 URL，没有 caption ⇒ 图在前、文字在后（新增；此前图片路径
   直接 return，只对「图就是全部回复」的 T2I 成立）。
-- **WhatsApp / Messenger / Instagram**：能吃 caption；超限则先发裸图，再把 `Kind` 复位为
-  `text` 分块发文字（否则每个分块都会重发同一张图）。caption 1024。
+- **WhatsApp**：图片体是 `type:image` + `image.link` + `image.caption`，能吃 caption（1024）；
+  超限则先发裸图，再把 `Kind` 复位为 `text` 分块发文字（否则每个分块都会重发同一张图）。
+- **Messenger / Instagram**：媒体体是 `message.attachment{type,payload.url}`（Send API：
+  "audio/video/file from a URL 用同一格式"），**attachment 没有 caption 字段** ⇒ 文字永远另发一条
+  （CaptionLimit 0）。顺带修掉一个从未暴露的缺陷：原来发的是顶层 `type` + `image:{link}`
+  （Zalo/LINE 形状），Graph 会以 error 100 拒绝。生产 outbox 里 media 投递为 0
+  （telegram 66 / meta 43 全是文本），三个渠道**都还没真发过图**，这个缺陷只能靠读官方文档发现。
 - **LINE / 网站组件**：能力表不含 `MediaImage` ⇒ 判定阶段就不附图，退化为纯文字。
 
 ### 六、失败与降级（都是"不伤客户"的那一侧）

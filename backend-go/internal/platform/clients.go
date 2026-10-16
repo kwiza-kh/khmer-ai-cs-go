@@ -378,11 +378,24 @@ func buildMetaMessageBodyInner(req *SendRequest) map[string]any {
 		if mediaType == "" {
 			mediaType = "image"
 		}
-		media := map[string]any{"link": req.MediaURL}
-		if req.Text != "" && mediaType != "audio" {
-			media["caption"] = req.Text
+		// Messenger and Instagram take media as message.attachment{type,payload.url}
+		// — "Sending audio, video, or a file from a URL will use the same format"
+		// (Send API docs). The previous top-level `type`/`image:{link}` body is the
+		// Zalo/LINE shape; Graph answers it with error 100 (Invalid parameter), and
+		// nothing had ever exercised it (0 media rows in production, 2026-10-16).
+		//
+		// There is no caption field here (unlike WhatsApp's image.caption), which is
+		// why the capability table gives Messenger/Instagram CaptionLimit 0 and
+		// channel_meta.Send delivers the reply as its own message.
+		return map[string]any{
+			"recipient": map[string]any{"id": req.RecipientID},
+			"message": map[string]any{
+				"attachment": map[string]any{
+					"type":    mediaType,
+					"payload": map[string]any{"url": req.MediaURL},
+				},
+			},
 		}
-		return map[string]any{"recipient": map[string]any{"id": req.RecipientID}, "type": mediaType, mediaType: media}
 	case "buttons":
 		var elems []map[string]any
 		for _, b := range req.Buttons {
