@@ -784,11 +784,29 @@ func (s *Service) Search(ctx context.Context, userID int32, query string, topK i
 		fused = fused[:topK]
 	}
 
-	out := make([]Source, 0, len(fused))
-	for _, c := range fused {
-		out = append(out, Source{DocID: c.DocID, Title: c.Title, Content: c.Content, Score: c.Similarity})
-	}
+	out := sourcesFromChunks(fused)
 	return out, nil
+}
+
+// sourcesFromChunks maps ranked chunks onto the sources the caller sees.
+//
+// A field dropped here is invisible to every other test: the retrieval legs are
+// database-bound, so the first production smoke of the product-photo feature
+// found sources coming back without media_key (2026-10-16) — which would have
+// silently disabled the whole attach step. Keep the mapping in one function so
+// that test can exist.
+func sourcesFromChunks(chunks []SearchChunk) []Source {
+	out := make([]Source, 0, len(chunks))
+	for _, c := range chunks {
+		out = append(out, Source{
+			DocID:    c.DocID,
+			Title:    c.Title,
+			Content:  c.Content,
+			Score:    c.Similarity,
+			MediaKey: c.MediaKey,
+		})
+	}
+	return out
 }
 
 // agreeSkipBar is the dense similarity at which dense and lexical agreeing on the
