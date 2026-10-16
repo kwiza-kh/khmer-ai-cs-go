@@ -551,6 +551,33 @@ func (t *TelegramClient) SendMessage(ctx context.Context, chatID, text string, b
 	return "", nil
 }
 
+// SendPhoto delivers a picture by URL (Telegram fetches it itself, so it must be
+// an HTTPS address the provider can reach — an R2 public or presigned URL is),
+// optionally with a caption and an inline keyboard.
+func (t *TelegramClient) SendPhoto(ctx context.Context, chatID, photoURL, caption string, buttons [][2]string) (string, error) {
+	body := map[string]any{"chat_id": chatID, "photo": photoURL}
+	if caption != "" {
+		body["caption"] = caption
+	}
+	if len(buttons) > 0 {
+		var rows [][]map[string]any
+		for _, b := range buttons {
+			rows = append(rows, []map[string]any{{"text": b[0], "callback_data": b[1]}})
+		}
+		body["reply_markup"] = map[string]any{"inline_keyboard": rows}
+	}
+	v, err := t.call(ctx, "sendPhoto", body)
+	if err != nil {
+		return "", err
+	}
+	if result, ok := v["result"].(map[string]any); ok {
+		if mid, ok := result["message_id"].(float64); ok {
+			return fmt.Sprintf("%.0f", mid), nil
+		}
+	}
+	return "", nil
+}
+
 // DownloadFile resolves file_id → path and fetches the bytes.
 func (t *TelegramClient) DownloadFile(ctx context.Context, fileID string) ([]byte, string, error) {
 	v, err := t.call(ctx, "getFile", map[string]any{"file_id": fileID})

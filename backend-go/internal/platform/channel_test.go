@@ -365,6 +365,37 @@ func TestZaloChannelSendsImageAttachment(t *testing.T) {
 	}
 }
 
+// Zalo's send-image call cannot carry a caption, so the answer follows the photo
+// as its own message — the customer must not receive a picture with no words.
+func TestZaloChannelSendsImageThenText(t *testing.T) {
+	rs := newRecordingServer(t, okJSON(`{"error":0,"data":{"msg_id":"z-2"}}`))
+	overrideBase(t, &zaloBase, rs.srv)
+
+	ch := &zaloChannel{p: &Pipeline{}, cfg: &configCred{Platform: "zalo", AccessToken: "tok"}}
+	id, err := ch.Send(context.Background(), ChannelMessage{
+		RecipientID: "u-9", Kind: "media", MediaType: "image", MediaURL: "https://cdn/x.png",
+		Content: "យើងមានទំនិញនេះ",
+	})
+	if err != nil {
+		t.Fatalf("send image: %v", err)
+	}
+	calls := rs.recorded()
+	if len(calls) != 2 {
+		t.Fatalf("calls = %+v, want the image and then the text", calls)
+	}
+	first, _ := calls[0].Body["message"].(map[string]any)
+	if first["type"] != "image" {
+		t.Fatalf("first message = %+v, want the image", first)
+	}
+	second, _ := calls[1].Body["message"].(map[string]any)
+	if got, _ := second["text"].(string); got != "យើងមានទំនិញនេះ" {
+		t.Fatalf("second message text = %q, want the reply", got)
+	}
+	if id != "z-2" {
+		t.Fatalf("msg id = %q, want the text message id", id)
+	}
+}
+
 func TestZaloChannelTypingIsANoop(t *testing.T) {
 	rs := newRecordingServer(t, okJSON(`{"error":0}`))
 	overrideBase(t, &zaloBase, rs.srv)

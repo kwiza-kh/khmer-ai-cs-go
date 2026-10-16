@@ -139,6 +139,64 @@ func (c *Client) PutObject(ctx context.Context, key string, data []byte, content
 	return nil
 }
 
+// DeleteObject removes one object (SigV4 header signing, no body).
+//
+// A missing object is not an error: S3 deletes are idempotent, and the caller's
+// goal — "this document's picture is gone" — is already true when the object is
+// absent (a re-run of a delete after a crash lands here).
+func (c *Client) DeleteObject(ctx context.Context, key string) error {
+	if !c.Enabled() {
+		return fmt.Errorf("r2 not configured")
+	}
+	u := c.endpoint(key)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, u, nil)
+	if err != nil {
+		return err
+	}
+	amzDate := time.Now().UTC().Format(amzDateFormat)
+	dateStamp := time.Now().UTC().Format(dateFormat)
+	emptyHash := sha256.Sum256(nil)
+	hexPayload := hex.EncodeToString(emptyHash[:])
+
+	req.Header.Set("x-amz-date", amzDate)
+	req.Header.Set("x-amz-content-sha256", hexPayload)
+
+	signedHeaders := "host;x-amz-content-sha256;x-amz-date"
+	canonicalHeaders := "host:" + req.URL.Host + "\n" +
+		"x-amz-content-sha256:" + hexPayload + "\n" +
+		"x-amz-date:" + amzDate + "\n"
+	canonicalRequest := strings.Join([]string{
+		"DELETE", req.URL.Path, "", canonicalHeaders, signedHeaders, hexPayload,
+	}, "\n")
+
+	scope := dateStamp + "/" + region + "/" + service + "/aws4_request"
+	crHash := sha256.Sum256([]byte(canonicalRequest))
+	stringToSign := strings.Join([]string{
+		"AWS4-HMAC-SHA256", amzDate, scope, hex.EncodeToString(crHash[:]),
+	}, "\n")
+
+	kDate := hmacSHA256([]byte("AWS4"+c.SecretKey), []byte(dateStamp))
+	kRegion := hmacSHA256(kDate, []byte(region))
+	kService := hmacSHA256(kRegion, []byte(service))
+	kSigning := hmacSHA256(kService, []byte("aws4_request"))
+	signature := hex.EncodeToString(hmacSHA256(kSigning, []byte(stringToSign)))
+
+	req.Header.Set("Authorization", fmt.Sprintf(
+		"AWS4-HMAC-SHA256 Credential=%s/%s, SignedHeaders=%s, Signature=%s",
+		c.AccessKey, scope, signedHeaders, signature))
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("r2 delete: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 && resp.StatusCode != http.StatusNotFound {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return fmt.Errorf("r2 delete %s failed (%d): %s", key, resp.StatusCode, string(body))
+	}
+	return nil
+}
+
 // PresignedGET returns a temporary HTTPS URL that downloads the object.
 func (c *Client) PresignedGET(key string, ttl time.Duration) (string, error) {
 	if !c.Enabled() {

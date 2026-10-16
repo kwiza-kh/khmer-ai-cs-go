@@ -142,6 +142,7 @@ func TestInboundStageListIsStable(t *testing.T) {
 		"screen-reply",
 		"after-hours-preamble",
 		"handoff-reply",
+		"attach-doc-image",
 		"persist-and-deliver",
 		"post-delivery",
 	}

@@ -2264,3 +2264,96 @@ headless Chrome + CDP：`Page.addScriptToEvaluateOnNewDocument` 在**任何应�
 - 这类"客户会碰到的失败"要么重试、要么记录（垫片的 warn 属于记录，见 AGENTS.md 惯例）。
 - 以后任何「某个浏览器整页崩溃」的报障，先按上面的毒化法复现再谈修复——
   比读代码猜 API 快一个数量级。
+
+## 二十七、知识库里的图片：入库、检索、回传（2026-10-16）
+
+起因是一个真实场景：商家把产品图入库，客户发一张同样的照片问「有没有这个」。
+在此之前知识库对图片只有半条链路——**收得进、搜得到、但发不回去**：图片上传后
+被 OCR 成文字，原图当场丢弃（`knowledge_documents` 没有存文件的列），而模型的回复
+里根本没有媒体通道（出站媒体只来自 T2I 渲染、语音回复和坐席手工附件）。
+
+### 一、原图存哪：迁移 080 + R2 对象键
+
+- `knowledge_documents.media_key`（080，双目录镜像）存 **R2 对象键**，不存 URL：
+  键不会因公网基址变更而失效，读的时候统一走 `storager2.PublicOrPresigned`
+  （与会话媒体、头像同一套约定）。
+- 键是内容寻址的 `kb/<tenant>/<sha256前8字节>.<ext>`：同一张图重复上传覆盖同一个
+  对象，不会堆副本；租户 id 在路径里。
+- 上传路径先 `PutObject` 再记 `media_key`（和 079 的 `file_ext` 同一条 UPDATE）；
+  R2 未配置或上传失败**不阻断上传**（文字才是文档），但列保持 NULL——
+  「为什么机器人不发图」有答案。删文档时用 `storager2.DeleteObject` 清对象
+  （新增；S3 DELETE 幂等，404 视为成功），失败只记日志：行已经删了，孤儿对象只是存储成本。
+- 存前按**字节**判类型（复用头像那套 `sniffImageType`）：改名成 `.jpg` 的 PDF 不会以
+  图片身份进桶，扩展名取自嗅探结果而不是客户文件名。
+
+### 二、图片怎么变成可检索的文字：`ExtractProductImage`
+
+逐字转写（`ExtractDocumentText`）对产品图几乎没用——一台电饭锅的照片转出来是
+「SANYO」一个词，客户怎么问都匹配不上。图片入库改走新的产品读图提示词，产出两段：
+`TEXT:`（逐字转写，高棉文保持高棉文，不翻译）+ `PRODUCT:`（产品名与可见属性，附
+英/高棉/中文名——写成客户会用来提问的词）。索引文本是检索唯一的抓手，
+没有词的图片就是一篇永远搜不到的文档。
+
+入站方向同理：`DescribeImage` 的提示词加了「若是商品/包装，说出产品名与属性并给
+中英高棉名」，因为客户照片的描述文本会并进该轮内容参与检索，描述质量直接决定召回。
+
+### 三、检索把图片带出来
+
+`rag.SearchChunk` / `rag.Source` 增加 `MediaKey`，三条检索腿（dense / lexical /
+trigram）的 SELECT 都带上 `COALESCE(kd.media_key,'')`，随 sources_json 一路到管道。
+检索行为本身不变：图片文档仍然是文字 chunk 参与打分，没有图像向量。
+
+### 四、回复带图：`attach-doc-image`
+
+新增一个 stage（在 `handoff-reply` 之后、`persist-and-deliver` 之前），判定交给纯函数
+`chooseDocImage`，**全部条件满足才附图**：
+
+- 是真实模型回复（非 canned、非转人工致歉）；
+- top1 来源带图；
+- 没有**另一张不同的图**的文档分数咬到 top1 的 90% 以内（两个产品 0.81/0.80 =
+  客户照片可能是任何一个 ⇒ 只回文字反问，不猜）；
+- 渠道能力表允许发图。
+
+命中后：`persist-and-deliver` 在**发送前几秒**签名 URL（避免慢轮次把链接放过期），
+payload 变 `{kind:media, media_type:image, media_url}`；`chat_messages.media_url`
+存**对象键**（收件箱读时再签名，与其它行一致），所以坐席在会话里能看到机器人发了哪张图
+（`MessagePayloadPreview` 已有渲染分支）。
+
+图片是商家目录里的，不是模型写的——模型自写 media URL 正是
+`unsafeReplyMediaURL` 防的那类注入，选图必须由检索证据决定。
+
+### 五、渠道差异：图片不能吃掉正文
+
+`Capabilities` 新增 `CaptionLimit`（runes；0 = 该渠道不能给图片配文）。规则一句话：
+**回复长到当不了 caption，就先发图、再把文字作为独立消息发出去**，绝不截断答案。
+
+- **Telegram**：能力表原先写 `MediaText|MediaAudio`，注释写明「因为 `Send` 没有图片分支，
+  声称支持会让 T2I 把图当文字发」——本轮补上 `sendPhoto`（`SendPhoto` 客户端方法 +
+  `sendImage`），能力位随之翻成含 `MediaImage`（副作用：T2I 开启时现在也适用于 Telegram，
+  默认仍是关的）。caption 1024。
+- **Zalo**：`SendImage` 只吃 URL，没有 caption ⇒ 图在前、文字在后（新增；此前图片路径
+  直接 return，只对「图就是全部回复」的 T2I 成立）。
+- **WhatsApp / Messenger / Instagram**：能吃 caption；超限则先发裸图，再把 `Kind` 复位为
+  `text` 分块发文字（否则每个分块都会重发同一张图）。caption 1024。
+- **LINE / 网站组件**：能力表不含 `MediaImage` ⇒ 判定阶段就不附图，退化为纯文字。
+
+### 六、失败与降级（都是"不伤客户"的那一侧）
+
+| 情况 | 行为 |
+|---|---|
+| R2 未配置 / 签名失败 | 不附图，文字照常发（`docImageURL` 返回 ""） |
+| 上传时 R2 写失败 | 上传成功，`media_key` 为 NULL，日志留痕 |
+| 入站图片识别失败 | 内容为空 → 不再让模型对着空气作答，直接转人工（`media-unreadable`），失败原因记在 `platform_media.extract_failed` |
+| 检索歧义 / 低分 | 只回文字（反问或转人工） |
+| 渠道不支持图片 | 能力表拦截，文字照常 |
+
+### 七、验证
+
+- 纯逻辑：`chooseDocImage` 11 例（无图/无命中/canned/转人工/渠道不支持/同图多 chunk 不算歧义/
+  两产品打平不猜/明显领先才发/夹一篇无图文档不算歧义）、`captionFits` 7 例（含高棉文按 rune 计数）、
+  `kbImageMime`（PDF 改名 .jpg 被拒）、`kbAssetKey`（内容寻址 + 租户隔离）、
+  `TestZaloChannelSendsImageThenText`（图后必须有文字，空正文只发一条）。
+- 能力表与实现一致（`TestCapabilitiesMatchTheImagePathsThatExist`）与 T2I 目标渠道
+  （`TestShouldRender`）随 Telegram 的图片分支一起更新。
+- 线上：迁移 080 后跑 `SQLCHECK_REQUIRED=1 go test ./internal/sqlcheck/`（指向生产库，
+  PREPARE-only、事务回滚）；发布后 `/ready` 与真实轮次验证。

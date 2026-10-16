@@ -42,6 +42,35 @@ func (c *metaChannel) Send(ctx context.Context, msg ChannelMessage) (string, err
 	if msg.Kind == "text" || msg.Kind == "buttons" {
 		req.Text = msg.Content
 	}
+	// An image carries the reply as its caption when that fits (WhatsApp,
+	// Messenger and Instagram all render one). A reply longer than the caption
+	// limit goes out as its own message after the picture: an over-long caption
+	// makes the provider reject the whole send, and dropping the answer to keep
+	// the image is the wrong trade — the picture exists to support the words.
+	if msg.Kind == "media" && msg.MediaURL != "" {
+		if !captionFits(msg.Content, c.Caps()) {
+			id, err := client.SendMessage(ctx, req)
+			if err != nil {
+				return "", err
+			}
+			// The picture is on its way: the rest of this function must send plain
+			// text, or every chunk would carry the same image again.
+			req.Kind, req.MediaURL, req.MediaType, req.Text = "text", "", "", ""
+			last := id
+			for _, chunk := range SplitChannelText(msg.Content, c.Caps()) {
+				req.Text = chunk
+				mid, err := client.SendMessage(ctx, req)
+				if err != nil {
+					return "", err
+				}
+				if mid != "" {
+					last = mid
+				}
+			}
+			return last, nil
+		}
+		req.Text = msg.Content
+	}
 	chunks := SplitChannelText(msg.Content, c.Caps())
 	last := ""
 	if msg.Kind != "text" || len(chunks) == 0 {

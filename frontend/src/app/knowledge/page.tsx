@@ -864,6 +864,12 @@ export default function KnowledgePage() {
               <div className="space-y-3"><Skeleton className="h-5 w-1/3" /><Skeleton className="h-72" /></div>
             ) : previewDoc ? (
               <div className="space-y-4">
+                {previewDoc.media_url && (
+                  <a href={previewDoc.media_url} target="_blank" rel="noreferrer" className="block overflow-hidden rounded-xl border border-border bg-muted/30">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={previewDoc.media_url} alt={previewDoc.title} className="mx-auto max-h-[42vh] w-auto object-contain" />
+                  </a>
+                )}
                 <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                   {previewLabel && <Badge variant="outline" className="h-5 px-1.5 font-mono text-label" title={t(previewGroup.labelKey)}>{previewLabel}</Badge>}
                   <span>{tf("kb.created", { date: formatDate(previewDoc.created_at, t("kb.dateUnavailable")) })}</span>

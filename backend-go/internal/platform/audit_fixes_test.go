@@ -2,6 +2,7 @@ package platform
 
 import (
 	"regexp"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -191,12 +192,16 @@ func TestCriticalLaneOverflowCountsAndPages(t *testing.T) {
 	if n != 2 {
 		t.Fatalf("expected a page on the first drop and at the threshold, got %d (%v)", n, recorded)
 	}
-	first, last := recorded[0], recorded[n-1]
-	if want := before + 1; first != want {
-		t.Errorf("first page reported overflow=%d, want %d", first, want)
+	// The two pages are written by different dropping goroutines, so their ORDER
+	// is not defined: the goroutine that took overflow=32 can reach the hook
+	// before the one that took overflow=1 does. Compare as a set — asserting
+	// pages[0]==1 made this flake roughly one run in five (2026-10-16).
+	sort.Slice(recorded, func(i, j int) bool { return recorded[i] < recorded[j] })
+	if want := before + 1; recorded[0] != want {
+		t.Errorf("first page reported overflow=%d, want %d", recorded[0], want)
 	}
-	if want := before + criticalLaneOverflowPageAt; last != want {
-		t.Errorf("threshold page reported overflow=%d, want %d", last, want)
+	if want := before + criticalLaneOverflowPageAt; recorded[1] != want {
+		t.Errorf("threshold page reported overflow=%d, want %d", recorded[1], want)
 	}
 
 	// The best-effort lane keeps dropping in silence: no work, no count, no page.

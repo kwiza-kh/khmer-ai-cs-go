@@ -86,7 +86,11 @@ type inboundTurn struct {
 	HandoffReason string
 	Result        gemini.ChatResult
 	GroundCtx     rag.GroundingContext
-	ClaimsHandoff bool
+	// AttachMediaKey is the picture of the document the answer grounded on
+	// (attach-doc-image stage). "" = deliver text only; persist-and-deliver
+	// resolves it to a URL and turns the payload into a media message.
+	AttachMediaKey string
+	ClaimsHandoff  bool
 }
 
 // inboundStage is one step of the turn. next=false means the turn is over
@@ -123,6 +127,9 @@ func (p *Pipeline) inboundStages() []inboundStage {
 		{Name: "screen-reply", Run: p.stageScreenReply},
 		{Name: "after-hours-preamble", Run: p.stageAfterHours},
 		{Name: "handoff-reply", Run: p.stageHandoffReply},
+		// After handoff-reply (the last stage that may rewrite the reply) and
+		// before delivery: only the final text is worth attaching a picture to.
+		{Name: "attach-doc-image", Run: p.stageAttachDocImage},
 		{Name: "persist-and-deliver", Run: p.stagePersistAndDeliver},
 		{Name: "post-delivery", Run: p.stagePostDelivery},
 	}
@@ -184,6 +191,21 @@ func (p *Pipeline) stageResolveProfile(ctx context.Context, t *inboundTurn) (boo
 func (p *Pipeline) stagePrepareMedia(ctx context.Context, t *inboundTurn) (bool, error) {
 	if t.Event.Media != nil {
 		t.Content, t.MediaURL, t.PlatformMedia = p.prepareMedia(ctx, t.Event, t.Config, t.Content)
+		// A photo or voice note we could not read leaves the turn with no words
+		// at all. Generating from empty content means answering a question the
+		// customer never asked (the model fills the silence), so the turn goes to
+		// a human: the failure is already recorded in
+		// platform_media.extract_failed, and now the customer gets a promise of a
+		// person instead of an invention.
+		if strings.TrimSpace(t.Content) == "" {
+			if failed, _ := t.PlatformMedia["extract_failed"].(string); failed != "" {
+				t.handOffWithoutReply("media-unreadable", "Inbound media could not be read ("+failed+"); customer handed to a human instead of answered")
+				if p.Logger != nil {
+					p.Logger.Warn("inbound media unreadable; handing off instead of answering an empty message",
+						"event_id", t.Event.EventID, "reason", failed)
+				}
+			}
+		}
 	}
 	return true, nil
 }
@@ -615,6 +637,16 @@ func (p *Pipeline) stagePersistAndDeliver(ctx context.Context, t *inboundTurn) (
 	}
 	p.publishMessage(ctx, t.Config.UserID, t.SessionID, modelMessageID, "model")
 	feedbackPayload := map[string]any{"feedback": true}
+	// The matched document's own picture rides along (attach-doc-image). The URL
+	// is signed here, seconds before delivery, so a slow turn cannot hand the
+	// provider a link that expired while the turn was still running.
+	if t.AttachMediaKey != "" {
+		if url := p.docImageURL(t.AttachMediaKey); url != "" {
+			feedbackPayload["kind"] = "media"
+			feedbackPayload["media_type"] = "image"
+			feedbackPayload["media_url"] = url
+		}
+	}
 	if err := p.enqueueDelivery(ctx, t.Event, t.Config, t.SessionID, modelMessageID, t.Reply, feedbackPayload); err != nil {
 		return false, err
 	}
@@ -759,10 +791,17 @@ func (p *Pipeline) persistModelReply(ctx context.Context, t *inboundTurn, modelN
 		return existing, false, nil
 	}
 	var modelMessageID int64
+	// media_url stores the object KEY, like every other chat_messages row (the
+	// inbox presigns it when it renders); the customer's copy carries a signed URL
+	// in the delivery payload instead.
+	var attachArg any
+	if t.AttachMediaKey != "" {
+		attachArg = t.AttachMediaKey
+	}
 	err = tx.QueryRow(ctx,
-		"INSERT INTO chat_messages (session_id, role, message_type, content, tokens_used, model_name, used_mock, sources_json, created_at) "+
-			"VALUES ($1,'model','text',$2,$3,$4,$5,$6,$7) RETURNING message_id",
-		t.SessionID, t.Reply, tokensUsed, modelName, t.Result.UsedMock,
+		"INSERT INTO chat_messages (session_id, role, message_type, content, media_url, tokens_used, model_name, used_mock, sources_json, created_at) "+
+			"VALUES ($1,'model','text',$2,$3,$4,$5,$6,$7,$8) RETURNING message_id",
+		t.SessionID, t.Reply, attachArg, tokensUsed, modelName, t.Result.UsedMock,
 		sourcesJSON(t.GroundCtx), time.Now()).
 		Scan(&modelMessageID)
 	if err != nil {

@@ -241,6 +241,13 @@ export interface KnowledgeDocument {
   compiled_from?: number | null;
   compile_status?: string;
   compiled_from_title?: string | null;
+  /** Object key of the stored picture (migration 080). Kept for support: the
+   *  renderable address is media_url. */
+  media_key?: string | null;
+  /** Resolved address of the uploaded picture (product photos). Present only
+   *  when the document really has one and object storage can sign it — the
+   *  merchant's own photo, which the bot sends when a customer asks about it. */
+  media_url?: string;
 }
 
 export interface KnowledgeContradictionItem {

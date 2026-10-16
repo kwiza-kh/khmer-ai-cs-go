@@ -80,10 +80,17 @@ type Capabilities struct {
 
 	// Media is the set of message kinds this channel can actually SEND. It is
 	// what the channel implementations do, not what the provider's API allows in
-	// principle: Telegram is text+audio here because telegramChannel.Send has no
-	// image branch, and claiming otherwise would make text-to-image hand it a
-	// picture it would deliver as text.
+	// principle: a channel whose Send has no image branch must not claim
+	// MediaImage, or text-to-image and the knowledge-base photo would hand it a
+	// picture it delivers as text.
 	Media MediaKinds
+
+	// CaptionLimit is the longest text that may ride along with an image, in
+	// runes; 0 means this channel cannot caption an image at all (Zalo's send
+	// image call takes a URL only). It exists because an attached product photo
+	// must not cost the customer the answer: a channel that cannot fit the reply
+	// as a caption sends the picture first and the text after it.
+	CaptionLimit int
 
 	// FlattensMarkdown is true for transports that deliver plain text to the
 	// customer (every chat channel: Markdown is stripped in enqueueDelivery). The
@@ -206,6 +213,17 @@ func (c Capabilities) MissingRequiredCredential(values map[string]string) string
 	return ""
 }
 
+// captionFits reports whether a reply can ride along with an image as its
+// caption. An empty reply always fits (a text-to-image message IS the picture),
+// and a channel with no caption support (CaptionLimit 0) never fits — the
+// picture goes out and the words follow it as their own message.
+func captionFits(content string, caps Capabilities) bool {
+	if content == "" {
+		return true
+	}
+	return caps.CaptionLimit > 0 && len([]rune(content)) <= caps.CaptionLimit
+}
+
 // Caps is the short name used by channel implementations.
 type Caps = Capabilities
 
@@ -218,7 +236,8 @@ var capabilitiesTable = map[string]Capabilities{
 		DisplayName:       "Telegram",
 		TextLimit:         4096,
 		TextLimitUnit:     UnitRunes,
-		Media:             MediaText | MediaAudio,
+		Media:             MediaText | MediaImage | MediaAudio,
+		CaptionLimit:      1024,
 		FlattensMarkdown:  true,
 		SupportsTyping:    true,
 		AvatarNeedsRehost: true,
@@ -257,11 +276,13 @@ var capabilitiesTable = map[string]Capabilities{
 		},
 	},
 	"zalo": {
-		Platform:         "zalo",
-		DisplayName:      "Zalo",
-		TextLimit:        2000,
-		TextLimitUnit:    UnitRunes,
-		Media:            MediaText | MediaImage,
+		Platform:      "zalo",
+		DisplayName:   "Zalo",
+		TextLimit:     2000,
+		TextLimitUnit: UnitRunes,
+		Media:         MediaText | MediaImage,
+		// Zalo's send-image call takes a URL only, so the text always follows as
+		// its own message (CaptionLimit 0 = "cannot caption an image").
 		FlattensMarkdown: true,
 		Windowless:       true,
 		ProactiveSend:    true,
@@ -279,6 +300,7 @@ var capabilitiesTable = map[string]Capabilities{
 		TextLimit:        1024,
 		TextLimitUnit:    UnitRunes,
 		Media:            MediaText | MediaImage | MediaAudio | MediaFile,
+		CaptionLimit:     1024,
 		FlattensMarkdown: true,
 		ReplyWindow:      CustomerCareWindowHours * time.Hour,
 		TemplateExempt:   true,
@@ -302,6 +324,7 @@ var capabilitiesTable = map[string]Capabilities{
 		TextLimit:        2000,
 		TextLimitUnit:    UnitRunes,
 		Media:            MediaText | MediaImage | MediaAudio | MediaFile,
+		CaptionLimit:     1024,
 		FlattensMarkdown: true,
 		SupportsTyping:   true,
 		SupportsButtons:  true,
@@ -324,6 +347,7 @@ var capabilitiesTable = map[string]Capabilities{
 		TextLimit:        1000,
 		TextLimitUnit:    UnitRunes,
 		Media:            MediaText | MediaImage,
+		CaptionLimit:     1024,
 		FlattensMarkdown: true,
 		SupportsTyping:   true,
 		ReplyWindow:      CustomerCareWindowHours * time.Hour,

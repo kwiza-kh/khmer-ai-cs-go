@@ -34,6 +34,9 @@ func (c *telegramChannel) Send(ctx context.Context, msg ChannelMessage) (string,
 		}
 		return TelegramProviderMessageID(msg.RecipientID, id), nil
 	}
+	if msg.Kind == "media" && msg.MediaType == "image" && msg.MediaURL != "" {
+		return c.sendImage(ctx, client, msg)
+	}
 
 	// AI replies get 👍/👎 inline buttons (customer-side CSAT collection).
 	buttons, hasFeedbackButtons := feedbackButtons(msg.Delivery, msg.Buttons)
@@ -48,6 +51,47 @@ func (c *telegramChannel) Send(ctx context.Context, msg ChannelMessage) (string,
 			lastID = TelegramProviderMessageID(msg.RecipientID, id)
 		}
 		// Buttons ride on the first chunk only.
+		buttons = nil
+	}
+	if hasFeedbackButtons {
+		c.p.demotePreviousFeedbackKeyboard(ctx, client, msg.Delivery)
+	}
+	return lastID, nil
+}
+
+// sendImage delivers a picture — a matched knowledge document's own product
+// photo, or a text-to-image render — with the reply as its caption.
+//
+// Telegram caps a caption at 1024 characters. A longer reply is NOT truncated:
+// losing the answer to keep the picture would be the worse trade, so the picture
+// goes out bare and the text follows as ordinary messages (which also keeps the
+// 👍/👎 buttons on a text bubble, where a customer can actually read them
+// beside the words they rate).
+func (c *telegramChannel) sendImage(ctx context.Context, client *TelegramClient, msg ChannelMessage) (string, error) {
+	buttons, hasFeedbackButtons := feedbackButtons(msg.Delivery, msg.Buttons)
+	if captionFits(msg.Content, c.Caps()) {
+		id, err := client.SendPhoto(ctx, msg.RecipientID, msg.MediaURL, msg.Content, buttons)
+		if err != nil {
+			return "", err
+		}
+		if hasFeedbackButtons {
+			c.p.demotePreviousFeedbackKeyboard(ctx, client, msg.Delivery)
+		}
+		return TelegramProviderMessageID(msg.RecipientID, id), nil
+	}
+	id, err := client.SendPhoto(ctx, msg.RecipientID, msg.MediaURL, "", nil)
+	if err != nil {
+		return "", err
+	}
+	lastID := TelegramProviderMessageID(msg.RecipientID, id)
+	for _, chunk := range SplitChannelText(msg.Content, c.Caps()) {
+		mid, err := client.SendMessage(ctx, msg.RecipientID, chunk, buttons)
+		if err != nil {
+			return "", err
+		}
+		if mid != "" {
+			lastID = TelegramProviderMessageID(msg.RecipientID, mid)
+		}
 		buttons = nil
 	}
 	if hasFeedbackButtons {

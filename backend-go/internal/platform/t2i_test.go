@@ -75,9 +75,9 @@ func TestShouldRender(t *testing.T) {
 		{"whatsapp carries images", long, cfg, "whatsapp", true},
 		{"meta carries images", long, cfg, "meta", true},
 		{"instagram carries images", long, cfg, "instagram", true},
-		// Telegram has no image send path (see the capability table), so an image
-		// would be delivered as text — worse than the text.
-		{"telegram has no image path", long, cfg, "telegram", false},
+		// Telegram gained a sendPhoto path (telegramChannel.sendImage), so the
+		// capability table now claims MediaImage and text-to-image may target it.
+		{"telegram carries images", long, cfg, "telegram", true},
 		{"line is text only", long, cfg, "line", false},
 		// The widget renders Markdown itself; an image would be a downgrade.
 		{"web renders markdown", long, cfg, "web", false},
@@ -90,13 +90,19 @@ func TestShouldRender(t *testing.T) {
 }
 
 // The capability table must describe what the channel implementations can really
-// send, because text-to-image now acts on it.
+// send: text-to-image and the knowledge-base product photo both act on it.
 func TestCapabilitiesMatchTheImagePathsThatExist(t *testing.T) {
-	if CapabilitiesFor("telegram").Media.Supports(MediaImage) {
-		t.Error("telegram has no image branch in telegramChannel.Send and must not claim one")
+	// Telegram used to be text+audio because Send had no image branch; it does
+	// now (sendPhoto), which is what lets a matched product photo reach the
+	// customer on the deployment's main channel.
+	if !CapabilitiesFor("telegram").Media.Supports(MediaImage) {
+		t.Error("telegramChannel.Send has an image branch and must claim MediaImage")
 	}
 	if !CapabilitiesFor("zalo").Media.Supports(MediaImage) {
 		t.Error("zalo sends images")
+	}
+	if CapabilitiesFor("line").Media.Supports(MediaImage) {
+		t.Error("line has no image send path and must not claim one")
 	}
 	for _, p := range []string{"telegram", "line", "zalo", "whatsapp", "meta", "instagram"} {
 		if !CapabilitiesFor(p).FlattensMarkdown {

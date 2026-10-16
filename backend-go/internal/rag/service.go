@@ -79,6 +79,10 @@ type SearchChunk struct {
 	Title      string
 	Similarity float64
 	DenseSim   *float64 // cosine when the chunk came from the vector path
+	// MediaKey is the document's stored picture (knowledge_documents.media_key),
+	// empty for text documents. Carried through retrieval so the answer can send
+	// the picture the question was about.
+	MediaKey string
 }
 
 // Source is what the chat handler needs from RAG.
@@ -87,6 +91,9 @@ type Source struct {
 	Title   string  `json:"title"`
 	Content string  `json:"content"`
 	Score   float64 `json:"score"`
+	// MediaKey rides along (into sources_json and the pipeline) so the turn can
+	// resolve it to a URL when the matched document is a picture.
+	MediaKey string `json:"media_key,omitempty"`
 }
 
 // GroundingContext carries retrieval results into prompt construction.
@@ -612,7 +619,7 @@ func (s *Service) UploadDocument(ctx context.Context, userID int32, title, conte
 	row := s.DB.QueryRow(ctx,
 		"INSERT INTO knowledge_documents (title, content, language, category, tags, uploaded_by, index_status, source, source_url, origin) "+
 			"VALUES ($1, $2, $3, $4, $5::text[], $6, 'pending', $7, $8, $9) "+
-			"RETURNING doc_id, title, language, category, chunk_count, source, index_status, index_error, created_at, updated_at, origin, compiled_from, compile_status, file_ext",
+			"RETURNING doc_id, title, language, category, chunk_count, source, index_status, index_error, created_at, updated_at, origin, compiled_from, compile_status, file_ext, media_key",
 		title, content, lang, category, tags, userID, source, sourceURL, source)
 	doc, err := scanDocumentRow(row)
 	if err != nil {
@@ -1016,7 +1023,7 @@ func applyRerankScores(chunks []SearchChunk, scores []float32, topK int64) []Sea
 
 func (s *Service) searchDense(ctx context.Context, userID int32, vector string, limit int64) ([]SearchChunk, error) {
 	rows, err := s.DB.Query(ctx,
-		"SELECT kc.chunk_id, kc.doc_id, kc.content, kd.title, 1 - (kc.embedding <=> $1::vector) AS similarity "+
+		"SELECT kc.chunk_id, kc.doc_id, kc.content, kd.title, COALESCE(kd.media_key, '') AS media_key, 1 - (kc.embedding <=> $1::vector) AS similarity "+
 			"FROM knowledge_chunks kc "+
 			"JOIN knowledge_documents kd ON kc.doc_id = kd.doc_id "+
 			"WHERE kd.uploaded_by = $4 AND kd.index_status = 'ready' "+
@@ -1031,7 +1038,7 @@ func (s *Service) searchDense(ctx context.Context, userID int32, vector string, 
 	var out []SearchChunk
 	for rows.Next() {
 		var c SearchChunk
-		if err := rows.Scan(&c.ChunkID, &c.DocID, &c.Content, &c.Title, &c.Similarity); err != nil {
+		if err := rows.Scan(&c.ChunkID, &c.DocID, &c.Content, &c.Title, &c.MediaKey, &c.Similarity); err != nil {
 			return nil, fmt.Errorf("vector search scan: %w", err)
 		}
 		sim := c.Similarity
@@ -1054,7 +1061,7 @@ func (s *Service) searchLexical(ctx context.Context, userID int32, query string,
 		termsArg = tsq
 	}
 	sql := "WITH search_query AS (SELECT " + termsExpr + " AS terms) " +
-		"SELECT kc.chunk_id, kc.doc_id, kc.content, kd.title, " +
+		"SELECT kc.chunk_id, kc.doc_id, kc.content, kd.title, COALESCE(kd.media_key, '') AS media_key, " +
 		"GREATEST(ts_rank_cd(COALESCE(kc.content_tsv, ''::tsvector), sq.terms), " +
 		"ts_rank_cd(to_tsvector('simple', kc.content), sq.terms))::float8 AS similarity " +
 		"FROM knowledge_chunks kc " +
@@ -1071,7 +1078,7 @@ func (s *Service) searchLexical(ctx context.Context, userID int32, query string,
 	var out []SearchChunk
 	for rows.Next() {
 		var c SearchChunk
-		if err := rows.Scan(&c.ChunkID, &c.DocID, &c.Content, &c.Title, &c.Similarity); err != nil {
+		if err := rows.Scan(&c.ChunkID, &c.DocID, &c.Content, &c.Title, &c.MediaKey, &c.Similarity); err != nil {
 			return nil, fmt.Errorf("lexical search scan: %w", err)
 		}
 		out = append(out, c)
@@ -1096,7 +1103,7 @@ func (s *Service) searchTrigram(ctx context.Context, userID int32, query string,
 		args = append(args, "%"+ngrams[i]+"%")
 	}
 	sql := fmt.Sprintf(
-		"SELECT kc.chunk_id, kc.doc_id, kc.content, kd.title, (%s)::float8 AS similarity "+
+		"SELECT kc.chunk_id, kc.doc_id, kc.content, kd.title, COALESCE(kd.media_key, '') AS media_key, (%s)::float8 AS similarity "+
 			"FROM knowledge_chunks kc "+
 			"JOIN knowledge_documents kd ON kc.doc_id = kd.doc_id "+
 			"WHERE kd.uploaded_by = $1 AND kd.index_status = 'ready' "+
@@ -1111,7 +1118,7 @@ func (s *Service) searchTrigram(ctx context.Context, userID int32, query string,
 	var out []SearchChunk
 	for rows.Next() {
 		var c SearchChunk
-		if err := rows.Scan(&c.ChunkID, &c.DocID, &c.Content, &c.Title, &c.Similarity); err != nil {
+		if err := rows.Scan(&c.ChunkID, &c.DocID, &c.Content, &c.Title, &c.MediaKey, &c.Similarity); err != nil {
 			return nil, fmt.Errorf("trigram search scan: %w", err)
 		}
 		out = append(out, c)
@@ -1657,8 +1664,8 @@ func ChunkMarkdown(text string) []string {
 // 文档管理
 // ============================================
 
-const summaryCols = "kd.doc_id, kd.title, kd.language, kd.category, kd.chunk_count, kd.source, kd.index_status, kd.index_error, kd.created_at, kd.updated_at, kd.origin, kd.compiled_from, kd.compile_status, src.title, kd.file_ext"
-const fullCols = "doc_id, title, content, language, category, tags, chunk_count, source, index_status, index_error, created_at, updated_at, origin, compiled_from, compile_status, file_ext"
+const summaryCols = "kd.doc_id, kd.title, kd.language, kd.category, kd.chunk_count, kd.source, kd.index_status, kd.index_error, kd.created_at, kd.updated_at, kd.origin, kd.compiled_from, kd.compile_status, src.title, kd.file_ext, kd.media_key"
+const fullCols = "doc_id, title, content, language, category, tags, chunk_count, source, index_status, index_error, created_at, updated_at, origin, compiled_from, compile_status, file_ext, media_key"
 
 // ListDocuments — paginated document summaries.
 func (s *Service) ListDocuments(ctx context.Context, userID int32, page, pageSize int64) (map[string]any, error) {
@@ -1756,16 +1763,33 @@ func (s *Service) UpdateDocument(ctx context.Context, userID int32, docID int32,
 	return s.GetDocument(ctx, userID, docID)
 }
 
-// DeleteDocument removes a document (and its chunks via FK cascade).
-func (s *Service) DeleteDocument(ctx context.Context, userID int32, docID int32) error {
+// DeleteDocument removes a document (and its chunks via FK cascade) and returns
+// its stored picture key ("" when it has none).
+//
+// The key comes back to the caller because the row is the only record of it: a
+// caller that deletes the row first can never find the object again, and the
+// bucket keeps an unreachable picture forever.
+func (s *Service) DeleteDocument(ctx context.Context, userID int32, docID int32) (string, error) {
+	var mediaKey *string
+	if err := s.DB.QueryRow(ctx,
+		"SELECT media_key FROM knowledge_documents WHERE doc_id = $1 AND uploaded_by = $2",
+		docID, userID).Scan(&mediaKey); err != nil {
+		if err == pgx.ErrNoRows {
+			return "", fmt.Errorf("document not found")
+		}
+		return "", fmt.Errorf("查询失败: %w", err)
+	}
 	tag, err := s.DB.Exec(ctx, "DELETE FROM knowledge_documents WHERE doc_id = $1 AND uploaded_by = $2", docID, userID)
 	if err != nil {
-		return fmt.Errorf("删除失败: %w", err)
+		return "", fmt.Errorf("删除失败: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("document not found")
+		return "", fmt.Errorf("document not found")
 	}
-	return nil
+	if mediaKey == nil {
+		return "", nil
+	}
+	return *mediaKey, nil
 }
 
 // RetryDocument — reset a failed/pending doc to pending and re-queue.

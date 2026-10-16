@@ -181,10 +181,28 @@ func (a *App) uploadKnowledgeFile(w http.ResponseWriter, r *http.Request) (any, 
 	if lang == "" {
 		lang = "km"
 	}
+	// Keep the picture itself: the question a customer sends is often "do you
+	// have this?", and the answer is only complete with the photo. Best-effort —
+	// a bucket outage must not cost the operator the upload, because the extracted
+	// text is the document — but the miss stays visible: media_key is NULL, so
+	// "why did the bot not send the photo" has an answer.
+	mediaKey := ""
+	if isKnowledgeImageFile(filename) {
+		key, kerr := a.storeKnowledgeImage(r.Context(), user.Tenant(), filename, data)
+		if kerr != nil {
+			if a.Logger != nil {
+				a.Logger.Warn("kb image store failed; document indexed without its picture",
+					"file", filename, "error", kerr.Error())
+			}
+		} else {
+			mediaKey = key
+		}
+	}
 	doc, err := a.RAG.UploadDocument(r.Context(), user.Tenant(), title, text, lang, category, []string{}, nil)
 	if err != nil {
 		// Detached from the request context: see uploadKnowledge.
 		refundDocQuota(context.WithoutCancel(r.Context()), a.DB, a.Logger, user.Tenant())
+		a.dropKnowledgeImage(context.WithoutCancel(r.Context()), mediaKey)
 		return nil, err
 	}
 	// Mark source = upload (Go parity) and record the file's type: the title at
@@ -192,9 +210,19 @@ func (a *App) uploadKnowledgeFile(w http.ResponseWriter, r *http.Request) (any, 
 	// document library can read "PDF / DOCX / XLSX / …" from.
 	if docID, ok := doc["doc_id"].(int32); ok {
 		ext := uploadFileExt(filename)
-		_, _ = a.DB.Exec(r.Context(), "UPDATE knowledge_documents SET source = 'upload', file_ext = $2 WHERE doc_id = $1", docID, ext)
+		var mediaArg any
+		if mediaKey != "" {
+			mediaArg = mediaKey
+		}
+		_, _ = a.DB.Exec(r.Context(),
+			"UPDATE knowledge_documents SET source = 'upload', file_ext = $2, media_key = $3 WHERE doc_id = $1",
+			docID, ext, mediaArg)
 		doc["source"] = "upload"
 		doc["file_ext"] = ext
+		if mediaKey != "" {
+			doc["media_key"] = mediaKey
+			a.attachKnowledgeMediaURL(doc)
+		}
 	}
 	return doc, nil
 }
@@ -206,17 +234,19 @@ func uploadFileExt(filename string) string {
 }
 
 // extractKnowledgeText picks the extraction path for one KB upload. Images go
-// straight to vision OCR. PDFs use the native extractor first and fall back to
+// straight to the product-aware vision read (verbatim text + the product names a
+// customer would ask with — a bare transcription of a rice cooker is one word and
+// can never be found). PDFs use the native extractor first and fall back to
 // OCR when the result is unusable (Khmer fonts without a ToUnicode map come
 // out as replacement characters or nothing at all); if the fallback also
 // fails, whatever the native extractor produced is kept.
 func (a *App) extractKnowledgeText(ctx context.Context, filename string, data []byte) (string, error) {
 	if rag.IsImage(filename) {
-		ocr, err := a.Gemini.ExtractDocumentText(ctx, data, rag.ImageMimeType(filename))
+		text, err := a.Gemini.ExtractProductImage(ctx, data, rag.ImageMimeType(filename))
 		if err != nil {
 			return "", ErrServiceUnavailable("图片识别失败: " + err.Error())
 		}
-		return ocr, nil
+		return text, nil
 	}
 	native, err := rag.ExtractText(filename, data)
 	isPDF := strings.ToLower(filepath.Ext(filename)) == ".pdf"
@@ -325,7 +355,16 @@ func (a *App) listKnowledge(w http.ResponseWriter, r *http.Request) (any, error)
 			pageSize = n
 		}
 	}
-	return a.RAG.ListDocuments(r.Context(), user.Tenant(), page, pageSize)
+	res, err := a.RAG.ListDocuments(r.Context(), user.Tenant(), page, pageSize)
+	if err != nil {
+		return nil, err
+	}
+	if docs, ok := res["data"].([]map[string]any); ok {
+		for _, doc := range docs {
+			a.attachKnowledgeMediaURL(doc)
+		}
+	}
+	return res, nil
 }
 
 func (a *App) getKnowledgeDocument(w http.ResponseWriter, r *http.Request, docID int32) (any, error) {
@@ -340,6 +379,7 @@ func (a *App) getKnowledgeDocument(w http.ResponseWriter, r *http.Request, docID
 		// (2026-10-16): delete a doc, refresh it, get "服务器错误".
 		return nil, knowledgeNotFoundOr(err)
 	}
+	a.attachKnowledgeMediaURL(doc)
 	return doc, nil
 }
 
@@ -379,12 +419,16 @@ func (a *App) deleteKnowledge(w http.ResponseWriter, r *http.Request, docID int3
 	if err := requirePermission(user, PermKnowledgeEdit); err != nil {
 		return nil, err
 	}
-	if err := a.RAG.DeleteDocument(r.Context(), user.Tenant(), docID); err != nil {
+	mediaKey, err := a.RAG.DeleteDocument(r.Context(), user.Tenant(), docID)
+	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			return nil, ErrNotFound(err.Error())
 		}
 		return nil, ErrInternal(err.Error())
 	}
+	// After the row is gone: the picture has no owner any more, and a failure
+	// here leaves an unreachable object, which is a log line, not an error.
+	a.dropKnowledgeImage(context.WithoutCancel(r.Context()), mediaKey)
 	return map[string]string{"message": "已删除"}, nil
 }
 

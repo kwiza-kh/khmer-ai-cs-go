@@ -26,8 +26,9 @@ func scanDocumentSummary(rows pgx.Rows) (map[string]any, error) {
 		compileStatus     string
 		compiledFromTitle *string
 		fileExt           *string
+		mediaKey          *string
 	)
-	if err := rows.Scan(&docID, &title, &language, &category, &chunkCount, &source, &indexStatus, &indexError, &createdAt, &updatedAt, &origin, &compiledFrom, &compileStatus, &compiledFromTitle, &fileExt); err != nil {
+	if err := rows.Scan(&docID, &title, &language, &category, &chunkCount, &source, &indexStatus, &indexError, &createdAt, &updatedAt, &origin, &compiledFrom, &compileStatus, &compiledFromTitle, &fileExt, &mediaKey); err != nil {
 		return nil, err
 	}
 	return map[string]any{
@@ -46,6 +47,7 @@ func scanDocumentSummary(rows pgx.Rows) (map[string]any, error) {
 		"compile_status":      compileStatus,
 		"compiled_from_title": compiledFromTitle,
 		"file_ext":            fileExt,
+		"media_key":           mediaKey,
 	}, nil
 }
 
@@ -66,8 +68,9 @@ func scanDocumentRow(row pgx.Row) (map[string]any, error) {
 		compiledFrom  *int32
 		compileStatus string
 		fileExt       *string
+		mediaKey      *string
 	)
-	if err := row.Scan(&docID, &title, &language, &category, &chunkCount, &source, &indexStatus, &indexError, &createdAt, &updatedAt, &origin, &compiledFrom, &compileStatus, &fileExt); err != nil {
+	if err := row.Scan(&docID, &title, &language, &category, &chunkCount, &source, &indexStatus, &indexError, &createdAt, &updatedAt, &origin, &compiledFrom, &compileStatus, &fileExt, &mediaKey); err != nil {
 		return nil, fmt.Errorf("扫描文档行失败: %w", err)
 	}
 	return map[string]any{
@@ -85,6 +88,7 @@ func scanDocumentRow(row pgx.Row) (map[string]any, error) {
 		"compiled_from":  compiledFrom,
 		"compile_status": compileStatus,
 		"file_ext":       fileExt,
+		"media_key":      mediaKey,
 	}, nil
 }
 
@@ -107,8 +111,9 @@ func scanDocumentFull(row pgx.Row) (map[string]any, error) {
 		compiledFrom  *int32
 		compileStatus string
 		fileExt       *string
+		mediaKey      *string
 	)
-	if err := row.Scan(&docID, &title, &content, &language, &category, &tags, &chunkCount, &source, &indexStatus, &indexError, &createdAt, &updatedAt, &origin, &compiledFrom, &compileStatus, &fileExt); err != nil {
+	if err := row.Scan(&docID, &title, &content, &language, &category, &tags, &chunkCount, &source, &indexStatus, &indexError, &createdAt, &updatedAt, &origin, &compiledFrom, &compileStatus, &fileExt, &mediaKey); err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, fmt.Errorf("document not found")
 		}
@@ -131,5 +136,6 @@ func scanDocumentFull(row pgx.Row) (map[string]any, error) {
 		"compiled_from":  compiledFrom,
 		"compile_status": compileStatus,
 		"file_ext":       fileExt,
+		"media_key":      mediaKey,
 	}, nil
 }

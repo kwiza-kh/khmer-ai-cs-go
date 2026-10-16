@@ -1980,7 +1980,7 @@ func (s *Service) DescribeImage(ctx context.Context, data []byte, mimeType strin
 		"contents": []map[string]any{{
 			"role": "user",
 			"parts": []map[string]any{
-				{"text": "Describe this customer-service photo in 1-2 sentences for an AI assistant that cannot see it: state what is shown, transcribe any clearly visible text (prices, order numbers, error messages) in its original language, and note the likely customer intent. Reply with the description only — no preamble."},
+				{"text": "Describe this customer-service photo for an AI assistant that cannot see it. State what is shown; if it shows a product, packaging or a price tag, name the product and its visible attributes (brand, model, colour, size, material) and add the product name in English, Khmer and Chinese when you can infer it. Transcribe any clearly visible text (prices, order numbers, error messages) in its original language, and note the likely customer intent. Keep it to a few sentences. Reply with the description only — no preamble."},
 				{"inlineData": map[string]any{"mimeType": mimeType, "data": base64.StdEncoding.EncodeToString(data)}},
 			},
 		}},
@@ -2040,6 +2040,57 @@ func (s *Service) ExtractDocumentText(ctx context.Context, data []byte, mimeType
 	out := strings.TrimSpace(ExtractTextFromValue(v))
 	if out == "" {
 		return "", fmt.Errorf("document OCR returned no text")
+	}
+	return out, nil
+}
+
+// ExtractProductImage turns a knowledge-base picture into searchable text.
+//
+// ExtractDocumentText is a verbatim transcriber, and a product photo is mostly
+// not text: a picture of a rice cooker produces "" or "SANYO" and then never
+// matches the questions customers actually type. This one asks for the same
+// verbatim transcription PLUS a product line that names the item the way a
+// customer and the merchant would (English/Khmer/Chinese names, brand, model,
+// colour, size, material, price), because the indexed text is the only thing the
+// retrieval legs can match on — a picture with no words is a document that can
+// never be found. The response is stored as the document body, so both sections
+// are written in plain language a merchant can read and edit.
+func (s *Service) ExtractProductImage(ctx context.Context, data []byte, mimeType string) (string, error) {
+	if !s.IsConfigured() {
+		return "", fmt.Errorf("Gemini not configured; document OCR unavailable")
+	}
+	if mimeType == "" {
+		mimeType = "image/jpeg"
+	}
+	prompt := "Read this picture for a shop assistant's knowledge base. Reply with exactly two labelled sections and nothing else.\n\n" +
+		"TEXT: transcribe ALL text visible in the picture verbatim, preserving the original language and reading order. Khmer text must stay Khmer script — never transliterate and never translate. Write \"(none)\" when the picture carries no text.\n\n" +
+		"PRODUCT: if the picture shows a product, packaging, shelf or price list, name every product you can see and give its visible attributes — brand, model, colour, size, material, price — and the product name in English, Khmer and Chinese when you can infer it. Write the words a customer would use when asking for it, and write \"(not a product picture)\" when it is not merchandise."
+	body := map[string]any{
+		"contents": []map[string]any{{
+			"role": "user",
+			"parts": []map[string]any{
+				{"text": prompt},
+				{"inlineData": map[string]any{"mimeType": mimeType, "data": base64.StdEncoding.EncodeToString(data)}},
+			},
+		}},
+		"generationConfig": map[string]any{"temperature": 0.0, "maxOutputTokens": 8192},
+	}
+	status, text, err := s.postWithRetry(ctx, s.generateURLFor(s.fastModelName()), body)
+	if err != nil {
+		return "", fmt.Errorf("product image request: %w", err)
+	}
+	if status != http.StatusOK {
+		return "", fmt.Errorf("product image read failed (%d): %s", status, textutil.Ellipsize(text, 300))
+	}
+	var v map[string]any
+	if json.Unmarshal([]byte(text), &v) != nil {
+		return "", fmt.Errorf("product image read: invalid response")
+	}
+	auxPrompt, auxCompletion, auxCached := usageFromValue(v)
+	reportAuxUsage(ctx, s.fastModelName(), auxPrompt, auxCompletion, auxCached)
+	out := strings.TrimSpace(ExtractTextFromValue(v))
+	if out == "" {
+		return "", fmt.Errorf("product image read returned no text")
 	}
 	return out, nil
 }
