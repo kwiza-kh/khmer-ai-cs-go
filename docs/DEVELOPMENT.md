@@ -2177,3 +2177,90 @@ region=global temperature=1 credential=service_account`。注意该行的 `tempe
 **残余（非客户可见）**：claude 原始 markdown 11–13/31——`SanitizeReply` 后 `format` 判列
 全 0，客户看到的永远是纯文本；该项作为模型行为观测保留（新增的「价格列表每行一条纯文本」
 提示没有压低该计数，实测 13→11，属噪声范围）。
+
+## 二十五、文档库文件类型与上传体系（2026-10-16）
+
+起因是一句用户反馈：「所有文档库的文件都要显示文档文件类型（pdf、excel 之类），
+每个类型都要有独立图标」。查下去发现三件事同时缺：类型没有被记录、图标是猜的、
+能传的格式比用户以为的少。
+
+### 一、类型从哪来：迁移 079 + 回填
+
+- 文件上传时标题被剥掉了扩展名（`SVN-003-order-quotation`），类型此前靠标题后缀猜，
+  脚本导入的文档因此全部落进 "other"（通用图标）。**新增 `knowledge_documents.file_ext`**
+  （079，双目录镜像）：上传时记录小写无点扩展名，列表/详情 JSON 一并返回。
+- 生产回填：30 份 SVN 文档是 `kb/docs/*.md` 脚本导入的，按标题与仓库文件一一对应
+  一次性回填 `file_ext='md'`——属数据修正，不进迁移（迁移保持通用）。
+- 前端识别优先级（`knowledgeFileKind`）：`origin=compiled` → AI；`source=url` → 网页；
+  否则 `file_ext` 优先、标题后缀兜底；`source=manual`（粘贴文本）→ 纯文本。
+
+### 二、每个类型独立图标（Bootstrap Icons 内联）
+
+- 需求方指定 Bootstrap Icons 的 `file-earmark-*` 族。图标以**内联 SVG 组件**落地
+  （`frontend/src/components/file-icons.tsx`，MIT，注明来源）：不引图标字体包，
+  `currentColor` 直接继承既有语义色 token（info/brand/success/warning/danger）。
+- 10 个字形覆盖 12 种类型（wps 复用 Word、et 复用 Excel 字形，靠角标区分）；
+  每类独立字形 + 扩展名角标 + 三语 label，卡片、AI 编译清单、预览弹窗共用同一张表。
+- 网格卡片与预览弹窗对无 `file_ext` 的未知类型显示原始扩展名（如 PPTX），
+  没有扩展名则不显示角标。
+
+### 三、上传格式：xlsx / wps / et（OOXML）
+
+- `.xlsx`（共享字符串 + 多工作表，工作表按尾部数字自然排序）、`.wps`/`.et`
+  （新版 WPS 保存的是 OOXML 容器，与 docx/xlsx 布局相同，解析器复用）。
+  实现：zip + `encoding/xml` token 走查，单成员 32MB 解压上限、不解析外部实体（无 XXE 面）。
+- **旧版 WPS 二进制**不静默入库：解析失败给出「请在 WPS 中另存为 .docx/.xlsx 后重传」
+  的明确报错（静默索引零字节是更糟的失败）。
+- `.pptx`/`.dps` 当日实现后又按用户要求移除：白名单、解析器、前端类型、词典同步删除，
+  并有回归测试断言它们不在白名单（防止将来误加）。
+- 「不支持的文件类型」报错文案改为从 `AcceptedExtensions()` 动态生成——此前是字面量，
+  本轮加格式时它就漏改了，这类枚举必须在数据里只有一个来源。
+
+### 四、上传窗口收敛 + URL 导入实测
+
+- 「粘贴文本」页移除：与 Markdown 编辑器（新建文档）功能重复，后者还能校验格式、
+  支持二次编辑；三个语言词典的 6 个孤儿键同步清掉。上传窗口现在只有「上传文件 / 从 URL 导入」。
+- URL 导入端到端实测（Wikipedia EPS 词条）：导入 → indexing → ready 约 9 秒 →
+  `chunk_count=100`、正文 76,394 字符 → `rag/query` 命中该文档 0.805 分 → 删除清理通过。
+- 顺带修复：`GET/PUT /knowledge/{id}` 的 not-found 此前返回 500（未映射服务层 sentinel），
+  统一经 `knowledgeNotFoundOr` → 404（删除文档后刷新一次即现形，URL 导入测试时发现）。
+
+## 二十六、Safari History API 节流 → 整页崩溃事故（2026-10-16）
+
+### 症状与定位
+
+Safari 26.6.2 用户偶发整页错误屏「页面加载失败 · The operation is insecure.」。
+该文案是 WebKit（与 Firefox 同文案）在 **History API 被节流/限制**时从
+`history.replaceState` 抛出的 SecurityError。锁人靠 nginx UA + 后端日志：
+用户最后动作是整页加载 `/` 后客户端死亡（此后连轮询都停了）；根布局级 global-error
+（按钮为「重试 · Retry」）说明异常冒泡点位于 React 边界内，而 hydration 期抛错会落到
+Next 内置屏——两条线索把范围收窄到**水合完成后的导航调用**。
+
+### 复现方法（可复用，重点记录）
+
+headless Chrome + CDP：`Page.addScriptToEvaluateOnNewDocument` 在**任何应用代码之前**
+把 `history.replaceState/pushState`（或 localStorage）替换为抛 SecurityError 的毒化函数，
+导航到目标页后用 `Runtime.exceptionThrown` + `stackTrace.callFrames` 收集完整调用栈。
+
+- 毒化 localStorage/sessionStorage：登录页完好、0 异常——storage 守卫完整，假设排除。
+- 毒化 history：**复现**。hydration 前抛 → Next 内置屏（应用边界尚未挂载）；
+  hydration 后抛（AuthGuard 的 `router.replace` effect）→ 我们的 global-error，
+  与用户截图逐字一致。
+
+### 修复（三层，同日上线）
+
+1. **`frontend/src/lib/history-guard.ts`**：hydration 前安装的 History 垫片——原方法
+   抛错时吞掉并 `console.warn`（条件保持可见 = 「记录」），原方法留 `__rawHistory`
+   供调试。这层覆盖 Next 内部 `HistoryUpdater` 的被动 effect，那是任何应用级错误边界
+   都够不着的地方（垫片由 `auth-client.tsx` 模块级调用，先于 hydration 执行）。
+2. **启动路径导航全部加固**（try/catch + 降级为停留或整页跳转）：`auth-guard`、
+   根页 `/`、`/admin`、登出（`auth-client`）、login/platforms 两处 OAuth 回调的
+   URL 清理。`logout` 特别处理：它也会从 `khmer:auth-expired` 窗口事件监听器里被调，
+   那里抛错连 React 都接不住。
+3. **复测**：毒化三场景全部 0 未捕获异常、页面正常渲染；正常冒烟无回归。
+
+### 经验
+
+- 这类"客户会碰到的失败"要么重试、要么记录（垫片的 warn 属于记录，见 AGENTS.md 惯例）。
+- 以后任何「某个浏览器整页崩溃」的报障，先按上面的毒化法复现再谈修复——
+  比读代码猜 API 快一个数量级。

@@ -76,3 +76,11 @@ npm run build            # NEXT_PUBLIC_API_URL must be set: it is baked into the
 `deploy-khmer-ai-cs/` is the runbook (SSH, cross-compile, upload, migrate,
 restart, verify). Ports: backend `:8081`, frontend `:3001`, and `wms.service`
 shares the host — do not touch it.
+
+**Ship every change (owner's standing rule, 2026-10-16).** Once a change passes
+its build/tests, deploy it immediately — do not leave verified work sitting in
+the working tree and do not wait to be asked per change. Frontend-only change →
+frontend release; backend change → migrate (if any) + backend release with the
+SQL gate; docs-only change needs no deploy. The change does not need to be
+committed first (dirty-tree builds are the norm here; mark the version, e.g.
+`b77e1b9-kbfiletypes`).
