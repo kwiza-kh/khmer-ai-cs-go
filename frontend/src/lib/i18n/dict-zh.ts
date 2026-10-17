@@ -161,6 +161,8 @@ export const zh: Dict = {
   "inbox.msgDeleteConfirm": "为客户端撤回这条消息？此操作不可撤销。",
   "inbox.msgEdited": "消息已更新",
   "inbox.msgDeleted": "消息已撤回",
+  "inbox.mediaAdd": "添加附件",
+  "inbox.mediaRemove": "移除附件",
   "inbox.filterAll": "全部",
   "inbox.filterActive": "进行中",
   "inbox.filterHandoff": "等待人工",

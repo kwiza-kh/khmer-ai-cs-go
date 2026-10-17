@@ -285,6 +285,9 @@ export interface PlatformMessagePayload {
   kind: Exclude<PlatformMessageKind, "text">;
   media_url?: string;
   media_type?: "image" | "video" | "audio" | "document";
+  /** Two or more attachments. One item stays in media_url/media_type so the
+   *  single-attachment caption rules keep applying. */
+  media_items?: { url: string; type: "image" | "video" | "audio" | "document" }[];
   buttons?: PlatformReplyButton[];
   template_name?: string;
   template_language?: string;

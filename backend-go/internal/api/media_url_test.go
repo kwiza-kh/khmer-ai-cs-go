@@ -25,6 +25,16 @@ func TestUnsafeReplyMediaURL(t *testing.T) {
 		{"protocol relative", map[string]any{"media_url": "//evil.example.com/a.png"}, true},
 		{"relative path", map[string]any{"media_url": "/uploads/a.png"}, true},
 		{"https with leading whitespace", map[string]any{"media_url": " https://cdn.example.com/a.png"}, true},
+		{"items all https", map[string]any{"media_items": []any{
+			map[string]any{"url": "https://a.example/1.png"}, map[string]any{"url": "https://a.example/2.png"},
+		}}, false},
+		{"one item is http", map[string]any{"media_items": []any{
+			map[string]any{"url": "https://a.example/1.png"}, map[string]any{"url": "http://a.example/2.png"},
+		}}, true},
+		{"item is javascript", map[string]any{"media_items": []any{
+			map[string]any{"url": "javascript:alert(1)"},
+		}}, true},
+		{"empty items", map[string]any{"media_items": []any{}}, false},
 	}
 	for _, tc := range cases {
 		if got := unsafeReplyMediaURL(tc.payload); got != tc.unsafe {

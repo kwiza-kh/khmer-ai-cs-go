@@ -814,6 +814,30 @@ func (t *TelegramClient) EditMessageText(ctx context.Context, chatID, messageID,
 	return err
 }
 
+// SendMediaGroup posts 2–10 photos/videos as one album. Telegram returns one
+// message per item; the ids are returned in order so the caller can log them.
+func (t *TelegramClient) SendMediaGroup(ctx context.Context, chatID string, media []map[string]any, replyTo int64) ([]string, error) {
+	body := map[string]any{"chat_id": chatID, "media": media}
+	if rp := telegramReplyParameters(replyTo); rp != nil {
+		body["reply_parameters"] = rp
+	}
+	v, err := t.call(ctx, "sendMediaGroup", body)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(media))
+	if arr, ok := v["result"].([]any); ok {
+		for _, item := range arr {
+			if m, ok := item.(map[string]any); ok {
+				if mid, ok := m["message_id"].(float64); ok {
+					ids = append(ids, fmt.Sprintf("%.0f", mid))
+				}
+			}
+		}
+	}
+	return ids, nil
+}
+
 // DeleteMessage removes one message this bot sent.
 func (t *TelegramClient) DeleteMessage(ctx context.Context, chatID, messageID string) error {
 	mid, err := strconv.ParseInt(strings.TrimSpace(messageID), 10, 64)

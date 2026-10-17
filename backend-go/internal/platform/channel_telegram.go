@@ -28,6 +28,15 @@ func (c *telegramChannel) Caps() Capabilities { return CapabilitiesFor("telegram
 
 func (c *telegramChannel) Send(ctx context.Context, msg ChannelMessage) (string, error) {
 	client := NewTelegramClient(c.cfg.BotToken)
+	// One item is the single-attachment path, captions and all; two or more take
+	// the multi-attachment path below.
+	if len(msg.MediaItems) == 1 {
+		msg.MediaURL, msg.MediaType = msg.MediaItems[0].URL, msg.MediaItems[0].Type
+		msg.MediaItems = nil
+	}
+	if len(msg.MediaItems) > 1 {
+		return c.sendMediaItems(ctx, client, msg)
+	}
 	if msg.Kind == "media" && msg.MediaURL != "" {
 		switch msg.MediaType {
 		case "audio":
@@ -83,6 +92,72 @@ func (c *telegramChannel) sendChunk(ctx context.Context, client *TelegramClient,
 		c.p.Logger.Warn("telegram rejected HTML entities; sending plain text", "error", err.Error())
 	}
 	return client.SendMessageFormatted(ctx, chatID, plainTextForChat(chunk), "", buttons, replyTo)
+}
+
+// sendMediaItems delivers a multi-attachment reply. Photos and videos become one
+// album (Telegram groups 2–10); anything mixed with documents/audio, or an album
+// that is too long, goes out one message per item — Telegram cannot group those,
+// and silently dropping an attachment is the failure this path exists to avoid.
+// The reply text follows as its own message, which is also where the 👍/👎 pair
+// and the quote live: a caption per album item cannot carry a rating pair.
+func (c *telegramChannel) sendMediaItems(ctx context.Context, client *TelegramClient, msg ChannelMessage) (string, error) {
+	buttons, hasFeedbackButtons := feedbackButtons(msg.Delivery, msg.Buttons)
+	album := len(msg.MediaItems) <= 10
+	for _, item := range msg.MediaItems {
+		if item.Type != "image" && item.Type != "video" {
+			album = false
+		}
+	}
+	if album {
+		media := make([]map[string]any, 0, len(msg.MediaItems))
+		for _, item := range msg.MediaItems {
+			kind := "photo"
+			if item.Type == "video" {
+				kind = "video"
+			}
+			media = append(media, map[string]any{"type": kind, "media": item.URL})
+		}
+		if _, err := client.SendMediaGroup(ctx, msg.RecipientID, media, msg.ReplyTo); err != nil {
+			return "", err
+		}
+	} else {
+		for _, item := range msg.MediaItems {
+			if item.Type == "audio" {
+				if _, err := client.SendAudio(ctx, msg.RecipientID, item.URL, ""); err != nil {
+					return "", err
+				}
+				continue
+			}
+			one := msg
+			one.MediaItems, one.Content, one.ReplyTo = nil, "", 0
+			one.MediaURL, one.MediaType = item.URL, item.Type
+			kind := "photo"
+			switch item.Type {
+			case "video":
+				kind = "video"
+			case "document", "file":
+				kind = "document"
+			}
+			if _, err := c.sendCaptionMedia(ctx, client, one, kind); err != nil {
+				return "", err
+			}
+		}
+	}
+	lastID := ""
+	for _, chunk := range SplitChannelText(msg.Content, c.Caps()) {
+		id, err := c.sendChunk(ctx, client, msg.RecipientID, chunk, buttons, 0)
+		if err != nil {
+			return "", err
+		}
+		if id != "" {
+			lastID = TelegramProviderMessageID(msg.RecipientID, id)
+		}
+		buttons = nil
+	}
+	if hasFeedbackButtons {
+		c.p.demotePreviousFeedbackKeyboard(ctx, client, msg.Delivery)
+	}
+	return lastID, nil
 }
 
 // sendCaptionMedia delivers a photo, video or document — a matched knowledge

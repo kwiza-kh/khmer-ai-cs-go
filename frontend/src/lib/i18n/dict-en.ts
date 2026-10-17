@@ -165,6 +165,8 @@ export const en: Dict = {
   "inbox.msgDeleteConfirm": "Withdraw this message for the customer? This cannot be undone.",
   "inbox.msgEdited": "Message updated",
   "inbox.msgDeleted": "Message withdrawn",
+  "inbox.mediaAdd": "Add attachment",
+  "inbox.mediaRemove": "Remove attachment",
   "inbox.filterAll": "All",
   "inbox.filterActive": "Active",
   "inbox.filterHandoff": "Awaiting agent",

@@ -1361,6 +1361,7 @@ function ConversationDetail({
   const [cannedQuery, setCannedQuery] = React.useState("");
   const [composerKind, setComposerKind] = React.useState<ComposerKind>("text");
   const [mediaURL, setMediaURL] = React.useState("");
+  const [mediaItems, setMediaItems] = React.useState<{ url: string; type: NonNullable<PlatformMessagePayload["media_type"]> }[]>([]);
   const [mediaType, setMediaType] = React.useState<NonNullable<PlatformMessagePayload["media_type"]>>("image");
   const [buttons, setButtons] = React.useState<PlatformReplyButton[]>([{ title: "", payload: "" }]);
   const [templateName, setTemplateName] = React.useState("");
@@ -1407,7 +1408,7 @@ function ConversationDetail({
     composerKind === "text"
       ? Boolean(draft.trim())
       : composerKind === "media"
-        ? isPublicHTTPSURL(mediaURL)
+        ? (mediaItems.length > 0 || isPublicHTTPSURL(mediaURL))
         : composerKind === "buttons"
           ? Boolean(draft.trim()) && buttonsValid
           : templateReady
@@ -1443,7 +1444,14 @@ function ConversationDetail({
     if (!canSubmitReply) return;
     let payload: PlatformMessagePayload | undefined;
     if (composerKind === "media") {
-      payload = { kind: "media", media_url: mediaURL.trim(), media_type: mediaType };
+      // One attachment keeps the single-media shape (caption rules included); two
+      // or more go as media_items, which Telegram groups into an album.
+      const items = mediaItems.length > 1
+        ? mediaItems
+        : [{ url: mediaURL.trim(), type: mediaType }].filter((entry) => isPublicHTTPSURL(entry.url));
+      payload = items.length > 1
+        ? { kind: "media", media_items: items }
+        : { kind: "media", media_url: items[0]?.url ?? "", media_type: items[0]?.type ?? mediaType };
     } else if (composerKind === "buttons") {
       payload = { kind: "buttons", buttons: normalizedButtons };
     } else if (composerKind === "template") {
@@ -1492,6 +1500,7 @@ function ConversationDetail({
       }
       onDraftChange("");
       setMediaURL("");
+      setMediaItems([]);
       setButtons([{ title: "", payload: "" }]);
       setTemplateName("");
       setTemplateParameters("");
@@ -2002,13 +2011,47 @@ function ConversationDetail({
                   <SelectItem value="video">{t("inbox.mediaVideo")}</SelectItem>
                 </SelectContent>
               </Select>
-              <Input
-                value={mediaURL}
-                onChange={(event) => setMediaURL(event.target.value)}
-                placeholder={t("inbox.mediaUrlPlaceholder")}
-                disabled={sending || isReplyBlocked}
-                className="h-9 text-xs"
-              />
+              <div className="flex gap-1.5">
+                <Input
+                  value={mediaURL}
+                  onChange={(event) => setMediaURL(event.target.value)}
+                  placeholder={t("inbox.mediaUrlPlaceholder")}
+                  disabled={sending || isReplyBlocked}
+                  className="h-9 text-xs"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-9 shrink-0 text-xs"
+                  disabled={sending || isReplyBlocked || !isPublicHTTPSURL(mediaURL) || mediaItems.length >= 10}
+                  onClick={() => {
+                    setMediaItems((current) => [...current, { url: mediaURL.trim(), type: mediaType }]);
+                    setMediaURL("");
+                  }}
+                >
+                  {t("inbox.mediaAdd")}
+                </Button>
+              </div>
+              {mediaItems.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 sm:col-span-2">
+                  {mediaItems.map((entry, index) => (
+                    <span key={`${entry.url}-${index}`} className="inline-flex max-w-full items-center gap-1 border border-border bg-muted/40 px-2 py-1 text-label">
+                      <Paperclip className="size-3 shrink-0 text-muted-foreground" />
+                      <span className="truncate max-w-52">{entry.url}</span>
+                      <span className="text-muted-foreground">{t(`inbox.media${entry.type === "image" ? "Image" : entry.type === "video" ? "Video" : entry.type === "audio" ? "Audio" : "Document"}`)}</span>
+                      <button
+                        type="button"
+                        onClick={() => setMediaItems((current) => current.filter((_, i) => i !== index))}
+                        title={t("inbox.mediaRemove")}
+                        className="rounded p-0.5 text-muted-foreground hover:text-danger"
+                      >
+                        <Trash2 className="size-3" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
@@ -2452,6 +2495,23 @@ function MessagePayloadPreview({ messageID, content, metadata, payload }: { mess
     <>
       {!isStoredPreview && content && !transcriptDuplicated && <p className="text-sm leading-normal whitespace-pre-wrap">{content}</p>}
       {inboundMedia && <InboundPlatformMediaPreview messageID={messageID} media={inboundMedia} />}
+      {payload?.kind === "media" && payload.media_items && payload.media_items.length > 0 && (
+        <div className="mt-1.5 flex flex-wrap gap-1.5">
+          {payload.media_items.map((entry, index) => (
+            entry.type === "image" && isSafeHTTPSURL(entry.url) ? (
+              <a key={`${entry.url}-${index}`} href={entry.url} target="_blank" rel="noreferrer" className="block max-w-40 overflow-hidden rounded-md border border-border bg-muted/30">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={entry.url} alt="" className="max-h-32 w-full object-contain" />
+              </a>
+            ) : (
+              <a key={`${entry.url}-${index}`} href={isSafeHTTPSURL(entry.url) ? entry.url : undefined} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 text-xs font-medium text-primary hover:underline">
+                <Paperclip className="size-3.5" />
+                {entry.type}
+              </a>
+            )
+          ))}
+        </div>
+      )}
       {payload?.kind === "media" && payload.media_url && (
         <div className="mt-1.5">
           {!isSafeHTTPSURL(payload.media_url) ? (

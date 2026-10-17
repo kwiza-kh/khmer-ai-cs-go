@@ -14,6 +14,14 @@ import (
 	"fmt"
 )
 
+// MediaItem is one attachment in a multi-attachment reply. Type uses the
+// composer's vocabulary (image/video/audio/document); each channel maps it to its
+// own wire type.
+type MediaItem struct {
+	URL  string
+	Type string
+}
+
 // ChannelMessage is the provider-neutral outbound message handed to a Channel.
 // It carries the already-parsed payload so every implementation does not repeat
 // the `Payload["kind"]` / buttons / template decoding.
@@ -43,6 +51,10 @@ type ChannelMessage struct {
 	// supports quoting and the payload named one (agent replies do; AI replies
 	// answer the message that just arrived and do not need the quote).
 	ReplyTo int64
+
+	// MediaItems is a multi-attachment reply (2+). Empty means "use MediaURL and
+	// MediaType", so the single-attachment path stays exactly as it was.
+	MediaItems []MediaItem
 }
 
 // Channel performs the provider-specific half of delivery for one config row.

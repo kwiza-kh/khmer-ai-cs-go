@@ -54,6 +54,9 @@ func (c *metaChannel) Send(ctx context.Context, msg ChannelMessage) (string, err
 	// limit goes out as its own message after the picture: an over-long caption
 	// makes the provider reject the whole send, and dropping the answer to keep
 	// the image is the wrong trade — the picture exists to support the words.
+	if len(msg.MediaItems) > 0 {
+		return c.sendMediaItems(ctx, client, msg)
+	}
 	if msg.Kind == "media" && msg.MediaURL != "" {
 		if !captionFits(msg.Content, c.Caps()) {
 			bare := *req
@@ -83,6 +86,41 @@ func (c *metaChannel) Send(ctx context.Context, msg ChannelMessage) (string, err
 		return client.SendMessage(ctx, req)
 	}
 	return c.sendTextChunks(ctx, client, msg, req, buttons)
+}
+
+// sendMediaItems sends a multi-attachment reply: the Send API carries one
+// attachment per message, so the items go out one after another and the text
+// follows (with the rating pair on its last chunk).
+func (c *metaChannel) sendMediaItems(ctx context.Context, client *MetaClient, msg ChannelMessage) (string, error) {
+	buttons, _ := feedbackButtons(msg.Delivery, msg.Buttons)
+	if c.cfg.Platform == "whatsapp" {
+		buttons = nil
+	}
+	last := ""
+	for _, item := range msg.MediaItems {
+		req := &SendRequest{
+			Platform:    c.cfg.Platform,
+			RecipientID: msg.RecipientID,
+			Kind:        "media",
+			MediaURL:    item.URL,
+			MediaType:   item.Type,
+			Tag:         msg.Tag,
+		}
+		id, err := client.SendMessage(ctx, req)
+		if err != nil {
+			return "", err
+		}
+		if id != "" {
+			last = id
+		}
+	}
+	text := &SendRequest{Platform: c.cfg.Platform, RecipientID: msg.RecipientID, Kind: "text", Tag: msg.Tag}
+	if mid, err := c.sendTextChunks(ctx, client, msg, text, buttons); err != nil {
+		return "", err
+	} else if mid != "" {
+		last = mid
+	}
+	return last, nil
 }
 
 // sendTextChunks splits the reply and attaches any buttons to the LAST chunk, so

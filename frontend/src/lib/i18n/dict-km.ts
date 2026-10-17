@@ -161,6 +161,8 @@ export const km: Dict = {
   "inbox.msgDeleteConfirm": "ដកសារនេះចេញសម្រាប់អតិថិជន? មិនអាចត្រឡប់វិញបានទេ។",
   "inbox.msgEdited": "សារត្រូវបានកែ",
   "inbox.msgDeleted": "សារត្រូវបានដកចេញ",
+  "inbox.mediaAdd": "បន្ថែមឯកសារភ្ជាប់",
+  "inbox.mediaRemove": "លុបឯកសារភ្ជាប់",
   "inbox.filterAll": "ទាំងអស់",
   "inbox.filterActive": "សកម្ម",
   "inbox.filterHandoff": "កំពុងរង់ចាំភ្នាក់ងារ",

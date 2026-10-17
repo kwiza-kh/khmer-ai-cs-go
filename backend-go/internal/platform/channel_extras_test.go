@@ -459,3 +459,114 @@ func TestMessageActionCapabilitiesFollowTheSendAPI(t *testing.T) {
 		}
 	}
 }
+
+// B2: two images become one Telegram album; the reply text follows as its own
+// message (the id the outbox stores is the text, which is what edit/delete act on).
+func TestTelegramChannelSendsAlbumAsMediaGroup(t *testing.T) {
+	rs := newRecordingServer(t, func(r *http.Request, n int) (int, map[string]string, string) {
+		if strings.HasSuffix(r.URL.Path, "/sendMediaGroup") {
+			return http.StatusOK, map[string]string{"Content-Type": "application/json"},
+				`{"ok":true,"result":[{"message_id":501},{"message_id":502}]}`
+		}
+		return http.StatusOK, map[string]string{"Content-Type": "application/json"}, `{"ok":true,"result":{"message_id":503}}`
+	})
+	overrideBase(t, &telegramBase, rs.srv)
+
+	ch := &telegramChannel{p: &Pipeline{}, cfg: &configCred{Platform: "telegram", BotToken: "T"}}
+	id, err := ch.Send(context.Background(), ChannelMessage{
+		Delivery:    &outboundDelivery{},
+		RecipientID: "chat-1",
+		Kind:        "media",
+		MediaItems: []MediaItem{
+			{URL: "https://cdn.example/1.jpg", Type: "image"},
+			{URL: "https://cdn.example/2.jpg", Type: "image"},
+		},
+		Content: "two products",
+	})
+	if err != nil {
+		t.Fatalf("send album: %v", err)
+	}
+	if id != "chat-1:503" {
+		t.Fatalf("provider id = %q, want the text message", id)
+	}
+	calls := rs.recorded()
+	if len(calls) != 2 {
+		t.Fatalf("requests = %d, want sendMediaGroup + sendMessage", len(calls))
+	}
+	if !strings.HasSuffix(calls[0].Path, "/sendMediaGroup") {
+		t.Fatalf("first call = %s", calls[0].Path)
+	}
+	media, _ := calls[0].Body["media"].([]any)
+	if len(media) != 2 {
+		t.Fatalf("album media = %v, want 2 items", calls[0].Body["media"])
+	}
+	first := media[0].(map[string]any)
+	if first["type"] != "photo" || first["media"] != "https://cdn.example/1.jpg" {
+		t.Errorf("album item = %v", first)
+	}
+	if _, ok := calls[1].Body["text"]; !ok {
+		t.Error("the reply text must follow the album as its own message")
+	}
+}
+
+// Documents cannot join an album: they go one by one, and no attachment is
+// dropped (the failure this whole path exists to prevent).
+func TestTelegramChannelMixedMediaSendsOneByOne(t *testing.T) {
+	rs := newRecordingServer(t, okJSON(`{"ok":true,"result":{"message_id":600}}`))
+	overrideBase(t, &telegramBase, rs.srv)
+
+	ch := &telegramChannel{p: &Pipeline{}, cfg: &configCred{Platform: "telegram", BotToken: "T"}}
+	if _, err := ch.Send(context.Background(), ChannelMessage{
+		Delivery:    &outboundDelivery{},
+		RecipientID: "chat-1",
+		Kind:        "media",
+		MediaItems: []MediaItem{
+			{URL: "https://cdn.example/1.jpg", Type: "image"},
+			{URL: "https://cdn.example/list.pdf", Type: "document"},
+		},
+		Content: "look",
+	}); err != nil {
+		t.Fatalf("send mixed: %v", err)
+	}
+	paths := []string{}
+	for _, c := range rs.recorded() {
+		paths = append(paths, c.Path)
+	}
+	want := []string{"/botT/sendPhoto", "/botT/sendDocument", "/botT/sendMessage"}
+	if strings.Join(paths, ",") != strings.Join(want, ",") {
+		t.Fatalf("paths = %v, want %v", paths, want)
+	}
+}
+
+func TestMetaChannelSendsMultiMediaSequentially(t *testing.T) {
+	rs := newRecordingServer(t, okJSON(`{"message_id":"m_9"}`))
+	overrideBase(t, &metaGraphBase, rs.srv)
+
+	ch := &metaChannel{p: &Pipeline{}, cfg: &configCred{Platform: "meta", AccessToken: "tok", PageID: "PAGE-1"}}
+	if _, err := ch.Send(context.Background(), ChannelMessage{
+		Delivery:    &outboundDelivery{},
+		RecipientID: "psid-1",
+		Kind:        "media",
+		MediaItems: []MediaItem{
+			{URL: "https://cdn.example/1.jpg", Type: "image"},
+			{URL: "https://cdn.example/2.jpg", Type: "image"},
+		},
+		Content: "both",
+	}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	calls := rs.recorded()
+	if len(calls) != 3 {
+		t.Fatalf("requests = %d, want two attachments + one text", len(calls))
+	}
+	for i := 0; i < 2; i++ {
+		msg := calls[i].Body["message"].(map[string]any)
+		if _, ok := msg["attachment"]; !ok {
+			t.Errorf("call %d is not an attachment: %v", i, msg)
+		}
+	}
+	last := calls[2].Body["message"].(map[string]any)
+	if last["text"] != "both" {
+		t.Errorf("last message text = %v", last["text"])
+	}
+}

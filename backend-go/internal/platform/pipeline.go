@@ -2131,6 +2131,7 @@ func (p *Pipeline) deliverToProvider(ctx context.Context, d *outboundDelivery, i
 	}
 	kind := "text"
 	var mediaURL, mediaType string
+	var mediaItems []MediaItem
 	var buttons [][2]string
 	var replyTo int64
 	if d.Payload != nil {
@@ -2145,6 +2146,19 @@ func (p *Pipeline) deliverToProvider(ctx context.Context, d *outboundDelivery, i
 		}
 		mediaURL, _ = d.Payload["media_url"].(string)
 		mediaType, _ = d.Payload["media_type"].(string)
+		if items, ok := d.Payload["media_items"].([]any); ok {
+			for _, item := range items {
+				m, _ := item.(map[string]any)
+				if m == nil {
+					continue
+				}
+				url, _ := m["url"].(string)
+				typ, _ := m["type"].(string)
+				if url != "" {
+					mediaItems = append(mediaItems, MediaItem{URL: url, Type: typ})
+				}
+			}
+		}
 		if b, ok := d.Payload["buttons"].([]any); ok {
 			for _, item := range b {
 				if m, ok := item.(map[string]any); ok {
@@ -2166,6 +2180,7 @@ func (p *Pipeline) deliverToProvider(ctx context.Context, d *outboundDelivery, i
 		Kind:        kind,
 		Content:     d.Content,
 		ReplyTo:     replyTo,
+		MediaItems:  mediaItems,
 		MediaURL:    mediaURL,
 		MediaType:   mediaType,
 		Buttons:     buttons,

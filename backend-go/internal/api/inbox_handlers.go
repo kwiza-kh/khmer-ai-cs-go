@@ -26,11 +26,27 @@ import (
 // token is JS-readable by design). Extracted from agentReply so the rule can be
 // tested without a database; the renderer's isSafeHTTPSURL is the second line.
 func unsafeReplyMediaURL(payload map[string]any) bool {
-	raw, ok := payload["media_url"].(string)
-	if !ok || raw == "" {
+	if payload == nil {
 		return false
 	}
-	return !strings.HasPrefix(strings.ToLower(raw), "https://")
+	unsafe := func(raw string) bool {
+		return raw != "" && !strings.HasPrefix(strings.ToLower(raw), "https://")
+	}
+	if raw, ok := payload["media_url"].(string); ok && unsafe(raw) {
+		return true
+	}
+	// A multi-attachment reply stores its URLs in media_items; every one of them
+	// is rendered as a link in the dashboard, so every one gets the same rule.
+	if items, ok := payload["media_items"].([]any); ok {
+		for _, item := range items {
+			if m, ok := item.(map[string]any); ok {
+				if raw, ok := m["url"].(string); ok && unsafe(raw) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // listInbox — cross-platform sessions with avatar + last message (owner-scoped).
@@ -279,7 +295,12 @@ func (a *App) agentReply(w http.ResponseWriter, r *http.Request, sessionID strin
 	// design). The renderer also guards with isSafeHTTPSURL; this is the first
 	// line, so the bad value never reaches the database at all.
 	if unsafeReplyMediaURL(req.Payload) {
-		return nil, ErrBadRequest("media_url 必须是 https 地址")
+		return nil, ErrBadRequest("媒体地址必须是 https")
+	}
+	// Telegram groups at most ten items into one album; beyond that the reply
+	// becomes a wall of messages nobody asked for.
+	if items, ok := req.Payload["media_items"].([]any); ok && len(items) > 10 {
+		return nil, ErrBadRequest("最多 10 个附件")
 	}
 	// Load the session's platform + recipient for delivery. Web/NULL-platform
 	// sessions (the website widget) have no provider mapping: the reply is
