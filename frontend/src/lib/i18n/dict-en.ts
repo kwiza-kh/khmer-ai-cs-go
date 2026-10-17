@@ -39,6 +39,7 @@ export const en: Dict = {
   "notif.empty": "No notifications yet",
   "role.platformAdmin": "Platform admin",
   "role.admin": "Administrator",
+  "role.owner": "Owner",
   "role.member": "Member",
 
   // Login

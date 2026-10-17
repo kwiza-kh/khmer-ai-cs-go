@@ -38,6 +38,7 @@ export const km: Dict = {
   "notif.empty": "មិនទាន់មានការជូនដំណឹង",
   "role.platformAdmin": "អ្នកគ្រប់គ្រងវេទិកា",
   "role.admin": "អ្នកគ្រប់គ្រង",
+  "role.owner": "ម្ចាស់ហាង",
   "role.member": "សមាជិក",
 
   "login.footer": "RelayChat សេវាកម្មអតិថិជន · Production",

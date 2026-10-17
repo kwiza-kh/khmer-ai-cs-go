@@ -490,7 +490,7 @@ function AppLayoutShell({ children }: { children: React.ReactNode }) {
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-body-sm font-medium leading-tight">{user?.username}</p>
                   <p className="truncate text-label text-muted-foreground leading-tight">
-                    {t(ROLE_KEYS[user?.role ?? "user"] ?? "role.member")}
+                    {isPlatformAdmin ? t("role.platformAdmin") : user?.is_member ? t("role.member") : isTenantOwner ? t("role.owner") : t(ROLE_KEYS[user?.role ?? "user"] ?? "role.member")}
                   </p>
                 </div>
                 <button
