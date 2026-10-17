@@ -1674,26 +1674,30 @@ function ConversationDetail({
               <UserCircle2 className="size-3" />{t("inbox.reassignToMe")}
             </Button>
           )}
-          <Button size="sm" variant="outline" onClick={handleResolve} className="h-7 text-xs gap-1.5">
-            <CheckCircle2 className="size-3" />{t("inbox.resolve")}
-          </Button>
-          <Button size="sm" variant="ghost" onClick={handleClose} className="h-7 text-xs gap-1.5 text-muted-foreground">
-            <XCircle className="size-3" />{t("inbox.close")}
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => void handleArchiveHere()}
-            className="h-7 w-7 p-0 text-muted-foreground"
-            title={item.archived_at ? t("inbox.restore") : t("inbox.archive")}
-          >
-            {item.archived_at ? <ArchiveRestore className="size-3.5" /> : <Archive className="size-3.5" />}
-          </Button>
+          {can("inbox_reply") && (
+            <>
+              <Button size="sm" variant="outline" onClick={handleResolve} className="h-7 text-xs gap-1.5">
+                <CheckCircle2 className="size-3" />{t("inbox.resolve")}
+              </Button>
+              <Button size="sm" variant="ghost" onClick={handleClose} className="h-7 text-xs gap-1.5 text-muted-foreground">
+                <XCircle className="size-3" />{t("inbox.close")}
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => void handleArchiveHere()}
+                className="h-7 w-7 p-0 text-muted-foreground"
+                title={item.archived_at ? t("inbox.restore") : t("inbox.archive")}
+              >
+                {item.archived_at ? <ArchiveRestore className="size-3.5" /> : <Archive className="size-3.5" />}
+              </Button>
+            </>
+          )}
         </div>
       </div>
 
       {/* Tags editor — quick conversation triage */}
-      <TagsBar sessionId={item.session_id} initial={item.tags ?? []} onMutate={onMutate} />
+      {can("inbox_reply") && <TagsBar sessionId={item.session_id} initial={item.tags ?? []} onMutate={onMutate} />}
 
       {hasCustomerCareWindow && (
         <div className={cn("mx-5 mt-2 flex items-start gap-2 border px-3 py-1.5 text-xs", replyWindowExpired || replyWindowExtended ? "border-warning/40 bg-warning/10 text-warning" : "border-success/30 bg-success/10 text-foreground")}>

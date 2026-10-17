@@ -2738,8 +2738,8 @@ AI 报错价、消息发错人，此前只能再补一条"更正"——客户手
 ### 一、席位（seat）看到的写按钮
 权限矩阵上线后，接口会 403，但前端仍把按钮画出来——成员点下去只得到"没有权限"。现在按同一套键隐藏：
 知识库的 新建/上传/删除/矛盾处理/缺口起草（`knowledge_edit`）、渠道页的 添加/连接/保存/停用
-（`channels_manage`）、挂件页的 生成/删除（`widget_manage`）、收件箱的回复框（`inbox_reply`）、
-接管/分配（`inbox_takeover`/`inbox_assign`）。
+（`channels_manage`）、挂件页的 生成/删除（`widget_manage`）、收件箱的回复框、解决/关闭/归档/标签
+（`inbox_reply`）、接管/分配（`inbox_takeover`/`inbox_assign`）。
 
 ### 二、结账
 - **席位也能下单**：`paypalCreateOrder` 绑定 `user.UserID`，席位付的钱落在自己那个空租户上，
