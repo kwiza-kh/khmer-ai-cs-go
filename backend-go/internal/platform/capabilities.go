@@ -252,7 +252,7 @@ var capabilitiesTable = map[string]Capabilities{
 		DisplayName:    "Telegram",
 		TextLimit:      4096,
 		TextLimitUnit:  UnitRunes,
-		Media:          MediaText | MediaImage | MediaAudio,
+		Media:          MediaText | MediaImage | MediaAudio | MediaVideo | MediaFile,
 		CaptionLimit:   1024,
 		SupportsTyping: true,
 		// Telegram accepts an HTML subset (b/i/u/s/code/pre/a). MarkdownV2 is the
@@ -316,7 +316,7 @@ var capabilitiesTable = map[string]Capabilities{
 		DisplayName:    "WhatsApp",
 		TextLimit:      1024,
 		TextLimitUnit:  UnitRunes,
-		Media:          MediaText | MediaImage | MediaAudio | MediaFile,
+		Media:          MediaText | MediaImage | MediaAudio | MediaVideo | MediaFile,
 		CaptionLimit:   1024,
 		ReplyWindow:    CustomerCareWindowHours * time.Hour,
 		TemplateExempt: true,
@@ -339,7 +339,7 @@ var capabilitiesTable = map[string]Capabilities{
 		DisplayName:   "Messenger",
 		TextLimit:     2000,
 		TextLimitUnit: UnitRunes,
-		Media:         MediaText | MediaImage | MediaAudio | MediaFile,
+		Media:         MediaText | MediaImage | MediaAudio | MediaVideo | MediaFile,
 		// Messenger attachments have no caption field (Send API: type + payload.url),
 		// so the text always follows the picture as its own message.
 		SupportsTyping:  true,
@@ -362,7 +362,7 @@ var capabilitiesTable = map[string]Capabilities{
 		DisplayName:   "Instagram",
 		TextLimit:     1000,
 		TextLimitUnit: UnitRunes,
-		Media:         MediaText | MediaImage,
+		Media:         MediaText | MediaImage | MediaVideo,
 		// Same Send API as Messenger (message.attachment) — no caption field, so the
 		// reply text follows the picture.
 		SupportsTyping: true,

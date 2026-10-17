@@ -9,6 +9,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -21,6 +22,7 @@ import (
 
 	"khmer-ai-cs-go/internal/realtime"
 	"khmer-ai-cs-go/internal/security"
+	"khmer-ai-cs-go/internal/textutil"
 )
 
 // Webhooks bundles webhook dependencies.
@@ -35,7 +37,13 @@ type Webhooks struct {
 	// PublicBaseURL is the site origin used to build the deletion status link
 	// handed back to Meta. Falls back to the production origin when empty.
 	PublicBaseURL string
-	Logger        *slog.Logger
+	// GraphAPIVersion is passed to the Meta client the comment→DM path builds.
+	GraphAPIVersion string
+	// CommentDM turns a new Page/IG comment into one private message. Off unless
+	// META_COMMENT_DM_ENABLED is set: the feed/comments webhook fields are only
+	// delivered to an app that passed App Review for the engagement permissions.
+	CommentDM bool
+	Logger    *slog.Logger
 }
 
 // configRow is the lookup shape for webhook routing.
@@ -128,9 +136,121 @@ func (wh *Webhooks) MetaWebhook(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		// Page feed / Instagram comments arrive in `changes`, not `messaging`.
+		// They are the entry point for the comment→DM funnel (off unless the
+		// engagement permissions are approved — see Webhooks.CommentDM).
+		changes, _ := entry["changes"].([]any)
+		for _, c := range changes {
+			change, _ := c.(map[string]any)
+			cfg := wh.resolveMetaConfig(r.Context(), entryID)
+			if cfg == nil {
+				continue
+			}
+			if !verifyMetaSignature(cfg.WebhookSecret, signature, body) {
+				continue
+			}
+			wh.recordHealth(r.Context(), cfg.ConfigID, "connected", "", "Receiving signed Meta webhook events")
+			if err := wh.handleMetaComment(r.Context(), cfg, entryID, change); err != nil && wh.Logger != nil {
+				// A comment is not a customer message: a failure here must not
+				// answer 5xx, or Meta redelivers the whole batch for nothing.
+				wh.Logger.Warn("meta comment handling failed", "config_id", cfg.ConfigID, "error", err.Error())
+			}
+		}
 	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"received"}`))
+}
+
+// metaCommentTarget extracts the comment id from a feed/comments change. ok is
+// false for anything that is not a new comment (likes, edits, deletes, our own
+// public reply).
+func metaCommentTarget(change map[string]any) (commentID, fromID string, ok bool) {
+	field, _ := change["field"].(string)
+	value, _ := change["value"].(map[string]any)
+	if value == nil {
+		return "", "", false
+	}
+	switch field {
+	case "feed":
+		if item, _ := value["item"].(string); item != "comment" {
+			return "", "", false
+		}
+		if verb, _ := value["verb"].(string); verb != "add" {
+			return "", "", false
+		}
+		commentID, _ = value["comment_id"].(string)
+	case "comments":
+		// Instagram delivers the comment object itself.
+		commentID, _ = value["id"].(string)
+	default:
+		return "", "", false
+	}
+	if commentID == "" {
+		return "", "", false
+	}
+	if from, ok := value["from"].(map[string]any); ok {
+		fromID, _ = from["id"].(string)
+	}
+	return commentID, fromID, true
+}
+
+// commentDMText is the one private message a commenter receives. Meta allows
+// exactly one private reply per comment, so it has to ask them to continue the
+// conversation in the DM thread, which is where the AI answers.
+func commentDMText() string {
+	return "សួស្តី! អរគុណសម្រាប់មតិយោបល់របស់អ្នក។ សូមឆ្លើយតបនៅទីនេះ ដើម្បីឱ្យយើងជួយបន្ត។\n\n" +
+		"Hi! Thanks for your comment — reply here and we'll help you in a message."
+}
+
+// handleMetaComment turns one new comment into a private reply. Every step is
+// best-effort and none of it is fatal to the webhook.
+func (wh *Webhooks) handleMetaComment(ctx context.Context, cfg *webhookConfig, entryID string, change map[string]any) error {
+	if !wh.CommentDM {
+		return nil
+	}
+	commentID, fromID, ok := metaCommentTarget(change)
+	if !ok {
+		return nil
+	}
+	// Our own public replies come back as comment events on the same post.
+	if fromID != "" && (fromID == entryID || fromID == cfg.ChannelIdentity) {
+		return nil
+	}
+	// One private reply per comment (Meta's rule); the webhook can redeliver.
+	if wh.Pipe != nil && wh.Pipe.Redis != nil {
+		if allowed, err := wh.Pipe.Redis.IncrWindow(ctx, fmt.Sprintf("comment-dm:%d:%s", cfg.ConfigID, commentID), 1, 7*24*time.Hour); err != nil || !allowed {
+			return nil
+		}
+	}
+	access, pageID, igID, err := wh.metaCredentials(ctx, cfg.ConfigID)
+	if err != nil || access == "" {
+		return err
+	}
+	client := NewMetaClient(access, pageID, igID, wh.GraphAPIVersion)
+	if _, err := client.SendPrivateReply(ctx, cfg.Platform, commentID, commentDMText()); err != nil {
+		return err
+	}
+	if wh.Logger != nil {
+		wh.Logger.Info("comment→dm sent", "config_id", cfg.ConfigID, "platform", cfg.Platform, "comment_id", commentID)
+	}
+	return nil
+}
+
+// metaCredentials loads and decrypts what the comment path needs; the webhook
+// config row carries only the routing identity.
+func (wh *Webhooks) metaCredentials(ctx context.Context, configID int32) (access, pageID, igID string, err error) {
+	var encAccess string
+	var page, ig *string
+	if err = wh.DB.QueryRow(ctx,
+		"SELECT access_token, page_id, instagram_business_id FROM platform_configs WHERE config_id = $1",
+		configID).Scan(&encAccess, &page, &ig); err != nil {
+		return "", "", "", err
+	}
+	access, err = wh.Sealer.Decrypt(encAccess)
+	if err != nil {
+		return "", "", "", err
+	}
+	return access, textutil.DerefString(page), textutil.DerefString(ig), nil
 }
 
 func verifyMetaSignature(secret, signature string, body []byte) bool {
@@ -220,7 +340,7 @@ func (wh *Webhooks) handleMetaMessaging(ctx context.Context, cfg *webhookConfig,
 		}
 		ts, _ := msg["timestamp"].(float64)
 		externalID := "postback:" + payload + ":" + jsonNumberString(ts)
-		return wh.Pipe.EnqueueInboundEvent(ctx, cfg.ConfigID, cfg.Platform, externalID, sender, "", ButtonSelection(label), nil)
+		return wh.Pipe.EnqueueInboundEvent(ctx, cfg.ConfigID, cfg.Platform, externalID, sender, "", ButtonSelection(label), "", nil)
 	}
 	message, _ := msg["message"].(map[string]any)
 	if message == nil || sender == "" {
@@ -261,7 +381,7 @@ func (wh *Webhooks) handleMetaMessaging(ctx context.Context, cfg *webhookConfig,
 	if text == "" {
 		return nil
 	}
-	return wh.Pipe.EnqueueInboundEvent(ctx, cfg.ConfigID, cfg.Platform, mid, sender, "", text, media)
+	return wh.Pipe.EnqueueInboundEvent(ctx, cfg.ConfigID, cfg.Platform, mid, sender, "", text, mid, media)
 }
 
 // metaQuickReplyLabel returns the label of a quick-reply tap.
@@ -466,7 +586,7 @@ func (wh *Webhooks) TelegramWebhook(w http.ResponseWriter, r *http.Request) {
 			display = un
 		}
 	}
-	if err := wh.Pipe.EnqueueInboundEvent(r.Context(), cfg.ConfigID, "telegram", updateID, chatID, display, text, media); err != nil {
+	if err := wh.Pipe.EnqueueInboundEvent(r.Context(), cfg.ConfigID, "telegram", updateID, chatID, display, text, telegramMessageID(message), media); err != nil {
 		wh.failInboundEnqueue(w, cfg.ConfigID, "telegram", err)
 		return
 	}
@@ -610,7 +730,7 @@ func (wh *Webhooks) enqueueTelegramButtonSelection(ctx context.Context, cfg *web
 	// external_id = the callback id. Telegram only reuses it for a redelivery of
 	// the same press, so this keeps the enqueue idempotent without collapsing two
 	// different taps on the same button.
-	_ = wh.Pipe.EnqueueInboundEvent(ctx, cfg.ConfigID, "telegram", cbID, chatID, "", ButtonSelection(label), nil)
+	_ = wh.Pipe.EnqueueInboundEvent(ctx, cfg.ConfigID, "telegram", cbID, chatID, "", ButtonSelection(label), "", nil)
 
 	// Clear the button spinner. The answer arrives as its own chat message, so
 	// the toast itself stays empty.
@@ -662,6 +782,15 @@ func (wh *Webhooks) telegramBotToken(ctx context.Context, configID int32) string
 		return ""
 	}
 	return token
+}
+
+// telegramMessageID is the message_id the Bot API needs for reply_parameters.
+// external_id is the update_id (the dedupe key), which is a different number.
+func telegramMessageID(message map[string]any) string {
+	if id, ok := message["message_id"].(float64); ok && id > 0 {
+		return jsonNumberString(id)
+	}
+	return ""
 }
 
 func extractTelegramMedia(message map[string]any) map[string]any {
@@ -802,7 +931,7 @@ func (wh *Webhooks) LineWebhook(w http.ResponseWriter, r *http.Request) {
 		if externalID == "" {
 			externalID = userID
 		}
-		if err := wh.Pipe.EnqueueInboundEvent(r.Context(), cfg.ConfigID, "line", externalID, userID, "", text, media); err != nil {
+		if err := wh.Pipe.EnqueueInboundEvent(r.Context(), cfg.ConfigID, "line", externalID, userID, "", text, msgID, media); err != nil {
 			wh.failInboundEnqueue(w, cfg.ConfigID, "line", err)
 			return
 		}
@@ -883,7 +1012,7 @@ func (wh *Webhooks) ZaloWebhook(w http.ResponseWriter, r *http.Request) {
 	if externalID == "" {
 		externalID = userID
 	}
-	if err := wh.Pipe.EnqueueInboundEvent(r.Context(), cfg.ConfigID, "zalo", externalID, userID, "", text, media); err != nil {
+	if err := wh.Pipe.EnqueueInboundEvent(r.Context(), cfg.ConfigID, "zalo", externalID, userID, "", text, msgID, media); err != nil {
 		wh.failInboundEnqueue(w, cfg.ConfigID, "zalo", err)
 		return
 	}
@@ -1017,7 +1146,7 @@ func (wh *Webhooks) WhatsAppWebhook(w http.ResponseWriter, r *http.Request) {
 				if fromButton {
 					text = ButtonSelection(text)
 				}
-				if err := wh.Pipe.EnqueueInboundEvent(r.Context(), cfg.ConfigID, "whatsapp", msgID, from, "", text, media); err != nil {
+				if err := wh.Pipe.EnqueueInboundEvent(r.Context(), cfg.ConfigID, "whatsapp", msgID, from, "", text, msgID, media); err != nil {
 					wh.failInboundEnqueue(w, cfg.ConfigID, "whatsapp", err)
 					return
 				}

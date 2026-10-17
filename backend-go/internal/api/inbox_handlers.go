@@ -309,6 +309,23 @@ func (a *App) agentReply(w http.ResponseWriter, r *http.Request, sessionID strin
 	}
 	// Enqueue delivery via the platform pipeline (platform sessions only).
 	if mapped {
+		// Quote the customer's last message on channels that support it. A human
+		// jumping into a thread answers one of several messages, so the customer
+		// needs to see which one; an AI reply never quotes (it answers the message
+		// that just arrived, and the quote is pure noise there).
+		if req.Payload == nil {
+			req.Payload = map[string]any{}
+		}
+		if _, set := req.Payload["reply_to"]; !set {
+			var providerMsgID string
+			_ = a.DB.QueryRow(r.Context(),
+				"SELECT provider_message_id FROM platform_inbound_events "+
+					"WHERE session_id = $1 AND provider_message_id IS NOT NULL ORDER BY processed_at DESC NULLS LAST LIMIT 1",
+				sessionID).Scan(&providerMsgID)
+			if providerMsgID != "" {
+				req.Payload["reply_to"] = providerMsgID
+			}
+		}
 		payloadJSON, _ := json.Marshal(req.Payload)
 		if _, err := a.DB.Exec(r.Context(),
 			"INSERT INTO platform_outbox (config_id, session_id, chat_message_id, platform, recipient_id, content, payload, status, next_attempt_at, created_at, updated_at) "+

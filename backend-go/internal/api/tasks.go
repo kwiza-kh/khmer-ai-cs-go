@@ -46,6 +46,13 @@ func (a *App) StartBackgroundTasks(ctx context.Context) {
 	// Telegram call per merchant every 12s, and for a platform-bot merchant it
 	// polled a bot that has a webhook registered, which Telegram rejects.
 	go a.loop(ctx, 15*time.Minute, a.sendDueDigests)
+	// Post-resolution nudge, off unless FOLLOWUP_HOURS is set: it messages real
+	// customers, so enabling it is a product decision. The sweep itself re-reads
+	// the flag, so a zero interval here only means "nothing to do".
+	if followupHours() > 0 {
+		go a.loop(ctx, 15*time.Minute, a.sendFollowups)
+		a.Logger.Info("followup sweep enabled", "hours", followupHours())
+	}
 
 	// DB-backed scheduled jobs (migration 066): the jobs an operator or a tenant
 	// created, as opposed to the fixed loops above. That is what makes a cadence

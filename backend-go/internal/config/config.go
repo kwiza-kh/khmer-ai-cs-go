@@ -54,6 +54,12 @@ type MetaConfig struct {
 	GraphAPIVersion                string
 	WhatsAppEmbeddedSignupConfigID string
 	OAuthScopes                    string // META_OAUTH_SCOPES — optional override of the Facebook Login scope list
+	// CommentDM answers new comments on a Page post / an IG post with one private
+	// message, which is how a commenter enters the DM thread the AI serves. Off by
+	// default: the feed/comments webhook field needs pages_read_engagement +
+	// pages_manage_engagement (or instagram_manage_comments) through App Review,
+	// and receiving the events without them is not possible.
+	CommentDM bool
 }
 
 type EmailConfig struct {
@@ -240,6 +246,7 @@ func Load() (*Config, error) {
 			GraphAPIVersion:                env("META_GRAPH_API_VERSION", "v24.0"),
 			WhatsAppEmbeddedSignupConfigID: env("META_WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID", ""),
 			OAuthScopes:                    env("META_OAUTH_SCOPES", ""),
+			CommentDM:                      envBool("META_COMMENT_DM_ENABLED", false),
 		},
 		MetaVerifyToken: env("META_VERIFY_TOKEN", ""),
 		Email: EmailConfig{

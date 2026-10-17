@@ -286,7 +286,7 @@ type configCred struct {
 }
 
 // EnqueueInboundEvent persists one inbound message (idempotent, rate-limited).
-func (p *Pipeline) EnqueueInboundEvent(ctx context.Context, configID int32, platform, externalID, platformUserID, displayName, content string, media map[string]any) error {
+func (p *Pipeline) EnqueueInboundEvent(ctx context.Context, configID int32, platform, externalID, platformUserID, displayName, content, providerMessageID string, media map[string]any) error {
 	if externalID == "" || platformUserID == "" || content == "" {
 		return nil
 	}
@@ -303,12 +303,16 @@ func (p *Pipeline) EnqueueInboundEvent(ctx context.Context, configID int32, plat
 	} else {
 		mediaParam = mediaJSON
 	}
+	var providerParam any
+	if providerMessageID != "" {
+		providerParam = providerMessageID
+	}
 	tag, err := p.DB.Exec(ctx,
 		"INSERT INTO platform_inbound_events "+
-			"(config_id, external_id, platform, platform_user_id, user_display_name, content, media_json, status, next_attempt_at, created_at) "+
-			"VALUES ($1,$2,$3::platform_type,$4,$5,$6,$7,'pending',$8,$9) "+
+			"(config_id, external_id, platform, platform_user_id, user_display_name, content, provider_message_id, media_json, status, next_attempt_at, created_at) "+
+			"VALUES ($1,$2,$3::platform_type,$4,$5,$6,$7,$8,'pending',$9,$10) "+
 			"ON CONFLICT (config_id, external_id) DO NOTHING",
-		configID, externalID, platform, platformUserID, displayName, content, mediaParam, now, now)
+		configID, externalID, platform, platformUserID, displayName, content, providerParam, mediaParam, now, now)
 	if err != nil {
 		// Log here, not only at the call site: the inbound webhook handlers
 		// used to swallow this error entirely, so a failed INSERT still
@@ -2128,7 +2132,14 @@ func (p *Pipeline) deliverToProvider(ctx context.Context, d *outboundDelivery, i
 	kind := "text"
 	var mediaURL, mediaType string
 	var buttons [][2]string
+	var replyTo int64
 	if d.Payload != nil {
+		switch v := d.Payload["reply_to"].(type) {
+		case string:
+			replyTo, _ = strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+		case float64:
+			replyTo = int64(v)
+		}
 		if k, ok := d.Payload["kind"].(string); ok && k != "" {
 			kind = k
 		}
@@ -2154,6 +2165,7 @@ func (p *Pipeline) deliverToProvider(ctx context.Context, d *outboundDelivery, i
 		RecipientID: d.RecipientID,
 		Kind:        kind,
 		Content:     d.Content,
+		ReplyTo:     replyTo,
 		MediaURL:    mediaURL,
 		MediaType:   mediaType,
 		Buttons:     buttons,

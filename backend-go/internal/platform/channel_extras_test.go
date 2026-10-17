@@ -193,3 +193,218 @@ func TestSetMessengerProfileInstallsMenuWhenAbsent(t *testing.T) {
 		t.Error("the write body has no greeting")
 	}
 }
+
+// B3: the inbox composer's "document" attachment used to reach Telegram as a
+// text-only message — the file was silently dropped. It now goes out as a
+// document, with the reply as its caption.
+func TestTelegramChannelSendsDocumentByURL(t *testing.T) {
+	rs := newRecordingServer(t, okJSON(`{"ok":true,"result":{"message_id":31}}`))
+	overrideBase(t, &telegramBase, rs.srv)
+
+	ch := &telegramChannel{p: &Pipeline{}, cfg: &configCred{Platform: "telegram", BotToken: "T"}}
+	id, err := ch.Send(context.Background(), ChannelMessage{
+		Delivery:    &outboundDelivery{},
+		RecipientID: "chat-1",
+		Kind:        "media",
+		MediaType:   "document",
+		MediaURL:    "https://cdn.example/price-list.pdf",
+		Content:     "**Here** is the list",
+		ReplyTo:     55,
+	})
+	if err != nil {
+		t.Fatalf("send document: %v", err)
+	}
+	if id != "chat-1:31" {
+		t.Fatalf("provider id = %q", id)
+	}
+	calls := rs.recorded()
+	if len(calls) != 1 || calls[0].Path != "/botT/sendDocument" {
+		t.Fatalf("calls = %+v, want one sendDocument", calls)
+	}
+	if calls[0].Body["document"] != "https://cdn.example/price-list.pdf" {
+		t.Errorf("document = %v", calls[0].Body["document"])
+	}
+	if calls[0].Body["caption"] != "<b>Here</b> is the list" {
+		t.Errorf("caption = %v, want the HTML conversion", calls[0].Body["caption"])
+	}
+	rp, ok := calls[0].Body["reply_parameters"].(map[string]any)
+	if !ok || rp["message_id"] != float64(55) {
+		t.Errorf("reply_parameters = %v, want message_id 55", calls[0].Body["reply_parameters"])
+	}
+}
+
+func TestTelegramChannelSendsVideoByURL(t *testing.T) {
+	rs := newRecordingServer(t, okJSON(`{"ok":true,"result":{"message_id":32}}`))
+	overrideBase(t, &telegramBase, rs.srv)
+
+	ch := &telegramChannel{p: &Pipeline{}, cfg: &configCred{Platform: "telegram", BotToken: "T"}}
+	if _, err := ch.Send(context.Background(), ChannelMessage{
+		Delivery:    &outboundDelivery{},
+		RecipientID: "chat-1",
+		Kind:        "media",
+		MediaType:   "video",
+		MediaURL:    "https://cdn.example/demo.mp4",
+		Content:     "demo",
+	}); err != nil {
+		t.Fatalf("send video: %v", err)
+	}
+	calls := rs.recorded()
+	if len(calls) != 1 || calls[0].Path != "/botT/sendVideo" {
+		t.Fatalf("calls = %+v, want one sendVideo", calls)
+	}
+}
+
+// B1: an agent reply quotes the customer's message, on the first chunk only.
+func TestTelegramChannelQuotesOnlyTheFirstChunk(t *testing.T) {
+	rs := newRecordingServer(t, okJSON(`{"ok":true,"result":{"message_id":40}}`))
+	overrideBase(t, &telegramBase, rs.srv)
+
+	ch := &telegramChannel{p: &Pipeline{}, cfg: &configCred{Platform: "telegram", BotToken: "T"}}
+	if _, err := ch.Send(context.Background(), ChannelMessage{
+		Delivery:    &outboundDelivery{},
+		RecipientID: "chat-1",
+		Kind:        "text",
+		Content:     strings.Repeat("x", 4097),
+		ReplyTo:     71,
+	}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	calls := rs.recorded()
+	if len(calls) != 2 {
+		t.Fatalf("calls = %d, want 2 chunks", len(calls))
+	}
+	if rp, ok := calls[0].Body["reply_parameters"].(map[string]any); !ok || rp["message_id"] != float64(71) {
+		t.Errorf("first chunk reply_parameters = %v, want message_id 71", calls[0].Body["reply_parameters"])
+	}
+	if _, has := calls[1].Body["reply_parameters"]; has {
+		t.Error("later chunks must not repeat the quote")
+	}
+}
+
+// B3: the composer calls a PDF "document"; the Send API calls it "file".
+func TestMetaChannelMapsDocumentToFile(t *testing.T) {
+	rs := newRecordingServer(t, okJSON(`{"message_id":"m_2"}`))
+	overrideBase(t, &metaGraphBase, rs.srv)
+
+	ch := &metaChannel{p: &Pipeline{}, cfg: &configCred{Platform: "meta", AccessToken: "tok", PageID: "PAGE-1"}}
+	if _, err := ch.Send(context.Background(), ChannelMessage{
+		Delivery:    &outboundDelivery{},
+		RecipientID: "psid-1",
+		Kind:        "media",
+		MediaType:   "document",
+		MediaURL:    "https://cdn.example/price-list.pdf",
+	}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	msg := rs.recorded()[0].Body["message"].(map[string]any)
+	att := msg["attachment"].(map[string]any)
+	if att["type"] != "file" {
+		t.Fatalf("attachment type = %v, want file (document is not a Send API type)", att["type"])
+	}
+}
+
+func TestMediaCapabilitiesMatchTheSendBranches(t *testing.T) {
+	for _, tc := range []struct {
+		platform string
+		kind     MediaKinds
+		want     bool
+	}{
+		{"telegram", MediaVideo, true},
+		{"telegram", MediaFile, true},
+		{"meta", MediaVideo, true},
+		{"meta", MediaFile, true},
+		{"instagram", MediaVideo, true},
+		{"whatsapp", MediaVideo, true},
+		{"whatsapp", MediaFile, true},
+		{"zalo", MediaVideo, false},
+		{"line", MediaImage, false},
+		{"web", MediaVideo, false},
+	} {
+		got := CapabilitiesFor(tc.platform).Media.Supports(tc.kind)
+		if got != tc.want {
+			t.Errorf("%s supports %v = %v, want %v", tc.platform, tc.kind, got, tc.want)
+		}
+	}
+}
+
+// C1: only a new comment is a funnel entry — likes, edits, deletes and our own
+// public replies must not produce a private message.
+func TestMetaCommentTarget(t *testing.T) {
+	cases := []struct {
+		name     string
+		change   map[string]any
+		wantID   string
+		wantFrom string
+		wantOK   bool
+	}{
+		{
+			"page comment added",
+			map[string]any{"field": "feed", "value": map[string]any{
+				"item": "comment", "verb": "add", "comment_id": "c1",
+				"from": map[string]any{"id": "psid-9"},
+			}},
+			"c1", "psid-9", true,
+		},
+		{
+			"page like is not a comment",
+			map[string]any{"field": "feed", "value": map[string]any{
+				"item": "like", "verb": "add", "comment_id": "c2",
+			}},
+			"", "", false,
+		},
+		{
+			"comment removed",
+			map[string]any{"field": "feed", "value": map[string]any{
+				"item": "comment", "verb": "remove", "comment_id": "c3",
+			}},
+			"", "", false,
+		},
+		{
+			"instagram comment",
+			map[string]any{"field": "comments", "value": map[string]any{
+				"id": "ig-c1", "text": "how much?",
+				"from": map[string]any{"id": "igsid-9"},
+			}},
+			"ig-c1", "igsid-9", true,
+		},
+		{
+			"no id",
+			map[string]any{"field": "comments", "value": map[string]any{"text": "hi"}},
+			"", "", false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			id, from, ok := metaCommentTarget(tc.change)
+			if ok != tc.wantOK || id != tc.wantID || from != tc.wantFrom {
+				t.Fatalf("metaCommentTarget = (%q,%q,%v), want (%q,%q,%v)", id, from, ok, tc.wantID, tc.wantFrom, tc.wantOK)
+			}
+		})
+	}
+}
+
+func TestSendPrivateReplyUsesTheCommentRecipient(t *testing.T) {
+	rs := newRecordingServer(t, okJSON(`{"message_id":"m_private"}`))
+	overrideBase(t, &metaGraphBase, rs.srv)
+
+	client := NewMetaClient("tok", "PAGE-1", "", "")
+	id, err := client.SendPrivateReply(context.Background(), "meta", "COMMENT-1", "hello")
+	if err != nil {
+		t.Fatalf("SendPrivateReply: %v", err)
+	}
+	if id != "m_private" {
+		t.Fatalf("provider id = %q", id)
+	}
+	call := rs.recorded()[0]
+	if call.Path != "/v24.0/PAGE-1/messages" {
+		t.Errorf("path = %s", call.Path)
+	}
+	recipient, _ := call.Body["recipient"].(map[string]any)
+	if recipient["comment_id"] != "COMMENT-1" {
+		t.Errorf("recipient = %v, want the comment id (a PSID would open the wrong thread)", recipient)
+	}
+	msg, _ := call.Body["message"].(map[string]any)
+	if msg["text"] != "hello" {
+		t.Errorf("message text = %v", msg["text"])
+	}
+}

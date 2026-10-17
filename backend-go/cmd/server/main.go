@@ -350,9 +350,11 @@ func main() {
 		MetaVerifyToken: cfg.MetaVerifyToken,
 		// The Data Deletion callback is signed with the app secret, which is a
 		// different credential from the verify token used by the hub.challenge GET.
-		MetaAppSecret: cfg.Meta.AppSecret,
-		PublicBaseURL: cfg.Server.PublicAPIURL,
-		Logger:        logger,
+		MetaAppSecret:   cfg.Meta.AppSecret,
+		PublicBaseURL:   cfg.Server.PublicAPIURL,
+		GraphAPIVersion: cfg.Meta.GraphAPIVersion,
+		CommentDM:       cfg.Meta.CommentDM,
+		Logger:          logger,
 	}
 	whMux := http.NewServeMux()
 	// Every tenant provider callback, plus the unified /api/v1/webhook/{platform}

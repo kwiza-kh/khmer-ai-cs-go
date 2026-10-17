@@ -37,6 +37,11 @@ type ChannelMessage struct {
 	// Tag is the provider tag to attach (Meta HUMAN_AGENT when the 7-day
 	// extension applies).
 	Tag string
+
+	// ReplyTo is the provider message id this send quotes, when the channel
+	// supports quoting and the payload named one (agent replies do; AI replies
+	// answer the message that just arrived and do not need the quote).
+	ReplyTo int64
 }
 
 // Channel performs the provider-specific half of delivery for one config row.

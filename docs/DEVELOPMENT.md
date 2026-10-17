@@ -2631,3 +2631,46 @@ Telegram 通知（决定"每个客户消息进谁的聊天"）、团队与角色
   persistent menu` —— 已补 `get_started`，并把 `GET_STARTED` 点击映射成一句问候，
   而不是把 payload 当客户消息喂给路由器。
 - **未在线验证**：Instagram 的快捷回复/已读——部署里只有 Messenger 页面；代码同路径，但没有真实 IG 账号可测。
+
+## 三十二、B/C 组：引用回复、视频/文件、评论转私信、主动跟进（2026-10-17）
+
+### 一、视频/文件真正发出（B3，同时修掉一个静默丢附件）
+- 收件箱早就能发 `payload.media_url`，但 Telegram 通道只处理 image/audio：**video/document 会被
+  当成纯文字发出，附件静默消失**。Meta 侧把 composer 的 `document` 直接当 attachment type 发，
+  而 Send API 只认 `file`。
+- 现在：Telegram 增加 `sendVideo`/`sendDocument`（与图片共用"说明即 caption、超长/解析失败则
+  媒体先发文字后跟"的规则）；Meta 把 `document` 映射成 `file`；能力表补齐
+  telegram(text/image/audio/video/file)、meta(+video)、instagram(+video)、whatsapp(+video) ——
+  zalo/line/web 不声明它们发不出的类型。
+
+### 二、人工回复引用原消息（B1）
+- 迁移 **084** 给 `platform_inbound_events` 加 `provider_message_id`（`external_id` 是去重键：
+  Telegram 那里是 update_id，不是 message_id），五个渠道的 webhook 各自填值。
+- `agentReply` 取该会话最近一条入站消息的 provider id 写进 payload；Telegram 用
+  `reply_parameters`（`allow_sending_without_reply`，消息被删也不会整条失败），只挂在第一块上。
+  AI 回复不引用——它回答的就是刚到的消息，引用是噪音。Meta 没有可靠的发送侧引用参数，未接。
+
+### 三、评论转私信（C1，需 App Review，默认关闭）
+- `entry.changes` 里的 `feed`（Page 评论）/`comments`（IG 评论）此前被整段忽略。现在解析新增评论，
+  对评论人发**一条**私信（Meta 规则：每条评论只能私信一次；Redis 7 天窗口去重），
+  文本高棉语+英语，请对方在私信里继续——那里才是 AI 服务的地方。
+- 默认关闭：`META_COMMENT_DM_ENABLED`。`feed`/`comments` 字段只有在 App Review 通过
+  `pages_read_engagement` + `pages_manage_engagement`（或 `instagram_manage_comments`）后才会投递，
+  没有权限时这段代码就是不可达的，开着也没有事件。
+
+### 四、解决后的主动跟进（B5，仅可主动发送的渠道，默认关闭）
+- `FOLLOWUP_HOURS`（默认 0=关）。开启后每 15 分钟扫一次：`status='resolved'`、解决超过 N 小时、
+  **解决后客户没再说话**、从未跟进过、非测试会话，且渠道能力表 `ProactiveSend=true`
+  （Telegram/LINE/Zalo；Meta 的 24h 窗口使同一句成为违规）。
+- 每会话一条：`chat_messages`（role=agent, message_type=followup）+ outbox + `followup_sent_at`
+  在同一事务里落库，崩溃不会重复发送。迁移 **085**。
+- 这是会打扰真实客户的功能，所以默认关闭是刻意的；文案随会话语言（km/en/zh）。
+
+### 五、明确没做
+- **相册/多图（B2）**：收件箱只有单个 `media_url`，没有多图来源；要做先得改 composer 与 payload
+  形状（一次多条媒体），否则只是没有生产者的发送路径。
+- **编辑/撤回（B4）**：Meta 没有发送侧的编辑 API；Telegram 有，但需要一个"改正这条已发消息"的
+  收件箱动作与 UI，而删除已送达的 AI 回答是破坏性操作，不应由后台任务自动做。
+- **Telegram Business（C2）**：`business_connection`/`business_message` 需要会话按连接维度归属、
+  每条发送带 `business_connection_id`、商家个人号与 RelayChat 账号的绑定流程，以及真实 Telegram
+  Business 账号才能验证，是 1–2 周的独立项目，本轮不交付半成品。

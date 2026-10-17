@@ -353,6 +353,24 @@ func (m *MetaClient) SendSenderAction(ctx context.Context, platform, recipientID
 
 // ListWhatsAppTemplates fetches approved message templates from the WhatsApp
 // Business account behind this config.
+// SendPrivateReply answers a comment in a private message, which is how a
+// commenter enters the DM thread. Meta allows one private reply per comment and
+// only for a limited window after it was posted.
+func (m *MetaClient) SendPrivateReply(ctx context.Context, platform, commentID, text string) (string, error) {
+	body := map[string]any{
+		"recipient": map[string]any{"comment_id": commentID},
+		"message":   map[string]any{"text": text},
+	}
+	v, err := m.post(ctx, "/"+m.accountID(platform)+"/messages", body)
+	if err != nil {
+		return "", err
+	}
+	if id, ok := v["message_id"].(string); ok {
+		return id, nil
+	}
+	return "", nil
+}
+
 // SetMessengerProfile installs the entry points a Messenger customer sees before
 // typing anything: a greeting for a new thread and a persistent menu with the two
 // actions every shop's customers eventually want. Returns a sentence for the
@@ -465,6 +483,10 @@ func buildMetaMessageBodyInner(req *SendRequest) map[string]any {
 		mediaType := req.MediaType
 		if mediaType == "" {
 			mediaType = "image"
+		}
+		// The composer calls a PDF "document"; the Send API calls it "file".
+		if mediaType == "document" {
+			mediaType = "file"
 		}
 		// Messenger and Instagram take media as message.attachment{type,payload.url}
 		// — "Sending audio, video, or a file from a URL will use the same format"
@@ -635,16 +657,19 @@ func (t *TelegramClient) call(ctx context.Context, method string, body any) (map
 
 // SendMessage sends a text message (optionally with inline keyboard).
 func (t *TelegramClient) SendMessage(ctx context.Context, chatID, text string, buttons [][2]string) (string, error) {
-	return t.SendMessageFormatted(ctx, chatID, text, "", buttons)
+	return t.SendMessageFormatted(ctx, chatID, text, "", buttons, 0)
 }
 
 // SendMessageFormatted sends text with an optional parse_mode ("HTML"). Callers
 // that pass a markup mode must pre-convert the body: Telegram renders it and
 // rejects the whole message when it cannot parse the entities.
-func (t *TelegramClient) SendMessageFormatted(ctx context.Context, chatID, text, parseMode string, buttons [][2]string) (string, error) {
+func (t *TelegramClient) SendMessageFormatted(ctx context.Context, chatID, text, parseMode string, buttons [][2]string, replyTo int64) (string, error) {
 	body := map[string]any{"chat_id": chatID, "text": text}
 	if parseMode != "" {
 		body["parse_mode"] = parseMode
+	}
+	if rp := telegramReplyParameters(replyTo); rp != nil {
+		body["reply_parameters"] = rp
 	}
 	if len(buttons) > 0 {
 		var rows [][]map[string]any
@@ -669,17 +694,20 @@ func (t *TelegramClient) SendMessageFormatted(ctx context.Context, chatID, text,
 // an HTTPS address the provider can reach — an R2 public or presigned URL is),
 // optionally with a caption and an inline keyboard.
 func (t *TelegramClient) SendPhoto(ctx context.Context, chatID, photoURL, caption string, buttons [][2]string) (string, error) {
-	return t.SendPhotoFormatted(ctx, chatID, photoURL, caption, "", buttons)
+	return t.SendPhotoFormatted(ctx, chatID, photoURL, caption, "", buttons, 0)
 }
 
 // SendPhotoFormatted is SendPhoto with an optional parse_mode for the caption.
-func (t *TelegramClient) SendPhotoFormatted(ctx context.Context, chatID, photoURL, caption, parseMode string, buttons [][2]string) (string, error) {
+func (t *TelegramClient) SendPhotoFormatted(ctx context.Context, chatID, photoURL, caption, parseMode string, buttons [][2]string, replyTo int64) (string, error) {
 	body := map[string]any{"chat_id": chatID, "photo": photoURL}
 	if caption != "" {
 		body["caption"] = caption
 	}
 	if parseMode != "" {
 		body["parse_mode"] = parseMode
+	}
+	if rp := telegramReplyParameters(replyTo); rp != nil {
+		body["reply_parameters"] = rp
 	}
 	if len(buttons) > 0 {
 		var rows [][]map[string]any
@@ -698,6 +726,87 @@ func (t *TelegramClient) SendPhotoFormatted(ctx context.Context, chatID, photoUR
 		}
 	}
 	return "", nil
+}
+
+// SendVideo delivers a video by URL, with the same caption rules as photos.
+func (t *TelegramClient) SendVideo(ctx context.Context, chatID, videoURL, caption string, buttons [][2]string) (string, error) {
+	return t.SendVideoFormatted(ctx, chatID, videoURL, caption, "", buttons, 0)
+}
+
+func (t *TelegramClient) SendVideoFormatted(ctx context.Context, chatID, videoURL, caption, parseMode string, buttons [][2]string, replyTo int64) (string, error) {
+	body := map[string]any{"chat_id": chatID, "video": videoURL}
+	if caption != "" {
+		body["caption"] = caption
+	}
+	if parseMode != "" {
+		body["parse_mode"] = parseMode
+	}
+	if rp := telegramReplyParameters(replyTo); rp != nil {
+		body["reply_parameters"] = rp
+	}
+	if len(buttons) > 0 {
+		var rows [][]map[string]any
+		for _, b := range buttons {
+			rows = append(rows, []map[string]any{{"text": b[0], "callback_data": b[1]}})
+		}
+		body["reply_markup"] = map[string]any{"inline_keyboard": rows}
+	}
+	v, err := t.call(ctx, "sendVideo", body)
+	if err != nil {
+		return "", err
+	}
+	if result, ok := v["result"].(map[string]any); ok {
+		if mid, ok := result["message_id"].(float64); ok {
+			return fmt.Sprintf("%.0f", mid), nil
+		}
+	}
+	return "", nil
+}
+
+// SendDocument delivers a file by URL (a price list PDF, say). Telegram fetches
+// the URL itself, so it must be reachable from the internet.
+func (t *TelegramClient) SendDocument(ctx context.Context, chatID, documentURL, caption string, buttons [][2]string) (string, error) {
+	return t.SendDocumentFormatted(ctx, chatID, documentURL, caption, "", buttons, 0)
+}
+
+func (t *TelegramClient) SendDocumentFormatted(ctx context.Context, chatID, documentURL, caption, parseMode string, buttons [][2]string, replyTo int64) (string, error) {
+	body := map[string]any{"chat_id": chatID, "document": documentURL}
+	if caption != "" {
+		body["caption"] = caption
+	}
+	if parseMode != "" {
+		body["parse_mode"] = parseMode
+	}
+	if rp := telegramReplyParameters(replyTo); rp != nil {
+		body["reply_parameters"] = rp
+	}
+	if len(buttons) > 0 {
+		var rows [][]map[string]any
+		for _, b := range buttons {
+			rows = append(rows, []map[string]any{{"text": b[0], "callback_data": b[1]}})
+		}
+		body["reply_markup"] = map[string]any{"inline_keyboard": rows}
+	}
+	v, err := t.call(ctx, "sendDocument", body)
+	if err != nil {
+		return "", err
+	}
+	if result, ok := v["result"].(map[string]any); ok {
+		if mid, ok := result["message_id"].(float64); ok {
+			return fmt.Sprintf("%.0f", mid), nil
+		}
+	}
+	return "", nil
+}
+
+// telegramReplyParameters is the Bot API 7 reply block. allow_sending_without_reply
+// keeps a stale quote from rejecting the whole message (the customer may have
+// deleted the message being answered).
+func telegramReplyParameters(replyTo int64) map[string]any {
+	if replyTo <= 0 {
+		return nil
+	}
+	return map[string]any{"message_id": replyTo, "allow_sending_without_reply": true}
 }
 
 // DownloadFile resolves file_id → path and fetches the bytes.
