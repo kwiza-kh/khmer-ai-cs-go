@@ -151,13 +151,13 @@ func (a *App) listInbox(w http.ResponseWriter, r *http.Request) (any, error) {
 		"CASE WHEN s.platform IN ('whatsapp','meta','instagram') THEN pus.last_inbound_at + INTERVAL '24 hours' END AS reply_window_expires_at, " +
 		"s.status::text, s.language, s.title, s.user_message_count, s.model_message_count, " +
 		"s.assigned_agent_id, s.first_response_at, s.escalated_at, s.created_at, s.archived_at, " +
-		"last_message.content AS last_message, last_message.created_at AS last_message_at, " +
+		"last_message.content AS last_message, last_message.created_at AS last_message_at, last_message.message_type AS last_message_type, " +
 		"u.username AS assigned_agent_name, s.sentiment, s.tags, s.intent " +
 		"FROM sessions AS s " +
 		"LEFT JOIN users u ON u.user_id = s.assigned_agent_id " +
 		"LEFT JOIN platform_user_sessions pus ON pus.session_id = s.session_id " +
 		"LEFT JOIN customer_profiles cp ON cp.user_id = s.user_id AND cp.platform::text = s.platform::text AND cp.platform_user_id = s.platform_user_id " +
-		"LEFT JOIN LATERAL (SELECT content, created_at FROM chat_messages WHERE session_id = s.session_id AND deleted_at IS NULL ORDER BY created_at DESC, message_id DESC LIMIT 1) AS last_message ON TRUE " +
+		"LEFT JOIN LATERAL (SELECT content, created_at, message_type FROM chat_messages WHERE session_id = s.session_id AND deleted_at IS NULL ORDER BY created_at DESC, message_id DESC LIMIT 1) AS last_message ON TRUE " +
 		"WHERE s.user_id = $1 AND s.is_test = FALSE" +
 		" AND ($2::session_status IS NULL OR s.status = $2)" +
 		" AND ((s.archived_at IS NOT NULL) = $3::boolean)" +
@@ -198,6 +198,7 @@ func (a *App) listInbox(w http.ResponseWriter, r *http.Request) (any, error) {
 			sid, status, language                        string
 			platform, puid                               *string // NULL for every web/widget session
 			displayName, avatarURL, title, lastMsg       *string
+			lastMsgType                                  *string
 			replyWindow, firstResp, escalated, lastMsgAt *time.Time
 			archivedAt                                   *time.Time
 			assignedAgent                                *int32
@@ -213,7 +214,7 @@ func (a *App) listInbox(w http.ResponseWriter, r *http.Request) (any, error) {
 		// so those conversations silently vanished from the inbox.
 		if err := rows.Scan(&sid, &uid, &platform, &puid, &displayName, &avatarURL, &replyWindow,
 			&status, &language, &title, &umc, &mmc, &assignedAgent, &firstResp, &escalated,
-			&createdAt, &archivedAt, &lastMsg, &lastMsgAt, &agentName, &sentiment, &tagsPtr, &intent); err != nil {
+			&createdAt, &archivedAt, &lastMsg, &lastMsgAt, &lastMsgType, &agentName, &sentiment, &tagsPtr, &intent); err != nil {
 			skipped++
 			a.Logger.Warn("inbox row skipped", "session_id", sid, "error", err.Error())
 			continue
@@ -239,6 +240,7 @@ func (a *App) listInbox(w http.ResponseWriter, r *http.Request) (any, error) {
 			"created_at":              createdAt,
 			"archived_at":             archivedAt,
 			"last_message":            lastMsg,
+			"last_message_type":       lastMsgType,
 			"last_message_at":         lastMsgAt,
 			"last_inbound_at":         replyWindow, // approximation: reply window derives from last inbound
 			"sentiment":               textutil.DerefString(sentiment),

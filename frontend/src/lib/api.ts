@@ -370,6 +370,7 @@ export interface InboxItem {
   assigned_agent_id?: number | null;
   assigned_agent_name?: string;
   last_message?: string;
+  last_message_type?: string | null;
   last_message_at?: string | null;
   last_inbound_at?: string | null;
   reply_window_expires_at?: string | null;
@@ -404,6 +405,7 @@ export interface HumanHandoffRequest {
   user_display_name?: string;
   session_title?: string;
   last_message?: string;
+  last_message_type?: string | null;
   last_message_at?: string | null;
 }
 

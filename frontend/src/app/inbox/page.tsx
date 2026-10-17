@@ -709,7 +709,10 @@ export default function InboxPage() {
                               {t(STATUS_BADGE[item.status].labelKey)}
                             </Badge>
                           </div>
-                          <p className="mt-1 truncate text-xs leading-5 text-muted-foreground">{item.last_message || t("inbox.noMessagesPreview")}</p>
+                          <p className="mt-1 truncate text-xs leading-5 text-muted-foreground">{
+                            item.last_message
+                            || (item.last_message_type === "media" ? t("inbox.modeMedia") : t("inbox.noMessagesPreview"))
+                          }</p>
                           <p className="mt-1 text-label text-muted-foreground">
                             {tf("inbox.messagesCount", { n: item.user_message_count + item.model_message_count })}
                           </p>
