@@ -286,7 +286,7 @@ func (a *App) chatPlain(w http.ResponseWriter, r *http.Request) (any, error) {
 
 	history := a.chatHistory(r.Context(), sessionID, historyFromRequest(req), userMsgID)
 	sid := sessionID
-	groundCtx := a.RAG.Ground(r.Context(), user.UserID, &sid, req.Message, language, history, 0)
+	groundCtx := a.RAG.Ground(r.Context(), user.Tenant(), &sid, req.Message, language, history, 0)
 	message := req.Message
 	if groundCtx.HasMatch {
 		message = rag.AugmentMessage(req.Message, &groundCtx)
@@ -318,7 +318,7 @@ func (a *App) chatPlain(w http.ResponseWriter, r *http.Request) (any, error) {
 		}
 		return nil, ErrInternal("生成回答失败")
 	}
-	usage.Record(r.Context(), a.DB, user.UserID, &sid, a.serving().ModelName(), result.PromptTokens, result.OutputTokens, result.CachedTokens, result.ThoughtsTokens)
+	usage.Record(r.Context(), a.DB, user.Tenant(), &sid, a.serving().ModelName(), result.PromptTokens, result.OutputTokens, result.CachedTokens, result.ThoughtsTokens)
 	reply := result.Reply
 	if !result.UsedMock {
 		reply = gemini.SanitizeReply(reply)
@@ -429,7 +429,7 @@ func (a *App) chatStream(w http.ResponseWriter, r *http.Request) {
 
 	history := a.chatHistory(r.Context(), sessionID, historyFromRequest(req), userMsgID)
 	sid := sessionID
-	groundCtx := a.RAG.Ground(r.Context(), user.UserID, &sid, req.Message, language, history, 0)
+	groundCtx := a.RAG.Ground(r.Context(), user.Tenant(), &sid, req.Message, language, history, 0)
 	message := req.Message
 	if groundCtx.HasMatch {
 		message = rag.AugmentMessage(req.Message, &groundCtx)

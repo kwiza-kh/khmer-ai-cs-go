@@ -15,10 +15,15 @@ import {
 import { toast } from "sonner";
 import { apiBaseURL } from "@/lib/api-base";
 import { useI18n } from "@/lib/i18n";
+import { useAuth } from "@/lib/auth-client";
 import { Globe2, Copy, Plus, Trash2, Code2, Loader2 } from "lucide-react";
 
 export default function WidgetAdminPage() {
   const { t, tf } = useI18n();
+  // The embed token is a public capability; only a seat granted widget_manage may
+  // mint or revoke one, so the controls follow the same key as the API.
+  const { can } = useAuth();
+  const canManage = can("widget_manage");
   const { data: tokens, isLoading, mutate } = useSWR<WidgetTokenItem[]>("widget-tokens", listWidgetTokens);
   const [name, setName] = React.useState("");
   const [origins, setOrigins] = React.useState("");
@@ -79,11 +84,11 @@ export default function WidgetAdminPage() {
         kicker={t("widget.kicker")}
         title={t("widget.title")}
         description={t("widget.description")}
-        actions={
+        actions={canManage ? (
           <Button size="sm" variant="outline" onClick={() => setShowForm((v) => !v)} className="gap-1.5">
             <Plus className="size-3.5" /> {t("widget.newToken")}
           </Button>
-        }
+        ) : undefined}
       />
       <div className="flex-1 overflow-auto p-5 sm:p-8">
         <div className="mx-auto max-w-3xl space-y-5">
@@ -130,9 +135,11 @@ export default function WidgetAdminPage() {
                   </div>
                 </div>
                 <p className="text-label text-muted-foreground">{t("widget.questionsHint")}</p>
-                <Button onClick={create} disabled={busy} className="h-8 text-xs gap-1.5">
-                  {busy ? <Loader2 className="size-3 animate-spin" /> : <Plus className="size-3" />}{t("widget.create")}
-                </Button>
+                {canManage && (
+                  <Button onClick={create} disabled={busy} className="h-8 text-xs gap-1.5">
+                    {busy ? <Loader2 className="size-3 animate-spin" /> : <Plus className="size-3" />}{t("widget.create")}
+                  </Button>
+                )}
               </CardContent>
             </Card>
           )}
@@ -142,10 +149,12 @@ export default function WidgetAdminPage() {
           ) : (tokens ?? []).length === 0 ? (
             <Card className="border-dashed"><CardContent className="flex flex-col items-center gap-3 py-12">
               <p className="text-sm text-muted-foreground">{t("widget.empty")}</p>
-              <Button size="sm" onClick={() => setShowForm(true)} disabled={busy} className="h-8 gap-1.5 text-xs">
-                <Plus className="size-3.5" />
-                {t("widget.newToken")}
-              </Button>
+              {canManage && (
+                <Button size="sm" onClick={() => setShowForm(true)} disabled={busy} className="h-8 gap-1.5 text-xs">
+                  <Plus className="size-3.5" />
+                  {t("widget.newToken")}
+                </Button>
+              )}
             </CardContent></Card>
           ) : (
             (tokens ?? []).map((tk) => (
@@ -156,9 +165,11 @@ export default function WidgetAdminPage() {
                       <p className="text-sm font-medium">{tk.name}</p>
                       <Badge variant="success" className="h-4 text-label">{t("widget.active")}</Badge>
                     </div>
-                    <Button size="sm" variant="ghost" className="h-7 text-xs gap-1 text-danger" onClick={() => void remove(tk.token_id)}>
-                      <Trash2 className="size-3" />{t("widget.delete")}
-                    </Button>
+                    {canManage && (
+                      <Button size="sm" variant="ghost" className="h-7 text-xs gap-1 text-danger" onClick={() => void remove(tk.token_id)}>
+                        <Trash2 className="size-3" />{t("widget.delete")}
+                      </Button>
+                    )}
                   </div>
                   <div>
                     <p className="text-label text-muted-foreground mb-1">{t("widget.tokenLabel")}</p>

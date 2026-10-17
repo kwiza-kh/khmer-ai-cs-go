@@ -252,7 +252,11 @@ export default function KnowledgePage() {
     return () => window.clearTimeout(timer);
   }, [loadDocs, loadInsights]);
 
-  const { user } = useAuth();
+  const { user, can } = useAuth();
+  // Search/quality panels stay readable for a seat; every write control on the
+  // page is gated by the same key the API enforces, so a view-only seat never
+  // sees a dead button.
+  const canEdit = can("knowledge_edit");
   // The AI-compile switch is a PLATFORM-wide flag (the rag:compile_enabled Redis
   // key) behind platformAdminOnly routes, so only the platform admin may see it.
   // It used to key off "role is admin", which showed tenant admins a control
@@ -470,10 +474,14 @@ export default function KnowledgePage() {
                 </span>
               </button>
             )}
-            <Button size="sm" variant="outline" className="gap-1.5" onClick={openCreateEditor}>
-              <Plus className="size-3.5" />{t("kb.newDoc")}
-            </Button>
-            <KnowledgeUploadDialog onUploaded={loadDocs} />
+            {canEdit && (
+              <>
+                <Button size="sm" variant="outline" className="gap-1.5" onClick={openCreateEditor}>
+                  <Plus className="size-3.5" />{t("kb.newDoc")}
+                </Button>
+                <KnowledgeUploadDialog onUploaded={loadDocs} />
+              </>
+            )}
           </>
         }
       />
@@ -559,6 +567,7 @@ export default function KnowledgePage() {
                       <div key={c.id} className="rounded-lg border border-warning/30 bg-warning/5 p-3">
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <p className="min-w-0 truncate text-xs font-semibold">{c.new_title}</p>
+                          {canEdit && (
                           <div className="flex shrink-0 items-center gap-1.5">
                             <Button variant="outline" size="sm" className="h-6 gap-1 px-2 text-label"
                               onClick={() => void handleContradiction(c.id, "resolve")}
@@ -572,6 +581,7 @@ export default function KnowledgePage() {
                               <X className="size-3" />{t("kb.contradictionDismiss")}
                             </Button>
                           </div>
+                          )}
                         </div>
                         <div className="mt-2 space-y-1.5">
                           {c.items.map((item, i) => (
@@ -633,6 +643,7 @@ export default function KnowledgePage() {
                         <p className="min-w-0 truncate text-xs">{gap.query}</p>
                         <div className="flex shrink-0 items-center gap-2">
                           <Badge variant="secondary" className="h-4 px-1.5 text-label">{tf("kb.qualityUses", { n: gap.hits })}</Badge>
+                          {canEdit && (
                           <Button
                             variant="outline"
                             size="sm"
@@ -643,6 +654,7 @@ export default function KnowledgePage() {
                             {drafting === gap.query ? <Loader2 className="size-3 animate-spin" /> : <Sparkles className="size-3" />}
                             {t("kb.gapDraft")}
                           </Button>
+                          )}
                         </div>
                       </div>
                     ))
@@ -681,7 +693,7 @@ export default function KnowledgePage() {
               filterNeedle ? (
                 <Card><CardContent className="py-12"><EmptyState icon={Search} title={t("nav.searchNoResults")} description={tf("kb.filterActive", { q: urlQuery })} action={<Button variant="outline" onClick={() => router.replace("/knowledge")}>{t("kb.filterClear")}</Button>} /></CardContent></Card>
               ) : (
-                <Card><CardContent className="py-12"><EmptyState icon={FileText} title={t("kb.emptyTitle")} description={t("kb.emptyDesc")} action={<KnowledgeUploadDialog onUploaded={loadDocs} />} /></CardContent></Card>
+                <Card><CardContent className="py-12"><EmptyState icon={FileText} title={t("kb.emptyTitle")} description={t("kb.emptyDesc")} action={canEdit ? <KnowledgeUploadDialog onUploaded={loadDocs} /> : undefined} /></CardContent></Card>
               )
             ) : documentGroups.map((group) => {
               const collapsed = collapsedGroups.has(group.key);
@@ -753,16 +765,18 @@ export default function KnowledgePage() {
                                   <span className="text-label text-muted-foreground">{tf("kb.chunks", { n: doc.chunk_count })}</span>
                                 </div>
                               </button>
-                              <button
-                                type="button"
-                                title={tf("kb.deleteTitle", { title: doc.title })}
-                                aria-label={tf("kb.deleteTitle", { title: doc.title })}
-                                onClick={() => { void handleDelete(doc); }}
-                                disabled={deletingDocId === doc.doc_id}
-                                className="absolute right-2 top-2 flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-danger disabled:opacity-50"
-                              >
-                                {deletingDocId === doc.doc_id ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
-                              </button>
+                              {canEdit && (
+                                <button
+                                  type="button"
+                                  title={tf("kb.deleteTitle", { title: doc.title })}
+                                  aria-label={tf("kb.deleteTitle", { title: doc.title })}
+                                  onClick={() => { void handleDelete(doc); }}
+                                  disabled={deletingDocId === doc.doc_id}
+                                  className="absolute right-2 top-2 flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-danger disabled:opacity-50"
+                                >
+                                  {deletingDocId === doc.doc_id ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
+                                </button>
+                              )}
                               {doc.index_status === "failed" && (
                                 <Button
                                   variant="outline"
@@ -817,7 +831,7 @@ export default function KnowledgePage() {
                                       </p>
                                     </button>
                                     <IndexStatusBadge status={doc.index_status} />
-                                    <button
+                                    {canEdit && <button
                                       type="button"
                                       title={tf("kb.deleteTitle", { title: doc.title })}
                                       aria-label={tf("kb.deleteTitle", { title: doc.title })}
@@ -826,7 +840,7 @@ export default function KnowledgePage() {
                                       className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-danger disabled:opacity-50"
                                     >
                                       {deletingDocId === doc.doc_id ? <Loader2 className="size-3 animate-spin" /> : <Trash2 className="size-3" />}
-                                    </button>
+                                    </button>}
                                   </li>
                                 );
                               })}
@@ -892,7 +906,7 @@ export default function KnowledgePage() {
 
           {previewDoc && !previewLoading && (
             <DialogFooter className="flex-row items-center justify-between gap-3 border-t border-border p-4 sm:justify-between">
-              <Button
+              {canEdit && <Button
                 variant="ghost"
                 size="sm"
                 className="text-danger hover:bg-destructive/10 hover:text-danger"
@@ -901,7 +915,7 @@ export default function KnowledgePage() {
               >
                 {deletingDocId === previewDoc.doc_id ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
                 {t("kb.delete")}
-              </Button>
+              </Button>}
               <div className="flex items-center gap-2">
                 {previewCanEdit && !editing && (
                   <>

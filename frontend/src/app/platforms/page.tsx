@@ -16,6 +16,7 @@ import { PLATFORM_ICONS } from "@/components/platform-icons";
 import { Globe, MessageCircle, ExternalLink, CheckCircle2, Loader2, Link2, Camera, Plus, RefreshCw, Unplug, CircleAlert, Radio, Clock3, Inbox, Send, RotateCcw, Copy, type LucideIcon } from "lucide-react";
 import { toast } from "sonner";
 import { useI18n } from "@/lib/i18n";
+import { useAuth } from "@/lib/auth-client";
 import { fmtDateTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { apiBaseURL } from "@/lib/api-base";
@@ -406,6 +407,7 @@ function StatusMetric({ icon: Icon, label, value, tone }: { icon: LucideIcon; la
 }
 
 function PlatformGroup({ meta, configs }: { meta: PlatformMeta; configs: PlatformConfig[] }) {
+  const { can } = useAuth();
   const { t, tf } = useI18n();
   const [adding, setAdding] = React.useState(false);
   return (
@@ -428,9 +430,11 @@ function PlatformGroup({ meta, configs }: { meta: PlatformMeta; configs: Platfor
               <CapabilityGroup label={t("pf.capReceipts")} values={[t(`pf.${meta.label}.receipts`)]} />
             </div>
             <p className="mt-1 text-label leading-4 text-muted-foreground">{t(`pf.${meta.label}.limitation`)}</p>
-            <Button size="sm" variant="outline" onClick={() => setAdding(true)} disabled={adding} className="mt-3 h-8 gap-1.5 text-xs">
-              <Plus className="size-3.5" /> {t("pf.addAccount")}
-            </Button>
+            {can("channels_manage") && (
+              <Button size="sm" variant="outline" onClick={() => setAdding(true)} disabled={adding} className="mt-3 h-8 gap-1.5 text-xs">
+                <Plus className="size-3.5" /> {t("pf.addAccount")}
+              </Button>
+            )}
           </div>
         </div>
       </div>
@@ -545,6 +549,7 @@ function MetaOAuthConnectCard({
   connectedInstagram: ConnectedAccount[];
 }) {
   const { t } = useI18n();
+  const { can } = useAuth();
   const hasConnections = connectedMeta.length > 0 || connectedInstagram.length > 0;
 
   return (
@@ -577,10 +582,12 @@ function MetaOAuthConnectCard({
             )}
           </div>
         </div>
-        <Button size="sm" variant={hasConnections ? "outline" : "default"} onClick={onStart} disabled={starting} className="h-8 shrink-0 gap-1.5 text-xs">
-          {starting ? <Loader2 className="size-3 animate-spin" /> : <Plus className="size-3" />}
-          {hasConnections ? t("pf.connectAnotherPage") : t("pf.connectMeta")}
-        </Button>
+        {can("channels_manage") && (
+          <Button size="sm" variant={hasConnections ? "outline" : "default"} onClick={onStart} disabled={starting} className="h-8 shrink-0 gap-1.5 text-xs">
+            {starting ? <Loader2 className="size-3 animate-spin" /> : <Plus className="size-3" />}
+            {hasConnections ? t("pf.connectAnotherPage") : t("pf.connectMeta")}
+          </Button>
+        )}
       </CardContent>
     </Card>
   );
@@ -616,6 +623,7 @@ function loadFacebookSDK(appID: string) {
 
 function WhatsAppEmbeddedSignupCard({ connected }: { connected: ConnectedAccount[] }) {
   const { t } = useI18n();
+  const { can } = useAuth();
   const [starting, setStarting] = React.useState(false);
   const [completing, setCompleting] = React.useState(false);
   const signup = React.useRef({ code: "", phoneNumberID: "", businessAccountID: "" });
@@ -722,10 +730,12 @@ function WhatsAppEmbeddedSignupCard({ connected }: { connected: ConnectedAccount
             )}
           </div>
         </div>
-        <Button size="sm" variant={connected.length > 0 ? "outline" : "default"} onClick={() => void start()} disabled={starting || completing} className="h-8 shrink-0 gap-1.5 text-xs">
-          {starting || completing ? <Loader2 className="size-3 animate-spin" /> : <Plus className="size-3" />}
-          {connected.length > 0 ? t("pf.connectAnotherNumber") : t("pf.connectWa")}
-        </Button>
+        {can("channels_manage") && (
+          <Button size="sm" variant={connected.length > 0 ? "outline" : "default"} onClick={() => void start()} disabled={starting || completing} className="h-8 shrink-0 gap-1.5 text-xs">
+            {starting || completing ? <Loader2 className="size-3 animate-spin" /> : <Plus className="size-3" />}
+            {connected.length > 0 ? t("pf.connectAnotherNumber") : t("pf.connectWa")}
+          </Button>
+        )}
       </CardContent>
     </Card>
   );
@@ -836,6 +846,8 @@ function MetaOAuthSelectionDialog({
 
 function PlatformCard({ meta, initial, onClose }: { meta: PlatformMeta; initial?: PlatformConfig; onClose?: () => void }) {
   const { t, tf } = useI18n();
+  const { can } = useAuth();
+  const canManage = can("channels_manage");
   const platformName = t(`pf.${meta.label}.name`);
   const [form, setForm] = React.useState<PlatformConfig>(() => ({
     platform: meta.label,
@@ -1043,10 +1055,12 @@ function PlatformCard({ meta, initial, onClose }: { meta: PlatformMeta; initial?
 
         <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
           <div className="flex flex-wrap gap-2">
-            <Button size="sm" onClick={handleSave} disabled={saving} className="h-8 text-xs gap-1.5">
-              {saving ? <Loader2 className="size-3 animate-spin" /> : <CheckCircle2 className="size-3" />}
-              {t("pf.save")}
-            </Button>
+            {canManage && (
+              <Button size="sm" onClick={handleSave} disabled={saving} className="h-8 text-xs gap-1.5">
+                {saving ? <Loader2 className="size-3 animate-spin" /> : <CheckCircle2 className="size-3" />}
+                {t("pf.save")}
+              </Button>
+            )}
             <Button size="sm" variant="outline" onClick={checkConnection} disabled={checking || !initial?.config_id || !initial.is_active} className="h-8 gap-1.5 text-xs">
               {checking ? <Loader2 className="size-3 animate-spin" /> : <Radio className="size-3" />}
               {t("pf.verify")}
@@ -1064,7 +1078,7 @@ function PlatformCard({ meta, initial, onClose }: { meta: PlatformMeta; initial?
             >
               <ExternalLink className="size-3" />{t("pf.docs")}
             </Button>
-            {initial?.config_id && initial.is_active && (
+            {canManage && initial?.config_id && initial.is_active && (
               <Button variant="ghost" size="sm" onClick={disconnect} disabled={disconnecting} className="h-8 gap-1 text-danger hover:text-danger">
                 {disconnecting ? <Loader2 className="size-3 animate-spin" /> : <Unplug className="size-3" />} {t("pf.disconnect")}
               </Button>

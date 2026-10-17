@@ -275,8 +275,12 @@ func (a *App) Router() http.Handler {
 	// still moves only through the platform console (setPlan), which stays
 	// platform-admin only.
 	authed.Handle("GET /api/v1/billing/plans", a.handle(a.billingCatalog))
-	authed.Handle("POST /api/v1/billing/paypal/order", a.handle(a.paypalCreateOrder))
-	authed.Handle("POST /api/v1/billing/paypal/capture", a.handle(a.paypalCapture))
+	// Checkout stays owner-only: a seat buying a plan would pay from its own PayPal
+	// into a tenant whose plan it does not own (the money reached the wrong row —
+	// found 2026-10-17 while auditing seat paths). Reads (plans/current) remain open
+	// so a member can see the plan without being able to change it.
+	authed.Handle("POST /api/v1/billing/paypal/order", a.tenantAdminOnly(a.handle(a.paypalCreateOrder)))
+	authed.Handle("POST /api/v1/billing/paypal/capture", a.tenantAdminOnly(a.handle(a.paypalCapture)))
 
 	// Teams (agent management). The tenant boundary lives in each statement, not
 	// in a role check: listTeam gates on requireOwnerOfTenant and filters on

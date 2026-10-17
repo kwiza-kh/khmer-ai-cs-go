@@ -1004,6 +1004,7 @@ function ConversationDetail({
   // realtime events with a 15s fallback poll (WS 断线自愈). The component is
   // keyed by session_id upstream, so switching conversations remounts it.
   const { t, tf } = useI18n();
+  const { can } = useAuth();
   // Seeded from the transcript cache so revisiting a conversation paints its
   // rows immediately; the mount fetch below revalidates in the background.
   const [msgList, setMsgList] = React.useState<ChatMessageItem[]>(() => transcriptCache.get(item.session_id) ?? []);
@@ -1310,7 +1311,9 @@ function ConversationDetail({
     void pullMessages(maxMessageIdRef.current);
   }, [realtimeVersion, pullMessages]);
   const isMine = item.assigned_agent_id === currentUserId;
-  const canReply = isMine || item.status === "handoff" || item.status === "pending";
+  // A seat without inbox_reply may read the conversation but not answer it; the
+  // composer used to be offered anyway and the POST answered 403.
+  const canReply = can("inbox_reply") && (isMine || item.status === "handoff" || item.status === "pending");
 
   // Conversation summary — follows the user's language preference and is
   // regenerated server-side when the transcript grows. The key includes the
@@ -1446,7 +1449,7 @@ function ConversationDetail({
     if (composerKind === "media") {
       // One attachment keeps the single-media shape (caption rules included); two
       // or more go as media_items, which Telegram groups into an album.
-      const items = mediaItems.length > 1
+      const items = mediaItems.length > 0
         ? mediaItems
         : [{ url: mediaURL.trim(), type: mediaType }].filter((entry) => isPublicHTTPSURL(entry.url));
       payload = items.length > 1
@@ -1658,12 +1661,12 @@ function ConversationDetail({
               <PanelRight className="size-3.5" />
             </Button>
           )}
-          {!isMine && (
+          {!isMine && can("inbox_takeover") && (
             <Button size="sm" onClick={handleTakeover} className="h-7 text-xs gap-1.5">
               <HandMetal className="size-3" />{t("inbox.takeOver")}
             </Button>
           )}
-          {isMine && (
+          {isMine && can("inbox_assign") && (
             <Button size="sm" variant="outline" onClick={handleAssignToMe} className="h-7 text-xs gap-1.5">
               <UserCircle2 className="size-3" />{t("inbox.reassignToMe")}
             </Button>
@@ -1808,7 +1811,7 @@ function ConversationDetail({
                                       : "rounded-bl-md bg-muted text-muted-foreground",
                                   ),
                                 )}>
-                                  <MessagePayloadPreview messageID={m.message_id} content={m.content} metadata={m.metadata} payload={m.delivery?.payload} />
+                                  <MessagePayloadPreview messageID={m.message_id} content={m.content} metadata={m.metadata} payload={m.delivery?.payload} markdown={m.role !== "user"} />
                                   {m.role === "model" && parseSources(m.sources_json).length > 0 && (
                                     <div className="mt-1.5 flex flex-wrap gap-1 border-t border-border/60 pt-1.5">
                                       {parseSources(m.sources_json).slice(0, 4).map((src) => (
@@ -2473,7 +2476,7 @@ function InboundPlatformMediaPreview({ messageID, media }: { messageID: number; 
   );
 }
 
-function MessagePayloadPreview({ messageID, content, metadata, payload }: { messageID: number; content: string; metadata?: string | Record<string, unknown> | null; payload?: PlatformMessagePayload }) {
+function MessagePayloadPreview({ messageID, content, metadata, payload, markdown }: { messageID: number; content: string; metadata?: string | Record<string, unknown> | null; payload?: PlatformMessagePayload; markdown?: boolean }) {
   const { t, tf } = useI18n();
   const mediaLabel = payload?.media_type ? `${payload.media_type.slice(0, 1).toUpperCase()}${payload.media_type.slice(1)}` : t("inbox.modeMedia");
   const inboundMedia = parseInboundPlatformMedia(metadata);
@@ -2493,7 +2496,11 @@ function MessagePayloadPreview({ messageID, content, metadata, payload }: { mess
 
   return (
     <>
-      {!isStoredPreview && content && !transcriptDuplicated && <p className="text-sm leading-normal whitespace-pre-wrap">{content}</p>}
+      {!isStoredPreview && content && !transcriptDuplicated && (
+        markdown
+          ? <div className="text-sm leading-normal"><Markdown>{content}</Markdown></div>
+          : <p className="text-sm leading-normal whitespace-pre-wrap">{content}</p>
+      )}
       {inboundMedia && <InboundPlatformMediaPreview messageID={messageID} media={inboundMedia} />}
       {payload?.kind === "media" && payload.media_items && payload.media_items.length > 0 && (
         <div className="mt-1.5 flex flex-wrap gap-1.5">

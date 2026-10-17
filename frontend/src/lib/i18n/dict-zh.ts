@@ -163,6 +163,7 @@ export const zh: Dict = {
   "inbox.msgDeleted": "消息已撤回",
   "inbox.mediaAdd": "添加附件",
   "inbox.mediaRemove": "移除附件",
+  "bl.ownerOnly": "只有店主可以变更套餐。",
   "inbox.filterAll": "全部",
   "inbox.filterActive": "进行中",
   "inbox.filterHandoff": "等待人工",

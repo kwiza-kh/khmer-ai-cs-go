@@ -207,7 +207,7 @@ func (a *App) billingCatalog(w http.ResponseWriter, r *http.Request) (any, error
 		}
 		plans = append(plans, entry)
 	}
-	state, err := a.paidState(r.Context(), user.UserID)
+	state, err := a.paidState(r.Context(), user.Tenant())
 	if err != nil {
 		return nil, err
 	}
@@ -241,7 +241,7 @@ func (a *App) paypalCreateOrder(w http.ResponseWriter, r *http.Request) (any, er
 		Plan:      plan,
 		Amount:    price,
 		Currency:  currency,
-		UserID:    user.UserID,
+		UserID:    user.Tenant(),
 		ReturnURL: a.billingReturnURL("return"),
 		CancelURL: a.billingReturnURL("cancel"),
 		BrandName: "RelayChat",
@@ -252,8 +252,8 @@ func (a *App) paypalCreateOrder(w http.ResponseWriter, r *http.Request) (any, er
 	}
 	// The row is the order's memory: capture and webhook both read plan and price
 	// back from here.
-	if _, err := a.DB.Exec(r.Context(), sqlPaymentInsert, user.UserID, order.ID, plan, price, currency); err != nil {
-		a.Logger.Error("paypal payment row insert failed", "user_id", user.UserID, "order_id", order.ID, "error", err.Error())
+	if _, err := a.DB.Exec(r.Context(), sqlPaymentInsert, user.Tenant(), order.ID, plan, price, currency); err != nil {
+		a.Logger.Error("paypal payment row insert failed", "user_id", user.Tenant(), "order_id", order.ID, "error", err.Error())
 		return nil, ErrInternal("创建支付记录失败")
 	}
 	return map[string]any{
@@ -289,11 +289,11 @@ func (a *App) paypalCapture(w http.ResponseWriter, r *http.Request) (any, error)
 		}
 		return nil, ErrInternal("读取订单失败")
 	}
-	if owner != user.UserID {
+	if owner != user.Tenant() {
 		return nil, &ApiError{http.StatusNotFound, "订单不存在"}
 	}
 	if status == "captured" {
-		state, err := a.paidState(r.Context(), user.UserID)
+		state, err := a.paidState(r.Context(), user.Tenant())
 		if err != nil {
 			return nil, err
 		}
@@ -314,7 +314,7 @@ func (a *App) paypalCapture(w http.ResponseWriter, r *http.Request) (any, error)
 		a.Logger.Error("paypal activation failed", "user_id", user.UserID, "order_id", orderID, "error", err.Error())
 		return nil, ErrInternal("支付已收到但开通失败，请联系管理员")
 	}
-	state, err := a.paidState(r.Context(), user.UserID)
+	state, err := a.paidState(r.Context(), user.Tenant())
 	if err != nil {
 		return nil, err
 	}

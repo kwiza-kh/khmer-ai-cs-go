@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useI18n } from "@/lib/i18n";
+import { useAuth } from "@/lib/auth-client";
 import { fmtDate, fmtInt } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -48,6 +49,10 @@ function paypalApproveURL(raw: string): string | null {
 // webhook that got there first — cannot grant a second month.
 export default function BillingPage() {
   const { t, tf } = useI18n();
+  const { user } = useAuth();
+  // Checkout is owner-only (the API refuses a seat); a member still sees the
+  // catalogue and the current plan.
+  const canBuy = !user?.is_member;
   const searchParams = useSearchParams();
   const paypalState = searchParams.get("paypal") ?? "";
   const orderId = searchParams.get("token") ?? "";
@@ -174,6 +179,7 @@ export default function BillingPage() {
               isCurrent={currentPlan === offer.plan}
               busy={busy}
               onBuy={() => void startCheckout(offer.plan)}
+              canBuy={canBuy}
               t={t}
               limit={limit}
             />
@@ -190,13 +196,14 @@ export default function BillingPage() {
 }
 
 function PlanCard({
-  offer, currency, isCurrent, busy, onBuy, t, limit,
+  offer, currency, isCurrent, busy, onBuy, canBuy, t, limit,
 }: {
   offer: PlanOffer;
   currency: string;
   isCurrent: boolean;
   busy: BillingPlan | null;
   onBuy: () => void;
+  canBuy: boolean;
   t: (key: string) => string;
   limit: (value: number | null | undefined) => string;
 }) {
@@ -232,14 +239,14 @@ function PlanCard({
       </p>
 
       <div className="mt-4">
-        {offer.purchasable ? (
+        {offer.purchasable && canBuy ? (
           <Button className="w-full gap-2" disabled={busy !== null} onClick={onBuy}>
             {busy === offer.plan ? <Loader2 className="size-3.5 animate-spin" /> : <CreditCard className="size-3.5" />}
             {t("bl.buy")}
           </Button>
         ) : (
           <p className="rounded-lg bg-muted/40 px-3 py-2.5 text-label leading-5 text-muted-foreground">
-            {offer.plan === "free" ? t("bl.freeNote") : t("bl.notForSale")}
+            {offer.plan === "free" ? t("bl.freeNote") : !canBuy ? t("bl.ownerOnly") : t("bl.notForSale")}
           </p>
         )}
       </div>

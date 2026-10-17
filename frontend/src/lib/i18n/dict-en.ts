@@ -167,6 +167,7 @@ export const en: Dict = {
   "inbox.msgDeleted": "Message withdrawn",
   "inbox.mediaAdd": "Add attachment",
   "inbox.mediaRemove": "Remove attachment",
+  "bl.ownerOnly": "Only the store owner can change the plan.",
   "inbox.filterAll": "All",
   "inbox.filterActive": "Active",
   "inbox.filterHandoff": "Awaiting agent",

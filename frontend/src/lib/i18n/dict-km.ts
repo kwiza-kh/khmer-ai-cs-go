@@ -163,6 +163,7 @@ export const km: Dict = {
   "inbox.msgDeleted": "សារត្រូវបានដកចេញ",
   "inbox.mediaAdd": "បន្ថែមឯកសារភ្ជាប់",
   "inbox.mediaRemove": "លុបឯកសារភ្ជាប់",
+  "bl.ownerOnly": "មានតែម្ចាស់ហាងទេដែលអាចផ្លាស់ប្តូរគម្រោង។",
   "inbox.filterAll": "ទាំងអស់",
   "inbox.filterActive": "សកម្ម",
   "inbox.filterHandoff": "កំពុងរង់ចាំភ្នាក់ងារ",

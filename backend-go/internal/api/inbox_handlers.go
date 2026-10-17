@@ -49,6 +49,50 @@ func unsafeReplyMediaURL(payload map[string]any) bool {
 	return false
 }
 
+// replyMediaUnsupported names the first attachment kind the channel cannot send,
+// or "" when every item is supported. It is the server-side half of the composer's
+// per-platform type list: without it a Zalo "document" reply looks sent in the
+// dashboard while the attachment never leaves (Zalo's Send falls through to the
+// text path), and LINE fails the whole delivery with an error the agent never sees.
+func replyMediaUnsupported(platformName string, payload map[string]any) string {
+	if payload == nil {
+		return ""
+	}
+	caps := platform.CapabilitiesFor(platformName)
+	check := func(typ string) string {
+		var need platform.MediaKinds
+		switch typ {
+		case "image":
+			need = platform.MediaImage
+		case "video":
+			need = platform.MediaVideo
+		case "audio":
+			need = platform.MediaAudio
+		case "document", "file":
+			need = platform.MediaFile
+		default:
+			return "" // an unknown type is the provider's problem, not ours
+		}
+		if !caps.Media.Supports(need) {
+			return typ
+		}
+		return ""
+	}
+	if items, ok := payload["media_items"].([]any); ok {
+		for _, item := range items {
+			if m, ok := item.(map[string]any); ok {
+				typ, _ := m["type"].(string)
+				if bad := check(typ); bad != "" {
+					return bad
+				}
+			}
+		}
+		return ""
+	}
+	typ, _ := payload["media_type"].(string)
+	return check(typ)
+}
+
 // listInbox — cross-platform sessions with avatar + last message (owner-scoped).
 func (a *App) listInbox(w http.ResponseWriter, r *http.Request) (any, error) {
 	user, _ := UserFrom(r)
@@ -314,6 +358,15 @@ func (a *App) agentReply(w http.ResponseWriter, r *http.Request, sessionID strin
 		sessionID).Scan(&configID, &platform, &recipientID)
 	if err != nil {
 		mapped = false
+	}
+	// Refuse an attachment this channel cannot carry, before it is persisted: the
+	// dashboard must not report a message the provider will drop or reject.
+	if mapped {
+		if kind, _ := req.Payload["kind"].(string); kind == "media" {
+			if bad := replyMediaUnsupported(platform, req.Payload); bad != "" {
+				return nil, ErrBadRequest("该渠道不支持发送" + bad + "附件")
+			}
+		}
 	}
 	// Persist the agent message. message_type carries the composer mode, so the
 	// transcript says what was actually sent without joining the delivery queue:
