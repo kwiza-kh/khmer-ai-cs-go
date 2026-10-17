@@ -213,6 +213,11 @@ func (wh *Webhooks) handleMetaMessaging(ctx context.Context, cfg *webhookConfig,
 			wh.recordMessageFeedback(ctx, cfg.UserID, cfg.Platform, sender, chatMessageID, rating)
 			return nil
 		}
+		if payload == "GET_STARTED" {
+			// The Get Started button we install alongside the menu has no title; its
+			// payload is not something the model should read, so it becomes a greeting.
+			label = "Hello"
+		}
 		ts, _ := msg["timestamp"].(float64)
 		externalID := "postback:" + payload + ":" + jsonNumberString(ts)
 		return wh.Pipe.EnqueueInboundEvent(ctx, cfg.ConfigID, cfg.Platform, externalID, sender, "", ButtonSelection(label), nil)

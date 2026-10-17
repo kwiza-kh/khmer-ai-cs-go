@@ -186,6 +186,9 @@ func TestSetMessengerProfileInstallsMenuWhenAbsent(t *testing.T) {
 	if _, ok := post.Body["persistent_menu"]; !ok {
 		t.Error("the write body has no persistent_menu")
 	}
+	if gs, ok := post.Body["get_started"].(map[string]any); !ok || gs["payload"] != "GET_STARTED" {
+		t.Error("the write body must include get_started: Meta rejects a menu without it (#100)")
+	}
 	if _, ok := post.Body["greeting"]; !ok {
 		t.Error("the write body has no greeting")
 	}

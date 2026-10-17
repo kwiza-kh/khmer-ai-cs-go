@@ -377,6 +377,11 @@ func (m *MetaClient) SetMessengerProfile(ctx context.Context) (string, error) {
 		}
 	}
 	body := map[string]any{
+		// Meta refuses a persistent menu without a Get Started button
+		// ("You must set a Get started button if you also wish to use persistent
+		// menu", #100 — hit in production on 2026-10-17). The tap arrives as a
+		// GET_STARTED postback; the webhook turns it into a greeting message.
+		"get_started": map[string]any{"payload": "GET_STARTED"},
 		"greeting": []map[string]any{
 			{"locale": "default", "text": "Hi! Tap a button below or just type your question. 🙋 Talk to a human any time."},
 			{"locale": "km_KH", "text": "សួស្តី! ចុចប៊ូតុងខាងក្រោម ឬវាយសំណួររបស់អ្នក។ 🙋 ចង់និយាយជាមួយមនុស្ស សូមចុចប៊ូតុង។"},

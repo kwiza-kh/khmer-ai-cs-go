@@ -2616,3 +2616,18 @@ Telegram 通知（决定"每个客户消息进谁的聊天"）、团队与角色
   名片转成文本标记，不再静默丢弃。
 - Meta：`reaction`（👍❤️😍 / 👎😡）按 outbox 的 `provider_message_id` 映射成同一条评分；
   `referral`（广告 / m.me 来源）写入日志 —— 事件表还没有归因列，写日志好过静默丢弃。
+
+### 五、验证（2026-10-17 线上）
+
+- **Telegram 排版**：注入一轮"请用列表回答"→ 出站行 `delivery 163` 的内容**保留 Markdown**
+  （`- EPS-P 彩钢夹芯板 …`；改动前会在入队时被压平成纯文本），投递 `sent`，日志没有
+  "rejected HTML entities" ⇒ 首次 HTML 发送即被 Telegram 接受（回退没有触发）。
+- **Messenger CSAT**：同一轮（`delivery 164`）`payload.feedback=true`、投递 `sent`
+  ⇒ Graph 接受了带 `quick_replies` 的消息（格式错误会 400 并被记成 failed）。客户在回复下看到 👍/👎。
+- **Messenger 菜单**：连接自检第一次返回
+  `Connection verified via Meta Graph API; Messenger greeting + menu installed`，第二次
+  `… existing Messenger menu kept`（幂等，不覆盖已有配置）。
+  第一次尝试的失败本身是证据：`(#100) You must set a Get started button if you also wish to use
+  persistent menu` —— 已补 `get_started`，并把 `GET_STARTED` 点击映射成一句问候，
+  而不是把 payload 当客户消息喂给路由器。
+- **未在线验证**：Instagram 的快捷回复/已读——部署里只有 Messenger 页面；代码同路径，但没有真实 IG 账号可测。
