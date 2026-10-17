@@ -570,3 +570,47 @@ func TestMetaChannelSendsMultiMediaSequentially(t *testing.T) {
 		t.Errorf("last message text = %v", last["text"])
 	}
 }
+
+// A media-only album must not be followed by an empty text message (Telegram
+// rejects it, and the retry would re-send the album).
+func TestSplitChannelTextEmptyIsNoChunks(t *testing.T) {
+	if got := SplitChannelText("", CapabilitiesFor("telegram")); len(got) != 0 {
+		t.Fatalf("empty text split into %d chunk(s): %v", len(got), got)
+	}
+	if got := SplitChannelText("   \n", CapabilitiesFor("meta")); len(got) != 0 {
+		t.Fatalf("whitespace-only text split into %d chunk(s)", len(got))
+	}
+}
+
+func TestTelegramMediaOnlyAlbumSendsNoTextMessage(t *testing.T) {
+	rs := newRecordingServer(t, func(r *http.Request, n int) (int, map[string]string, string) {
+		if strings.HasSuffix(r.URL.Path, "/sendMediaGroup") {
+			return http.StatusOK, map[string]string{"Content-Type": "application/json"},
+				`{"ok":true,"result":[{"message_id":701},{"message_id":702}]}`
+		}
+		return http.StatusOK, map[string]string{"Content-Type": "application/json"}, `{"ok":true,"result":{"message_id":703}}`
+	})
+	overrideBase(t, &telegramBase, rs.srv)
+
+	ch := &telegramChannel{p: &Pipeline{}, cfg: &configCred{Platform: "telegram", BotToken: "T"}}
+	id, err := ch.Send(context.Background(), ChannelMessage{
+		Delivery:    &outboundDelivery{},
+		RecipientID: "chat-1",
+		Kind:        "media",
+		MediaItems: []MediaItem{
+			{URL: "https://cdn.example/1.jpg", Type: "image"},
+			{URL: "https://cdn.example/2.jpg", Type: "image"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("send album: %v", err)
+	}
+	if id != "chat-1:701" {
+		t.Fatalf("provider id = %q, want the album's first message", id)
+	}
+	for _, call := range rs.recorded() {
+		if strings.HasSuffix(call.Path, "/sendMessage") {
+			t.Fatalf("a media-only album sent an extra text message: %v", call.Body)
+		}
+	}
+}

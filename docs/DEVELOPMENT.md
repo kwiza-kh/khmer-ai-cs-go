@@ -2702,3 +2702,31 @@ AI 报错价、消息发错人，此前只能再补一条"更正"——客户手
   （UI 实拍），列表预览同步。
 - 撤回消息 11453（PDF）→ 接口 `已撤回`、`deleted_at` 置位；会话里消失。
 - 两次 provider 调用都被接受，日志无错误。
+
+## 三十四、多附件回复：Telegram 相册、Meta 连发（2026-10-17）
+
+### 一、实现
+- payload 新增 `media_items: [{url, type}]`（收件箱 composer 的"添加附件"，最多 10 个）；
+  一项仍走原来的 `media_url/media_type`，所以单附件的 caption 规则不变。
+- Telegram：2–10 张图片/视频 → `sendMediaGroup` 一条相册；混入文件/音频或超过 10 项 →
+  逐条发送（相册不能混类型，静默丢附件才是这里要防的失败）。相册之后跟一条文字（按钮与引用
+  挂在文字上），outbox 的 provider id 指向文字消息；**纯附件**（无文字）时指向相册首条。
+- Meta：Send API 一条消息只能一个附件，逐条发完再发文字。
+- 校验：`media_items` 里每个 URL 都必须是 https（与 `media_url` 同规则），最多 10 个。
+
+### 二、线上撞到的 bug：空文本块
+第一次线上发送（只有附件、没有文字）失败：
+`telegram sendMessage failed (400): Bad Request: message text is empty`。
+根因不在相册：`SplitChannelText("")` 返回一个**空块**，发送循环把它当成第二条消息发了出去。
+于是：`SplitChannelText` 对空白文本返回零块；多附件路径在无文字时直接返回相册首条的 id。
+这个 bug 对纯文本路径同样存在（只是 AI/客服回复总有内容，所以没暴露）。
+
+代价：那条投递已重试过一次（相册在客户侧出现了两遍），人工取消后重发验证。教训写在这里：
+**部分成功投递的重试会重复已发出的部分**——多消息发送的幂等只能靠"一次 provider 调用"或
+更细的进度记录，本项目目前没有，长文本分块也有同样的问题（既有行为，未在本轮扩大）。
+
+### 三、验证（线上）
+- 纯附件相册（2 图、无文字）：`delivery 173` 一次 `sent`，provider id = 相册首条消息，
+  无空文本错误。
+- 文字+相册：相册 + 一条文字，文字带按钮/引用（单测钉住调用顺序：sendMediaGroup → sendMessage）。
+- 单附件仍走 caption 路径（单测）；混合类型逐条发送（单测：sendPhoto → sendDocument → sendMessage）。

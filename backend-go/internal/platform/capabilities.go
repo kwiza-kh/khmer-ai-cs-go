@@ -428,6 +428,13 @@ func CapabilitiesFor(platform string) Capabilities {
 // SplitPlatformText(text, caps.TextLimit) pattern, which always
 // counted runes.
 func SplitChannelText(text string, caps Capabilities) []string {
+	// No text, no chunks. A media-only reply (an album, a file) used to yield one
+	// empty chunk here, and the sender loop turned it into a second message that
+	// Telegram rejected with "message text is empty" — which also made the whole
+	// delivery retry and re-send the album. Found in production 2026-10-17.
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
 	if caps.TextLimit <= 0 {
 		return []string{text}
 	}

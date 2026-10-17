@@ -108,6 +108,7 @@ func (c *telegramChannel) sendMediaItems(ctx context.Context, client *TelegramCl
 			album = false
 		}
 	}
+	var albumIDs []string
 	if album {
 		media := make([]map[string]any, 0, len(msg.MediaItems))
 		for _, item := range msg.MediaItems {
@@ -117,9 +118,11 @@ func (c *telegramChannel) sendMediaItems(ctx context.Context, client *TelegramCl
 			}
 			media = append(media, map[string]any{"type": kind, "media": item.URL})
 		}
-		if _, err := client.SendMediaGroup(ctx, msg.RecipientID, media, msg.ReplyTo); err != nil {
+		ids, err := client.SendMediaGroup(ctx, msg.RecipientID, media, msg.ReplyTo)
+		if err != nil {
 			return "", err
 		}
+		albumIDs = ids
 	} else {
 		for _, item := range msg.MediaItems {
 			if item.Type == "audio" {
@@ -144,7 +147,8 @@ func (c *telegramChannel) sendMediaItems(ctx context.Context, client *TelegramCl
 		}
 	}
 	lastID := ""
-	for _, chunk := range SplitChannelText(msg.Content, c.Caps()) {
+	chunks := SplitChannelText(msg.Content, c.Caps())
+	for _, chunk := range chunks {
 		id, err := c.sendChunk(ctx, client, msg.RecipientID, chunk, buttons, 0)
 		if err != nil {
 			return "", err
@@ -153,6 +157,11 @@ func (c *telegramChannel) sendMediaItems(ctx context.Context, client *TelegramCl
 			lastID = TelegramProviderMessageID(msg.RecipientID, id)
 		}
 		buttons = nil
+	}
+	if lastID == "" && len(albumIDs) > 0 {
+		// A media-only album: the album itself is the message. Return its first
+		// message id so the outbox can still withdraw it.
+		lastID = TelegramProviderMessageID(msg.RecipientID, albumIDs[0])
 	}
 	if hasFeedbackButtons {
 		c.p.demotePreviousFeedbackKeyboard(ctx, client, msg.Delivery)
