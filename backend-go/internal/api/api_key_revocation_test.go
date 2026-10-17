@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -23,9 +24,10 @@ func TestPasswordChangeRevokesAPIKeys(t *testing.T) {
 	if _, err := p.pool.Exec(ctx, "UPDATE users SET password_hash = $1 WHERE user_id = $2", hash, owner); err != nil {
 		t.Fatalf("seed password: %v", err)
 	}
+	keyHash := fmt.Sprintf("probe-hash-%d", owner)
 	if _, err := p.pool.Exec(ctx,
 		`INSERT INTO api_keys (user_id, name, key_prefix, key_hash, is_active, expires_at)
-		 VALUES ($1, 'probe', 'kcs_', 'probe-hash-' || $1, true, NOW() + interval '30 days')`, owner); err != nil {
+		 VALUES ($1, 'probe', 'kcs_', $2, true, NOW() + interval '30 days')`, owner, keyHash); err != nil {
 		t.Fatalf("seed api key: %v", err)
 	}
 
