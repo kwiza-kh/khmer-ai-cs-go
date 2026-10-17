@@ -211,7 +211,7 @@ func TestGenerateFastReportsAuxUsage(t *testing.T) {
 	var seenModel string
 	var seenIn, seenOut int
 	prev := gemini.AuxUsageObserver
-	gemini.AuxUsageObserver = func(ctx context.Context, model string, prompt, completion, cached int) {
+	gemini.AuxUsageObserver = func(ctx context.Context, model string, prompt, completion, cached, thoughts int) {
 		seenModel, seenIn, seenOut = model, prompt, completion
 	}
 	t.Cleanup(func() { gemini.AuxUsageObserver = prev })

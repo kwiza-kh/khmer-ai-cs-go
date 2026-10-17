@@ -272,7 +272,11 @@ type ChatResult struct {
 	PromptTokens int
 	OutputTokens int
 	CachedTokens int
-	UsedMock     bool
+	// ThoughtsTokens is the billed reasoning share of OutputTokens (migration
+	// 082). Kept apart so a thinking regression is visible in token_usage
+	// instead of being rediscovered from a latency spike.
+	ThoughtsTokens int
+	UsedMock       bool
 }
 
 // Service is the Gemini client (thread-safe).
@@ -1854,7 +1858,7 @@ func (s *Service) resultFromValue(v map[string]any) ChatResult {
 	// invisible characters still inside it is a reply nobody can copy, search or
 	// wrap. See khmer.go for what is canonicalised and why.
 	res := ChatResult{Reply: SanitizeReply(ExtractTextFromValue(v))}
-	res.PromptTokens, res.OutputTokens, res.CachedTokens = usageFromValue(v)
+	res.PromptTokens, res.OutputTokens, res.CachedTokens, res.ThoughtsTokens = usageFromValue(v)
 	return res
 }
 
@@ -1866,8 +1870,8 @@ func (s *Service) resultFromValue(v map[string]any) ChatResult {
 // spend was invisible in token_usage — and the spend ceiling documented in
 // docs/GEMINI-RATE-LIMIT.md was reverse-engineered from those understated
 // numbers. Folding them in makes cost_estimate track the invoice.
-func usageFromValue(v map[string]any) (int, int, int) {
-	var prompt, completion, cached int
+func usageFromValue(v map[string]any) (int, int, int, int) {
+	var prompt, completion, cached, thoughts int
 	usage, _ := v["usageMetadata"].(map[string]any)
 	if usage != nil {
 		if n, ok := usage["promptTokenCount"].(float64); ok {
@@ -1877,13 +1881,14 @@ func usageFromValue(v map[string]any) (int, int, int) {
 			completion = int(n)
 		}
 		if n, ok := usage["thoughtsTokenCount"].(float64); ok {
-			completion += int(n)
+			thoughts = int(n)
+			completion += thoughts
 		}
 		if n, ok := usage["cachedContentTokenCount"].(float64); ok {
 			cached = int(n)
 		}
 	}
-	return prompt, completion, cached
+	return prompt, completion, cached, thoughts
 }
 
 // ChatStream runs a turn with token-level streaming: onToken is invoked for
@@ -1970,8 +1975,8 @@ func (s *Service) chatStream(ctx context.Context, message string, history []Hist
 			// of the whitespace between two words.
 			onToken(SanitizeReplyChunk(text))
 		}
-		if p, c, cached := usageFromValue(chunk); p+c+cached > 0 {
-			res.PromptTokens, res.OutputTokens, res.CachedTokens = p, c, cached
+		if p, c, cached, th := usageFromValue(chunk); p+c+cached > 0 {
+			res.PromptTokens, res.OutputTokens, res.CachedTokens, res.ThoughtsTokens = p, c, cached, th
 		}
 	}
 	// A stream that dies mid-answer used to be indistinguishable from a complete
@@ -2029,8 +2034,8 @@ func (s *Service) DescribeImage(ctx context.Context, data []byte, mimeType strin
 	if json.Unmarshal([]byte(text), &v) != nil {
 		return "", fmt.Errorf("describe image: invalid response")
 	}
-	auxPrompt, auxCompletion, auxCached := usageFromValue(v)
-	reportAuxUsage(ctx, s.fastModelName(), auxPrompt, auxCompletion, auxCached)
+	auxPrompt, auxCompletion, auxCached, auxThoughts := usageFromValue(v)
+	reportAuxUsage(ctx, s.fastModelName(), auxPrompt, auxCompletion, auxCached, auxThoughts)
 	return strings.TrimSpace(ExtractTextFromValue(v)), nil
 }
 
@@ -2067,8 +2072,8 @@ func (s *Service) ExtractDocumentText(ctx context.Context, data []byte, mimeType
 	if json.Unmarshal([]byte(text), &v) != nil {
 		return "", fmt.Errorf("document OCR: invalid response")
 	}
-	auxPrompt, auxCompletion, auxCached := usageFromValue(v)
-	reportAuxUsage(ctx, s.fastModelName(), auxPrompt, auxCompletion, auxCached)
+	auxPrompt, auxCompletion, auxCached, auxThoughts := usageFromValue(v)
+	reportAuxUsage(ctx, s.fastModelName(), auxPrompt, auxCompletion, auxCached, auxThoughts)
 	out := strings.TrimSpace(ExtractTextFromValue(v))
 	if out == "" {
 		return "", fmt.Errorf("document OCR returned no text")
@@ -2118,8 +2123,8 @@ func (s *Service) ExtractProductImage(ctx context.Context, data []byte, mimeType
 	if json.Unmarshal([]byte(text), &v) != nil {
 		return "", fmt.Errorf("product image read: invalid response")
 	}
-	auxPrompt, auxCompletion, auxCached := usageFromValue(v)
-	reportAuxUsage(ctx, s.fastModelName(), auxPrompt, auxCompletion, auxCached)
+	auxPrompt, auxCompletion, auxCached, auxThoughts := usageFromValue(v)
+	reportAuxUsage(ctx, s.fastModelName(), auxPrompt, auxCompletion, auxCached, auxThoughts)
 	out := strings.TrimSpace(ExtractTextFromValue(v))
 	if out == "" {
 		return "", fmt.Errorf("product image read returned no text")
@@ -2255,11 +2260,11 @@ func (s *Service) GenerateFast(ctx context.Context, prompt string, timeout time.
 //
 // Callers attribute the spend by tagging ctx with usage.WithUser; an observer
 // that finds no user simply skips the row.
-var AuxUsageObserver func(ctx context.Context, model string, prompt, completion, cached int)
+var AuxUsageObserver func(ctx context.Context, model string, prompt, completion, cached, thoughts int)
 
-func reportAuxUsage(ctx context.Context, model string, prompt, completion, cached int) {
+func reportAuxUsage(ctx context.Context, model string, prompt, completion, cached, thoughts int) {
 	if AuxUsageObserver != nil && prompt+completion > 0 {
-		AuxUsageObserver(ctx, model, prompt, completion, cached)
+		AuxUsageObserver(ctx, model, prompt, completion, cached, thoughts)
 	}
 }
 
@@ -2292,8 +2297,8 @@ func (s *Service) GenerateFastMax(ctx context.Context, prompt string, timeout ti
 	}
 	// Bill the call even when the reply turns out unusable: the tokens were
 	// spent either way.
-	auxPrompt, auxCompletion, auxCached := usageFromValue(v)
-	reportAuxUsage(ctx, s.fastModelName(), auxPrompt, auxCompletion, auxCached)
+	auxPrompt, auxCompletion, auxCached, auxThoughts := usageFromValue(v)
+	reportAuxUsage(ctx, s.fastModelName(), auxPrompt, auxCompletion, auxCached, auxThoughts)
 	reply := strings.TrimSpace(StripSourceMarkers(ExtractTextFromValue(v)))
 	if reply == "" {
 		return "", false
@@ -2589,7 +2594,7 @@ func (s *Service) embedBatch(ctx context.Context, conditioned []string) ([][]flo
 	for _, t := range conditioned {
 		total += len(t)
 	}
-	reportAuxUsage(ctx, model, total/4, 0, 0)
+	reportAuxUsage(ctx, model, total/4, 0, 0, 0)
 	if prov.kind == providerVertex {
 		return parseVertexPredictBatch(respText, len(conditioned), model)
 	}
@@ -2682,7 +2687,7 @@ func (s *Service) embedConditioned(ctx context.Context, text, taskType string) (
 	}
 	// Single-document/query embedding: same reasoning as embedBatch above —
 	// reported before validation so a billed call is always recorded.
-	reportAuxUsage(ctx, model, len(text)/4, 0, 0)
+	reportAuxUsage(ctx, model, len(text)/4, 0, 0, 0)
 	var v map[string]any
 	if json.Unmarshal([]byte(respText), &v) != nil {
 		return nil, fmt.Errorf("embed: invalid response")
@@ -2784,8 +2789,8 @@ func (s *Service) transcribeOnce(ctx context.Context, audio []byte, mimeType, pr
 	if json.Unmarshal([]byte(text), &v) != nil {
 		return "", fmt.Errorf("transcribe: invalid response")
 	}
-	auxPrompt, auxCompletion, auxCached := usageFromValue(v)
-	reportAuxUsage(ctx, s.fastModelName(), auxPrompt, auxCompletion, auxCached)
+	auxPrompt, auxCompletion, auxCached, auxThoughts := usageFromValue(v)
+	reportAuxUsage(ctx, s.fastModelName(), auxPrompt, auxCompletion, auxCached, auxThoughts)
 	transcript := strings.TrimSpace(ExtractTextFromValue(v))
 	if isTranscriptionRefusal(transcript) {
 		return "", fmt.Errorf("transcribe: model could not decode audio (mime=%s): %s", mimeType, textutil.Ellipsize(transcript, 160))

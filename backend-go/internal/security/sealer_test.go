@@ -2,7 +2,10 @@ package security
 
 import "testing"
 
-const testKey = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=" // 32 bytes
+// A random-looking 32-byte key: the envelope test is about the ciphertext shape,
+// and NewSealer now refuses the documented demo value (see
+// sealer_placeholder_test.go for that policy).
+const testKey = "M2Y5YTBjMWQ1ZThiMjc0NmFmMzBjOWQxN2I2ZTA1NDI="
 
 func TestRoundtripAndPassthrough(t *testing.T) {
 	sealer, err := NewSealer(testKey)

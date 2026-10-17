@@ -374,7 +374,7 @@ func TestAuxUsageIsReportedToThePlatformObserver(t *testing.T) {
 	var seenModel string
 	var seenPrompt, seenCompletion, seenCached int
 	prev := gemini.AuxUsageObserver
-	gemini.AuxUsageObserver = func(_ context.Context, model string, prompt, completion, cached int) {
+	gemini.AuxUsageObserver = func(_ context.Context, model string, prompt, completion, cached, thoughts int) {
 		seenModel, seenPrompt, seenCompletion, seenCached = model, prompt, completion, cached
 	}
 	t.Cleanup(func() { gemini.AuxUsageObserver = prev })

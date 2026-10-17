@@ -1,0 +1,12 @@
+-- 082 — token_usage.thoughts_tokens: the reasoning part of a completion, kept
+-- apart from the part the customer actually needed.
+--
+-- The Gemini clients fold thinking tokens into completion_tokens (that is what is
+-- billed, so the cost estimate stays right), which made them invisible: an ASR
+-- call that should have reported ~10 tokens reported 96 for a three-word Khmer
+-- transcript, and the "thinking" half was only found by reading the raw
+-- usageMetadata (2026-10-16, docs §二十八). The auxiliary calls now run with a
+-- thinking budget of zero; this column makes a future regression — or a
+-- deliberate opt-in — visible in the cost view instead of being rediscovered by
+-- a latency investigation.
+ALTER TABLE token_usage ADD COLUMN IF NOT EXISTS thoughts_tokens INTEGER NOT NULL DEFAULT 0;

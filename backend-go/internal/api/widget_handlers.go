@@ -636,7 +636,7 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	usage.Record(persistCtx, a.DB, t.ownerID, &sid, a.serving().ModelName(), result.PromptTokens, result.OutputTokens, result.CachedTokens)
+	usage.Record(persistCtx, a.DB, t.ownerID, &sid, a.serving().ModelName(), result.PromptTokens, result.OutputTokens, result.CachedTokens, result.ThoughtsTokens)
 	// The visitor row was persisted above, so persist only the model turn.
 	// (The combined user+model helper was deleted as dead code: calling it here
 	// would store the visitor's message a second time and double-count it.)

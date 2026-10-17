@@ -105,9 +105,15 @@ func (a *App) logging(next http.Handler) http.Handler {
 		switch {
 		case rec.status >= 500:
 			a.Logger.Error("request", attrs...)
-		case rec.status >= 400:
+		case rec.status == http.StatusUnauthorized || rec.status == http.StatusForbidden || rec.status == http.StatusTooManyRequests:
+			// Authentication, permission and throttle refusals are signals an
+			// operator watches for (brute force, a mis-scoped seat, a tenant hitting
+			// a limit), so they stay loud.
 			a.Logger.Warn("request", attrs...)
 		default:
+			// Other 4xx are the client's problem — a missing route, a bad body — and
+			// at WARN the internet's scanner traffic (`/api/.env`, `/.git/config`)
+			// buried the lines that matter.
 			a.Logger.Info("request", attrs...)
 		}
 	})

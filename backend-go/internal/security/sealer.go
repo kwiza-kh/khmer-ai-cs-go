@@ -23,7 +23,27 @@ type Sealer struct {
 }
 
 // NewSealer builds from the env value (base64 of exactly 32 bytes).
+//
+// It REFUSES a well-known placeholder key. Length alone is not a security
+// property: the demo key this repo documents base64-decodes to
+// "0123456789abcdef…", and a deployment that kept it sealed every credential
+// (page tokens, bot tokens, webhook secrets, TOTP secrets) under a value anyone
+// with a database read could reproduce — found in production on 2026-10-17,
+// where the startup log had said nothing about it.
 func NewSealer(encodedKey string) (*Sealer, error) {
+	s, err := NewSealerRaw(encodedKey)
+	if err != nil {
+		return nil, err
+	}
+	if reason := placeholderKeyReason(s.key); reason != "" {
+		return nil, fmt.Errorf("PLATFORM_CREDENTIAL_KEY is a placeholder (%s): generate a real key with `openssl rand -base64 32`, rotate the stored ciphertext (cmd/rotatekey) and restart", reason)
+	}
+	return s, nil
+}
+
+// NewSealerRaw skips the placeholder check. Only the rotation tool may use it:
+// it has to read values sealed under the very key NewSealer refuses.
+func NewSealerRaw(encodedKey string) (*Sealer, error) {
 	trimmed := strings.TrimSpace(encodedKey)
 	decoded, err := base64.RawStdEncoding.DecodeString(trimmed)
 	if err != nil {
@@ -35,6 +55,32 @@ func NewSealer(encodedKey string) (*Sealer, error) {
 		return nil, fmt.Errorf("PLATFORM_CREDENTIAL_KEY must be base64 for exactly 32 random bytes")
 	}
 	return &Sealer{key: decoded}, nil
+}
+
+// placeholderKeyReason names why a key is not a secret, or "" when it is usable.
+// Deliberately small and explicit: a deny-list of the shapes this repo has
+// actually shipped as examples, not a guess at an attacker's dictionary.
+func placeholderKeyReason(key []byte) string {
+	if len(key) == 0 {
+		return "empty"
+	}
+	same := true
+	for _, b := range key[1:] {
+		if b != key[0] {
+			same = false
+			break
+		}
+	}
+	if same {
+		return "every byte is identical"
+	}
+	lower := strings.ToLower(string(key))
+	for _, pat := range []string{"0123456789abcdef", "changeme", "password", "placeholder", "secretkey", "testtest"} {
+		if strings.HasPrefix(lower, pat) || strings.Contains(lower, pat) {
+			return "matches the documented example " + pat
+		}
+	}
+	return ""
 }
 
 // IsEncrypted reports the envelope prefix.

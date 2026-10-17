@@ -318,7 +318,7 @@ func (a *App) chatPlain(w http.ResponseWriter, r *http.Request) (any, error) {
 		}
 		return nil, ErrInternal("生成回答失败")
 	}
-	usage.Record(r.Context(), a.DB, user.UserID, &sid, a.serving().ModelName(), result.PromptTokens, result.OutputTokens, result.CachedTokens)
+	usage.Record(r.Context(), a.DB, user.UserID, &sid, a.serving().ModelName(), result.PromptTokens, result.OutputTokens, result.CachedTokens, result.ThoughtsTokens)
 	reply := result.Reply
 	if !result.UsedMock {
 		reply = gemini.SanitizeReply(reply)
@@ -468,7 +468,7 @@ func (a *App) chatStream(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	usage.Record(persistCtx, a.DB, user.UserID, &sid, a.serving().ModelName(), result.PromptTokens, result.OutputTokens, result.CachedTokens)
+	usage.Record(persistCtx, a.DB, user.UserID, &sid, a.serving().ModelName(), result.PromptTokens, result.OutputTokens, result.CachedTokens, result.ThoughtsTokens)
 	reply := result.Reply
 	if !result.UsedMock {
 		reply = gemini.SanitizeReply(reply)

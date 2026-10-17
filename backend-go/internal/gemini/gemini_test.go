@@ -174,9 +174,14 @@ func TestUsageFromValueFoldsThinkingTokens(t *testing.T) {
 		"thoughtsTokenCount":      float64(800),
 		"cachedContentTokenCount": float64(300),
 	}}
-	prompt, completion, cached := usageFromValue(v)
+	prompt, completion, cached, thoughts := usageFromValue(v)
 	if prompt != 1000 || cached != 300 {
 		t.Fatalf("prompt/cached = %d/%d, want 1000/300", prompt, cached)
+	}
+	// The reasoning share is reported separately (migration 082) but still billed
+	// inside completion, which is what the cost estimate is built from.
+	if thoughts != 800 {
+		t.Errorf("thoughts = %d, want 800", thoughts)
 	}
 	// Thinking tokens are billed at the output rate, so they belong in the
 	// completion count the cost estimate is built from.

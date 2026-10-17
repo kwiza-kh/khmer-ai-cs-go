@@ -223,7 +223,7 @@ func (s *Service) GenerateFastMax(ctx context.Context, prompt string, timeout ti
 // reported for a call that never reached the API.
 func reportAuxUsage(ctx context.Context, model string, prompt, completion, cached int) {
 	if gemini.AuxUsageObserver != nil && prompt+completion > 0 {
-		gemini.AuxUsageObserver(ctx, model, prompt, completion, cached)
+		gemini.AuxUsageObserver(ctx, model, prompt, completion, cached, 0)
 	}
 }
 

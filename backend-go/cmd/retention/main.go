@@ -46,6 +46,7 @@ func main() {
 	ragDays := flag.Int("rag-logs-days", 90, "keep rag_query_logs newer than this")
 	notifyDays := flag.Int("notifications-days", 90, "keep notifications newer than this")
 	inboundDays := flag.Int("inbound-events-days", 30, "keep completed platform_inbound_events newer than this")
+	turnMetricsDays := flag.Int("turn-metrics-days", 90, "keep per-turn latency samples newer than this")
 	auditDays := flag.Int("audit-days", 0, "purge audit_logs older than this; 0 = never (opt-in)")
 	outboxDays := flag.Int("outbox-days", 0, "purge sent platform_outbox older than this; 0 = never (opt-in)")
 	flag.Parse()
@@ -95,6 +96,13 @@ func main() {
 			table: "platform_inbound_events",
 			why:   "processed inbound events — content holds the raw customer message",
 			where: fmt.Sprintf("status = 'completed' AND created_at < now() - interval '%d days'", *inboundDays),
+		},
+		{
+			// Timings only — no message text — so the row outlives the event by
+			// design (migration 081 has no FK for exactly this reason).
+			table: "turn_metrics",
+			why:   "per-turn latency samples",
+			where: fmt.Sprintf("created_at < now() - interval '%d days'", *turnMetricsDays),
 		},
 	}
 

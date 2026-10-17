@@ -319,6 +319,10 @@ func (s *Service) indexDocument(ctx context.Context, docID int32, title, content
 		return fmt.Errorf("tx commit: %w", err)
 	}
 	s.Logger.Info("knowledge document indexed", "doc_id", docID, "chunks", len(chunks))
+	// The tenant's cached retrievals are stale the moment a document becomes
+	// searchable; waiting out the TTL would hide a brand-new document from the
+	// question asked right after uploading it.
+	s.bumpSearchCacheForDoc(ctx, docID)
 	return nil
 }
 
@@ -682,6 +686,14 @@ func (s *Service) Search(ctx context.Context, userID int32, query string, topK i
 	if topK <= 0 {
 		topK = int64(config.EnvPositiveInt("RAG_TOP_K", int(DefaultTopK)))
 	}
+	// Repeated questions (a re-ask, an agent re-sending, two customers with the
+	// same FAQ inside a minute) reuse the previous result set: the query embedding
+	// is the leg that runs into the provider's quota. Versioned per tenant, so a
+	// knowledge-base edit invalidates it immediately.
+	cacheKey := searchCacheKey(userID, s.searchCacheVersion(ctx, userID), query, topK)
+	if cached, ok := s.cachedSearch(ctx, cacheKey); ok {
+		return cached, nil
+	}
 	candidateLimit := searchCandidateLimit(topK)
 	if int64(rerankWindow) > candidateLimit {
 		candidateLimit = int64(rerankWindow)
@@ -785,6 +797,7 @@ func (s *Service) Search(ctx context.Context, userID int32, query string, topK i
 	}
 
 	out := sourcesFromChunks(fused)
+	s.storeSearch(ctx, cacheKey, out)
 	return out, nil
 }
 
@@ -1804,6 +1817,10 @@ func (s *Service) DeleteDocument(ctx context.Context, userID int32, docID int32)
 	if tag.RowsAffected() == 0 {
 		return "", fmt.Errorf("document not found")
 	}
+	// A deleted document must stop appearing in answers immediately, not after the
+	// cache TTL — "we still cite the document you deleted" is exactly the kind of
+	// lag a merchant notices.
+	s.bumpSearchCache(ctx, userID)
 	if mediaKey == nil {
 		return "", nil
 	}

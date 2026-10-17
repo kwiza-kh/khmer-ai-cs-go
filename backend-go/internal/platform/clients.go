@@ -179,21 +179,25 @@ func (m *MetaClient) do(req *http.Request, what string) (map[string]any, error) 
 func (m *MetaClient) VerifyConnection(ctx context.Context, platform string) (string, error) {
 	var path string
 	params := url.Values{}
-	if platform == "whatsapp" {
+	switch {
+	case platform == "whatsapp":
 		path = "/" + m.accountID(platform)
 		params.Set("fields", "id,display_phone_number,verified_name")
-	} else if platform == "instagram" && m.InstagramBusiness != "" {
+	case platform == "instagram" && m.InstagramBusiness != "":
 		// Verify the Instagram professional account itself — /me with a Page
 		// token resolves to the Page, which proves nothing about IG access.
 		path = "/" + m.InstagramBusiness
 		params.Set("fields", "id,name,username")
-	} else {
-		fields := "id,name"
-		if platform == "instagram" {
-			fields = "id,name,username"
-		}
+	case m.accountID(platform) != "":
+		// Messenger: a Page token cannot call /me — Graph answers #100 "Object does
+		// not exist, cannot be loaded due to missing permission" — so the connection
+		// check reported a perfectly healthy page as broken (found 2026-10-17 while
+		// verifying a credential-key rotation). Query the Page node the token is for.
+		path = "/" + m.accountID(platform)
+		params.Set("fields", "id,name")
+	default:
 		path = "/me"
-		params.Set("fields", fields)
+		params.Set("fields", "id,name")
 	}
 	v, err := m.get(ctx, path, params)
 	if err != nil {

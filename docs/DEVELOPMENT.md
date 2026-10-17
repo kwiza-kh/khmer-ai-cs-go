@@ -2424,3 +2424,86 @@ payload 变 `{kind:media, media_type:image, media_url}`；`chat_messages.media_u
   而猜出来的修复（超时/重试/换路径）通常打不中。
 - 同会话严格串行（消息顺序保证）会放大单轮慢：一条 65s 的轮次把后面所有消息一起挡住，
   客户感知是「全都慢」。
+
+## 二十九、一轮全面加固：密钥、告警、记忆、延迟与观测（2026-10-17）
+
+上一节找到的语音延迟只是冰山一角。这一轮按"安全 → 客户可感知 → 延迟/成本 → 观测/卫生"
+把剩下的全部收口，每一项都尽量留下可查的证据或机制。
+
+### 一、凭据密钥：轮换 + 拒绝占位符
+
+- **问题**：`PLATFORM_CREDENTIAL_KEY` 用的是文档里的演示值（base64 解出 `0123456789abcdef…`），
+  于是库里所有 `enc:v1:`（Page token、bot token、webhook secret、TOTP secret、模型 api_key）
+  对任何能读库的人等同明文；`NewSealer` 只校验 32 字节，启动时毫无提示。
+- **修复**：`NewSealer` 拒绝占位符（全同字节、含 `0123456789abcdef`/`changeme`/`password`/…），
+  新增 `NewSealerRaw` 只给轮换工具用；`cmd/rotatekey` 用旧 key 解封、新 key 加封，
+  **单事务 + 写后自检**（任一失败整体回滚），只打印表/列与行数。
+- **生产执行**：干跑 11 行 → 写入 11 行 → 用新 key 全量复检通过 → 更新 `.env-go` → 重启 →
+  `/ready` ok 且平台接口能解密（Graph 已受理该 token）。旧 key 留在 `.env-go.bak-*`。
+
+### 二、终态出站失败：首次即告警
+
+`alertOutboundFailures` 是"15 分钟内满 5 条"才响，而**终态失败**（政策拒绝、HUMAN_AGENT 未审批）
+意味着这个客户永远收不到回复——2026-10-06 两条 Meta 回复就是这样悄悄丢掉的。
+现在这类失败在**首次**就 `PlatformAlert`（key: `outbound-terminal-<platform>`，15 分钟去重）。
+
+### 三、admin 两步验证
+
+已为 `admin` 启用 TOTP：无码登录返回 `action=2fa_required`，带码登录成功。
+`otpauth` URI 位于服务器 `/root/admin-totp.txt`（0600），请导入验证器后删除该文件。
+**恢复**（验证器丢失时）：`UPDATE user_totp SET enabled=false WHERE user_id=1`。
+
+### 四、模型记忆：跨越 20 条窗口
+
+- 现象：每轮只带最近 20 条消息（≈10 轮），更早的约束（"5 箱"、"周五前"）滑出视野但仍在库里。
+- `sessions.summary` 不能复用：那是**商家面**的 2–3 句摘要（商家 UI 语言，供收件箱展示），
+  与"助手该记住什么"是两件事，混用会让一个功能的写入覆盖另一个的产物。
+- 迁移 **083** 新增 `memory_summary / memory_summary_at / memory_summary_count`；
+  `session_memory.go` 做**增量滚动摘要**（已有记忆 + 未覆盖的新消息，单次有界），
+  在 `post-delivery` 异步刷新（critical lane），下一轮由 `stagePrepareGrounding` 加载、
+  `stageGenerate` 以带标签的块注入到用户消息之前。
+- 触发阈值：消息数超过窗口且新增 ≥10 条才重算，避免每条消息一次模型调用。
+
+### 五、延迟：打字指示移出关键路径
+
+`turn timing` 显示 `notify-owner` 阶段固定 0.5–0.9s——通知本身早已异步，耗时来自
+**打字指示**（provider 往返）。它纯装饰，改为独立 goroutine（带 recover），
+每轮省下这次往返。
+
+### 六、检索结果缓存（45s，按租户版本失效）
+
+embedding 是唯一会撞供应商配额的腿（3 天 4 次 `Resource exhausted`，每次都静默丢语义召回）。
+`Search` 现按 **(租户, KB 版本, 归一化 query, topK)** 缓存 45 秒；版本号由
+`indexDocument`（文档变为可检索）与 `DeleteDocument`（文档消失）自增，
+所以"刚上传的问题"和"刚删的文档"都不会读到旧结果。query 只以 SHA-256 出现在 Redis 键里。
+
+### 七、观测：每轮指标入库 + thinking 记账 + 日志降噪
+
+- 迁移 **081** `turn_metrics`（event_id / user_id / platform / media_kind / total_ms / slow_stages）
+  在每轮结束时写入（best-effort，失败只记 WARN）。与事件的 30 天保留解耦（无外键），
+  `cmd/retention` 新增 `-turn-metrics-days`（默认 90）。
+- 迁移 **082** `token_usage.thoughts_tokens`：thinking 仍计入 completion（计费不变），
+  但单独记一列，未来"是否又偷偷思考了"在账上可见。
+- `request` 日志：只有 401/403/429 与 5xx 记 WARN，其余 4xx 降为 INFO——
+  扫描器探测 `/api/.env`、`/.git/config` 曾把 WARN 刷满。
+
+### 八、顺手修掉的与运维清理
+
+- **Messenger 连接自检**：Page token 不能调 `/me`（Graph 返回 #100），自检把健康的页面报成故障；
+  改为查询 `/{page-id}?fields=id,name`。这是验证密钥轮换时撞见的。
+- **边缘缓存**（`internal/cloudflare`）：删除知识库图片后按公共 URL purge；
+  `CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ZONE_ID` 未配置时为 no-op（当前默认），
+  失败只告警不影响删除。
+- **遗留备份表** `chat_messages_dedup_backup_20260913`（33 条客户消息、不在删除/保留流程内）
+  已 DROP。
+- 死注释：`inbound_stages.go` 里残留的 `cache-lookup`（回复缓存在 076 已移除）。
+
+### 九、明确没做的（以及原因）
+
+| 项 | 为什么不做 |
+|---|---|
+| RLS 后盾（061）接线 | 需要所有租户查询走 `SET LOCAL app.user_id`，是一次连接/事务模型重构；当前 `tenantscope` 静态门禁 + SQL 租户列是实际控制，启动警告如实说明它是 scaffold |
+| KB 排序加权（让带图产品文档更靠前） | 会改动已测得 recall@5 97% 的排序，必须先跑 `cmd/rageval` 基线，不能盲改 |
+| 多产品照片的追问话术 | 要改生产提示词（§二十四 调过），同样需要 eval 基线 |
+| HUMAN_AGENT 权限 | 属 Meta App Review 外部流程；代码侧已做到"首次失败即告警" |
+| 收件箱摘要预生成 | 现为"缓存未命中时现场生成"（1.3–1.9s，商家侧）；改动是把生成搬进后台，收益小于本轮其他项 |

@@ -76,7 +76,7 @@ type inboundTurn struct {
 	// spelling routing.go uses).
 	Urgency string
 
-	// --- set by cache-lookup / generate / guard-reply / after-hours ---
+	// --- set by generate / guard-reply / after-hours ---
 	Reply  string
 	Canned bool
 	// CannedLabel is the model_name recorded for a canned reply (empty means
@@ -87,6 +87,9 @@ type inboundTurn struct {
 	HandoffReason string
 	Result        gemini.ChatResult
 	GroundCtx     rag.GroundingContext
+	// MemorySummary is the rolling note covering the turns older than
+	// historyWindow (migration 083). "" while the window still holds everything.
+	MemorySummary string
 	// StageTimings collects the stages that cost real time (>= stageTimingFloor),
 	// recorded by runInboundStages and logged once per turn.
 	StageTimings []StageTiming
@@ -406,6 +409,9 @@ func (p *Pipeline) stagePrepareGrounding(ctx context.Context, t *inboundTurn) (b
 	replyLang := p.turnReplyLang(ctx, t.Config.UserID, t.Content)
 	t.ReplyLang = replyLang
 	t.History = p.loadHistory(ctx, t.SessionID, t.UserMessageID)
+	// What the 20-message window cannot see. Empty for short threads, a labelled
+	// note once the conversation outgrows it (migration 083, session_memory.go).
+	t.MemorySummary = p.loadSessionMemory(ctx, t.SessionID)
 
 	// Copy what the worker needs: it outlives this turn's struct, and reading the
 	// turn from another goroutine is exactly the sharing this refactor exists to
@@ -480,7 +486,21 @@ func (p *Pipeline) stageNotifyOwner(ctx context.Context, t *inboundTurn) (bool, 
 	SpawnCritical(func() {
 		p.NotifyNewCustomerMessage(ctx, userID, sessionID, platform, name, content)
 	})
-	p.sendTyping(ctx, t.Config, t.Event.PlatformUserID)
+	// The typing indicator is a provider API round-trip (~0.5–0.9s measured on
+	// Messenger) and purely cosmetic: the customer sees dots while the model
+	// works. Sending it inline made every turn pay that round-trip before
+	// generation even started (turn timing, 2026-10-16).
+	recipient := t.Event.PlatformUserID
+	cfg := t.Config
+	runTyping := func() { p.sendTyping(ctx, cfg, recipient) }
+	go func() {
+		defer func() {
+			if r := recover(); r != nil && p.Logger != nil {
+				p.Logger.Warn("typing indicator panicked", "panic", fmt.Sprint(r))
+			}
+		}()
+		runTyping()
+	}()
 	return true, nil
 }
 
@@ -524,6 +544,11 @@ func (p *Pipeline) stageGenerate(ctx context.Context, t *inboundTurn) (bool, err
 	if t.GroundCtx.HasMatch {
 		message = rag.AugmentMessage(t.Content, &t.GroundCtx)
 	}
+	// Ahead of everything: a constraint from turn 2 ("5 boxes", "before Friday")
+	// is still true at turn 40 even though the window dropped it.
+	if mem := strings.TrimSpace(t.MemorySummary); mem != "" {
+		message = sessionMemoryLine(mem) + "\n\n" + message
+	}
 	history, systemPrompt := t.History, ""
 	if t.Persona != nil {
 		history = append(personaHistory(t.Persona.BeginDialogs), t.History...)
@@ -557,7 +582,7 @@ func (p *Pipeline) stageGenerate(ctx context.Context, t *inboundTurn) (bool, err
 	}
 	t.Result = result
 	sid := t.SessionID
-	usage.Record(ctx, p.DB, t.Config.UserID, &sid, p.serving().ModelName(), result.PromptTokens, result.OutputTokens, result.CachedTokens)
+	usage.Record(ctx, p.DB, t.Config.UserID, &sid, p.serving().ModelName(), result.PromptTokens, result.OutputTokens, result.CachedTokens, result.ThoughtsTokens)
 	t.Reply = result.Reply
 	if !result.UsedMock {
 		t.Reply = gemini.SanitizeReply(t.Reply)
@@ -858,6 +883,10 @@ func (p *Pipeline) persistModelReply(ctx context.Context, t *inboundTurn, modelN
 // post-delivery — make a promised handoff true, then classify the turn in the
 // background (never blocks the customer).
 func (p *Pipeline) stagePostDelivery(ctx context.Context, t *inboundTurn) (bool, error) {
+	// Keep the assistant's memory current, off the customer's path: the note only
+	// matters to a later turn, and a refresh is one bounded fast-model call per
+	// memoryRefreshEvery messages.
+	p.refreshSessionMemoryAsync(t.Config.UserID, t.SessionID)
 	// Auto-handoff triggers 2+3. The reply announced a handoff to the customer
 	// ("已为您转接人工…") — make it true: create the request now. No canned ack
 	// (ev=nil) since the reply itself already told the customer.

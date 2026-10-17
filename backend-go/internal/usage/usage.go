@@ -189,7 +189,7 @@ func UserFrom(ctx context.Context) (int32, bool) {
 // Record inserts one token_usage row (user, optional session, model, counts).
 // prompt includes the cached portion (Gemini semantics); cached is the subset
 // served from the context cache.
-func Record(ctx context.Context, db *pgxpool.Pool, userID int32, sessionID *string, model string, prompt, completion, cached int) {
+func Record(ctx context.Context, db *pgxpool.Pool, userID int32, sessionID *string, model string, prompt, completion, cached, thoughts int) {
 	if db == nil || prompt+completion == 0 {
 		return
 	}
@@ -197,9 +197,9 @@ func Record(ctx context.Context, db *pgxpool.Pool, userID int32, sessionID *stri
 	defer cancel()
 	cost := EstimateCostFor(model, prompt, completion, cached)
 	if _, err := db.Exec(ctx,
-		"INSERT INTO token_usage (user_id, session_id, model, prompt_tokens, completion_tokens, total_tokens, cached_tokens, cost_estimate, created_at) "+
-			"VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
-		userID, sessionID, model, prompt, completion, prompt+completion, cached, cost, time.Now()); err != nil {
+		"INSERT INTO token_usage (user_id, session_id, model, prompt_tokens, completion_tokens, total_tokens, cached_tokens, cost_estimate, thoughts_tokens, created_at) "+
+			"VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+		userID, sessionID, model, prompt, completion, prompt+completion, cached, cost, thoughts, time.Now()); err != nil {
 		// Still best-effort — the chat path must never fail on accounting — but
 		// no longer silent. This row is not only a dashboard input: the rolling
 		// spend gate (spend.go) sums exactly cost_estimate over a 10-minute

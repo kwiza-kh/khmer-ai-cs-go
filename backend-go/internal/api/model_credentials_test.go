@@ -45,7 +45,10 @@ import (
 // testSealerKey is the same 32-byte key internal/security's own tests use; a
 // real Sealer (not a stub) is used so the studio tests exercise the actual
 // seal/open path the deployment runs.
-const testSealerKey = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+// A random-looking 32-byte key: security.NewSealer now refuses the documented
+// demo value (see security/sealer_placeholder_test.go), and these tests are about
+// DB-stored credentials, not the key policy.
+const testSealerKey = "M2Y5YTBjMWQ1ZThiMjc0NmFmMzBjOWQxN2I2ZTA1NDI="
 
 func newTestSealer(t *testing.T) *security.Sealer {
 	t.Helper()

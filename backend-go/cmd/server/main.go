@@ -243,9 +243,9 @@ func main() {
 	// documents immediately, and the ingest compile is exactly the call this
 	// observer exists to record. Assigning it afterwards was an unsynchronised
 	// write racing their first reads.
-	gemini.AuxUsageObserver = func(ctx context.Context, model string, prompt, completion, cached int) {
+	gemini.AuxUsageObserver = func(ctx context.Context, model string, prompt, completion, cached, thoughts int) {
 		if uid, ok := usage.UserFrom(ctx); ok {
-			usage.Record(ctx, pool, uid, nil, model, prompt, completion, cached)
+			usage.Record(ctx, pool, uid, nil, model, prompt, completion, cached, thoughts)
 		}
 	}
 

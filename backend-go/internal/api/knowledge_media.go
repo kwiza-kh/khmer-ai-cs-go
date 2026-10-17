@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"khmer-ai-cs-go/internal/cloudflare"
 	"khmer-ai-cs-go/internal/rag"
 )
 
@@ -111,6 +112,11 @@ func (a *App) attachKnowledgeMediaURL(doc map[string]any) {
 	}
 }
 
+// kbPurgeTimeout bounds the edge-cache purge that follows a delete. The delete
+// itself has already succeeded by then, so a slow API must not hold the request
+// open any longer than a merchant would tolerate.
+const kbPurgeTimeout = 5 * time.Second
+
 // dropKnowledgeImage deletes one stored picture. Best-effort on purpose: the
 // document row is already gone by the time this runs, so a bucket failure can
 // only leave an unreachable object behind — worth a log line, never an error
@@ -119,8 +125,39 @@ func (a *App) dropKnowledgeImage(ctx context.Context, key string) {
 	if key == "" || a.Media == nil || !a.Media.Enabled() {
 		return
 	}
-	if err := a.Media.DeleteObject(ctx, key); err != nil && a.Logger != nil {
-		a.Logger.Warn("kb image delete failed; object left in the bucket", "key", key, "error", err.Error())
+	if err := a.Media.DeleteObject(ctx, key); err != nil {
+		if a.Logger != nil {
+			a.Logger.Warn("kb image delete failed; object left in the bucket", "key", key, "error", err.Error())
+		}
+		return
+	}
+	a.purgeKnowledgeImage(ctx, key)
+}
+
+// purgeKnowledgeImage evicts Cloudflare's edge copy of a picture whose object we
+// just deleted, so the URL stops answering.
+//
+// media.wanfanginsulationmaterial.com is proxied by Cloudflare, and a bucket
+// delete alone leaves the edge serving the old bytes (2026-10-16: the first
+// production KB-photo delete still answered 200 from the edge after the object
+// was gone). Best-effort like the delete above: a failed purge only means the
+// picture lingers in the cache, so it is a warning, never an error.
+//
+// Only the permanent public URL is purged. Without R2_PUBLIC_URL the resolver
+// hands back a presigned URL — a different host with a signed query, not the
+// cached object — so the purge is skipped rather than sent somewhere useless.
+func (a *App) purgeKnowledgeImage(ctx context.Context, key string) {
+	if a.Media == nil || a.Media.PublicURL == "" {
+		return
+	}
+	target := a.mediaURLFor(key)
+	if target == "" {
+		return
+	}
+	purgeCtx, cancel := context.WithTimeout(ctx, kbPurgeTimeout)
+	defer cancel()
+	if err := cloudflare.FromEnv().PurgeURL(purgeCtx, target); err != nil && a.Logger != nil {
+		a.Logger.Warn("kb image edge purge failed; Cloudflare may keep serving the deleted picture", "key", key, "error", err.Error())
 	}
 }
 

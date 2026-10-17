@@ -579,6 +579,27 @@ func (p *Pipeline) processInboundEvent(ctx context.Context, ev *InboundEvent) er
 			"total_s", fmt.Sprintf("%.1f", time.Since(start).Seconds()),
 			"slow_stages", formatStageTimings(t.StageTimings, 4))
 	}
+	// The same numbers, kept: the log line is for the person watching now, the row
+	// is for "did that change make turns faster" a week later (migration 081). The
+	// insert is best-effort — a metrics write must never turn a delivered reply
+	// into a retried one — but a failure is logged rather than swallowed.
+	if p.DB != nil && ev.EventID > 0 && t.Config != nil {
+		stages := make([]map[string]any, 0, len(t.StageTimings))
+		for _, s := range t.StageTimings {
+			stages = append(stages, map[string]any{"name": s.Name, "ms": s.Dur.Milliseconds()})
+		}
+		blob, _ := json.Marshal(stages)
+		kind, _ := ev.Media["kind"].(string)
+		if _, merr := p.DB.Exec(ctx,
+			"INSERT INTO turn_metrics (event_id, user_id, platform, media_kind, total_ms, slow_stages) "+
+				"VALUES ($1,$2,$3::platform_type,$4,$5,$6) "+
+				"ON CONFLICT (event_id) DO UPDATE SET total_ms = EXCLUDED.total_ms, slow_stages = EXCLUDED.slow_stages",
+			ev.EventID, t.Config.UserID, ev.Platform, kind, time.Since(start).Milliseconds(), blob); merr != nil {
+			if p.Logger != nil {
+				p.Logger.Warn("turn metrics insert failed", "event_id", ev.EventID, "error", merr.Error())
+			}
+		}
+	}
 	return err
 }
 
@@ -1913,6 +1934,16 @@ func (p *Pipeline) deliver(ctx context.Context, d *outboundDelivery) {
 	if policyErr || errors.Is(err, ErrHumanTagNotApproved) || d.Attempts >= maxAttempts {
 		_, _ = p.DB.Exec(ctx, "UPDATE platform_outbox SET status='failed', next_attempt_at=$1, locked_at=NULL, last_error=$2, updated_at=NOW() WHERE delivery_id=$3", time.Now(), msg, d.DeliveryID)
 		p.alertOutboundFailures(ctx, d.Platform, msg)
+		// The threshold alert above only fires once five failures pile up inside a
+		// window, but these two classes are terminal on the FIRST occurrence: the
+		// customer will never receive this reply, and the cause is configuration
+		// (an unapproved tag, a policy refusal) that nobody can fix by waiting.
+		// Two Meta replies were lost silently this way on 2026-10-06.
+		if policyErr || errors.Is(err, ErrHumanTagNotApproved) {
+			p.PlatformAlert(ctx, "outbound-terminal-"+d.Platform, "出站消息永久失败（客户收不到）",
+				fmt.Sprintf("平台 %s 的一条回复因终态错误被放弃，客户不会收到：%s（delivery %d）。请检查权限/标签/政策配置。",
+					d.Platform, textutil.TruncateRunes(msg, 300), d.DeliveryID))
+		}
 	} else {
 		_, _ = p.DB.Exec(ctx, "UPDATE platform_outbox SET status='pending', next_attempt_at=$1, locked_at=NULL, last_error=$2, updated_at=NOW() WHERE delivery_id=$3", time.Now().Add(retryDelay(int(d.Attempts))), msg, d.DeliveryID)
 	}
