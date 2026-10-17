@@ -904,6 +904,21 @@ export async function agentReply(sessionId: string, request: AgentReplyRequest) 
   });
 }
 
+/** Rewrite a message already delivered to the customer (Telegram; the API
+ *  refuses a channel without the capability). */
+export async function editInboxMessage(messageId: number, content: string) {
+  return apiFetch<{ message: string }>(`/inbox/messages/${messageId}/edit`, {
+    method: "POST",
+    body: JSON.stringify({ content }),
+  });
+}
+
+/** Withdraw a delivered message for everyone. A pending one is cancelled
+ *  instead of being sent. */
+export async function deleteInboxMessage(messageId: number) {
+  return apiFetch<{ message: string }>(`/inbox/messages/${messageId}/delete`, { method: "POST" });
+}
+
 export async function listSessionWhatsAppTemplates(sessionId: string) {
   return apiFetch<{ templates: WhatsAppTemplate[] }>(`/inbox/sessions/${sessionId}/whatsapp-templates`);
 }

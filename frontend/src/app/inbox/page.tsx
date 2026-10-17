@@ -10,7 +10,7 @@ import {
 	sendTestMessage, RAGSource, PlatformMessageKind, PlatformMessagePayload, PlatformReplyButton,
 	listSessionWhatsAppTemplates, WhatsAppTemplate, getInboundPlatformMediaURL, InboundPlatformMedia,
 	copilotSuggest, getCustomer360, listCustomers, CustomerProfile, updateCustomerNotes,
-	archiveSession, unarchiveSession, deleteSession,
+	archiveSession, unarchiveSession, deleteSession, editInboxMessage, deleteInboxMessage,
 	translateText, translateTexts,
 	TranslateTarget,
 } from "@/lib/api";
@@ -1506,6 +1506,31 @@ function ConversationDetail({
     }
   };
 
+  const editSentMessage = async (m: ChatMessageItem) => {
+    const next = window.prompt(t("inbox.msgEditPrompt"), m.content);
+    if (next == null) return;
+    const text = next.trim();
+    if (!text || text === m.content) return;
+    try {
+      await editInboxMessage(m.message_id, text);
+      setMsgList((prev) => prev.map((row) => (row.message_id === m.message_id ? { ...row, content: text } : row)));
+      toast.success(t("inbox.msgEdited"));
+    } catch (e) {
+      toast.error((e as Error).message);
+    }
+  };
+
+  const deleteSentMessage = async (m: ChatMessageItem) => {
+    if (!window.confirm(t("inbox.msgDeleteConfirm"))) return;
+    try {
+      await deleteInboxMessage(m.message_id);
+      setMsgList((prev) => prev.filter((row) => row.message_id !== m.message_id));
+      toast.success(t("inbox.msgDeleted"));
+    } catch (e) {
+      toast.error((e as Error).message);
+    }
+  };
+
   const insertCanned = (body: string) => {
     const cur = draft.trim();
     // Place the snippet on its own line below the draft.
@@ -1786,6 +1811,30 @@ function ConversationDetail({
                                     </div>
                                   )}
                                 </div>
+                                {/* Correcting what was already sent. Only Telegram supports
+                                    provider-side edit/delete, so the actions appear there and
+                                    nowhere else — a Meta bubble with a dead button would be
+                                    worse than no button. */}
+                                {(m.role === "agent" || m.role === "model") && item.platform === "telegram" && (
+                                  <MessageFooter className="gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => void editSentMessage(m)}
+                                      title={t("inbox.msgEdit")}
+                                      className="rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                                    >
+                                      <Pencil className="size-3" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => void deleteSentMessage(m)}
+                                      title={t("inbox.msgDelete")}
+                                      className="rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-danger"
+                                    >
+                                      <Trash2 className="size-3" />
+                                    </button>
+                                  </MessageFooter>
+                                )}
                                 {(m.feedback_rating != null || m.delivery) && (
                                   <MessageFooter className="gap-2">
                                     {m.feedback_rating != null && (

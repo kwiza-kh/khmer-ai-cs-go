@@ -799,6 +799,31 @@ func (t *TelegramClient) SendDocumentFormatted(ctx context.Context, chatID, docu
 	return "", nil
 }
 
+// EditMessageText rewrites one message this bot sent. Telegram allows it only for
+// text messages (a media caption is not editable) and only within 48 hours.
+func (t *TelegramClient) EditMessageText(ctx context.Context, chatID, messageID, text, parseMode string) error {
+	mid, err := strconv.ParseInt(strings.TrimSpace(messageID), 10, 64)
+	if err != nil {
+		return fmt.Errorf("telegram: invalid message id %q", messageID)
+	}
+	body := map[string]any{"chat_id": chatID, "message_id": mid, "text": text}
+	if parseMode != "" {
+		body["parse_mode"] = parseMode
+	}
+	_, err = t.call(ctx, "editMessageText", body)
+	return err
+}
+
+// DeleteMessage removes one message this bot sent.
+func (t *TelegramClient) DeleteMessage(ctx context.Context, chatID, messageID string) error {
+	mid, err := strconv.ParseInt(strings.TrimSpace(messageID), 10, 64)
+	if err != nil {
+		return fmt.Errorf("telegram: invalid message id %q", messageID)
+	}
+	_, err = t.call(ctx, "deleteMessage", map[string]any{"chat_id": chatID, "message_id": mid})
+	return err
+}
+
 // telegramReplyParameters is the Bot API 7 reply block. allow_sending_without_reply
 // keeps a stale quote from rejecting the whole message (the customer may have
 // deleted the message being answered).

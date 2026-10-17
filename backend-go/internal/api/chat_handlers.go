@@ -87,7 +87,7 @@ func (a *App) chatHistory(ctx context.Context, sessionID string, reqHistory []ge
 		return reqHistory
 	}
 	rows, err := a.DB.Query(ctx,
-		"SELECT role, content FROM chat_messages WHERE session_id = $1 AND role IN ('user','model','agent') "+
+		"SELECT role, content FROM chat_messages WHERE session_id = $1 AND deleted_at IS NULL AND role IN ('user','model','agent') "+
 			"AND message_id <> $2 AND NOT (role = 'model' AND message_type = 'audio') AND cancelled_at IS NULL "+
 			"ORDER BY message_id DESC LIMIT 20", sessionID, excludeMessageID)
 	if err != nil {
@@ -694,7 +694,7 @@ func (a *App) getSession(w http.ResponseWriter, r *http.Request, sessionID strin
 func (a *App) listSessionMessages(w http.ResponseWriter, r *http.Request, sessionID string) (any, error) {
 	user, _ := UserFrom(r)
 	var sid string
-	if err := a.DB.QueryRow(r.Context(), "SELECT session_id FROM sessions WHERE session_id = $1 AND user_id = $2", sessionID, user.UserID).Scan(&sid); err != nil {
+	if err := a.DB.QueryRow(r.Context(), "SELECT session_id FROM sessions WHERE session_id = $1 AND user_id = $2", sessionID, user.Tenant()).Scan(&sid); err != nil {
 		return nil, ErrNotFound("会话不存在")
 	}
 	limit := parseIntOr(r.URL.Query().Get("limit"), 100)
@@ -711,7 +711,7 @@ func (a *App) listSessionMessages(w http.ResponseWriter, r *http.Request, sessio
 	query := "SELECT " + cols + " FROM chat_messages cm " +
 		"LEFT JOIN LATERAL (SELECT status, provider_status, sent_at, delivered_at, read_at, last_error, payload " +
 		"FROM platform_outbox ob WHERE ob.chat_message_id = cm.message_id ORDER BY ob.delivery_id DESC LIMIT 1) po ON TRUE " +
-		"WHERE cm.session_id = $1"
+		"WHERE cm.session_id = $1 AND cm.deleted_at IS NULL"
 	args := []any{sessionID}
 	if after > 0 {
 		query += " AND cm.message_id > $2 ORDER BY cm.message_id ASC LIMIT $3"

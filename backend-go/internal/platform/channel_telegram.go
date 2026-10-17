@@ -3,6 +3,7 @@ package platform
 import (
 	"context"
 	"fmt"
+	"strings"
 )
 
 // telegramChannel — Bot API. Moved verbatim out of Pipeline.deliverToProvider's
@@ -152,6 +153,40 @@ func (c *telegramChannel) sendCaptionMedia(ctx context.Context, client *Telegram
 		c.p.demotePreviousFeedbackKeyboard(ctx, client, msg.Delivery)
 	}
 	return lastID, nil
+}
+
+// splitTelegramProviderRef splits the outbox's "chatID:messageID" reference.
+// Chat ids are often negative, so the split is on the LAST colon.
+func splitTelegramProviderRef(ref string) (chatID, messageID string, ok bool) {
+	i := strings.LastIndex(ref, ":")
+	if i <= 0 || i == len(ref)-1 {
+		return "", "", false
+	}
+	return ref[:i], ref[i+1:], true
+}
+
+// EditMessage rewrites a delivered text message. Markdown becomes the HTML subset
+// exactly like a fresh send, and a formatting refusal falls back to plain text.
+func (c *telegramChannel) EditMessage(ctx context.Context, providerRef, content string) error {
+	chatID, messageID, ok := splitTelegramProviderRef(providerRef)
+	if !ok {
+		return fmt.Errorf("telegram: bad provider message ref %q", providerRef)
+	}
+	client := NewTelegramClient(c.cfg.BotToken)
+	if c.Caps().Markup == MarkupHTML {
+		if err := client.EditMessageText(ctx, chatID, messageID, telegramHTML(content), "HTML"); err == nil || !tgParseError(err) {
+			return err
+		}
+	}
+	return client.EditMessageText(ctx, chatID, messageID, plainTextForChat(content), "")
+}
+
+func (c *telegramChannel) DeleteMessage(ctx context.Context, providerRef string) error {
+	chatID, messageID, ok := splitTelegramProviderRef(providerRef)
+	if !ok {
+		return fmt.Errorf("telegram: bad provider message ref %q", providerRef)
+	}
+	return NewTelegramClient(c.cfg.BotToken).DeleteMessage(ctx, chatID, messageID)
 }
 
 func (c *telegramChannel) DownloadMedia(ctx context.Context, providerID, _ string, _ string) ([]byte, string, error) {

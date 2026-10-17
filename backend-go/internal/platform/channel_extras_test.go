@@ -408,3 +408,54 @@ func TestSendPrivateReplyUsesTheCommentRecipient(t *testing.T) {
 		t.Errorf("message text = %v", msg["text"])
 	}
 }
+
+// B4: the inbox's edit action rewrites the delivered message at the provider, and
+// a formatting refusal falls back to plain text.
+func TestTelegramChannelEditMessage(t *testing.T) {
+	rs := newRecordingServer(t, okJSON(`{"ok":true,"result":true}`))
+	overrideBase(t, &telegramBase, rs.srv)
+
+	ch := &telegramChannel{p: &Pipeline{}, cfg: &configCred{Platform: "telegram", BotToken: "T"}}
+	if err := ch.EditMessage(context.Background(), "chat-1:42", "**fixed** price"); err != nil {
+		t.Fatalf("edit: %v", err)
+	}
+	calls := rs.recorded()
+	if len(calls) != 1 || calls[0].Path != "/botT/editMessageText" {
+		t.Fatalf("calls = %+v, want one editMessageText", calls)
+	}
+	if calls[0].Body["chat_id"] != "chat-1" || calls[0].Body["message_id"] != float64(42) {
+		t.Errorf("target = %v/%v", calls[0].Body["chat_id"], calls[0].Body["message_id"])
+	}
+	if calls[0].Body["text"] != "<b>fixed</b> price" || calls[0].Body["parse_mode"] != "HTML" {
+		t.Errorf("text/parse_mode = %v/%v", calls[0].Body["text"], calls[0].Body["parse_mode"])
+	}
+}
+
+func TestTelegramChannelDeleteMessage(t *testing.T) {
+	rs := newRecordingServer(t, okJSON(`{"ok":true,"result":true}`))
+	overrideBase(t, &telegramBase, rs.srv)
+
+	ch := &telegramChannel{p: &Pipeline{}, cfg: &configCred{Platform: "telegram", BotToken: "T"}}
+	if err := ch.DeleteMessage(context.Background(), "-100123:77"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	calls := rs.recorded()
+	if len(calls) != 1 || calls[0].Path != "/botT/deleteMessage" {
+		t.Fatalf("calls = %+v, want one deleteMessage", calls)
+	}
+	// Negative chat ids are group ids; the split must be on the last colon.
+	if calls[0].Body["chat_id"] != "-100123" || calls[0].Body["message_id"] != float64(77) {
+		t.Errorf("target = %v/%v", calls[0].Body["chat_id"], calls[0].Body["message_id"])
+	}
+}
+
+func TestMessageActionCapabilitiesFollowTheSendAPI(t *testing.T) {
+	if !CapabilitiesFor("telegram").CanEditMessage || !CapabilitiesFor("telegram").CanDeleteMessage {
+		t.Error("telegram implements both edit and delete")
+	}
+	for _, p := range []string{"meta", "instagram", "whatsapp", "line", "zalo", "web"} {
+		if CapabilitiesFor(p).CanEditMessage || CapabilitiesFor(p).CanDeleteMessage {
+			t.Errorf("%s has no provider-side edit/delete and must not claim one", p)
+		}
+	}
+}

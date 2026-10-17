@@ -124,6 +124,11 @@ type Capabilities struct {
 	AvatarNeedsRehost bool
 	// FeedbackButtons marks channels that can render the thumbs-up/down CSAT pair.
 	FeedbackButtons bool
+	// CanEditMessage / CanDeleteMessage say whether a delivered message can be
+	// changed or removed at the provider. Telegram yes; Meta's send API has
+	// neither (it only delivers edit/delete events), LINE/Zalo none.
+	CanEditMessage   bool
+	CanDeleteMessage bool
 
 	// Windowless channels accept a reply without a preceding inbound message.
 	// Channels with ReplyWindow > 0 must stay inside it (see policy.go).
@@ -262,6 +267,8 @@ var capabilitiesTable = map[string]Capabilities{
 		AvatarNeedsRehost: true,
 		SupportsButtons:   true,
 		FeedbackButtons:   true,
+		CanEditMessage:    true,
+		CanDeleteMessage:  true,
 		Windowless:        true,
 		ProactiveSend:     true,
 		Known:             true,

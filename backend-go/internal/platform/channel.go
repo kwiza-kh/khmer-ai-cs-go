@@ -10,6 +10,7 @@ package platform
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
@@ -74,6 +75,48 @@ type Channel interface {
 	// The caller disables the row whatever this returns: a provider that refuses to
 	// co-operate must not leave a merchant unable to switch a channel off.
 	Disconnect(ctx context.Context) (string, error)
+}
+
+// MessageEditor is implemented by channels that can change or remove a message
+// they already delivered. The API layer drives the inbox's edit/delete actions
+// through EditDeliveredMessage/DeleteDeliveredMessage, gated by
+// Capabilities.CanEditMessage / CanDeleteMessage.
+type MessageEditor interface {
+	// EditMessage replaces the text of the message identified by providerRef.
+	EditMessage(ctx context.Context, providerRef, content string) error
+	// DeleteMessage removes it for everyone.
+	DeleteMessage(ctx context.Context, providerRef string) error
+}
+
+// ErrMessageActionsUnsupported means the channel cannot do this at the provider
+// (Meta's send API has neither edit nor delete). The API maps it to a 400 that
+// names the channel rather than pretending the action succeeded.
+var ErrMessageActionsUnsupported = errors.New("platform: message actions are not supported on this channel")
+
+// EditDeliveredMessage / DeleteDeliveredMessage build the channel for one config
+// and perform the action on the message the outbox recorded.
+func EditDeliveredMessage(ctx context.Context, p *Pipeline, plat string, creds ChannelCredentials, providerRef, content string) error {
+	ch, err := ChannelFor(p, plat, creds)
+	if err != nil {
+		return err
+	}
+	editor, ok := ch.(MessageEditor)
+	if !ok || !ch.Caps().CanEditMessage {
+		return ErrMessageActionsUnsupported
+	}
+	return editor.EditMessage(ctx, providerRef, content)
+}
+
+func DeleteDeliveredMessage(ctx context.Context, p *Pipeline, plat string, creds ChannelCredentials, providerRef string) error {
+	ch, err := ChannelFor(p, plat, creds)
+	if err != nil {
+		return err
+	}
+	editor, ok := ch.(MessageEditor)
+	if !ok || !ch.Caps().CanDeleteMessage {
+		return ErrMessageActionsUnsupported
+	}
+	return editor.DeleteMessage(ctx, providerRef)
 }
 
 // ChannelFor builds the Channel for one config from already-decrypted credentials.

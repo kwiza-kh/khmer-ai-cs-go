@@ -3,12 +3,14 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"khmer-ai-cs-go/internal/gemini"
+	"khmer-ai-cs-go/internal/platform"
 	"khmer-ai-cs-go/internal/realtime"
 	"khmer-ai-cs-go/internal/textutil"
 )
@@ -95,7 +97,7 @@ func (a *App) listInbox(w http.ResponseWriter, r *http.Request) (any, error) {
 		"LEFT JOIN users u ON u.user_id = s.assigned_agent_id " +
 		"LEFT JOIN platform_user_sessions pus ON pus.session_id = s.session_id " +
 		"LEFT JOIN customer_profiles cp ON cp.user_id = s.user_id AND cp.platform::text = s.platform::text AND cp.platform_user_id = s.platform_user_id " +
-		"LEFT JOIN LATERAL (SELECT content, created_at FROM chat_messages WHERE session_id = s.session_id ORDER BY created_at DESC, message_id DESC LIMIT 1) AS last_message ON TRUE " +
+		"LEFT JOIN LATERAL (SELECT content, created_at FROM chat_messages WHERE session_id = s.session_id AND deleted_at IS NULL ORDER BY created_at DESC, message_id DESC LIMIT 1) AS last_message ON TRUE " +
 		"WHERE s.user_id = $1 AND s.is_test = FALSE" +
 		" AND ($2::session_status IS NULL OR s.status = $2)" +
 		" AND ((s.archived_at IS NOT NULL) = $3::boolean)" +
@@ -351,6 +353,132 @@ func (a *App) agentReply(w http.ResponseWriter, r *http.Request, sessionID strin
 		Role:      "agent",
 	})
 	return map[string]any{"message_id": msgID, "message": "已发送"}, nil
+}
+
+// messageActionRequest is the edit payload (delete needs no body).
+type messageActionRequest struct {
+	Content string `json:"content"`
+}
+
+// deleteInboxMessage — POST /api/v1/inbox/messages/{id}/delete
+func (a *App) deleteInboxMessage(w http.ResponseWriter, r *http.Request) (any, error) {
+	return a.applyMessageAction(w, r, true)
+}
+
+// editInboxMessage — POST /api/v1/inbox/messages/{id}/edit
+func (a *App) editInboxMessage(w http.ResponseWriter, r *http.Request) (any, error) {
+	return a.applyMessageAction(w, r, false)
+}
+
+// applyMessageAction withdraws (delete) or rewrites (edit) one message an agent
+// or the AI already sent.
+//
+// The provider is told first: a provider refusal means the customer still has the
+// old message, so the transcript must keep showing it. Only after the provider
+// agrees are the local rows updated — the reverse order would let the dashboard
+// claim a correction that never reached the customer.
+func (a *App) applyMessageAction(w http.ResponseWriter, r *http.Request, del bool) (any, error) {
+	user, _ := UserFrom(r)
+	msgID, err := strconv.ParseInt(strings.TrimSpace(r.PathValue("id")), 10, 64)
+	if err != nil || msgID <= 0 {
+		return nil, ErrBadRequest("无效的消息 ID")
+	}
+	var content string
+	if !del {
+		var req messageActionRequest
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+			return nil, ErrBadRequest("请求格式错误")
+		}
+		content = strings.TrimSpace(req.Content)
+		if content == "" {
+			return nil, ErrBadRequest("内容不能为空")
+		}
+	}
+	var sessionID, role, platformName string
+	var mediaURL *string
+	if err := a.DB.QueryRow(r.Context(),
+		"SELECT cm.session_id, cm.role, s.platform::text, cm.media_url "+
+			"FROM chat_messages cm JOIN sessions s ON s.session_id = cm.session_id "+
+			"WHERE cm.message_id = $1 AND s.user_id = $2 AND cm.deleted_at IS NULL",
+		msgID, user.Tenant()).Scan(&sessionID, &role, &platformName, &mediaURL); err != nil {
+		return nil, ErrNotFound("消息不存在")
+	}
+	if role != "agent" && role != "model" {
+		return nil, ErrBadRequest("只能修改自己发出的消息")
+	}
+	if err := a.ensureSessionAccess(r.Context(), sessionID, user, PermInboxReply); err != nil {
+		return nil, err
+	}
+	caps := platform.CapabilitiesFor(platformName)
+	if del && !caps.CanDeleteMessage {
+		return nil, ErrBadRequest("该渠道不支持撤回消息")
+	}
+	if !del && !caps.CanEditMessage {
+		return nil, ErrBadRequest("该渠道不支持编辑消息")
+	}
+	if !del && mediaURL != nil && *mediaURL != "" {
+		return nil, ErrBadRequest("媒体消息不能编辑，只能撤回")
+	}
+
+	var providerRef string
+	var configID int32
+	_ = a.DB.QueryRow(r.Context(),
+		"SELECT provider_message_id FROM platform_outbox WHERE chat_message_id = $1 AND provider_message_id IS NOT NULL ORDER BY delivery_id DESC LIMIT 1",
+		msgID).Scan(&providerRef)
+	_ = a.DB.QueryRow(r.Context(), "SELECT config_id FROM platform_user_sessions WHERE session_id = $1", sessionID).Scan(&configID)
+
+	if providerRef != "" && configID > 0 {
+		var c platformConfigRow
+		if err := a.DB.QueryRow(r.Context(), "SELECT "+platformConfigCols+" FROM platform_configs WHERE config_id = $1 AND user_id = $2",
+			configID, user.Tenant()).Scan(&c.ConfigID, &c.UserID, &c.Platform, &c.AccessToken, &c.PageID,
+			&c.InstagramBusinessID, &c.WhatsAppBusinessAccountID, &c.BotToken, &c.BotTokenHash,
+			&c.WebhookSecret, &c.WebhookSecretHash, &c.IsActive, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			return nil, ErrInternal("读取渠道配置失败")
+		}
+		accessToken, _ := a.Sealer.Decrypt(c.AccessToken)
+		botToken, _ := a.Sealer.Decrypt(textutil.DerefString(c.BotToken))
+		creds := platform.ChannelCredentials{
+			AccessToken:         accessToken,
+			BotToken:            botToken,
+			PageID:              c.PageID,
+			InstagramBusinessID: textutil.DerefString(c.InstagramBusinessID),
+		}
+		if del {
+			err = platform.DeleteDeliveredMessage(r.Context(), a.Pipe, platformName, creds, providerRef)
+		} else {
+			err = platform.EditDeliveredMessage(r.Context(), a.Pipe, platformName, creds, providerRef, content)
+		}
+		if err != nil {
+			if errors.Is(err, platform.ErrMessageActionsUnsupported) {
+				return nil, ErrBadRequest("该渠道不支持此操作")
+			}
+			return nil, ErrBadRequest("渠道拒绝: " + err.Error())
+		}
+	} else if !del {
+		return nil, ErrBadRequest("消息尚未发出，无法编辑")
+	}
+
+	if del {
+		_, _ = a.DB.Exec(r.Context(), "UPDATE platform_outbox SET status='cancelled', updated_at=NOW() WHERE chat_message_id = $1 AND status = 'pending'", msgID)
+		if _, err := a.DB.Exec(r.Context(), "UPDATE chat_messages SET deleted_at = NOW() WHERE message_id = $1", msgID); err != nil {
+			return nil, ErrInternal("撤回失败")
+		}
+	} else {
+		if _, err := a.DB.Exec(r.Context(), "UPDATE chat_messages SET content = $1, edited_at = NOW() WHERE message_id = $2", content, msgID); err != nil {
+			return nil, ErrInternal("更新失败")
+		}
+	}
+	realtime.Publish(r.Context(), a.Redis, realtime.Event{
+		Type:      realtime.EventMessage,
+		UserID:    user.Tenant(),
+		SessionID: sessionID,
+		MessageID: msgID,
+		Role:      role,
+	})
+	if del {
+		return map[string]any{"message": "已撤回"}, nil
+	}
+	return map[string]any{"message": "已更新"}, nil
 }
 
 type statusRequest struct {

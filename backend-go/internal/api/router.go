@@ -137,6 +137,12 @@ func (a *App) Router() http.Handler {
 	authed.HandleFunc("POST /api/v1/inbox/sessions/{id}/unarchive", a.handleSession(a.unarchiveSession))
 	authed.HandleFunc("GET /api/v1/inbox/sessions/{id}/summary", a.handleSession(a.sessionSummary))
 	authed.Handle("GET /api/v1/inbox/messages/{id}/media-url", a.handle(a.getInboundMediaURL))
+	// Correcting what was already sent: a wrong price, a message that should not
+	// have gone out. Edit and delete are provider actions (Telegram supports both;
+	// Meta's send API supports neither) and the handler refuses a channel that
+	// cannot do it.
+	authed.Handle("POST /api/v1/inbox/messages/{id}/edit", a.handle(a.editInboxMessage))
+	authed.Handle("POST /api/v1/inbox/messages/{id}/delete", a.handle(a.deleteInboxMessage))
 
 	// Tenant self-service settings — every registered user manages their own
 	// business hours and canned responses (migration 021 scopes both by
