@@ -104,6 +104,45 @@ func TestEveryAdvertisedFeatureKeyExistsInTheDictionaries(t *testing.T) {
 	}
 }
 
+var anyDictKeyRe = regexp.MustCompile(`(?m)^\s*"([^"]+)"\s*:`)
+
+// The three dictionaries are one contract: the console renders whichever the
+// user picked, so a key present in one and missing from another shows the raw
+// key (or silently falls back) for exactly those users. A permission key that
+// landed in en/km but not zh shipped that way on 2026-10-17 — nothing compared
+// the full key sets, only the bl.feature.* subset.
+func TestDictionariesShareTheSameKeys(t *testing.T) {
+	languages := []string{"dict-zh.ts", "dict-en.ts", "dict-km.ts"}
+	sets := map[string]map[string]bool{}
+	for _, lang := range languages {
+		raw, err := os.ReadFile(filepath.Join("..", "..", "..", "frontend", "src", "lib", "i18n", lang))
+		if err != nil {
+			t.Skipf("frontend dictionaries unavailable (%v); skipping", err)
+		}
+		keys := map[string]bool{}
+		for _, m := range anyDictKeyRe.FindAllStringSubmatch(string(raw), -1) {
+			keys[m[1]] = true
+		}
+		if len(keys) == 0 {
+			t.Fatalf("%s parsed to zero keys; the scan stopped matching", lang)
+		}
+		sets[lang] = keys
+	}
+	base := sets[languages[0]]
+	for _, lang := range languages[1:] {
+		for key := range base {
+			if !sets[lang][key] {
+				t.Errorf("%q is in %s but missing from %s", key, languages[0], lang)
+			}
+		}
+		for key := range sets[lang] {
+			if !base[key] {
+				t.Errorf("%q is in %s but missing from %s", key, lang, languages[0])
+			}
+		}
+	}
+}
+
 func names(plans []Plan) []string {
 	out := make([]string, 0, len(plans))
 	for _, p := range plans {

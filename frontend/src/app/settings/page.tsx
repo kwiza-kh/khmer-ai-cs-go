@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { adoptRefreshedToken } from "@/lib/auth-client";
+import { adoptRefreshedToken, useAuth } from "@/lib/auth-client";
 import { apiFetch, ApiError, totpStatus, totpSetup, totpVerify, totpDisable } from "@/lib/api";
 import { PageHeader } from "@/components/page-header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -12,8 +12,7 @@ import { Label } from "@/components/ui/label";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
-import { Settings as SettingsIcon, Lock, Globe, Loader2, Clock, ShieldCheck } from "lucide-react";
-import { BusinessHoursCard, CannedResponsesCard } from "@/components/admin/operations-tab";
+import { Settings as SettingsIcon, Lock, Globe, Loader2, ShieldCheck } from "lucide-react";
 import { TelegramNotifyCard } from "@/components/settings/telegram-notify-card";
 import { PasswordInput } from "@/components/ui/password-input";
 import { ProfileCard } from "@/components/settings/profile-card";
@@ -22,6 +21,7 @@ import { useI18n, type Lang } from "@/lib/i18n";
 
 export default function SettingsPage() {
   const { setLang: setUiLang, t } = useI18n();
+  const { user } = useAuth();
   // AI language preference (persisted server-side; "auto" follows the customer).
   const [aiLang, setAiLang] = React.useState("auto");
   const [notif, setNotif] = React.useState("all");
@@ -92,8 +92,10 @@ export default function SettingsPage() {
           {/* Two-factor authentication */}
           <TwoFactorCard />
 
-          {/* Telegram notify bot */}
-          <TelegramNotifyCard />
+          {/* Telegram notify bot — owner-only: it decides which chat receives a
+              notification for every customer message, so the API refuses seats
+              (tenantAdminOnly). A seat must not see a card whose calls all 403. */}
+          {!user?.is_member && <TelegramNotifyCard />}
 
           {/* Language preference */}
           <Card>
@@ -125,17 +127,6 @@ export default function SettingsPage() {
               </div>
             </CardContent>
           </Card>
-
-          {/* Tenant settings — every user manages their own schedule + quick replies */}
-          <div className="pt-1">
-            <p className="text-xs font-medium text-muted-foreground flex items-center gap-1.5 mb-3">
-              <Clock className="size-3.5" /> {t("settings.csSettings")} <span className="text-label">({t("settings.yoursOnly")})</span>
-            </p>
-            <div className="space-y-5">
-              <BusinessHoursCard />
-              <CannedResponsesCard />
-            </div>
-          </div>
 
           <p className="text-center text-xs text-muted-foreground py-2">
             {t("settings.version")}

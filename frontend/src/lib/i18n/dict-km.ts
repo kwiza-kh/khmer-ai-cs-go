@@ -149,8 +149,6 @@ export const km: Dict = {
   "settings.notifNone": "បិទ",
   "settings.saved": "ចំណូលចិត្តបានរក្សាទុក",
   "settings.saveFailed": "មិនអាចរក្សាទុកចំណូលចិត្តបានទេ",
-  "settings.csSettings": "ការកំណត់សេវាកម្មអតិថិជន",
-  "settings.yoursOnly": "សម្រាប់តែអ្នក — គណនីផ្សេងមានការកំណត់ផ្ទាល់ខ្លួន",
   "settings.version": "RelayChat សេវាកម្មអតិថិជន · v1.0",
 
   "inbox.kicker": "ប្រតិបត្តិការ",

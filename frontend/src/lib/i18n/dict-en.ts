@@ -152,8 +152,6 @@ export const en: Dict = {
   "settings.notifNone": "None",
   "settings.saved": "Preferences saved",
   "settings.saveFailed": "Could not save preferences",
-  "settings.csSettings": "Customer-service settings",
-  "settings.yoursOnly": "yours only — other accounts have their own",
   "settings.version": "RelayChat · v1.0",
 
   // Inbox
