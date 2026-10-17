@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"khmer-ai-cs-go/internal/auth"
+	"khmer-ai-cs-go/internal/realtime"
 	"khmer-ai-cs-go/internal/usage"
 )
 
@@ -193,6 +194,11 @@ func (a *App) setTenantStatus(w http.ResponseWriter, r *http.Request, userID int
 	_, err = a.DB.Exec(r.Context(), "UPDATE users SET is_active = $1 WHERE user_id = $2", req.IsActive, userID)
 	if err != nil {
 		return nil, ErrInternal("更新失败")
+	}
+	if !req.IsActive {
+		// A disabled account must stop streaming too: the middleware blocks new
+		// requests but cannot reach an open websocket.
+		realtime.PublishRevoke(r.Context(), a.Redis, userID)
 	}
 	return map[string]string{"message": "已更新"}, nil
 }
@@ -525,7 +531,7 @@ func (a *App) createTenant(w http.ResponseWriter, r *http.Request) (any, error) 
 		return nil, ErrBadRequest("请求格式错误")
 	}
 	username := req.Username
-	if len([]rune(username)) < 3 || len([]rune(username)) > 50 || len([]rune(req.Password)) < 6 {
+	if len([]rune(username)) < 3 || len([]rune(username)) > 50 || len([]rune(req.Password)) < 8 {
 		return nil, ErrBadRequest("请求格式错误")
 	}
 	var existing int32

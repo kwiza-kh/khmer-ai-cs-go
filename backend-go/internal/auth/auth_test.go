@@ -153,3 +153,28 @@ func TestTOTPRoundtrip(t *testing.T) {
 func padCode(code int) string {
 	return fmt.Sprintf("%06d", code)
 }
+
+// VerifyTOTPStep reports the window it matched, which is what the login path
+// uses to refuse replaying a code; the malformed cases are the ones a hostile
+// client sends instead of six digits.
+func TestVerifyTOTPStepReportsTheWindow(t *testing.T) {
+	const secret = "JBSWY3DPEHPK3PXP"
+	key, _ := base32Decode(secret)
+	now := time.Now().Unix() / 30
+	// The previous window is always inside the ±1 tolerance, so it is stable
+	// across a step boundary; the reported step is what the replay guard stores.
+	prev := padCode(hotp(key, uint64(now-1)))
+	step, ok := VerifyTOTPStep(secret, prev)
+	if !ok || step != now-1 {
+		t.Fatalf("previous window: step=%d ok=%v, want %d,true", step, ok, now-1)
+	}
+	cur := padCode(hotp(key, uint64(now)))
+	if step, ok := VerifyTOTPStep(secret, cur); !ok || (step != now && step != now-1 && step != now+1) {
+		t.Fatalf("current code: step=%d ok=%v", step, ok)
+	}
+	for _, bad := range []string{"", "12345", "1234567", "abcdef", "12345a", "１２３４５６"} {
+		if _, ok := VerifyTOTPStep(secret, bad); ok {
+			t.Errorf("malformed candidate %q verified", bad)
+		}
+	}
+}

@@ -147,7 +147,7 @@ function ChangePasswordCard() {
   const submit = async () => {
     if (!old || !next || !confirm) { toast.error(t("settings.pwdFillAll")); return; }
     if (next !== confirm) { toast.error(t("settings.pwdMismatch")); return; }
-    if (next.length < 6) { toast.error(t("settings.pwdTooShort")); return; }
+    if (next.length < 8) { toast.error(t("settings.pwdTooShort")); return; }
     setSaving(true);
     try {
       const res = await apiFetch<{ message: string; token?: string }>("/auth/password", {

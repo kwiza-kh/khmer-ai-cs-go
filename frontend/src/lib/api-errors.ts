@@ -130,6 +130,7 @@ const ERR_MAP: Record<string, ErrTranslation> = {
   "请先调用 setup": { en: "Call setup first", km: "សូមហៅ setup ជាមុនសិន" },
   "请求格式错误": { en: "Invalid request format", km: "ទម្រង់សំណើមិនត្រឹមត្រូវ" },
   "请求格式错误或新密码过短 (最少 6 位)": { en: "Invalid request or new password too short (min 6 characters)", km: "សំណើមិនត្រឹមត្រូវ ឬពាក្យសម្ងាត់ថ្មីខ្លីពេក (យ៉ាងតិច 6 តួ)" },
+  "请求格式错误或新密码过短 (最少 8 位)": { en: "Invalid request or new password too short (min 8 characters)", km: "សំណើមិនត្រឹមត្រូវ ឬពាក្យសម្ងាត់ថ្មីខ្លីពេក (យ៉ាងតិច 8 តួ)" },
   "请求过于频繁": { en: "Too many requests", km: "សំណើច្រើនពេក" },
   "读取文件失败": { en: "Failed to read the file", km: "មិនអាចអានឯកសារ" },
   "读取音频失败": { en: "Failed to read the audio", km: "មិនអាចអានសំឡេង" },

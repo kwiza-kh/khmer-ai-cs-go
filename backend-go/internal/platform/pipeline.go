@@ -762,7 +762,10 @@ func (p *Pipeline) storeTelegramAvatar(ctx context.Context, cfg *configCred, pla
 		p.Logger.Warn("telegram avatar upload failed", "error", uerr.Error())
 		return ""
 	}
-	return p.Media.PublicOrPresigned(key, 7*24*time.Hour)
+	// 24h, not a week: the URL is handed to a provider that fetches it within
+	// seconds, so a longer validity only lengthens the window in which a leaked
+	// URL works. The bucket-public path (when configured) is unaffected.
+	return p.Media.PublicOrPresigned(key, 24*time.Hour)
 }
 
 // prepareMedia downloads media, transcribes voice, describes images, stores

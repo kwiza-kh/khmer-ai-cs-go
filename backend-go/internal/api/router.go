@@ -370,7 +370,11 @@ func (a *App) Router() http.Handler {
 
 	// Platform webhooks (mounted by main; no auth — signature-verified).
 	if a.WebhookHandler != nil {
-		mux.Handle("/api/v1/webhook/", a.WebhookHandler)
+		// Every provider callback is unauthenticated until its signature check
+		// runs, and each one reads up to 8MB and hits the database to resolve the
+		// tenant. Limit per client IP so a flood cannot spend that work for free
+		// (providers deliver in batches; 300/min is far above their cadence).
+		mux.Handle("/api/v1/webhook/", a.rateLimit(300)(a.WebhookHandler))
 		// Meta OAuth browser callback: Facebook redirects the user here with
 		// no JWT. Public by design — the handler validates the signed state.
 		mux.Handle("/api/v1/platforms/meta/oauth/callback", a.WebhookHandler)
@@ -400,7 +404,12 @@ func (a *App) handleDoc(h docHandler) http.HandlerFunc {
 		if herr != nil {
 			apiErr, ok := herr.(*ApiError)
 			if !ok {
-				apiErr = ErrInternal(herr.Error())
+				// Never echo a raw error: it can carry SQL, provider bodies or
+				// internal paths. Log it and answer the generic sentence.
+				if a.Logger != nil {
+					a.Logger.Error("handler error", "path", r.URL.Path, "error", herr.Error())
+				}
+				apiErr = ErrInternal("内部错误")
 			}
 			WriteJSON(w, apiErr.Status, map[string]string{"error": apiErr.Message})
 			return
@@ -424,7 +433,12 @@ func (a *App) handleSession(h sessionHandler) http.HandlerFunc {
 		if herr != nil {
 			apiErr, ok := herr.(*ApiError)
 			if !ok {
-				apiErr = ErrInternal(herr.Error())
+				// Never echo a raw error: it can carry SQL, provider bodies or
+				// internal paths. Log it and answer the generic sentence.
+				if a.Logger != nil {
+					a.Logger.Error("handler error", "path", r.URL.Path, "error", herr.Error())
+				}
+				apiErr = ErrInternal("内部错误")
 			}
 			WriteJSON(w, apiErr.Status, map[string]string{"error": apiErr.Message})
 			return
@@ -444,7 +458,10 @@ func (a *App) handleOAuthSession(w http.ResponseWriter, r *http.Request) {
 	if herr != nil {
 		apiErr, ok := herr.(*ApiError)
 		if !ok {
-			apiErr = ErrInternal(herr.Error())
+			if a.Logger != nil {
+				a.Logger.Error("handler error", "path", r.URL.Path, "error", herr.Error())
+			}
+			apiErr = ErrInternal("内部错误")
 		}
 		WriteJSON(w, apiErr.Status, map[string]string{"error": apiErr.Message})
 		return
@@ -465,7 +482,10 @@ func (a *App) handlePlatformRetry(kind string) http.HandlerFunc {
 		if herr != nil {
 			apiErr, ok := herr.(*ApiError)
 			if !ok {
-				apiErr = ErrInternal(herr.Error())
+				if a.Logger != nil {
+					a.Logger.Error("handler error", "path", r.URL.Path, "error", herr.Error())
+				}
+				apiErr = ErrInternal("内部错误")
 			}
 			WriteJSON(w, apiErr.Status, map[string]string{"error": apiErr.Message})
 			return
@@ -588,7 +608,12 @@ func (a *App) platformAdminTenant(h func(http.ResponseWriter, *http.Request, int
 		if herr != nil {
 			apiErr, ok := herr.(*ApiError)
 			if !ok {
-				apiErr = ErrInternal(herr.Error())
+				// Never echo a raw error: it can carry SQL, provider bodies or
+				// internal paths. Log it and answer the generic sentence.
+				if a.Logger != nil {
+					a.Logger.Error("handler error", "path", r.URL.Path, "error", herr.Error())
+				}
+				apiErr = ErrInternal("内部错误")
 			}
 			WriteJSON(w, apiErr.Status, map[string]string{"error": apiErr.Message})
 			return

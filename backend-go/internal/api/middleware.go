@@ -18,9 +18,26 @@ import (
 
 // requestID assigns a request id (inbound or generated) and echoes it via
 // X-Request-ID.
+// safeRequestID keeps a client-supplied correlation id only when it looks like
+// one. The value is echoed in a response header and written to every log line;
+// a header carrying control characters or arbitrary length would smear the log.
+func safeRequestID(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || len(raw) > 64 {
+		return ""
+	}
+	for _, ch := range raw {
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' || ch == '.' {
+			continue
+		}
+		return ""
+	}
+	return raw
+}
+
 func requestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rid := r.Header.Get("X-Request-ID")
+		rid := safeRequestID(r.Header.Get("X-Request-ID"))
 		if rid == "" {
 			rid = platform.NewUUID()
 		}

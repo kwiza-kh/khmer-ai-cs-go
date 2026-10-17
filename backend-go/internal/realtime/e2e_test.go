@@ -77,3 +77,33 @@ func TestHandshakeRejectsBadToken(t *testing.T) {
 		t.Fatalf("expected 401, got %d", resp.StatusCode)
 	}
 }
+
+// A token_version bump must reach sockets that are already open; the handshake
+// check only guards new connections.
+func TestRevokeClosesOpenSockets(t *testing.T) {
+	jwt := auth.NewJWT(strings.Repeat("k", 32), 1)
+	token, err := jwt.GenerateToken(43, "agent", "user", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewHub(jwt, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, nil)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	dialer := websocket.Dialer{Subprotocols: []string{ProtocolName, token}}
+	ws, _, err := dialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial failed: %v", err)
+	}
+	defer ws.Close()
+	time.Sleep(50 * time.Millisecond)
+
+	payload, _ := json.Marshal(Event{Type: EventRevoke, UserID: 43})
+	h.route(string(payload))
+
+	_ = ws.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, _, err := ws.ReadMessage(); err == nil {
+		t.Fatal("socket stayed open after a revoke event")
+	}
+}

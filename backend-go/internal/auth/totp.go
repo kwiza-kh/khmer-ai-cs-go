@@ -5,7 +5,9 @@ package auth
 import (
 	"crypto/hmac"
 	"crypto/sha1"
+	"crypto/subtle"
 	"encoding/binary"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -51,28 +53,40 @@ func hotp(secret []byte, counter uint64) int {
 	return int(binCode % 1_000_000)
 }
 
-// VerifyTOTP checks a candidate code against the base32 secret, tolerating ±1
-// 30-second step of clock skew.
-func VerifyTOTP(secret, candidate string) bool {
+// VerifyTOTPStep checks a candidate code against the base32 secret, tolerating
+// ±1 30-second step of clock skew, and returns the step that matched. The
+// comparison is constant-time per candidate: the digit-by-digit integer loop it
+// replaced leaked how many leading digits were right.
+//
+// The step is returned so the caller can refuse replaying the same (or an older)
+// window — a code stays valid for up to 90 seconds with the tolerance, which is
+// long enough to be reused otherwise.
+func VerifyTOTPStep(secret, candidate string) (int64, bool) {
 	key, ok := base32Decode(secret)
 	if !ok {
-		return false
+		return 0, false
 	}
-	code := 0
-	for _, ch := range strings.TrimSpace(candidate) {
+	code := strings.TrimSpace(candidate)
+	if len(code) != 6 {
+		return 0, false
+	}
+	for _, ch := range code {
 		if ch < '0' || ch > '9' {
-			return false
+			return 0, false
 		}
-		code = code*10 + int(ch-'0')
 	}
-	if code < 0 || code > 999_999 {
-		return false
-	}
-	step := uint64(time.Now().Unix()) / 30
+	now := time.Now().Unix() / 30
 	for _, off := range []int64{0, -1, 1} {
-		if hotp(key, uint64(int64(step)+off)) == code {
-			return true
+		want := fmt.Sprintf("%06d", hotp(key, uint64(now+off)))
+		if subtle.ConstantTimeCompare([]byte(code), []byte(want)) == 1 {
+			return now + off, true
 		}
 	}
-	return false
+	return 0, false
+}
+
+// VerifyTOTP is the boolean form, for callers that do not police replay.
+func VerifyTOTP(secret, candidate string) bool {
+	_, ok := VerifyTOTPStep(secret, candidate)
+	return ok
 }

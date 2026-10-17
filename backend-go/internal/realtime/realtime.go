@@ -39,6 +39,9 @@ const (
 	EventMessage      = "inbox.message"
 	EventSession      = "inbox.session"
 	EventNotification = "inbox.notification"
+	// EventRevoke is server-to-hub only: close this account's open sockets
+	// because its token_version moved (password/role/2FA change, disable).
+	EventRevoke = "auth.revoke"
 
 	writeWait       = 10 * time.Second
 	pongWait        = 60 * time.Second
@@ -69,6 +72,21 @@ func Publish(ctx context.Context, rdb *redisstore.Client, ev Event) {
 		ev.OccurredAt = time.Now()
 	}
 	payload, err := json.Marshal(ev)
+	if err != nil {
+		return
+	}
+	_ = rdb.Publish(ctx, Channel, string(payload))
+}
+
+// PublishRevoke tells every instance to close one account's open sockets. The
+// handshake-level token_version check only guards NEW connections, so a
+// credential or role change would otherwise leave a stolen session streaming
+// inbox events until the client disconnects.
+func PublishRevoke(ctx context.Context, rdb *redisstore.Client, userID int32) {
+	if rdb == nil || userID == 0 {
+		return
+	}
+	payload, err := json.Marshal(Event{Type: EventRevoke, UserID: userID, OccurredAt: time.Now()})
 	if err != nil {
 		return
 	}
@@ -262,6 +280,18 @@ func (h *Hub) deliver(userID int32, payload []byte) {
 	}
 }
 
+// disconnectUser closes every socket of one account. It runs on the subscriber
+// goroutine; shutdown is best-effort and idempotent.
+func (h *Hub) disconnectUser(userID int32) {
+	h.mu.Lock()
+	set := h.conns[userID]
+	delete(h.conns, userID)
+	h.mu.Unlock()
+	for c := range set {
+		go c.shutdown()
+	}
+}
+
 // route parses one Redis payload and delivers it to the right user.
 func (h *Hub) route(payload string) {
 	var ev Event
@@ -269,6 +299,10 @@ func (h *Hub) route(payload string) {
 		return
 	}
 	if ev.UserID == 0 || ev.Type == "" {
+		return
+	}
+	if ev.Type == EventRevoke {
+		h.disconnectUser(ev.UserID)
 		return
 	}
 	h.deliver(ev.UserID, []byte(payload))

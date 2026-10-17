@@ -101,7 +101,7 @@ export const km: Dict = {
   "settings.updatePassword": "ធ្វើបច្ចុប្បន្នភាពពាក្យសម្ងាត់",
   "settings.pwdFillAll": "សូមបំពេញគ្រប់ចំណុច",
   "settings.pwdMismatch": "ពាក្យសម្ងាត់ថ្មីទាំងពីរមិនដូចគ្នា",
-  "settings.pwdTooShort": "ពាក្យសម្ងាត់ថ្មីត្រូវមានយ៉ាងតិច 6 តួ",
+  "settings.pwdTooShort": "ពាក្យសម្ងាត់ថ្មីត្រូវមានយ៉ាងតិច 8 តួ",
   "settings.pwdUpdated": "ពាក្យសម្ងាត់បានធ្វើបច្ចុប្បន្នភាព",
   "settings.pwdFailed": "មិនអាចប្តូរពាក្យសម្ងាត់បានទេ៖ {msg}",
   "settings.twoFactor": "ការផ្ទៀងផ្ទាត់ពីរជាន់",

@@ -104,7 +104,7 @@ export const en: Dict = {
   "settings.updatePassword": "Update password",
   "settings.pwdFillAll": "Please fill in all fields",
   "settings.pwdMismatch": "New passwords do not match",
-  "settings.pwdTooShort": "New password must be at least 6 characters",
+  "settings.pwdTooShort": "New password must be at least 8 characters",
   "settings.pwdUpdated": "Password updated",
   "settings.pwdFailed": "Password change unavailable: {msg}",
   "settings.twoFactor": "Two-factor authentication",

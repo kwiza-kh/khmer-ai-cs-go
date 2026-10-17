@@ -2776,3 +2776,60 @@ AI 报错价、消息发错人，此前只能再补一条"更正"——客户手
   `delivery 180` `sent`，payload 是 `media_url`（不是 `media_items`）。
 - 收件箱列表恢复，最新为附件的会话显示"媒体"。
 - 全量 `go test ./...` 绿；受影响的成员/收件箱测试复跑绿；SQL 门禁通过；提交已推送。
+
+## 三十六、安全审计发现的全量修复（2026-10-17）
+
+上一节是"找出"，这一节把能安全落地的全部修掉。每项都有修复后的实测证据。
+
+### 一、依赖
+- **Go 工具链 1.26.5 → 1.26.9**，`pgx 5.7.2 → 5.9.2`，`x/text 0.23 → 0.41`；
+  `govulncheck ./...` 从 **18 个可达漏洞 → 0**（含 pgx 占位符混淆 SQL 注入与 14 个 stdlib CVE）。
+  发布二进制用新工具链构建（`go version` 已在构建日志里核对）。
+- **Next 16.2.12 → 16.4.2**（清掉 critical 通告 GHSA-p293-qw3h-jr36）；`npm audit fix` 后
+  **运行时依赖漏洞 6 → 0**（仅剩的 dev 依赖通告随 eslint 工具链，不进产物）。
+
+### 二、反向代理：真实客户端 IP
+nginx 只设 `X-Real-IP $remote_addr`，而前面是 Cloudflare → 后端看到的是 CF 边缘 IP：
+限流、登录锁定、审计与请求日志全部按边缘 IP 分桶（实测日志 `ip=172.71.124.70`）。
+修复：`/etc/nginx/cloudflare-real-ip.conf`（CF 官方 14 条 v4 + 6 条 v6）+
+`real_ip_header CF-Connecting-IP; real_ip_recursive on;`，仅 include 在 `khmer-ai-cs` 的两个
+server 块（同机的 wms 不信任该头，避免被伪造）。
+**实测**：同一探测请求的日志 `ip=49.156.46.154`（真实客户端）。
+
+### 三、Webhook 限流
+`/api/v1/webhook/*` 之前没有任何应用层限流（8MB body + DB 查询 + HMAC 全是免费算力）。
+现在每客户端 IP 300 次/分钟。**实测**：连发 320 次 → 300×401 + 20×429。
+
+### 四、凭据
+- **admin 密码已轮换**（20 字节随机 hex）：新值在服务器 `/root/admin-password.txt`（0600），
+  `.env-go` 的 `INITIAL_ADMIN_PASSWORD` 同步更新。实测新密码登录 200、旧密码 401。
+- **删除三份旧 `.env-go.bak-*`**（10/6、10/8、10/9，含 GEMINI/R2/JWT/Meta 等现役密钥副本）。
+- 本地 `backend-go/.env`（陈旧开发值，权限 777）已收紧 ACL 为仅当前用户。
+
+### 五、会话与派生凭据
+- **密码变更时吊销该用户全部 API key**：API key 不带 token_version，否则改密后旧 key 仍可用。
+- **实时连接随吊销断开**：新增 `auth.revoke` 事件，`token_version` 自增/账号禁用时由 Redis
+  广播，各实例关闭该账号的 WebSocket（握手检查只保护新连接）。
+- **TOTP**：改为常量时间比较，并记录每个账号最后接受的 30 秒窗口，拒绝重放（同一码/更早窗口
+  不能二次登录）。副作用：同一 30 秒内连续两次登录需要等下一个窗口。
+- 密码最小长度 6 → **8**（注册、改密、平台建租户；前端提示同步）。
+
+### 六、信息暴露与杂项
+- `handleDoc/handleSession/handleOAuthSession/handlePlatformRetry/platformAdminTenant`
+  不再把非 `ApiError` 的原始错误回显给客户端（记日志，回"内部错误"）。
+- `X-Request-ID` 只接受 `[A-Za-z0-9._-]{1,64}`，否则生成新值（日志/响应头注入面）。
+- 出站媒体的预签名兜底 URL 7 天 → **24 小时**（provider 秒级抓取，长有效期只扩大泄露窗口）。
+- **CSP 收紧**：`connect-src` 从任意 https 收到 `'self' + connect.facebook.net + graph.facebook.com`，
+  并补 `object-src 'none'`（`script-src 'unsafe-inline'` 仍因 Next 引导脚本保留，已文档化）。
+
+### 七、明确未修（附原因）
+- **RLS 后盾（061）接线**：需要把所有租户查询包进带 `SET LOCAL app.user_id` 的事务，属于连接/
+  事务模型重构；强行 `FORCE ROW LEVEL SECURITY` 会在没有 GUC 时直接清空所有查询结果。
+  当前控制仍是 `tenantscope` 静态门禁 + 语句内租户列，启动日志如实标注为 scaffold。
+- **注册用户名/邮箱枚举**：重复注册返回明确冲突（有每 IP 限流）。改成统一模糊文案会让正常用户
+  无法判断失败原因，属可接受的产品取舍。
+
+### 八、验证汇总
+`govulncheck` 0 可达；`npm audit --omit=dev` 0；全量 `go test ./...` 绿；SQL 门禁绿；
+线上：新密码 200/旧密码 401、webhook 300×401+20×429、日志真实 IP、CSP 新头、
+`/ready` = `secfix-1`、前端 BUILD 已换。

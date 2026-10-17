@@ -101,7 +101,7 @@ export const zh: Dict = {
   "settings.updatePassword": "更新密码",
   "settings.pwdFillAll": "请填写所有字段",
   "settings.pwdMismatch": "两次输入的新密码不一致",
-  "settings.pwdTooShort": "新密码至少 6 位",
+  "settings.pwdTooShort": "新密码至少 8 位",
   "settings.pwdUpdated": "密码已更新",
   "settings.pwdFailed": "密码修改失败：{msg}",
   "settings.twoFactor": "两步验证",

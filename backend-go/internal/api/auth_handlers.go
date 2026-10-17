@@ -7,12 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"khmer-ai-cs-go/internal/auth"
+	"khmer-ai-cs-go/internal/realtime"
 )
 
 const (
@@ -137,12 +139,27 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) (any, error) {
 				"action": "2fa_required",
 			}}, nil
 		}
-		if !auth.VerifyTOTP(*totpSecret, code) {
+		step, ok := auth.VerifyTOTPStep(*totpSecret, code)
+		if !ok {
 			// Second-factor failures count toward the same account lockout as
 			// password failures; without this the advertised 5/15min lockout
 			// never applies to TOTP guessing once the password is known.
 			a.recordLoginFailure(ctx, failKey, lockKey, accountKey)
 			return nil, ErrUnauthorized("验证码错误")
+		}
+		// Replay guard: the ±1-step tolerance keeps a code valid for up to 90s,
+		// so a code observed once (shoulder, screenshot, phish) must not
+		// authenticate a second time. The last accepted step is per account and
+		// survives restarts that matter (Redis).
+		if a.Redis != nil {
+			key := fmt.Sprintf("totp-step:%d", userID)
+			if lastRaw, err := a.Redis.GetString(ctx, key); err == nil && lastRaw != "" {
+				if last, err := strconv.ParseInt(lastRaw, 10, 64); err == nil && step <= last {
+					a.recordLoginFailure(ctx, failKey, lockKey, accountKey)
+					return nil, ErrUnauthorized("验证码已使用，请等待下一个")
+				}
+			}
+			_ = a.Redis.SetString(ctx, key, strconv.FormatInt(step, 10), 2*time.Minute)
 		}
 	}
 
@@ -247,8 +264,8 @@ func (a *App) register(w http.ResponseWriter, r *http.Request) (any, error) {
 	if !isValidEmail(req.Email) {
 		return nil, ErrBadRequest("请求格式错误")
 	}
-	if len([]rune(req.Password)) < 6 {
-		return nil, ErrBadRequest("请求格式错误")
+	if len([]rune(req.Password)) < 8 {
+		return nil, ErrBadRequest("请求格式错误或密码过短 (最少 8 位)")
 	}
 
 	ctx := r.Context()
@@ -317,6 +334,7 @@ func (a *App) bumpTokenVersion(ctx context.Context, userID int32) error {
 		}
 		return err
 	}
+	realtime.PublishRevoke(ctx, a.Redis, userID)
 	return nil
 }
 
@@ -326,8 +344,8 @@ func (a *App) changePassword(w http.ResponseWriter, r *http.Request) (any, error
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		return nil, ErrBadRequest("请求格式错误")
 	}
-	if len([]rune(req.NewPassword)) < 6 {
-		return nil, ErrBadRequest("请求格式错误或新密码过短 (最少 6 位)")
+	if len([]rune(req.NewPassword)) < 8 {
+		return nil, ErrBadRequest("请求格式错误或新密码过短 (最少 8 位)")
 	}
 
 	ctx := r.Context()
@@ -364,6 +382,15 @@ func (a *App) changePassword(w http.ResponseWriter, r *http.Request) (any, error
 		newHash, user.UserID).Scan(&newVersion); err != nil {
 		return nil, ErrInternal("更新失败")
 	}
+	// A password rotation invalidates derived credentials too: an API key is a
+	// long-lived bearer token with no token_version, so leaving it active would
+	// defeat the rotation.
+	if _, keyErr := a.DB.Exec(ctx, "UPDATE api_keys SET is_active = false WHERE user_id = $1", user.UserID); keyErr != nil && a.Logger != nil {
+		a.Logger.Warn("api key revocation failed after password change", "user_id", user.UserID, "error", keyErr.Error())
+	}
+	// Open websockets carry the OLD token; close them so clients reconnect with
+	// the new one (the handshake check only guards new connections).
+	realtime.PublishRevoke(ctx, a.Redis, user.UserID)
 	// Hand this session a token carrying the new version so the person who
 	// just changed their password is not logged out along with the attackers.
 	token, err := a.JWT.GenerateToken(user.UserID, user.Username, user.Role, newVersion)

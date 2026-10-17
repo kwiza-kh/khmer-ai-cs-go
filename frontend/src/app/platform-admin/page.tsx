@@ -392,7 +392,7 @@ function CreateTenantPanel() {
   const [saving, setSaving] = React.useState(false);
 
   const submit = async () => {
-    if (!username || !email || password.length < 6) { toast.error(t("pa.validation")); return; }
+    if (!username || !email || password.length < 8) { toast.error(t("pa.validation")); return; }
     setSaving(true);
     try {
       await createTenant({ username, email, password, plan });
