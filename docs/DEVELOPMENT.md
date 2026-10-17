@@ -2674,3 +2674,31 @@ Telegram 通知（决定"每个客户消息进谁的聊天"）、团队与角色
 - **Telegram Business（C2）**：`business_connection`/`business_message` 需要会话按连接维度归属、
   每条发送带 `business_connection_id`、商家个人号与 RelayChat 账号的绑定流程，以及真实 Telegram
   Business 账号才能验证，是 1–2 周的独立项目，本轮不交付半成品。
+
+## 三十三、收件箱更正：编辑/撤回已发消息（2026-10-17）
+
+### 一、问题
+AI 报错价、消息发错人，此前只能再补一条"更正"——客户手里那条错的还在，而且会继续被引用。
+
+### 二、实现
+- 迁移 **086**：`chat_messages.deleted_at / edited_at`。行本身保留（"我们发过什么"的审计），
+  只是对客户侧的读取隐藏。
+- 能力表 `CanEditMessage` / `CanDeleteMessage`：只有 Telegram 为真（Meta 的发送 API 既不能编辑
+  也不能删除，只投递 edit/delete 事件；LINE/Zalo 没有）。接口先问渠道，**渠道拒绝就不改本地** ——
+  反过来会让仪表盘宣称一个从未到达客户的更正。
+- 编辑：`editMessageText`；Markdown 同样转 HTML 子集，解析失败回退纯文本；媒体消息不能编辑
+  （Telegram 不允许把媒体消息改成文字），只能撤回。
+- 撤回：`deleteMessage`；尚未发出的（outbox `pending`）直接取消，不发出去。
+- 前端：agent/model 气泡上的"编辑 / 撤回"（仅 Telegram 会话显示——别的渠道放一个必然失败的按钮
+  比没有更糟）；编辑预填当前内容，撤回二次确认。
+- 读取侧统一过滤：transcript、AI 的历史窗口、收件箱列表的"最后一条"预览。
+
+### 三、顺带修的
+- `listSessionMessages` 仍按 `user.UserID` 取会话：成员能看会话列表，点开却是 404。
+  改为 `user.Tenant()`（权限矩阵上线时漏掉的一处）。
+
+### 四、验证（线上）
+- 编辑消息 11449（AI 回复）→ 接口 `已更新`、`edited_at` 置位；Telegram 会话里显示更正后的价格
+  （UI 实拍），列表预览同步。
+- 撤回消息 11453（PDF）→ 接口 `已撤回`、`deleted_at` 置位；会话里消失。
+- 两次 provider 调用都被接受，日志无错误。
