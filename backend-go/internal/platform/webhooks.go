@@ -143,6 +143,36 @@ func verifyMetaSignature(secret, signature string, body []byte) bool {
 	return hmac.Equal([]byte(expected), []byte(signature))
 }
 
+// handleMetaReaction maps a reaction on one of our delivered messages to the same
+// 👍/👎 rating the CSAT buttons write. The reaction names the provider message id,
+// which is how the outbox row (and through it the chat message) is found; unreact
+// events are ignored, and so is any emoji that is not a rating.
+func (wh *Webhooks) handleMetaReaction(ctx context.Context, cfg *webhookConfig, sender string, reaction map[string]any) {
+	if action, _ := reaction["action"].(string); action != "react" {
+		return
+	}
+	var rating int
+	switch emoji, _ := reaction["emoji"].(string); emoji {
+	case "👍", "❤", "❤️", "😍", "🔥":
+		rating = 1
+	case "👎", "😡", "😢", "💔":
+		rating = -1
+	default:
+		return
+	}
+	mid, _ := reaction["mid"].(string)
+	if mid == "" {
+		return
+	}
+	var chatMessageID int64
+	if err := wh.DB.QueryRow(ctx,
+		"SELECT chat_message_id FROM platform_outbox WHERE config_id = $1 AND provider_message_id = $2 AND chat_message_id IS NOT NULL LIMIT 1",
+		cfg.ConfigID, mid).Scan(&chatMessageID); err != nil {
+		return
+	}
+	wh.recordMessageFeedback(ctx, cfg.UserID, cfg.Platform, sender, chatMessageID, rating)
+}
+
 // handleMetaMessaging extracts one Messenger/Instagram message into the queue.
 // It returns an enqueue failure to the handler so the provider can redeliver
 // rather than have the message silently vanish.
@@ -157,6 +187,15 @@ func (wh *Webhooks) handleMetaMessaging(ctx context.Context, cfg *webhookConfig,
 	if senderObj, ok := msg["sender"].(map[string]any); ok {
 		sender, _ = senderObj["id"].(string)
 	}
+	// Reactions arrive as their own event with no `message` object. A 👍/👎 on a
+	// delivered reply is a rating; it is recorded the same way the CSAT quick
+	// replies are, so the two cannot disagree.
+	if reaction, ok := msg["reaction"].(map[string]any); ok {
+		if sender != "" {
+			wh.handleMetaReaction(ctx, cfg, sender, reaction)
+		}
+		return nil
+	}
 	// Template postback buttons arrive as their own event with no `message` at
 	// all. The webhook is subscribed to messaging_postbacks, so these were being
 	// delivered and then dropped before they could reach the pipeline — the same
@@ -168,6 +207,12 @@ func (wh *Webhooks) handleMetaMessaging(ctx context.Context, cfg *webhookConfig,
 		}
 		// No message id exists for a postback; payload+timestamp is the pair Meta
 		// repeats on a redelivery and only there, which is what dedupe needs.
+		// A CSAT tap is not a customer message: record the rating and stop. Feeding
+		// "👍" to the router would read it as a one-word question and answer it.
+		if chatMessageID, rating, isFeedback := parseFeedbackCallback(payload); isFeedback {
+			wh.recordMessageFeedback(ctx, cfg.UserID, cfg.Platform, sender, chatMessageID, rating)
+			return nil
+		}
 		ts, _ := msg["timestamp"].(float64)
 		externalID := "postback:" + payload + ":" + jsonNumberString(ts)
 		return wh.Pipe.EnqueueInboundEvent(ctx, cfg.ConfigID, cfg.Platform, externalID, sender, "", ButtonSelection(label), nil)
@@ -176,12 +221,25 @@ func (wh *Webhooks) handleMetaMessaging(ctx context.Context, cfg *webhookConfig,
 	if message == nil || sender == "" {
 		return nil
 	}
+	// Ad / m.me attribution rides on the message as `referral`. The event row has
+	// no attribution column yet, so this records the ids in the log rather than
+	// dropping them silently — which is what the webhook did before.
+	if ref, ok := message["referral"].(map[string]any); ok && wh.Pipe != nil && wh.Pipe.Logger != nil {
+		wh.Pipe.Logger.Info("meta referral",
+			"config_id", cfg.ConfigID, "platform", cfg.Platform, "sender", sender,
+			"source", ref["source"], "type", ref["type"], "ref", ref["ref"], "ad_id", ref["ad_id"])
+	}
 	text, _ := message["text"].(string)
 	// A quick-reply tap carries the button title in message.text and the machine
 	// payload beside it. Marking it is what stops the router from reading a
 	// short label as gibberish (2026-10-12: a button titled "1" was routed junk
 	// at p=0.90 and the customer got no reply).
 	if label, ok := metaQuickReplyLabel(message); ok {
+		// Same rule as postbacks: a rating returns before it can become text.
+		if chatMessageID, rating, isFeedback := parseFeedbackCallback(metaQuickReplyPayload(message)); isFeedback {
+			wh.recordMessageFeedback(ctx, cfg.UserID, cfg.Platform, sender, chatMessageID, rating)
+			return nil
+		}
 		text = ButtonSelection(label)
 	}
 	mid, _ := message["mid"].(string)
@@ -226,6 +284,17 @@ func metaQuickReplyLabel(message map[string]any) (string, bool) {
 // tap. A postback arrives as its own event with no `message` object at all, so
 // without this branch the tap never reached the pipeline (the webhook is
 // subscribed to messaging_postbacks).
+// metaQuickReplyPayload returns the machine payload of a quick-reply tap (empty
+// when the message is not a quick reply).
+func metaQuickReplyPayload(message map[string]any) string {
+	qr, ok := message["quick_reply"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	p, _ := qr["payload"].(string)
+	return strings.TrimSpace(p)
+}
+
 func metaPostbackLabel(msg map[string]any) (label, payload string, ok bool) {
 	postback, isPostback := msg["postback"].(map[string]any)
 	if !isPostback {
@@ -353,6 +422,12 @@ func (wh *Webhooks) TelegramWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	text, _ := message["text"].(string)
+	if text == "" {
+		// A photo/document carries its words in `caption`, not `text`. Without this
+		// the question attached to a product photo never reached the AI — it saw
+		// only "[Customer sent photo media]".
+		text, _ = message["caption"].(string)
+	}
 	updateID := ""
 	if uid, ok := update["update_id"].(float64); ok {
 		updateID = jsonNumberString(uid)
@@ -366,6 +441,12 @@ func (wh *Webhooks) TelegramWebhook(w http.ResponseWriter, r *http.Request) {
 		if kind, _ := media["kind"].(string); kind != "" {
 			text = "[Customer sent " + kind + " media]"
 		}
+	}
+	if text == "" {
+		// Non-media, non-text shapes a customer can send: a sticker, a shared
+		// location, a contact card. They used to be dropped silently — the customer
+		// tapped send and got nothing back.
+		text = telegramTextMarker(message)
 	}
 	if text == "" {
 		w.WriteHeader(http.StatusOK)
@@ -409,6 +490,33 @@ func isFeedbackCallback(data string) bool {
 	return ok
 }
 
+// recordMessageFeedback stores a 👍/👎 rating against one model reply, scoped to
+// this tenant and this chat, and escalates a 👎 to the handoff queue. Telegram's
+// inline keyboard and the Messenger/Instagram quick replies both call it, so a
+// rating means the same thing on every channel.
+func (wh *Webhooks) recordMessageFeedback(ctx context.Context, userID int32, platform, platformUserID string, chatMessageID int64, rating int) bool {
+	var sessionID string
+	var ownerID int32
+	err := wh.DB.QueryRow(ctx,
+		"SELECT cm.session_id, s.user_id FROM chat_messages cm JOIN sessions s ON s.session_id = cm.session_id "+
+			"WHERE cm.message_id = $1 AND cm.role = 'model' AND s.user_id = $2 AND s.platform = $3::platform_type AND s.platform_user_id = $4",
+		chatMessageID, userID, platform, platformUserID).Scan(&sessionID, &ownerID)
+	if err != nil {
+		return false
+	}
+	_, _ = wh.DB.Exec(ctx,
+		"UPDATE chat_messages SET feedback_rating = $1, feedback_at = NOW() WHERE message_id = $2", rating, chatMessageID)
+	if rating == -1 {
+		// 👎 = "the answer was not good enough" → negative_feedback handoff.
+		_ = wh.Pipe.createHandoffRequest(ctx, ownerID, sessionID, "negative_feedback",
+			"Customer rated the AI reply 👎", "")
+	}
+	realtime.Publish(ctx, wh.Pipe.Redis, realtime.Event{
+		Type: realtime.EventSession, UserID: ownerID, SessionID: sessionID,
+	})
+	return true
+}
+
 // handleTelegramCallback processes an inline-keyboard CSAT press
 // ("fb:<msgID>:<±1>") on an AI reply: stores the rating on the message,
 // escalates 👎 to the handoff queue, and answers the callback so Telegram clears
@@ -426,29 +534,11 @@ func (wh *Webhooks) handleTelegramCallback(ctx context.Context, cfg *webhookConf
 	if !ok || chatID == "" {
 		return
 	}
-
-	// Tenant + chat guard: the message must be a model reply on this tenant's
-	// Telegram session for this exact chat.
-	var sessionID string
-	var ownerID int32
-	err := wh.DB.QueryRow(ctx,
-		"SELECT cm.session_id, s.user_id FROM chat_messages cm JOIN sessions s ON s.session_id = cm.session_id "+
-			"WHERE cm.message_id = $1 AND cm.role = 'model' AND s.user_id = $2 AND s.platform = 'telegram'::platform_type AND s.platform_user_id = $3",
-		msgID, cfg.UserID, chatID).Scan(&sessionID, &ownerID)
-	if err != nil {
+	// The guard (model reply, this tenant, this chat) lives in the shared recorder
+	// so Messenger/Instagram cannot drift from what a rating means here.
+	if !wh.recordMessageFeedback(ctx, cfg.UserID, "telegram", chatID, msgID, rating) {
 		return
 	}
-	_, _ = wh.DB.Exec(ctx,
-		"UPDATE chat_messages SET feedback_rating = $1, feedback_at = NOW() WHERE message_id = $2", rating, msgID)
-
-	if rating == -1 {
-		// 👎 = "the answer was not good enough" → negative_feedback handoff.
-		_ = wh.Pipe.createHandoffRequest(ctx, ownerID, sessionID, "negative_feedback",
-			"Customer rated the AI reply 👎", "")
-	}
-	realtime.Publish(ctx, wh.Pipe.Redis, realtime.Event{
-		Type: realtime.EventSession, UserID: ownerID, SessionID: sessionID,
-	})
 
 	// Close the button spinner with a thank-you toast.
 	botToken := wh.telegramBotToken(ctx, cfg.ConfigID)
@@ -572,7 +662,7 @@ func (wh *Webhooks) telegramBotToken(ctx context.Context, configID int32) string
 func extractTelegramMedia(message map[string]any) map[string]any {
 	for _, key := range []struct {
 		field, kind string
-	}{{"voice", "voice"}, {"audio", "audio"}, {"video", "video"}, {"document", "document"}, {"photo", "photo"}} {
+	}{{"voice", "voice"}, {"audio", "audio"}, {"video", "video"}, {"video_note", "video"}, {"document", "document"}, {"photo", "photo"}} {
 		if obj, ok := message[key.field].(map[string]any); ok {
 			fileID, _ := obj["file_id"].(string)
 			mime, _ := obj["mime_type"].(string)
@@ -589,6 +679,54 @@ func extractTelegramMedia(message map[string]any) map[string]any {
 		}
 	}
 	return nil
+}
+
+// telegramTextMarker renders the non-text, non-media message shapes as text the
+// pipeline can read. "" means "nothing a customer expects an answer to"
+// (service messages, joins, edits) and the event is dropped as before.
+func telegramTextMarker(message map[string]any) string {
+	if sticker, ok := message["sticker"].(map[string]any); ok {
+		emoji, _ := sticker["emoji"].(string)
+		if emoji != "" {
+			return "[Customer sent a sticker " + emoji + "]"
+		}
+		return "[Customer sent a sticker]"
+	}
+	if loc, ok := message["location"].(map[string]any); ok {
+		name, _ := loc["name"].(string)
+		addr, _ := loc["address"].(string)
+		text := "[Customer shared a location"
+		if name != "" {
+			text += ": " + name
+		}
+		if addr != "" {
+			text += " " + addr
+		}
+		text += "]"
+		// The coordinates as a map link: a delivery question is the main reason a
+		// customer shares one, and the model cannot reason about bare numbers.
+		lat, _ := loc["latitude"].(float64)
+		lng, _ := loc["longitude"].(float64)
+		if lat != 0 || lng != 0 {
+			text += " https://maps.google.com/?q=" + strconv.FormatFloat(lat, 'f', 6, 64) + "," + strconv.FormatFloat(lng, 'f', 6, 64)
+		}
+		return text
+	}
+	if contact, ok := message["contact"].(map[string]any); ok {
+		first, _ := contact["first_name"].(string)
+		last, _ := contact["last_name"].(string)
+		phone, _ := contact["phone_number"].(string)
+		name := strings.TrimSpace(first + " " + last)
+		text := "[Customer shared a contact"
+		if name != "" {
+			text += ": " + name
+		}
+		if phone != "" {
+			text += " " + phone
+		}
+		return text + "]"
+	}
+	return ""
 }
 
 // LineWebhook handles POST events.

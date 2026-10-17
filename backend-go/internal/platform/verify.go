@@ -173,6 +173,17 @@ func verifyMetaFamily(ctx context.Context, plat string, creds ChannelCredentials
 	if err != nil {
 		return VerifyOutcome{}, err
 	}
+	if plat == "meta" {
+		// The entry points a customer sees before typing anything (greeting +
+		// persistent menu). Best-effort: a token without pages_manage_metadata
+		// refuses the profile write but is still a working messaging channel, so
+		// the failure is reported, not fatal.
+		if menu, menuErr := client.SetMessengerProfile(ctx); menuErr != nil {
+			detail += "; Messenger menu setup failed: " + menuErr.Error()
+		} else if menu != "" {
+			detail += "; " + menu
+		}
+	}
 	return VerifyOutcome{AccountName: name, Detail: detail}, nil
 }
 

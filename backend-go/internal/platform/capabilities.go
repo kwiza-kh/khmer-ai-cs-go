@@ -51,6 +51,22 @@ const (
 // Supports reports whether every kind in want is available on this channel.
 func (m MediaKinds) Supports(want MediaKinds) bool { return m&want == want }
 
+// TextMarkup is how outbound text carries formatting.
+type TextMarkup int
+
+const (
+	// MarkupNone is a plain-text transport: enqueueDelivery flattens Markdown
+	// before the row is stored, so no sender ever sees formatting it cannot show.
+	MarkupNone TextMarkup = iota
+	// MarkupMarkdown means the client renders Markdown itself (the website
+	// widget). The text is delivered verbatim.
+	MarkupMarkdown
+	// MarkupHTML means the channel converts Markdown to the provider's HTML
+	// subset at send time (Telegram). The outbox keeps the Markdown source, so a
+	// failed conversion can fall back to plain text per chunk.
+	MarkupHTML
+)
+
 // CredentialField describes one credential a channel needs. The same list drives
 // the connect form, the server-side validation and the error message, instead of
 // the hand-written `if req.Platform == "instagram"` ladder that used to live in
@@ -92,11 +108,11 @@ type Capabilities struct {
 	// as a caption sends the picture first and the text after it.
 	CaptionLimit int
 
-	// FlattensMarkdown is true for transports that deliver plain text to the
-	// customer (every chat channel: Markdown is stripped in enqueueDelivery). The
-	// website widget renders Markdown itself, so an image would be a downgrade
-	// there - which is exactly the check text-to-image needs.
-	FlattensMarkdown bool
+	// Markup says whether outbound text carries formatting, and in which form.
+	// It replaces the old boolean that only text-to-image read: the delivery path
+	// flattened Markdown unconditionally, so Telegram lost its formatting while
+	// the flag claimed to describe it.
+	Markup TextMarkup
 
 	SupportsTyping  bool
 	SupportsButtons bool
@@ -232,14 +248,17 @@ type Caps = Capabilities
 // no other file needs a new `case`.
 var capabilitiesTable = map[string]Capabilities{
 	"telegram": {
-		Platform:          "telegram",
-		DisplayName:       "Telegram",
-		TextLimit:         4096,
-		TextLimitUnit:     UnitRunes,
-		Media:             MediaText | MediaImage | MediaAudio,
-		CaptionLimit:      1024,
-		FlattensMarkdown:  true,
-		SupportsTyping:    true,
+		Platform:       "telegram",
+		DisplayName:    "Telegram",
+		TextLimit:      4096,
+		TextLimitUnit:  UnitRunes,
+		Media:          MediaText | MediaImage | MediaAudio,
+		CaptionLimit:   1024,
+		SupportsTyping: true,
+		// Telegram accepts an HTML subset (b/i/u/s/code/pre/a). MarkdownV2 is the
+		// escape minefield; HTML only needs &<> escaped, which the converter does
+		// before it inserts any tag.
+		Markup:            MarkupHTML,
 		AvatarNeedsRehost: true,
 		SupportsButtons:   true,
 		FeedbackButtons:   true,
@@ -258,16 +277,15 @@ var capabilitiesTable = map[string]Capabilities{
 		},
 	},
 	"line": {
-		Platform:         "line",
-		DisplayName:      "LINE",
-		TextLimit:        5000,
-		TextLimitUnit:    UnitRunes,
-		Media:            MediaText,
-		FlattensMarkdown: true,
-		SupportsTyping:   true,
-		Windowless:       true,
-		ProactiveSend:    true,
-		Known:            true,
+		Platform:       "line",
+		DisplayName:    "LINE",
+		TextLimit:      5000,
+		TextLimitUnit:  UnitRunes,
+		Media:          MediaText,
+		SupportsTyping: true,
+		Windowless:     true,
+		ProactiveSend:  true,
+		Known:          true,
 		Credentials: []CredentialField{
 			{Key: "access_token", Label: "Channel access token", Required: true, Secret: true,
 				MissingMessage: "该平台需要配置 access_token"},
@@ -283,10 +301,9 @@ var capabilitiesTable = map[string]Capabilities{
 		Media:         MediaText | MediaImage,
 		// Zalo's send-image call takes a URL only, so the text always follows as
 		// its own message (CaptionLimit 0 = "cannot caption an image").
-		FlattensMarkdown: true,
-		Windowless:       true,
-		ProactiveSend:    true,
-		Known:            true,
+		Windowless:    true,
+		ProactiveSend: true,
+		Known:         true,
 		Credentials: []CredentialField{
 			{Key: "access_token", Label: "OA access token", Required: true, Secret: true,
 				MissingMessage: "该平台需要配置 access_token"},
@@ -295,16 +312,15 @@ var capabilitiesTable = map[string]Capabilities{
 		},
 	},
 	"whatsapp": {
-		Platform:         "whatsapp",
-		DisplayName:      "WhatsApp",
-		TextLimit:        1024,
-		TextLimitUnit:    UnitRunes,
-		Media:            MediaText | MediaImage | MediaAudio | MediaFile,
-		CaptionLimit:     1024,
-		FlattensMarkdown: true,
-		ReplyWindow:      CustomerCareWindowHours * time.Hour,
-		TemplateExempt:   true,
-		Known:            true,
+		Platform:       "whatsapp",
+		DisplayName:    "WhatsApp",
+		TextLimit:      1024,
+		TextLimitUnit:  UnitRunes,
+		Media:          MediaText | MediaImage | MediaAudio | MediaFile,
+		CaptionLimit:   1024,
+		ReplyWindow:    CustomerCareWindowHours * time.Hour,
+		TemplateExempt: true,
+		Known:          true,
 		Credentials: []CredentialField{
 			{Key: "access_token", Label: "System user access token", Required: true, Secret: true,
 				MissingMessage: "该平台需要配置 access_token"},
@@ -326,12 +342,11 @@ var capabilitiesTable = map[string]Capabilities{
 		Media:         MediaText | MediaImage | MediaAudio | MediaFile,
 		// Messenger attachments have no caption field (Send API: type + payload.url),
 		// so the text always follows the picture as its own message.
-		FlattensMarkdown: true,
-		SupportsTyping:   true,
-		SupportsButtons:  true,
-		ReplyWindow:      CustomerCareWindowHours * time.Hour,
-		HumanExtension:   HumanAgentWindowDays * 24 * time.Hour,
-		Known:            true,
+		SupportsTyping:  true,
+		SupportsButtons: true,
+		ReplyWindow:     CustomerCareWindowHours * time.Hour,
+		HumanExtension:  HumanAgentWindowDays * 24 * time.Hour,
+		Known:           true,
 		Credentials: []CredentialField{
 			{Key: "access_token", Label: "Page access token", Required: true, Secret: true,
 				MissingMessage: "该平台需要配置 access_token"},
@@ -350,11 +365,10 @@ var capabilitiesTable = map[string]Capabilities{
 		Media:         MediaText | MediaImage,
 		// Same Send API as Messenger (message.attachment) — no caption field, so the
 		// reply text follows the picture.
-		FlattensMarkdown: true,
-		SupportsTyping:   true,
-		ReplyWindow:      CustomerCareWindowHours * time.Hour,
-		HumanExtension:   HumanAgentWindowDays * 24 * time.Hour,
-		Known:            true,
+		SupportsTyping: true,
+		ReplyWindow:    CustomerCareWindowHours * time.Hour,
+		HumanExtension: HumanAgentWindowDays * 24 * time.Hour,
+		Known:          true,
 		Credentials: []CredentialField{
 			{Key: "access_token", Label: "Page access token", Required: true, Secret: true,
 				MissingMessage: "该平台需要配置 access_token"},
@@ -376,6 +390,7 @@ var capabilitiesTable = map[string]Capabilities{
 		TextLimit:     2000,
 		TextLimitUnit: UnitRunes,
 		Media:         MediaText | MediaImage,
+		Markup:        MarkupMarkdown,
 		Known:         true,
 	},
 }

@@ -43,7 +43,7 @@ func (c *telegramChannel) Send(ctx context.Context, msg ChannelMessage) (string,
 	chunks := SplitChannelText(msg.Content, c.Caps())
 	lastID := ""
 	for _, chunk := range chunks {
-		id, err := client.SendMessage(ctx, msg.RecipientID, chunk, buttons)
+		id, err := c.sendChunk(ctx, client, msg.RecipientID, chunk, buttons)
 		if err != nil {
 			return "", err
 		}
@@ -59,6 +59,24 @@ func (c *telegramChannel) Send(ctx context.Context, msg ChannelMessage) (string,
 	return lastID, nil
 }
 
+// sendChunk delivers one already-split chunk. On a MarkupHTML channel the
+// Markdown source is converted to Telegram's HTML subset; if Telegram refuses
+// the entities, the same chunk is retried as plain text — a formatting bug must
+// cost the bold, never the answer.
+func (c *telegramChannel) sendChunk(ctx context.Context, client *TelegramClient, chatID, chunk string, buttons [][2]string) (string, error) {
+	if c.Caps().Markup != MarkupHTML {
+		return client.SendMessage(ctx, chatID, chunk, buttons)
+	}
+	id, err := client.SendMessageFormatted(ctx, chatID, telegramHTML(chunk), "HTML", buttons)
+	if err == nil || !tgParseError(err) {
+		return id, err
+	}
+	if c.p != nil && c.p.Logger != nil {
+		c.p.Logger.Warn("telegram rejected HTML entities; sending plain text", "error", err.Error())
+	}
+	return client.SendMessage(ctx, chatID, plainTextForChat(chunk), buttons)
+}
+
 // sendImage delivers a picture — a matched knowledge document's own product
 // photo, or a text-to-image render — with the reply as its caption.
 //
@@ -66,18 +84,36 @@ func (c *telegramChannel) Send(ctx context.Context, msg ChannelMessage) (string,
 // losing the answer to keep the picture would be the worse trade, so the picture
 // goes out bare and the text follows as ordinary messages (which also keeps the
 // 👍/👎 buttons on a text bubble, where a customer can actually read them
-// beside the words they rate).
+// beside the words they rate). The same fallback covers a caption whose HTML
+// form Telegram refuses or finds too long.
 func (c *telegramChannel) sendImage(ctx context.Context, client *TelegramClient, msg ChannelMessage) (string, error) {
 	buttons, hasFeedbackButtons := feedbackButtons(msg.Delivery, msg.Buttons)
+	markup := c.Caps().Markup == MarkupHTML
 	if captionFits(msg.Content, c.Caps()) {
-		id, err := client.SendPhoto(ctx, msg.RecipientID, msg.MediaURL, msg.Content, buttons)
-		if err != nil {
+		caption, mode := msg.Content, ""
+		if markup {
+			caption, mode = telegramHTML(caption), "HTML"
+		}
+		id, err := client.SendPhotoFormatted(ctx, msg.RecipientID, msg.MediaURL, caption, mode, buttons)
+		switch {
+		case err == nil:
+			if hasFeedbackButtons {
+				c.p.demotePreviousFeedbackKeyboard(ctx, client, msg.Delivery)
+			}
+			return TelegramProviderMessageID(msg.RecipientID, id), nil
+		case markup && tgParseError(err):
+			if id, plainErr := client.SendPhoto(ctx, msg.RecipientID, msg.MediaURL, plainTextForChat(msg.Content), buttons); plainErr == nil {
+				if hasFeedbackButtons {
+					c.p.demotePreviousFeedbackKeyboard(ctx, client, msg.Delivery)
+				}
+				return TelegramProviderMessageID(msg.RecipientID, id), nil
+			}
+			// Fall through to the bare-photo path below.
+		case tgCaptionTooLong(err):
+			// Fall through to the bare-photo path below.
+		default:
 			return "", err
 		}
-		if hasFeedbackButtons {
-			c.p.demotePreviousFeedbackKeyboard(ctx, client, msg.Delivery)
-		}
-		return TelegramProviderMessageID(msg.RecipientID, id), nil
 	}
 	id, err := client.SendPhoto(ctx, msg.RecipientID, msg.MediaURL, "", nil)
 	if err != nil {
@@ -85,7 +121,7 @@ func (c *telegramChannel) sendImage(ctx context.Context, client *TelegramClient,
 	}
 	lastID := TelegramProviderMessageID(msg.RecipientID, id)
 	for _, chunk := range SplitChannelText(msg.Content, c.Caps()) {
-		mid, err := client.SendMessage(ctx, msg.RecipientID, chunk, buttons)
+		mid, err := c.sendChunk(ctx, client, msg.RecipientID, chunk, buttons)
 		if err != nil {
 			return "", err
 		}

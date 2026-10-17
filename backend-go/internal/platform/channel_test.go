@@ -453,11 +453,29 @@ func TestMetaChannelTypingIsSkippedOnWhatsApp(t *testing.T) {
 		t.Fatalf("messenger typing: %v", err)
 	}
 	calls := rs.recorded()
-	if len(calls) != 1 {
-		t.Fatalf("messenger typing calls = %d", len(calls))
+	// Messenger marks the message seen first (the customer watches "seen" appear),
+	// then raises the typing hint. Instagram documents neither mark_seen nor
+	// anything but typing, so it gets one call.
+	if len(calls) != 2 {
+		t.Fatalf("messenger typing calls = %d, want mark_seen + typing_on", len(calls))
 	}
-	if !strings.Contains(calls[0].Path, "PAGE-1") || calls[0].Body["sender_action"] != "typing_on" {
-		t.Fatalf("messenger typing call = %+v", calls[0])
+	if !strings.Contains(calls[0].Path, "PAGE-1") || calls[0].Body["sender_action"] != "mark_seen" {
+		t.Fatalf("first messenger action = %+v, want mark_seen", calls[0])
+	}
+	if calls[1].Body["sender_action"] != "typing_on" {
+		t.Fatalf("second messenger action = %+v, want typing_on", calls[1])
+	}
+
+	rs.mu.Lock()
+	rs.calls = nil
+	rs.mu.Unlock()
+	ig := &metaChannel{p: &Pipeline{}, cfg: &configCred{Platform: "instagram", AccessToken: "tok", InstagramBusiness: "IG-1"}}
+	if err := ig.Typing(context.Background(), "igsid-1"); err != nil {
+		t.Fatalf("instagram typing: %v", err)
+	}
+	igCalls := rs.recorded()
+	if len(igCalls) != 1 || igCalls[0].Body["sender_action"] != "typing_on" {
+		t.Fatalf("instagram typing calls = %+v, want a single typing_on", igCalls)
 	}
 }
 

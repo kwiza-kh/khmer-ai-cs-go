@@ -353,6 +353,59 @@ func (m *MetaClient) SendSenderAction(ctx context.Context, platform, recipientID
 
 // ListWhatsAppTemplates fetches approved message templates from the WhatsApp
 // Business account behind this config.
+// SetMessengerProfile installs the entry points a Messenger customer sees before
+// typing anything: a greeting for a new thread and a persistent menu with the two
+// actions every shop's customers eventually want. Returns a sentence for the
+// connection-check detail.
+//
+// It is a no-op when the Page already has a menu: an operator (or an earlier
+// integration) may have configured one, and silently replacing it would be the
+// same class of surprise as overwriting a system prompt. Best-effort by design —
+// a Page token without pages_manage_metadata refuses the write but is still a
+// working messaging channel.
+func (m *MetaClient) SetMessengerProfile(ctx context.Context) (string, error) {
+	if m.PageID == "" {
+		return "", nil
+	}
+	if v, err := m.get(ctx, "/"+m.PageID+"/messenger_profile", url.Values{"fields": []string{"persistent_menu"}}); err == nil {
+		if data, ok := v["data"].([]any); ok && len(data) > 0 {
+			if first, ok := data[0].(map[string]any); ok {
+				if menu, ok := first["persistent_menu"].([]any); ok && len(menu) > 0 {
+					return "existing Messenger menu kept", nil
+				}
+			}
+		}
+	}
+	body := map[string]any{
+		"greeting": []map[string]any{
+			{"locale": "default", "text": "Hi! Tap a button below or just type your question. 🙋 Talk to a human any time."},
+			{"locale": "km_KH", "text": "សួស្តី! ចុចប៊ូតុងខាងក្រោម ឬវាយសំណួររបស់អ្នក។ 🙋 ចង់និយាយជាមួយមនុស្ស សូមចុចប៊ូតុង។"},
+		},
+		"persistent_menu": []map[string]any{
+			{
+				"locale":                  "default",
+				"composer_input_disabled": false,
+				"call_to_actions": []map[string]any{
+					{"type": "postback", "title": "🙋 Talk to a human", "payload": "HANDOFF"},
+					{"type": "postback", "title": "💰 Prices & catalog", "payload": "PRICES"},
+				},
+			},
+			{
+				"locale":                  "km_KH",
+				"composer_input_disabled": false,
+				"call_to_actions": []map[string]any{
+					{"type": "postback", "title": "🙋 និយាយជាមួយមនុស្ស", "payload": "HANDOFF"},
+					{"type": "postback", "title": "💰 តម្លៃ និងទំនិញ", "payload": "PRICES"},
+				},
+			},
+		},
+	}
+	if _, err := m.post(ctx, "/"+m.PageID+"/messenger_profile", body); err != nil {
+		return "", err
+	}
+	return "Messenger greeting + menu installed", nil
+}
+
 func (m *MetaClient) ListWhatsAppTemplates(ctx context.Context, accountID string) ([]map[string]any, error) {
 	if accountID == "" {
 		return nil, fmt.Errorf("whatsapp account not configured")
@@ -369,6 +422,21 @@ func (m *MetaClient) ListWhatsAppTemplates(ctx context.Context, accountID string
 		}
 	}
 	return out, nil
+}
+
+// metaQuickReplies renders the (title, payload) pairs as Send API quick replies.
+// Titles are capped at 20 characters by Meta; a longer one is truncated rather
+// than rejected, because a long label must not cost the customer the choices.
+func metaQuickReplies(buttons [][2]string) []map[string]any {
+	out := make([]map[string]any, 0, len(buttons))
+	for _, b := range buttons {
+		title := []rune(b[0])
+		if len(title) > 20 {
+			title = title[:20]
+		}
+		out = append(out, map[string]any{"content_type": "text", "title": string(title), "payload": b[1]})
+	}
+	return out
 }
 
 func buildMetaMessageBody(req *SendRequest) map[string]any {
@@ -402,23 +470,26 @@ func buildMetaMessageBodyInner(req *SendRequest) map[string]any {
 		// There is no caption field here (unlike WhatsApp's image.caption), which is
 		// why the capability table gives Messenger/Instagram CaptionLimit 0 and
 		// channel_meta.Send delivers the reply as its own message.
-		return map[string]any{
-			"recipient": map[string]any{"id": req.RecipientID},
-			"message": map[string]any{
-				"attachment": map[string]any{
-					"type":    mediaType,
-					"payload": map[string]any{"url": req.MediaURL},
-				},
+		message := map[string]any{
+			"attachment": map[string]any{
+				"type":    mediaType,
+				"payload": map[string]any{"url": req.MediaURL},
 			},
 		}
-	case "buttons":
-		var elems []map[string]any
-		for _, b := range req.Buttons {
-			elems = append(elems, map[string]any{"content_type": "text", "title": b[0], "payload": b[1]})
+		// The CSAT pair rides on the picture when the reply was sent as one, so a
+		// media answer still collects a rating (Telegram attaches the same pair to
+		// its photo message).
+		if len(req.Buttons) > 0 {
+			message["quick_replies"] = metaQuickReplies(req.Buttons)
 		}
 		return map[string]any{
 			"recipient": map[string]any{"id": req.RecipientID},
-			"message":   map[string]any{"text": req.Text, "quick_replies": elems},
+			"message":   message,
+		}
+	case "buttons":
+		return map[string]any{
+			"recipient": map[string]any{"id": req.RecipientID},
+			"message":   map[string]any{"text": req.Text, "quick_replies": metaQuickReplies(req.Buttons)},
 		}
 	case "template":
 		var params []map[string]any
@@ -559,7 +630,17 @@ func (t *TelegramClient) call(ctx context.Context, method string, body any) (map
 
 // SendMessage sends a text message (optionally with inline keyboard).
 func (t *TelegramClient) SendMessage(ctx context.Context, chatID, text string, buttons [][2]string) (string, error) {
+	return t.SendMessageFormatted(ctx, chatID, text, "", buttons)
+}
+
+// SendMessageFormatted sends text with an optional parse_mode ("HTML"). Callers
+// that pass a markup mode must pre-convert the body: Telegram renders it and
+// rejects the whole message when it cannot parse the entities.
+func (t *TelegramClient) SendMessageFormatted(ctx context.Context, chatID, text, parseMode string, buttons [][2]string) (string, error) {
 	body := map[string]any{"chat_id": chatID, "text": text}
+	if parseMode != "" {
+		body["parse_mode"] = parseMode
+	}
 	if len(buttons) > 0 {
 		var rows [][]map[string]any
 		for _, b := range buttons {
@@ -583,9 +664,17 @@ func (t *TelegramClient) SendMessage(ctx context.Context, chatID, text string, b
 // an HTTPS address the provider can reach — an R2 public or presigned URL is),
 // optionally with a caption and an inline keyboard.
 func (t *TelegramClient) SendPhoto(ctx context.Context, chatID, photoURL, caption string, buttons [][2]string) (string, error) {
+	return t.SendPhotoFormatted(ctx, chatID, photoURL, caption, "", buttons)
+}
+
+// SendPhotoFormatted is SendPhoto with an optional parse_mode for the caption.
+func (t *TelegramClient) SendPhotoFormatted(ctx context.Context, chatID, photoURL, caption, parseMode string, buttons [][2]string) (string, error) {
 	body := map[string]any{"chat_id": chatID, "photo": photoURL}
 	if caption != "" {
 		body["caption"] = caption
+	}
+	if parseMode != "" {
+		body["parse_mode"] = parseMode
 	}
 	if len(buttons) > 0 {
 		var rows [][]map[string]any

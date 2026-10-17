@@ -1792,12 +1792,18 @@ func sourcesJSON(groundCtx rag.GroundingContext) any {
 // ============================================
 
 // enqueueDelivery queues one outbound message (idempotent by chat_message_id).
-// The stored content is what the customer's app will render, so inline
-// Markdown is flattened here — the chat_messages row keeps the original for
-// the agent console, which does render it.
+// The stored content is what the customer's app will render. Plain-text
+// transports get the Markdown flattened here; a channel that renders formatting
+// (Telegram: MarkupHTML) keeps the source and converts per chunk at send time.
+// The chat_messages row always keeps the original for the agent console.
 func (p *Pipeline) enqueueDelivery(ctx context.Context, ev *InboundEvent, cfg *configCred, sessionID string, chatMessageID int64, content string, payload map[string]any) error {
 	now := time.Now()
-	content = plainTextForChat(content)
+	// Only plain-text transports lose their formatting here. Telegram keeps the
+	// Markdown source and converts it per chunk at send time (MarkupHTML), so a
+	// failed conversion can still fall back to plain text for that chunk.
+	if CapabilitiesFor(cfg.Platform).Markup == MarkupNone {
+		content = plainTextForChat(content)
+	}
 	// A long plain-text reply can go out as a single image instead of several
 	// chunks: the layout survives the flattening and, on a channel that counts
 	// messages rather than characters (WeChat customer service), it costs one

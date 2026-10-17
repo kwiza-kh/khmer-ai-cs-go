@@ -1,8 +1,9 @@
 // Text-to-image for long replies.
 //
-// Chat channels flatten Markdown and cap message length, so a long AI answer is
-// the worst case for both: the layout is lost and the answer arrives as several
-// chunks. Rendering it to one image keeps the layout, and on a channel that
+// Plain-text chat channels flatten Markdown and cap message length, so a long AI
+// answer is the worst case for both: the layout is lost and the answer arrives as
+// several chunks. (A channel that renders formatting — Telegram's HTML — keeps the
+// layout and does not need the image; ShouldRender skips it.) Rendering it to one image keeps the layout, and on a channel that
 // counts MESSAGES rather than characters (WeChat customer service allows five per
 // 48h) it spends exactly one message instead of several.
 //
@@ -103,7 +104,7 @@ func (c T2IConfig) ShouldRender(text string, caps Capabilities) bool {
 	if !c.Enabled || c.Endpoint == "" {
 		return false
 	}
-	if !caps.Media.Supports(MediaImage) || !caps.FlattensMarkdown {
+	if !caps.Media.Supports(MediaImage) || caps.Markup != MarkupNone {
 		return false
 	}
 	return len([]rune(text)) >= c.Threshold

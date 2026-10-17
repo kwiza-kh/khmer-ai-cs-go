@@ -2573,3 +2573,46 @@ Telegram 通知（决定"每个客户消息进谁的聊天"）、团队与角色
   已补齐并删除 `settings.csSettings`/`yoursOnly` 两个死键；新增
   `TestDictionariesShareTheSameKeys` 钉住"三份字典键集完全相同"——此前只有 `bl.feature.*`
   子集被检查，所以缺键能一路发布出去。
+
+## 三十一、渠道能力补全：Messenger / Instagram / Telegram（2026-10-17）
+
+三处代码是一组证据：`capabilities.go`（声明）、`clients.go`（发送）、`webhooks.go`（入站）。
+本轮把声明与行为对齐，并补上客户能感知的缺口。
+
+### 一、Telegram 恢复排版（能力表：布尔 → `Markup`）
+
+- 旧：`FlattensMarkdown bool` 只被 `t2i.go` 读，而 `enqueueDelivery` **无条件**压平 Markdown ——
+  声明说"投递前压平"，实际是"所有渠道一律压平"。AI 的价格表/清单到客户手机上变成一坨。
+- 新：`Capabilities.Markup`（`MarkupNone` / `MarkupMarkdown`=widget 自带渲染 / `MarkupHTML`）。
+  `enqueueDelivery` 只在 `MarkupNone` 时压平；Telegram 保留 Markdown 源，发送时**逐块**转成
+  Telegram 的 HTML 子集（b/i/u/s/code/pre/a），解析失败回退纯文本；说明超长或解析失败时
+  图片先发、文字后跟。
+- 转换器先整串转义（`& < > "`）再插标签，未闭合的 `**` 原样保留 —— 提示词注入的 `<script>`
+  只会作为文字到达客户（单测钉住）。逐块转换意味着跨块的粗体会留下字面 `**`，这是有意的取舍：
+  凭空补一个闭合标签比显示星号更糟。
+- 有意副作用：Telegram 不再触发 text-to-image（排版已原生保留，答案截图反而无法复制/翻译/读屏）。
+
+### 二、Messenger 已读 + 三渠道一致的 CSAT
+
+- 已读：`metaChannel.Typing` 先 `mark_seen` 再 `typing_on`（仅 Messenger；Instagram 文档未提供 `mark_seen`）。
+- CSAT：`feedbackButtons`（`fb:<chat_message_id>:±1`）此前只有 Telegram 调用。现在
+  Messenger/Instagram 用 `quick_replies` 发同一对 payload，挂在**最后一块**文字或图片消息上；
+  WhatsApp 不发（它的按钮是 interactive 模板）。
+- 评分落库抽成 `recordMessageFeedback`（租户+会话+聊天三重校验、👎 进 `negative_feedback` 队列、
+  实时推送），Telegram 内联键盘与 Meta quick reply/postback 共用，两渠道不会各写一套。
+- 评分点击**不再进管道**：此前会把 "👍" 当客户消息喂给路由器（它会当成一句话去回答）。
+
+### 三、Messenger 入口（连接自检时安装）
+
+- `SetMessengerProfile`：greeting（en / km_KH）+ persistent menu（🙋 人工客服 / 💰 价格与目录）。
+  **已有菜单则跳过**，不覆盖商家自己的配置；由 `verifyMetaFamily` 在自检成功后 best-effort 调用，
+  失败只写进自检说明，不阻碍渠道工作。
+- Menu 的 postback 走既有的按钮选择分支（标题 → `[Button selected] …`），不需要新路由。
+
+### 四、入站补齐
+
+- Telegram：照片/文件的 **caption** 此前被丢弃（客户在商品图上写的问题只剩
+  "[Customer sent photo media]"）；`video_note` 进媒体；贴纸（带 emoji）、定位（附地图链接）、
+  名片转成文本标记，不再静默丢弃。
+- Meta：`reaction`（👍❤️😍 / 👎😡）按 outbox 的 `provider_message_id` 映射成同一条评分；
+  `referral`（广告 / m.me 来源）写入日志 —— 事件表还没有归因列，写日志好过静默丢弃。

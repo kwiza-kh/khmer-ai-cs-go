@@ -27,13 +27,20 @@ func (c *metaChannel) client() *MetaClient {
 
 func (c *metaChannel) Send(ctx context.Context, msg ChannelMessage) (string, error) {
 	client := c.client()
+	// CSAT: Messenger/Instagram render the 👍/👎 pair as quick replies — the same
+	// pairs Telegram draws as an inline keyboard. WhatsApp has no such affordance
+	// (its buttons are interactive templates), so it stays plain.
+	buttons, _ := feedbackButtons(msg.Delivery, msg.Buttons)
+	if c.cfg.Platform == "whatsapp" {
+		buttons = nil
+	}
 	req := &SendRequest{
 		Platform:           c.cfg.Platform,
 		RecipientID:        msg.RecipientID,
 		Kind:               msg.Kind,
 		MediaURL:           msg.MediaURL,
 		MediaType:          msg.MediaType,
-		Buttons:            msg.Buttons,
+		Buttons:            buttons,
 		TemplateName:       msg.TemplateName,
 		TemplateLanguage:   msg.TemplateLanguage,
 		TemplateBodyParams: msg.TemplateBodyParams,
@@ -49,40 +56,47 @@ func (c *metaChannel) Send(ctx context.Context, msg ChannelMessage) (string, err
 	// the image is the wrong trade — the picture exists to support the words.
 	if msg.Kind == "media" && msg.MediaURL != "" {
 		if !captionFits(msg.Content, c.Caps()) {
-			id, err := client.SendMessage(ctx, req)
+			bare := *req
+			bare.Kind, bare.Text, bare.Buttons = "media", "", nil
+			id, err := client.SendMessage(ctx, &bare)
 			if err != nil {
 				return "", err
 			}
 			// The picture is on its way: the rest of this function must send plain
 			// text, or every chunk would carry the same image again.
-			req.Kind, req.MediaURL, req.MediaType, req.Text = "text", "", "", ""
 			last := id
-			for _, chunk := range SplitChannelText(msg.Content, c.Caps()) {
-				req.Text = chunk
-				mid, err := client.SendMessage(ctx, req)
-				if err != nil {
-					return "", err
-				}
-				if mid != "" {
-					last = mid
-				}
+			mid, err := c.sendTextChunks(ctx, client, msg, req, buttons)
+			if err != nil {
+				return "", err
+			}
+			if mid != "" {
+				last = mid
 			}
 			return last, nil
 		}
+		// The caption carries the reply; the rating pair rides on the same message.
 		req.Text = msg.Content
+		return client.SendMessage(ctx, req)
 	}
+	if msg.Kind != "text" && msg.Kind != "buttons" {
+		// template / media without a URL — one send, nothing to split.
+		return client.SendMessage(ctx, req)
+	}
+	return c.sendTextChunks(ctx, client, msg, req, buttons)
+}
+
+// sendTextChunks splits the reply and attaches any buttons to the LAST chunk, so
+// the choices sit under the complete answer instead of under its first third.
+func (c *metaChannel) sendTextChunks(ctx context.Context, client *MetaClient, msg ChannelMessage, req *SendRequest, buttons [][2]string) (string, error) {
 	chunks := SplitChannelText(msg.Content, c.Caps())
 	last := ""
-	if msg.Kind != "text" || len(chunks) == 0 {
-		id, err := client.SendMessage(ctx, req)
-		if err != nil {
-			return "", err
+	for i, chunk := range chunks {
+		out := *req
+		out.Kind, out.Text, out.Buttons = "text", chunk, nil
+		if i == len(chunks)-1 && len(buttons) > 0 {
+			out.Kind, out.Buttons = "buttons", buttons
 		}
-		return id, nil
-	}
-	for _, chunk := range chunks {
-		req.Text = chunk
-		id, err := client.SendMessage(ctx, req)
+		id, err := client.SendMessage(ctx, &out)
 		if err != nil {
 			return "", err
 		}
@@ -108,7 +122,13 @@ func (c *metaChannel) Typing(ctx context.Context, recipientID string) error {
 		return nil
 	}
 	switch c.cfg.Platform {
-	case "meta", "instagram":
+	case "meta":
+		// Reading the customer's message is what puts "seen" on their side before
+		// the answer arrives. Messenger has the action; Instagram's API does not
+		// document mark_seen, so only the typing hint is raised there.
+		_ = c.client().SendSenderAction(ctx, c.cfg.Platform, recipientID, "mark_seen")
+		return c.client().SendSenderAction(ctx, c.cfg.Platform, recipientID, "typing_on")
+	case "instagram":
 		return c.client().SendSenderAction(ctx, c.cfg.Platform, recipientID, "typing_on")
 	default:
 		// WhatsApp Cloud API has no sender-action endpoint.

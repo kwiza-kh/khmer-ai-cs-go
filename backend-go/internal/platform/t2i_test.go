@@ -75,9 +75,11 @@ func TestShouldRender(t *testing.T) {
 		{"whatsapp carries images", long, cfg, "whatsapp", true},
 		{"meta carries images", long, cfg, "meta", true},
 		{"instagram carries images", long, cfg, "instagram", true},
-		// Telegram gained a sendPhoto path (telegramChannel.sendImage), so the
-		// capability table now claims MediaImage and text-to-image may target it.
-		{"telegram carries images", long, cfg, "telegram", true},
+		// Telegram still carries images (sendImage), but it renders an HTML subset
+		// now, so the layout survives as real text: a picture of the answer would be
+		// worse for copying, translating and screen readers. Text-to-image is for
+		// channels that lose the layout.
+		{"telegram renders markup, no need for an image", long, cfg, "telegram", false},
 		{"line is text only", long, cfg, "line", false},
 		// The widget renders Markdown itself; an image would be a downgrade.
 		{"web renders markdown", long, cfg, "web", false},
@@ -104,13 +106,19 @@ func TestCapabilitiesMatchTheImagePathsThatExist(t *testing.T) {
 	if CapabilitiesFor("line").Media.Supports(MediaImage) {
 		t.Error("line has no image send path and must not claim one")
 	}
-	for _, p := range []string{"telegram", "line", "zalo", "whatsapp", "meta", "instagram"} {
-		if !CapabilitiesFor(p).FlattensMarkdown {
-			t.Errorf("%s delivers plain text and must declare it", p)
+	// Telegram converts Markdown to its HTML subset at send time, so it is not a
+	// plain-text transport any more; everything else still is, and the widget
+	// renders Markdown itself.
+	if got := CapabilitiesFor("telegram").Markup; got != MarkupHTML {
+		t.Errorf("telegram markup = %v, want MarkupHTML", got)
+	}
+	for _, p := range []string{"line", "zalo", "whatsapp", "meta", "instagram"} {
+		if got := CapabilitiesFor(p).Markup; got != MarkupNone {
+			t.Errorf("%s delivers plain text but declares markup %v", p, got)
 		}
 	}
-	if CapabilitiesFor("web").FlattensMarkdown {
-		t.Error("the widget renders Markdown; an image is a downgrade there")
+	if got := CapabilitiesFor("web").Markup; got != MarkupMarkdown {
+		t.Errorf("widget markup = %v, want MarkupMarkdown (an image is a downgrade)", got)
 	}
 }
 
