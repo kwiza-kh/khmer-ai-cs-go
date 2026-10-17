@@ -548,6 +548,11 @@ func (p *Pipeline) stageGenerate(ctx context.Context, t *inboundTurn) (bool, err
 	// is still true at turn 40 even though the window dropped it.
 	if mem := strings.TrimSpace(t.MemorySummary); mem != "" {
 		message = sessionMemoryLine(mem) + "\n\n" + message
+		// Observable: "did this turn have memory beyond the window" otherwise only
+		// exists inside the prompt.
+		if p.Logger != nil {
+			p.Logger.Info("session memory injected", "session_id", t.SessionID, "chars", len(mem))
+		}
 	}
 	history, systemPrompt := t.History, ""
 	if t.Persona != nil {
