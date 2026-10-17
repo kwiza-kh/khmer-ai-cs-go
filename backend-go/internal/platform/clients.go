@@ -188,13 +188,14 @@ func (m *MetaClient) VerifyConnection(ctx context.Context, platform string) (str
 		// token resolves to the Page, which proves nothing about IG access.
 		path = "/" + m.InstagramBusiness
 		params.Set("fields", "id,name,username")
-	case m.accountID(platform) != "":
-		// Messenger: a Page token cannot call /me — Graph answers #100 "Object does
-		// not exist, cannot be loaded due to missing permission" — so the connection
-		// check reported a perfectly healthy page as broken (found 2026-10-17 while
-		// verifying a credential-key rotation). Query the Page node the token is for.
-		path = "/" + m.accountID(platform)
-		params.Set("fields", "id,name")
+	case platform == "meta":
+		// A Messenger token's capabilities are messaging + webhook management, not
+		// page reading: /me is for user tokens and /{page}?fields=name needs
+		// pages_read_engagement, which this deployment's token does not carry
+		// (Graph #100, 2026-10-17) — so both "obvious" checks reported a healthy
+		// page as broken. subscribed_apps is the permission the channel actually
+		// relies on, so it answers "is this token wired to this page".
+		path = "/" + m.accountID(platform) + "/subscribed_apps"
 	default:
 		path = "/me"
 		params.Set("fields", "id,name")
@@ -206,6 +207,16 @@ func (m *MetaClient) VerifyConnection(ctx context.Context, platform string) (str
 	for _, k := range []string{"name", "username", "verified_name", "display_phone_number"} {
 		if s, ok := v[k].(string); ok && s != "" {
 			return s, nil
+		}
+	}
+	// subscribed_apps answers with {"data":[{"name":"…","subscribed_fields":[…]}]}.
+	// An app subscribed to `messages` is exactly what the channel needs, so its
+	// name is the account name the operator sees.
+	if data, ok := v["data"].([]any); ok && len(data) > 0 {
+		if first, ok := data[0].(map[string]any); ok {
+			if name, ok := first["name"].(string); ok && name != "" {
+				return name, nil
+			}
 		}
 	}
 	return "", nil
