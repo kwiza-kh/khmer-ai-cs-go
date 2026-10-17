@@ -126,7 +126,8 @@ func TestPlatformTokensBoardIsInternallyConsistent(t *testing.T) {
 	for _, tn := range got.ByTenant {
 		tenantTokens += tn.Tokens
 		tenantCalls += tn.Calls
-		if tn.UserID <= 0 || tn.Username == "" {
+		// The synthetic row has no account id; every real row must have one.
+		if tn.UserID < 0 || tn.Username == "" || (tn.UserID == 0 && tn.Username != "(unattributed)") {
 			t.Errorf("tenant row without identity: %+v", tn)
 		}
 		if tn.CacheHitRate < 0 || tn.CacheHitRate > 100 {

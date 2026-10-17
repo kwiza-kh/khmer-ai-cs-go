@@ -50,8 +50,54 @@ func TestTenantRoutesUseTheOwnerGuard(t *testing.T) {
 	if strings.Contains(src, "user.IsAdmin()") {
 		t.Error("router.go still decides by role; use a.isTenantOwner")
 	}
-	if n := strings.Count(src, "a.tenantAdminOnly("); n < 16 {
-		t.Errorf("router.go wires tenantAdminOnly %d times, want >= 16", n)
+	// Two tenant gates exist, and every tenant surface must be behind one of
+	// them: tenantAdminOnly for owner-only surfaces (money, seats, credentials
+	// the matrix does not grant) and permOnly for the capabilities the owner can
+	// delegate. The failure this scan exists to catch is a route that slips in
+	// unwrapped — canned responses and business hours shipped that way, and a
+	// seat's write landed under its own (empty) user_id while the API answered
+	// 200.
+	tenantPrefixes := []string{
+		"/api/v1/customers", "/api/v1/widgets",
+		"/api/v1/platforms/configs", "/api/v1/platforms/meta/", "/api/v1/platforms/whatsapp/",
+		"/api/v1/sla", "/api/v1/routing", "/api/v1/macros",
+		"/api/v1/webhooks/subscriptions",
+		"/api/v1/settings/business-hours", "/api/v1/settings/canned-responses",
+		"/api/v1/settings/faq/suggestions", "/api/v1/settings/telegram-notify",
+		"/api/v1/personas", "/api/v1/persona-bindings",
+		"/api/v1/admin/users", "/api/v1/admin/analytics/", "/api/v1/admin/agent-performance",
+		"/api/v1/admin/intent-analytics", "/api/v1/admin/integrations/status",
+		// /api/v1/reports/* streams CSV and cannot hand an error back to a.handle,
+		// so the owner check lives in reportCSV (requireOwnerOfTenant) rather than
+		// at the route. Pinned by the handler's own refuse-a-seat path.
+		// /api/v1/team/* is deliberately absent: those handlers gate inside
+		// requireOwnerOfTenant (they must also protect the invite-accept path,
+		// which is reachable before a seat exists). Their refusal is pinned by
+		// TestOwnerOnlyWrapperRefusesMembers and TestMemberStaysInsideItsTenant.
+	}
+	checked := 0
+	for _, line := range strings.Split(src, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "authed.Handle") {
+			continue
+		}
+		tenantRoute := false
+		for _, p := range tenantPrefixes {
+			if strings.Contains(trimmed, p) {
+				tenantRoute = true
+				break
+			}
+		}
+		if !tenantRoute {
+			continue
+		}
+		checked++
+		if !strings.Contains(trimmed, "a.permOnly(") && !strings.Contains(trimmed, "a.tenantAdminOnly(") {
+			t.Errorf("tenant route is not behind a tenant gate: %s", trimmed)
+		}
+	}
+	if checked < 40 {
+		t.Fatalf("only %d tenant routes recognised; the scan stopped matching the router", checked)
 	}
 	// The platform console keeps its own, stricter guard: that is where money and
 	// other tenants' data actually move.

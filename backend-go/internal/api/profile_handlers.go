@@ -99,12 +99,17 @@ type profileFields struct {
 	// whether it owns its tenant (self-service and SSO signups are owners with
 	// role "user"). Read on every console load, so a session that predates this
 	// field still gets the answer without re-login.
-	IsTenantOwner bool   `json:"is_tenant_owner"`
-	DisplayName   string `json:"display_name"`
-	JobTitle      string `json:"job_title"`
-	Phone         string `json:"phone"`
-	Timezone      string `json:"timezone"`
-	AvatarURL     string `json:"avatar_url"`
+	IsTenantOwner bool `json:"is_tenant_owner"`
+	// IsMember + Permissions describe a seat: the console hides console entries
+	// the handlers would refuse, instead of letting a member land on a 403. Nil
+	// for owners, who are allowed everything in their own tenant.
+	IsMember    bool            `json:"is_member"`
+	Permissions map[string]bool `json:"permissions,omitempty"`
+	DisplayName string          `json:"display_name"`
+	JobTitle    string          `json:"job_title"`
+	Phone       string          `json:"phone"`
+	Timezone    string          `json:"timezone"`
+	AvatarURL   string          `json:"avatar_url"`
 	// Linked login methods (read-only, derived).
 	HasPassword bool   `json:"has_password"`
 	HasGoogle   bool   `json:"has_google"`
@@ -130,6 +135,7 @@ func (a *App) getProfile(w http.ResponseWriter, r *http.Request) (any, error) {
 		return nil, ErrNotFound("用户不存在")
 	}
 	p.IsTenantOwner = a.isTenantOwnerID(r.Context(), p.UserID, p.Role)
+	p.IsMember, p.Permissions = a.memberIdentity(r.Context(), p.UserID)
 	p.DisplayName = textutil.DerefString(displayName)
 	p.JobTitle = textutil.DerefString(jobTitle)
 	p.Phone = textutil.DerefString(phone)

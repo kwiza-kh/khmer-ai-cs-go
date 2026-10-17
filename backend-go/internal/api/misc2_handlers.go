@@ -30,7 +30,7 @@ func (a *App) listSLA(w http.ResponseWriter, r *http.Request) (any, error) {
 	user, _ := UserFrom(r)
 	rows, err := a.DB.Query(r.Context(),
 		"SELECT sla_id, name, first_response_secs, resolution_secs, business_hours_only, priority::text, is_active "+
-			"FROM sla_policies WHERE user_id = $1 ORDER BY sla_id", user.UserID)
+			"FROM sla_policies WHERE user_id = $1 ORDER BY sla_id", user.Tenant())
 	if err != nil {
 		return nil, ErrInternal("查询失败")
 	}
@@ -75,7 +75,7 @@ func (a *App) upsertSLA(w http.ResponseWriter, r *http.Request) (any, error) {
 	if err := a.DB.QueryRow(r.Context(),
 		"INSERT INTO sla_policies (user_id, name, first_response_secs, resolution_secs, business_hours_only, priority, is_active) "+
 			"VALUES ($1,$2,$3,$4,$5,$6::varchar,true) RETURNING sla_id",
-		user.UserID, req.Name, req.FirstResponseSecs, req.ResolutionSecs, req.BusinessHoursOnly, req.Priority).Scan(&id); err != nil {
+		user.Tenant(), req.Name, req.FirstResponseSecs, req.ResolutionSecs, req.BusinessHoursOnly, req.Priority).Scan(&id); err != nil {
 		return nil, ErrInternal("创建失败")
 	}
 	return map[string]any{"sla_id": id, "message": "已保存"}, nil
@@ -83,7 +83,7 @@ func (a *App) upsertSLA(w http.ResponseWriter, r *http.Request) (any, error) {
 
 func (a *App) deleteSLA(w http.ResponseWriter, r *http.Request, id int32) (any, error) {
 	user, _ := UserFrom(r)
-	tag, err := a.DB.Exec(r.Context(), "DELETE FROM sla_policies WHERE sla_id = $1 AND user_id = $2", id, user.UserID)
+	tag, err := a.DB.Exec(r.Context(), "DELETE FROM sla_policies WHERE sla_id = $1 AND user_id = $2", id, user.Tenant())
 	if err != nil {
 		return nil, ErrInternal("删除失败")
 	}
@@ -110,7 +110,7 @@ func (a *App) listRouting(w http.ResponseWriter, r *http.Request) (any, error) {
 	user, _ := UserFrom(r)
 	rows, err := a.DB.Query(r.Context(),
 		"SELECT rule_id, name, conditions, target_type, target_agent_id, target_skills, priority, is_active "+
-			"FROM routing_rules WHERE user_id = $1 ORDER BY priority DESC, rule_id", user.UserID)
+			"FROM routing_rules WHERE user_id = $1 ORDER BY priority DESC, rule_id", user.Tenant())
 	if err != nil {
 		return nil, ErrInternal("查询失败")
 	}
@@ -153,7 +153,7 @@ func (a *App) upsertRouting(w http.ResponseWriter, r *http.Request) (any, error)
 	if err := a.DB.QueryRow(r.Context(),
 		"INSERT INTO routing_rules (user_id, name, conditions, target_type, target_agent_id, target_skills, priority, is_active) "+
 			"VALUES ($1,$2,$3::jsonb,$4,$5,$6::text[],$7,true) RETURNING rule_id",
-		user.UserID, req.Name, condJSON, req.TargetType, req.TargetAgentID, req.TargetSkills, req.Priority).Scan(&id); err != nil {
+		user.Tenant(), req.Name, condJSON, req.TargetType, req.TargetAgentID, req.TargetSkills, req.Priority).Scan(&id); err != nil {
 		return nil, ErrInternal("创建失败")
 	}
 	return map[string]any{"rule_id": id, "message": "已保存"}, nil
@@ -161,7 +161,7 @@ func (a *App) upsertRouting(w http.ResponseWriter, r *http.Request) (any, error)
 
 func (a *App) deleteRouting(w http.ResponseWriter, r *http.Request, id int32) (any, error) {
 	user, _ := UserFrom(r)
-	tag, err := a.DB.Exec(r.Context(), "DELETE FROM routing_rules WHERE rule_id = $1 AND user_id = $2", id, user.UserID)
+	tag, err := a.DB.Exec(r.Context(), "DELETE FROM routing_rules WHERE rule_id = $1 AND user_id = $2", id, user.Tenant())
 	if err != nil {
 		return nil, ErrInternal("删除失败")
 	}
@@ -184,7 +184,7 @@ type macroRequest struct {
 func (a *App) listMacros(w http.ResponseWriter, r *http.Request) (any, error) {
 	user, _ := UserFrom(r)
 	rows, err := a.DB.Query(r.Context(),
-		"SELECT macro_id, title, steps, category, is_active FROM macros WHERE user_id = $1 ORDER BY macro_id", user.UserID)
+		"SELECT macro_id, title, steps, category, is_active FROM macros WHERE user_id = $1 ORDER BY macro_id", user.Tenant())
 	if err != nil {
 		return nil, ErrInternal("查询失败")
 	}
@@ -225,7 +225,7 @@ func (a *App) createMacro(w http.ResponseWriter, r *http.Request) (any, error) {
 	var id int
 	if err := a.DB.QueryRow(r.Context(),
 		"INSERT INTO macros (user_id, title, steps, category, is_active) VALUES ($1,$2,$3::jsonb,$4,true) RETURNING macro_id",
-		user.UserID, req.Title, stepsJSON, req.Category).Scan(&id); err != nil {
+		user.Tenant(), req.Title, stepsJSON, req.Category).Scan(&id); err != nil {
 		return nil, ErrInternal("创建失败")
 	}
 	return map[string]any{"macro_id": id, "message": "已创建"}, nil
@@ -240,7 +240,7 @@ func (a *App) updateMacro(w http.ResponseWriter, r *http.Request, id int32) (any
 	stepsJSON, _ := json.Marshal(req.Steps)
 	tag, err := a.DB.Exec(r.Context(),
 		"UPDATE macros SET title = $1, steps = $2::jsonb, category = $3 WHERE macro_id = $4 AND user_id = $5",
-		req.Title, stepsJSON, req.Category, id, user.UserID)
+		req.Title, stepsJSON, req.Category, id, user.Tenant())
 	if err != nil {
 		return nil, ErrInternal("更新失败")
 	}
@@ -252,7 +252,7 @@ func (a *App) updateMacro(w http.ResponseWriter, r *http.Request, id int32) (any
 
 func (a *App) deleteMacro(w http.ResponseWriter, r *http.Request, id int32) (any, error) {
 	user, _ := UserFrom(r)
-	tag, err := a.DB.Exec(r.Context(), "DELETE FROM macros WHERE macro_id = $1 AND user_id = $2", id, user.UserID)
+	tag, err := a.DB.Exec(r.Context(), "DELETE FROM macros WHERE macro_id = $1 AND user_id = $2", id, user.Tenant())
 	if err != nil {
 		return nil, ErrInternal("删除失败")
 	}
@@ -278,7 +278,7 @@ func (a *App) listWebhooks(w http.ResponseWriter, r *http.Request) (any, error) 
 	user, _ := UserFrom(r)
 	rows, err := a.DB.Query(r.Context(),
 		"SELECT subscription_id, url, events, is_active, created_at FROM webhook_subscriptions WHERE user_id = $1 ORDER BY created_at DESC",
-		user.UserID)
+		user.Tenant())
 	if err != nil {
 		return nil, ErrInternal("查询失败")
 	}
@@ -316,7 +316,7 @@ func (a *App) createWebhook(w http.ResponseWriter, r *http.Request) (any, error)
 	var id int
 	if err := a.DB.QueryRow(r.Context(),
 		"INSERT INTO webhook_subscriptions (user_id, url, secret, events, is_active) VALUES ($1,$2,$3,$4::text[],true) RETURNING subscription_id",
-		user.UserID, req.URL, req.Secret, req.Events).Scan(&id); err != nil {
+		user.Tenant(), req.URL, req.Secret, req.Events).Scan(&id); err != nil {
 		return nil, ErrInternal("创建失败")
 	}
 	return map[string]any{"subscription_id": id, "message": "已创建"}, nil
@@ -324,7 +324,7 @@ func (a *App) createWebhook(w http.ResponseWriter, r *http.Request) (any, error)
 
 func (a *App) deleteWebhook(w http.ResponseWriter, r *http.Request, id int32) (any, error) {
 	user, _ := UserFrom(r)
-	tag, err := a.DB.Exec(r.Context(), "DELETE FROM webhook_subscriptions WHERE subscription_id = $1 AND user_id = $2", id, user.UserID)
+	tag, err := a.DB.Exec(r.Context(), "DELETE FROM webhook_subscriptions WHERE subscription_id = $1 AND user_id = $2", id, user.Tenant())
 	if err != nil {
 		return nil, ErrInternal("删除失败")
 	}
@@ -429,7 +429,7 @@ func (a *App) listCustomers(w http.ResponseWriter, r *http.Request) (any, error)
 	user, _ := UserFrom(r)
 	rows, err := a.DB.Query(r.Context(),
 		"SELECT profile_id, platform, platform_user_id, display_name, email, total_sessions, total_messages, last_seen_at "+
-			"FROM customer_profiles WHERE user_id = $1 ORDER BY last_seen_at DESC NULLS LAST LIMIT 200", user.UserID)
+			"FROM customer_profiles WHERE user_id = $1 ORDER BY last_seen_at DESC NULLS LAST LIMIT 200", user.Tenant())
 	if err != nil {
 		return nil, ErrInternal("查询失败")
 	}
@@ -464,14 +464,14 @@ func (a *App) customer360(w http.ResponseWriter, r *http.Request, profileID int3
 	var email, phone *string
 	err := a.DB.QueryRow(r.Context(),
 		"SELECT profile_id, platform, platform_user_id, display_name, email, phone, notes FROM customer_profiles WHERE profile_id = $1 AND user_id = $2",
-		profileID, user.UserID).Scan(&id, &platform, &puid, &displayName, &email, &phone, &notes)
+		profileID, user.Tenant()).Scan(&id, &platform, &puid, &displayName, &email, &phone, &notes)
 	if err != nil {
 		return nil, ErrNotFound("客户不存在")
 	}
 	// Related sessions.
 	rows, err := a.DB.Query(r.Context(),
 		"SELECT session_id, status::text, title, created_at FROM sessions WHERE user_id = $1 AND platform_user_id = $2 ORDER BY created_at DESC LIMIT 20",
-		user.UserID, puid)
+		user.Tenant(), puid)
 	sessions := make([]map[string]any, 0)
 	if err == nil {
 		defer rows.Close()
@@ -505,7 +505,7 @@ func (a *App) updateCustomerNotes(w http.ResponseWriter, r *http.Request, profil
 		return nil, ErrBadRequest("请求格式错误")
 	}
 	tag, err := a.DB.Exec(r.Context(), "UPDATE customer_profiles SET notes = $1, updated_at = NOW() WHERE profile_id = $2 AND user_id = $3",
-		req.Notes, profileID, user.UserID)
+		req.Notes, profileID, user.Tenant())
 	if err != nil {
 		return nil, ErrInternal("更新失败")
 	}
@@ -523,7 +523,7 @@ func (a *App) listFaqSuggestions(w http.ResponseWriter, r *http.Request) (any, e
 	user, _ := UserFrom(r)
 	rows, err := a.DB.Query(r.Context(),
 		"SELECT suggestion_id, question, answer, status::text, created_at FROM faq_suggestions WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100",
-		user.UserID)
+		user.Tenant())
 	if err != nil {
 		return nil, ErrInternal("查询失败")
 	}
@@ -549,7 +549,7 @@ func (a *App) listFaqSuggestions(w http.ResponseWriter, r *http.Request) (any, e
 
 func (a *App) acceptFaqSuggestion(w http.ResponseWriter, r *http.Request, id int32) (any, error) {
 	user, _ := UserFrom(r)
-	tag, err := a.DB.Exec(r.Context(), "UPDATE faq_suggestions SET status='accepted' WHERE suggestion_id = $1 AND user_id = $2", id, user.UserID)
+	tag, err := a.DB.Exec(r.Context(), "UPDATE faq_suggestions SET status='accepted' WHERE suggestion_id = $1 AND user_id = $2", id, user.Tenant())
 	if err != nil {
 		return nil, ErrInternal("更新失败")
 	}
@@ -561,7 +561,7 @@ func (a *App) acceptFaqSuggestion(w http.ResponseWriter, r *http.Request, id int
 
 func (a *App) dismissFaqSuggestion(w http.ResponseWriter, r *http.Request, id int32) (any, error) {
 	user, _ := UserFrom(r)
-	tag, err := a.DB.Exec(r.Context(), "UPDATE faq_suggestions SET status='dismissed' WHERE suggestion_id = $1 AND user_id = $2", id, user.UserID)
+	tag, err := a.DB.Exec(r.Context(), "UPDATE faq_suggestions SET status='dismissed' WHERE suggestion_id = $1 AND user_id = $2", id, user.Tenant())
 	if err != nil {
 		return nil, ErrInternal("更新失败")
 	}
@@ -582,7 +582,7 @@ func (a *App) getBilling(w http.ResponseWriter, r *http.Request) (any, error) {
 	var cycleStart, cycleEnd *time.Time
 	err := a.DB.QueryRow(r.Context(),
 		"SELECT plan, monthly_message_quota, monthly_doc_quota, messages_used, docs_used, cycle_start, cycle_end FROM tenant_billing WHERE user_id = $1",
-		user.UserID).Scan(&plan, &msgQuota, &docQuota, &msgUsed, &docUsed, &cycleStart, &cycleEnd)
+		user.Tenant()).Scan(&plan, &msgQuota, &docQuota, &msgUsed, &docUsed, &cycleStart, &cycleEnd)
 	if err != nil {
 		return map[string]any{"plan": "free", "messages_used": 0, "docs_used": 0}, nil
 	}
@@ -613,7 +613,7 @@ func (a *App) setPlan(w http.ResponseWriter, r *http.Request) (any, error) {
 		return nil, ErrBadRequest("请求格式错误")
 	}
 	req = body.setPlanRequest
-	targetID = user.UserID
+	targetID = user.Tenant()
 	if body.UserID != nil {
 		targetID = *body.UserID
 	}
@@ -641,7 +641,7 @@ func (a *App) setPlan(w http.ResponseWriter, r *http.Request) (any, error) {
 func (a *App) listTeam(w http.ResponseWriter, r *http.Request) (any, error) {
 	user, _ := UserFrom(r)
 	// Owner-only: this lists the tenant's seats and their permission sets, and
-	// binding user.UserID kept a seat safe only by accident (it returned the
+	// binding user.Tenant() kept a seat safe only by accident (it returned the
 	// seat's own empty set). Bind the tenant and refuse the seat outright.
 	if err := requireOwnerOfTenant(user); err != nil {
 		return nil, err
@@ -708,7 +708,7 @@ func (a *App) addTeamAgent(w http.ResponseWriter, r *http.Request) (any, error) 
 	var alreadySeated bool
 	if err := a.DB.QueryRow(r.Context(),
 		"SELECT EXISTS (SELECT 1 FROM agent_teams WHERE owner_user_id = $1 AND agent_user_id = $2)",
-		user.UserID, req.AgentUserID).Scan(&alreadySeated); err != nil {
+		user.Tenant(), req.AgentUserID).Scan(&alreadySeated); err != nil {
 		return nil, ErrInternal("查询失败")
 	}
 	if alreadySeated {
@@ -743,10 +743,10 @@ func (a *App) addTeamAgent(w http.ResponseWriter, r *http.Request) (any, error) 
 			"  OR EXISTS (SELECT 1 FROM sessions ss WHERE ss.user_id = u.user_id) "+
 			"  OR EXISTS (SELECT 1 FROM knowledge_documents kd WHERE kd.uploaded_by = u.user_id) "+
 			"FROM users u WHERE u.user_id = $1",
-		req.AgentUserID, user.UserID).Scan(&targetRole, &claimedElsewhere, &targetIsTenant); err != nil {
+		req.AgentUserID, user.Tenant()).Scan(&targetRole, &claimedElsewhere, &targetIsTenant); err != nil {
 		return nil, ErrNotFound("用户不存在")
 	}
-	if req.AgentUserID == user.UserID {
+	if req.AgentUserID == user.Tenant() {
 		return nil, ErrBadRequest("不能将自己添加为客服")
 	}
 	if targetRole == "platform_admin" {
@@ -773,16 +773,16 @@ func (a *App) addTeamAgent(w http.ResponseWriter, r *http.Request) (any, error) 
 		return nil, ErrInternal("添加失败")
 	}
 	defer func() { _ = tx.Rollback(r.Context()) }()
-	if _, err := tx.Exec(r.Context(), "SELECT 1 FROM users WHERE user_id = $1 FOR UPDATE", user.UserID); err != nil {
+	if _, err := tx.Exec(r.Context(), "SELECT 1 FROM users WHERE user_id = $1 FOR UPDATE", user.Tenant()); err != nil {
 		return nil, ErrInternal("添加失败")
 	}
-	if err := a.checkSeatLimitFrom(r.Context(), tx, user.UserID); err != nil {
+	if err := a.checkSeatLimitFrom(r.Context(), tx, user.Tenant()); err != nil {
 		return nil, err
 	}
 	var teamID int
 	if err := tx.QueryRow(r.Context(),
 		"INSERT INTO agent_teams (owner_user_id, agent_user_id, display_name, skills, is_active) VALUES ($1,$2,$3,$4::text[],true) RETURNING team_id",
-		user.UserID, req.AgentUserID, req.DisplayName, req.Skills).Scan(&teamID); err != nil {
+		user.Tenant(), req.AgentUserID, req.DisplayName, req.Skills).Scan(&teamID); err != nil {
 		// The checks above and this INSERT are a check-then-act pair, so the
 		// loser of a concurrent claim arrives here rather than at the
 		// claimedElsewhere branch. Both unique keys that can
@@ -805,7 +805,7 @@ func (a *App) addTeamAgent(w http.ResponseWriter, r *http.Request) (any, error) 
 
 func (a *App) removeTeamAgent(w http.ResponseWriter, r *http.Request, teamID int32) (any, error) {
 	user, _ := UserFrom(r)
-	tag, err := a.DB.Exec(r.Context(), "DELETE FROM agent_teams WHERE team_id = $1 AND owner_user_id = $2", teamID, user.UserID)
+	tag, err := a.DB.Exec(r.Context(), "DELETE FROM agent_teams WHERE team_id = $1 AND owner_user_id = $2", teamID, user.Tenant())
 	if err != nil {
 		return nil, ErrInternal("删除失败")
 	}

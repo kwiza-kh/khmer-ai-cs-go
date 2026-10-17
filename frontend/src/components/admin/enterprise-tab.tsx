@@ -14,6 +14,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { useAuth } from "@/lib/auth-client";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -342,22 +343,28 @@ function AnalyticsPanel() {
 
 export function EnterpriseTab() {
   const { t } = useI18n();
+  const { user, can } = useAuth();
+  // SLA/routing/webhooks are settings; macros are scripts; the performance
+  // panel aggregates tenant analytics that stay owner-only on the API. A seat
+  // sees the tabs its grants can actually load.
+  const isOwner = !user?.is_member;
+  const first = can("settings_view") ? "sla" : can("scripts_view") ? "macros" : "sla";
   return (
-    <Tabs defaultValue="sla">
+    <Tabs defaultValue={first}>
       {/* 二级导航与 Growth / 一级导航共用同一套 Tabs 视觉. 最后一项原名
           "Analytics" 与一级 Tab 重名, 改为 "Performance". */}
       <TabsList className="h-auto w-auto flex-wrap">
-        <TabsTrigger value="sla" className="gap-1.5 text-xs"><AlarmClock className="size-3" />{t("ent.tabSla")}</TabsTrigger>
-        <TabsTrigger value="routing" className="gap-1.5 text-xs"><GitBranch className="size-3" />{t("ent.tabRouting")}</TabsTrigger>
-        <TabsTrigger value="macros" className="gap-1.5 text-xs"><ListChecks className="size-3" />{t("ent.tabMacros")}</TabsTrigger>
-        <TabsTrigger value="webhooks" className="gap-1.5 text-xs"><Webhook className="size-3" />{t("ent.tabWebhooks")}</TabsTrigger>
-        <TabsTrigger value="analytics" className="gap-1.5 text-xs"><BarChart3 className="size-3" />{t("ent.tabPerformance")}</TabsTrigger>
+        {can("settings_view") && <TabsTrigger value="sla" className="gap-1.5 text-xs"><AlarmClock className="size-3" />{t("ent.tabSla")}</TabsTrigger>}
+        {can("settings_view") && <TabsTrigger value="routing" className="gap-1.5 text-xs"><GitBranch className="size-3" />{t("ent.tabRouting")}</TabsTrigger>}
+        {can("scripts_view") && <TabsTrigger value="macros" className="gap-1.5 text-xs"><ListChecks className="size-3" />{t("ent.tabMacros")}</TabsTrigger>}
+        {can("settings_view") && <TabsTrigger value="webhooks" className="gap-1.5 text-xs"><Webhook className="size-3" />{t("ent.tabWebhooks")}</TabsTrigger>}
+        {isOwner && <TabsTrigger value="analytics" className="gap-1.5 text-xs"><BarChart3 className="size-3" />{t("ent.tabPerformance")}</TabsTrigger>}
       </TabsList>
-      <TabsContent value="sla" className="mt-4"><SlaPanel /></TabsContent>
-      <TabsContent value="routing" className="mt-4"><RoutingPanel /></TabsContent>
-      <TabsContent value="macros" className="mt-4"><MacrosPanel /></TabsContent>
-      <TabsContent value="webhooks" className="mt-4"><WebhooksPanel /></TabsContent>
-      <TabsContent value="analytics" className="mt-4"><AnalyticsPanel /></TabsContent>
+      {can("settings_view") && <TabsContent value="sla" className="mt-4"><SlaPanel /></TabsContent>}
+      {can("settings_view") && <TabsContent value="routing" className="mt-4"><RoutingPanel /></TabsContent>}
+      {can("scripts_view") && <TabsContent value="macros" className="mt-4"><MacrosPanel /></TabsContent>}
+      {can("settings_view") && <TabsContent value="webhooks" className="mt-4"><WebhooksPanel /></TabsContent>}
+      {isOwner && <TabsContent value="analytics" className="mt-4"><AnalyticsPanel /></TabsContent>}
     </Tabs>
   );
 }

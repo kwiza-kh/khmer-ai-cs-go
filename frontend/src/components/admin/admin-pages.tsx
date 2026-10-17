@@ -91,6 +91,7 @@ function PageLoadingState() {
  */
 export function PersonasAdminPage() {
   const { t } = useI18n();
+  const { can } = useAuth();
   const { data, isLoading, mutate } = useSWR<PersonasResponse>("admin-personas", listPersonas);
   const personas = data?.personas ?? [];
   // The server ships its own precedence list so the editor cannot offer a scope
@@ -101,6 +102,8 @@ export function PersonasAdminPage() {
   const [editing, setEditing] = useState<PersonaItem | null>(null);
   const [form, setForm] = useState({ name: "", systemPrompt: "", beginDialogs: "", errorReply: "" });
   const [saving, setSaving] = useState(false);
+  // After every hook, so the hook order cannot change when the profile resolves.
+  if (!can("settings_view")) return <PermissionRequired title={t("nav.personas")} />;
 
   const openCreate = () => {
     setEditing(null);
@@ -371,6 +374,8 @@ export function AnalyticsAdminPage() {
 
 export function OperationsAdminPage() {
   const { t } = useI18n();
+  const { can } = useAuth();
+  if (!can("settings_view") && !can("scripts_view")) return <PermissionRequired title={t("nav.operations")} />;
   return (
     <AdminPageFrame icon={Clock} title={t("nav.operations")}>
       <OperationsTab />
@@ -380,6 +385,8 @@ export function OperationsAdminPage() {
 
 export function GrowthAdminPage() {
   const { t } = useI18n();
+  const { can } = useAuth();
+  if (!can("customers_view") && !can("scripts_view")) return <PermissionRequired title={t("nav.growth")} />;
   return (
     <AdminPageFrame icon={Sparkles} title={t("nav.growth")}>
       <GrowthTab />
@@ -398,6 +405,8 @@ export function ReportsAdminPage() {
 
 export function EnterpriseAdminPage() {
   const { t } = useI18n();
+  const { can } = useAuth();
+  if (!can("settings_view") && !can("scripts_view")) return <PermissionRequired title={t("nav.enterprise")} />;
   return (
     <AdminPageFrame icon={ShieldCheck} title={t("nav.enterprise")}>
       <EnterpriseTab />
@@ -454,8 +463,8 @@ const INVITE_STATUS: Record<InviteHistoryEntry["status"], { key: string; classNa
 
 // What a seat may do. The keys are the wire contract (member_permissions.go);
 // only wired capabilities appear here, and the hints say plainly what each one
-// grants. Channels, widget tokens, billing and the team stay owner-only and are
-// deliberately absent from this list.
+// grants. Billing, team management and Telegram notification routing stay
+// owner-only and are deliberately absent from this list.
 const MEMBER_PERMISSIONS: { key: string; label: string; hint: string }[] = [
   { key: "inbox_view", label: "admin.permInboxView", hint: "admin.permInboxViewHint" },
   { key: "inbox_reply", label: "admin.permInboxReply", hint: "admin.permInboxReplyHint" },
@@ -463,7 +472,29 @@ const MEMBER_PERMISSIONS: { key: string; label: string; hint: string }[] = [
   { key: "inbox_assign", label: "admin.permInboxAssign", hint: "admin.permInboxAssignHint" },
   { key: "knowledge_view", label: "admin.permKnowledgeView", hint: "admin.permKnowledgeViewHint" },
   { key: "knowledge_edit", label: "admin.permKnowledgeEdit", hint: "admin.permKnowledgeEditHint" },
+  { key: "channels_view", label: "admin.permChannelsView", hint: "admin.permChannelsViewHint" },
+  { key: "channels_manage", label: "admin.permChannelsManage", hint: "admin.permChannelsManageHint" },
+  { key: "widget_view", label: "admin.permWidgetView", hint: "admin.permWidgetViewHint" },
+  { key: "widget_manage", label: "admin.permWidgetManage", hint: "admin.permWidgetManageHint" },
+  { key: "customers_view", label: "admin.permCustomersView", hint: "admin.permCustomersViewHint" },
+  { key: "customers_edit", label: "admin.permCustomersEdit", hint: "admin.permCustomersEditHint" },
+  { key: "scripts_view", label: "admin.permScriptsView", hint: "admin.permScriptsViewHint" },
+  { key: "scripts_edit", label: "admin.permScriptsEdit", hint: "admin.permScriptsEditHint" },
+  { key: "settings_view", label: "admin.permSettingsView", hint: "admin.permSettingsViewHint" },
+  { key: "settings_manage", label: "admin.permSettingsManage", hint: "admin.permSettingsManageHint" },
 ];
+
+// PermissionRequired is the page-level counterpart of the nav gate: a seat that
+// opens one of these pages by URL without the grant gets a sentence, not a
+// dashboard of failing requests.
+function PermissionRequired({ title }: { title: string }) {
+  const { t } = useI18n();
+  return (
+    <AdminPageFrame icon={ShieldCheck} title={title}>
+      <p className="text-sm text-muted-foreground">{t("admin.noPermission")}</p>
+    </AdminPageFrame>
+  );
+}
 
 export function UsersAdminPage() {
   const { t, tf } = useI18n();

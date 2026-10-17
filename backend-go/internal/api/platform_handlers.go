@@ -79,7 +79,7 @@ func (a *App) listPlatformConfigs(w http.ResponseWriter, r *http.Request) (any, 
 	user, _ := UserFrom(r)
 	rows, err := a.DB.Query(r.Context(),
 		"SELECT "+platformConfigCols+" FROM platform_configs WHERE user_id = $1 ORDER BY platform ASC, config_id ASC",
-		user.UserID)
+		user.Tenant())
 	if err != nil {
 		return nil, ErrInternal("查询失败")
 	}
@@ -100,7 +100,7 @@ func (a *App) listPlatformConfigs(w http.ResponseWriter, r *http.Request) (any, 
 	// someone reconnect the same account and trip the cross-tenant conflict
 	// check. Fail the request instead of serving a partial answer.
 	if err := rows.Err(); err != nil {
-		a.Logger.Warn("platform config list read failed", "user_id", user.UserID, "error", err.Error())
+		a.Logger.Warn("platform config list read failed", "user_id", user.Tenant(), "error", err.Error())
 		return nil, ErrInternal("查询失败")
 	}
 	out := make([]map[string]any, 0)
@@ -192,7 +192,7 @@ func (a *App) upsertPlatformConfig(w http.ResponseWriter, r *http.Request) (any,
 	if req.ConfigID != nil && *req.ConfigID > 0 {
 		row := a.DB.QueryRow(r.Context(),
 			"SELECT "+platformConfigCols+" FROM platform_configs WHERE config_id = $1 AND user_id = $2",
-			*req.ConfigID, user.UserID)
+			*req.ConfigID, user.Tenant())
 		var c platformConfigRow
 		if err := row.Scan(&c.ConfigID, &c.UserID, &c.Platform, &c.AccessToken, &c.PageID,
 			&c.InstagramBusinessID, &c.WhatsAppBusinessAccountID, &c.BotToken, &c.BotTokenHash,
@@ -206,7 +206,7 @@ func (a *App) upsertPlatformConfig(w http.ResponseWriter, r *http.Request) (any,
 		// table, never request input.
 		row := a.DB.QueryRow(r.Context(),
 			"SELECT "+platformConfigCols+" FROM platform_configs WHERE user_id = $1 AND platform = $2::platform_type AND "+caps.Identity.Column+" = $3",
-			user.UserID, req.Platform, identity)
+			user.Tenant(), req.Platform, identity)
 		var c platformConfigRow
 		if err := row.Scan(&c.ConfigID, &c.UserID, &c.Platform, &c.AccessToken, &c.PageID,
 			&c.InstagramBusinessID, &c.WhatsAppBusinessAccountID, &c.BotToken, &c.BotTokenHash,
@@ -286,7 +286,7 @@ func (a *App) upsertPlatformConfig(w http.ResponseWriter, r *http.Request) (any,
 				var conflict int64
 				if err := a.DB.QueryRow(r.Context(),
 					"SELECT COUNT(*) FROM platform_configs WHERE platform = $1::platform_type AND is_active=true AND user_id <> $2 AND "+caps.Identity.Column+" = $3",
-					req.Platform, user.UserID, value).Scan(&conflict); err != nil {
+					req.Platform, user.Tenant(), value).Scan(&conflict); err != nil {
 					return nil, ErrInternal("冲突检查失败")
 				}
 				if conflict > 0 {
@@ -319,9 +319,9 @@ func (a *App) upsertPlatformConfig(w http.ResponseWriter, r *http.Request) (any,
 		// creating one (re-connecting an existing config must always be allowed),
 		// and the check shares the INSERT's transaction so two concurrent connects
 		// cannot both squeeze past the cap.
-		configID, err = a.createChannelConfig(r.Context(), user.UserID,
+		configID, err = a.createChannelConfig(r.Context(), user.Tenant(),
 			"INSERT INTO platform_configs (user_id, platform, access_token, page_id, instagram_business_id, whatsapp_business_account_id, bot_token, bot_token_hash, webhook_secret, webhook_secret_hash, is_active) VALUES ($1,$2::platform_type,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING config_id",
-			user.UserID, req.Platform, encAccess, pageID, igID, wabaID, encBot, botHash, encSecret, secretHash, isActive)
+			user.Tenant(), req.Platform, encAccess, pageID, igID, wabaID, encBot, botHash, encSecret, secretHash, isActive)
 		if err != nil {
 			return nil, err
 		}
@@ -331,7 +331,7 @@ func (a *App) upsertPlatformConfig(w http.ResponseWriter, r *http.Request) (any,
 
 	// Return the saved config with status.
 	var c platformConfigRow
-	row := a.DB.QueryRow(r.Context(), "SELECT "+platformConfigCols+" FROM platform_configs WHERE config_id = $1 AND user_id = $2", configID, user.UserID)
+	row := a.DB.QueryRow(r.Context(), "SELECT "+platformConfigCols+" FROM platform_configs WHERE config_id = $1 AND user_id = $2", configID, user.Tenant())
 	if err := row.Scan(&c.ConfigID, &c.UserID, &c.Platform, &c.AccessToken, &c.PageID,
 		&c.InstagramBusinessID, &c.WhatsAppBusinessAccountID, &c.BotToken, &c.BotTokenHash,
 		&c.WebhookSecret, &c.WebhookSecretHash, &c.IsActive, &c.CreatedAt, &c.UpdatedAt); err != nil {
@@ -399,7 +399,7 @@ func (a *App) verifyPlatformConfig(w http.ResponseWriter, r *http.Request, confi
 		return nil, ErrBadRequest("invalid platform configuration")
 	}
 	var c platformConfigRow
-	row := a.DB.QueryRow(r.Context(), "SELECT "+platformConfigCols+" FROM platform_configs WHERE config_id = $1 AND user_id = $2", configID, user.UserID)
+	row := a.DB.QueryRow(r.Context(), "SELECT "+platformConfigCols+" FROM platform_configs WHERE config_id = $1 AND user_id = $2", configID, user.Tenant())
 	if err := row.Scan(&c.ConfigID, &c.UserID, &c.Platform, &c.AccessToken, &c.PageID,
 		&c.InstagramBusinessID, &c.WhatsAppBusinessAccountID, &c.BotToken, &c.BotTokenHash,
 		&c.WebhookSecret, &c.WebhookSecretHash, &c.IsActive, &c.CreatedAt, &c.UpdatedAt); err != nil {
@@ -482,7 +482,7 @@ func (a *App) setChannelIdentity(ctx context.Context, configID int32, identity s
 func (a *App) deactivatePlatformConfig(w http.ResponseWriter, r *http.Request, configID int32) (any, error) {
 	user, _ := UserFrom(r)
 	var c platformConfigRow
-	row := a.DB.QueryRow(r.Context(), "SELECT "+platformConfigCols+" FROM platform_configs WHERE config_id = $1 AND user_id = $2", configID, user.UserID)
+	row := a.DB.QueryRow(r.Context(), "SELECT "+platformConfigCols+" FROM platform_configs WHERE config_id = $1 AND user_id = $2", configID, user.Tenant())
 	if err := row.Scan(&c.ConfigID, &c.UserID, &c.Platform, &c.AccessToken, &c.PageID,
 		&c.InstagramBusinessID, &c.WhatsAppBusinessAccountID, &c.BotToken, &c.BotTokenHash,
 		&c.WebhookSecret, &c.WebhookSecretHash, &c.IsActive, &c.CreatedAt, &c.UpdatedAt); err != nil {
@@ -508,7 +508,7 @@ func (a *App) deactivatePlatformConfig(w http.ResponseWriter, r *http.Request, c
 			detail = d
 		}
 	}
-	tag, err := a.DB.Exec(r.Context(), "UPDATE platform_configs SET is_active = false WHERE config_id = $1 AND user_id = $2", configID, user.UserID)
+	tag, err := a.DB.Exec(r.Context(), "UPDATE platform_configs SET is_active = false WHERE config_id = $1 AND user_id = $2", configID, user.Tenant())
 	if err != nil {
 		return nil, ErrInternal("更新失败")
 	}
@@ -528,7 +528,7 @@ func (a *App) ensureConfigOwner(ctx context.Context, configID, userID int32) boo
 // listPlatformWork — failed inbound/outbound + cancelled for a config.
 func (a *App) listPlatformWork(w http.ResponseWriter, r *http.Request, configID int32) (any, error) {
 	user, _ := UserFrom(r)
-	if !a.ensureConfigOwner(r.Context(), configID, user.UserID) {
+	if !a.ensureConfigOwner(r.Context(), configID, user.Tenant()) {
 		return nil, ErrNotFound("platform configuration was not found")
 	}
 	inbound := make([]map[string]any, 0)
@@ -590,7 +590,7 @@ func (a *App) listPlatformWork(w http.ResponseWriter, r *http.Request, configID 
 // kind is "inbound-events" or "deliveries".
 func (a *App) retryPlatformEvent(w http.ResponseWriter, r *http.Request, configID int32, kind string, id int32) (any, error) {
 	user, _ := UserFrom(r)
-	if !a.ensureConfigOwner(r.Context(), configID, user.UserID) {
+	if !a.ensureConfigOwner(r.Context(), configID, user.Tenant()) {
 		return nil, ErrNotFound("platform configuration was not found")
 	}
 	if kind == "inbound-events" {

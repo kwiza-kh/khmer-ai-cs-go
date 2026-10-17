@@ -16,6 +16,7 @@ import { EmptyState } from "@/components/empty-state";
 import { Clock, Zap, Plus, Trash2, Loader2, CheckCircle2, XCircle } from "lucide-react";
 import { toast } from "sonner";
 import { useI18n } from "@/lib/i18n";
+import { useAuth } from "@/lib/auth-client";
 
 // Weekday labels resolve through i18n at render time.
 const WEEKDAY_KEYS = ["ops.day0", "ops.day1", "ops.day2", "ops.day3", "ops.day4", "ops.day5", "ops.day6"];
@@ -25,10 +26,11 @@ const WEEKDAY_KEYS = ["ops.day0", "ops.day1", "ops.day2", "ops.day3", "ops.day4"
  * Split into a self-contained component so admin/page.tsx stays readable.
  */
 export function OperationsTab() {
+  const { can } = useAuth();
   return (
     <div className="space-y-4">
-      <BusinessHoursCard />
-      <CannedResponsesCard />
+      {can("settings_view") && <BusinessHoursCard />}
+      {can("scripts_view") && <CannedResponsesCard />}
     </div>
   );
 }

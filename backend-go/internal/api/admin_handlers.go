@@ -32,7 +32,7 @@ func (a *App) listBusinessHours(w http.ResponseWriter, r *http.Request) (any, er
 	user, _ := UserFrom(r)
 	rows, err := a.DB.Query(r.Context(),
 		"SELECT id, weekday, open_time, close_time, platform::text, is_active FROM business_hours WHERE user_id = $1 ORDER BY weekday ASC",
-		user.UserID)
+		user.Tenant())
 	if err != nil {
 		return nil, ErrInternal("查询失败")
 	}
@@ -76,13 +76,13 @@ func (a *App) upsertBusinessHours(w http.ResponseWriter, r *http.Request) (any, 
 				"INSERT INTO business_hours (user_id, weekday, open_time, close_time, platform, is_active) "+
 					"VALUES ($1,$2,$3,$4,NULL,$5) ON CONFLICT (user_id, weekday) WHERE platform IS NULL "+
 					"DO UPDATE SET open_time=EXCLUDED.open_time, close_time=EXCLUDED.close_time, is_active=EXCLUDED.is_active",
-				user.UserID, e.Weekday, e.OpenTime, e.CloseTime, e.IsActive)
+				user.Tenant(), e.Weekday, e.OpenTime, e.CloseTime, e.IsActive)
 		} else {
 			_, _ = a.DB.Exec(r.Context(),
 				"INSERT INTO business_hours (user_id, weekday, open_time, close_time, platform, is_active) "+
 					"VALUES ($1,$2,$3,$4,$5::platform_type,$6) ON CONFLICT (user_id, weekday, platform) WHERE platform IS NOT NULL "+
 					"DO UPDATE SET open_time=EXCLUDED.open_time, close_time=EXCLUDED.close_time, is_active=EXCLUDED.is_active",
-				user.UserID, e.Weekday, e.OpenTime, e.CloseTime, platformParam, e.IsActive)
+				user.Tenant(), e.Weekday, e.OpenTime, e.CloseTime, platformParam, e.IsActive)
 		}
 	}
 	return map[string]string{"message": "营业时间已保存"}, nil
@@ -97,7 +97,7 @@ func (a *App) isBusinessOpen(w http.ResponseWriter, r *http.Request) (any, error
 	var openTime, closeTime string
 	err := a.DB.QueryRow(r.Context(),
 		"SELECT open_time, close_time FROM business_hours WHERE user_id = $1 AND weekday = $2 AND is_active = true LIMIT 1",
-		user.UserID, weekday).Scan(&openTime, &closeTime)
+		user.Tenant(), weekday).Scan(&openTime, &closeTime)
 	if err != nil {
 		return map[string]any{"open": true, "reason": "no_schedule_configured"}, nil
 	}
@@ -128,7 +128,7 @@ func (a *App) listCannedResponses(w http.ResponseWriter, r *http.Request) (any, 
 	user, _ := UserFrom(r)
 	rows, err := a.DB.Query(r.Context(),
 		"SELECT id, title, body, category, language FROM canned_responses WHERE user_id = $1 AND is_active = true ORDER BY category ASC, title ASC",
-		user.UserID)
+		user.Tenant())
 	if err != nil {
 		return nil, ErrInternal("查询失败")
 	}
@@ -165,7 +165,7 @@ func (a *App) createCannedResponse(w http.ResponseWriter, r *http.Request) (any,
 	var id int
 	if err := a.DB.QueryRow(r.Context(),
 		"INSERT INTO canned_responses (user_id, title, body, category, language, created_by, is_active) VALUES ($1,$2,$3,$4,$5,$6,true) RETURNING id",
-		user.UserID, req.Title, req.Body, req.Category, req.Language, user.UserID).Scan(&id); err != nil {
+		user.Tenant(), req.Title, req.Body, req.Category, req.Language, user.UserID).Scan(&id); err != nil {
 		return nil, ErrInternal("创建失败")
 	}
 	return map[string]any{"id": id, "message": "已创建"}, nil
@@ -174,7 +174,7 @@ func (a *App) createCannedResponse(w http.ResponseWriter, r *http.Request) (any,
 // deleteCannedResponse — soft-delete a quick reply.
 func (a *App) deleteCannedResponse(w http.ResponseWriter, r *http.Request, id int32) (any, error) {
 	user, _ := UserFrom(r)
-	tag, err := a.DB.Exec(r.Context(), "UPDATE canned_responses SET is_active = false WHERE id = $1 AND user_id = $2", id, user.UserID)
+	tag, err := a.DB.Exec(r.Context(), "UPDATE canned_responses SET is_active = false WHERE id = $1 AND user_id = $2", id, user.Tenant())
 	if err != nil {
 		return nil, ErrInternal("删除失败")
 	}

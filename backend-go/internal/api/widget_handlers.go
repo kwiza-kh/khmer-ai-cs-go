@@ -89,7 +89,7 @@ func scanWidgetToken(scan func(dest ...any) error) (widgetTokenRow, error) {
 func (a *App) listWidgetTokens(w http.ResponseWriter, r *http.Request) (any, error) {
 	user, _ := UserFrom(r)
 	rows, err := a.DB.Query(r.Context(),
-		"SELECT "+widgetCols+" FROM widget_tokens WHERE user_id = $1 ORDER BY created_at DESC", user.UserID)
+		"SELECT "+widgetCols+" FROM widget_tokens WHERE user_id = $1 ORDER BY created_at DESC", user.Tenant())
 	if err != nil {
 		return nil, ErrInternal("查询失败")
 	}
@@ -148,7 +148,7 @@ func (a *App) createWidgetToken(w http.ResponseWriter, r *http.Request) (any, er
 	err := a.DB.QueryRow(r.Context(),
 		"INSERT INTO widget_tokens (user_id, name, token, is_active, allowed_origins, theme, primary_color, greeting_km, greeting_en, suggested_questions) "+
 			"VALUES ($1,$2,$3,true,$4::text[],$5,$6,$7,$8,$9::text[]) RETURNING token_id",
-		user.UserID, req.Name, token, req.Origins, req.Theme, req.Color, req.GreetingKm, req.GreetingEn, questions).Scan(&id)
+		user.Tenant(), req.Name, token, req.Origins, req.Theme, req.Color, req.GreetingKm, req.GreetingEn, questions).Scan(&id)
 	if err != nil {
 		return nil, ErrInternal("创建失败")
 	}
@@ -160,7 +160,7 @@ func (a *App) createWidgetToken(w http.ResponseWriter, r *http.Request) (any, er
 // deleteWidgetToken — revoke an embed token.
 func (a *App) deleteWidgetToken(w http.ResponseWriter, r *http.Request, id int32) (any, error) {
 	user, _ := UserFrom(r)
-	tag, err := a.DB.Exec(r.Context(), "DELETE FROM widget_tokens WHERE token_id = $1 AND user_id = $2", id, user.UserID)
+	tag, err := a.DB.Exec(r.Context(), "DELETE FROM widget_tokens WHERE token_id = $1 AND user_id = $2", id, user.Tenant())
 	if err != nil {
 		return nil, ErrInternal("删除失败")
 	}

@@ -2507,3 +2507,45 @@ embedding 是唯一会撞供应商配额的腿（3 天 4 次 `Resource exhausted
 | 多产品照片的追问话术 | 要改生产提示词（§二十四 调过），同样需要 eval 基线 |
 | HUMAN_AGENT 权限 | 属 Meta App Review 外部流程；代码侧已做到"首次失败即告警" |
 | 收件箱摘要预生成 | 现为"缓存未命中时现场生成"（1.3–1.9s，商家侧）；改动是把生成搬进后台，收益小于本轮其他项 |
+
+## 三十、成员权限矩阵铺开：渠道/挂件/客户/话术/设置（2026-10-17）
+
+前面几节只把权限矩阵接到了收件箱和知识库，其余租户面仍是 `tenantAdminOnly`——更糟的是
+**七个路由族根本没有门禁**（营业时间、快捷回复、SLA、分配规则、宏、webhook 订阅、FAQ 建议），
+处理器还按 `user.UserID` 取值：成员调用时读写落在自己的空租户里，接口回 200，
+店主什么也看不到。这一节把矩阵铺到剩下 6 个面，并把"租户键"统一成 `user.Tenant()`。
+
+### 一、权限键：5 对 view/manage
+
+| 键 | 默认 | 覆盖 |
+|---|---|---|
+| `channels_view` / `channels_manage` | 开 / 关 | 渠道列表、连接自检、失败重试 / 连接、换密、OAuth、WhatsApp 注册 |
+| `widget_view` / `widget_manage` | 开 / 关 | 挂件 token 列表 / 生成与吊销 |
+| `customers_view` / `customers_edit` | 开 / 关 | 客户列表与 360 / 备注 |
+| `scripts_view` / `scripts_edit` | 开 / 关 | 快捷回复、宏、FAQ 建议 |
+| `settings_view` / `settings_manage` | 开 / 关 | 营业时间、人格、SLA、分配规则、webhook 订阅 |
+
+默认地板仍是"够回答客户、不改变对外表面"：所有 `*_manage` 默认关闭（测试钉住）。
+
+### 二、路由门禁与租户绑定
+
+- 新增 `App.permOnly(perm)`：店主与平台管理员恒过，成员看授予。租户面上不再有
+  `tenantAdminOnly` 与 `permOnly` 之外的路由——`TestTenantRoutesUseTheOwnerGuard`
+  现在逐行扫描 router.go（`/team/*` 与 `/reports/*` 在处理器内自守，测试注明原因）。
+- `canned_responses` 的 `created_by` 保留**操作者**，其余租户键一律 `user.Tenant()`；
+  回归测试 `TestMemberSurfaceWritesLandInTenant` 断言成员写入落在店主名下且 `created_by` 是成员本人。
+- 登录/注册/profile 响应新增 `is_member` 与**生效**权限集（默认已合并），控制台据此隐藏入口；
+  `PermissionRequired` 兜住直接输 URL 的成员，团队对话框渲染全部 16 个键（中/英/高棉语）。
+
+### 三、仍然店主专属
+
+Telegram 通知（决定"每个客户消息进谁的聊天"）、团队与角色变更、套餐与支付、CSV 报表、
+租户分析——这些不是"成员权限"，是所有权与钱。
+
+### 四、顺手修的两处
+
+- **平台 token 看板**：四个查询现在跑在一个只读 `REPEATABLE READ` 快照里（此前并发结账会让
+  总量/日线/租户表互相矛盾）；同时补一行 `(unattributed)`——归因不到的用量（26 条后台
+  embedding，~10k tokens，`user_id` 为 NULL）此前只进总量、不进按租户表，让看板自己不自洽。
+- **测试卫生**：`TestLoadProviderFindsARowForProvidersThatAreNotServing` 先清掉事务内的
+  anthropic 行——此前库里一旦有 Claude 行，测试断言的就不是规则而是数据库历史。

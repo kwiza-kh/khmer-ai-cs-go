@@ -87,11 +87,11 @@ func (a *App) listPersonas(w http.ResponseWriter, r *http.Request) (any, error) 
 	user, _ := UserFrom(r)
 	ctx := r.Context()
 	store := persona.NewStore(a.DB)
-	list, err := store.List(ctx, user.UserID)
+	list, err := store.List(ctx, user.Tenant())
 	if err != nil {
 		return nil, ErrInternal("读取人格列表失败")
 	}
-	bindings, err := store.Bindings(ctx, user.UserID)
+	bindings, err := store.Bindings(ctx, user.Tenant())
 	if err != nil {
 		return nil, ErrInternal("读取人格绑定失败")
 	}
@@ -118,7 +118,7 @@ func (a *App) createPersona(w http.ResponseWriter, r *http.Request) (any, error)
 	if p.ID == "" {
 		p.ID = mintPersonaID()
 	}
-	if err := persona.NewStore(a.DB).Create(r.Context(), user.UserID, p); err != nil {
+	if err := persona.NewStore(a.DB).Create(r.Context(), user.Tenant(), p); err != nil {
 		if isUniqueViolation(err) {
 			return nil, ErrConflict("该人格 ID 已存在")
 		}
@@ -142,14 +142,14 @@ func (a *App) updatePersona(w http.ResponseWriter, r *http.Request) (any, error)
 	}
 	ctx := r.Context()
 	store := persona.NewStore(a.DB)
-	ok, err := store.Update(ctx, user.UserID, p)
+	ok, err := store.Update(ctx, user.Tenant(), p)
 	if err != nil {
 		return nil, ErrInternal("保存人格失败")
 	}
 	if !ok {
 		return nil, ErrNotFound("人格不存在")
 	}
-	bindings, err := store.Bindings(ctx, user.UserID)
+	bindings, err := store.Bindings(ctx, user.Tenant())
 	if err != nil {
 		return nil, ErrInternal("读取人格绑定失败")
 	}
@@ -161,7 +161,7 @@ func (a *App) updatePersona(w http.ResponseWriter, r *http.Request) (any, error)
 // cannot leave a dangling binding that makes every turn resolve to nothing.
 func (a *App) deletePersona(w http.ResponseWriter, r *http.Request) (any, error) {
 	user, _ := UserFrom(r)
-	ok, err := persona.NewStore(a.DB).Delete(r.Context(), user.UserID, strings.TrimSpace(r.PathValue("id")))
+	ok, err := persona.NewStore(a.DB).Delete(r.Context(), user.Tenant(), strings.TrimSpace(r.PathValue("id")))
 	if err != nil {
 		return nil, ErrInternal("删除人格失败")
 	}
@@ -188,7 +188,7 @@ func (a *App) putPersonaBinding(w http.ResponseWriter, r *http.Request) (any, er
 	if personaID == "" {
 		return nil, ErrBadRequest("必须指定 persona_id")
 	}
-	ok, err := persona.NewStore(a.DB).SetBinding(r.Context(), user.UserID,
+	ok, err := persona.NewStore(a.DB).SetBinding(r.Context(), user.Tenant(),
 		persona.Binding{PersonaID: personaID, Scope: scope, Target: target})
 	if err != nil {
 		return nil, ErrInternal("保存绑定失败")
@@ -211,7 +211,7 @@ func (a *App) deletePersonaBinding(w http.ResponseWriter, r *http.Request) (any,
 	if err != nil {
 		return nil, err
 	}
-	if _, err := persona.NewStore(a.DB).ClearBinding(r.Context(), user.UserID, scope, target); err != nil {
+	if _, err := persona.NewStore(a.DB).ClearBinding(r.Context(), user.Tenant(), scope, target); err != nil {
 		return nil, ErrInternal("解绑失败")
 	}
 	return map[string]any{"scope": scope, "target": target}, nil

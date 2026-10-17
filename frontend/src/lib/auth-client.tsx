@@ -16,6 +16,15 @@ interface User {
    * predates this field still gets the answer without re-login.
    */
   is_tenant_owner?: boolean;
+  /**
+   * Whether this account is a seat inside someone else's tenant, and the
+   * effective permission set the handlers enforce (member_permissions.go).
+   * Owners get is_member=false and no map: they are allowed everything in
+   * their own tenant. The console uses this to hide entries a seat cannot
+   * open, so a seat never lands on a 403 it could not have predicted.
+   */
+  is_member?: boolean;
+  permissions?: Record<string, boolean>;
 }
 
 interface AuthContextType {
@@ -31,6 +40,14 @@ interface AuthContextType {
   /** Exchange a one-time Telegram sign-in code (from ?telegram_code=). */
   completeTelegramLogin: (code: string, state: string) => Promise<void>;
   logout: () => void;
+  /**
+   * can answers "may this caller use the surface gated by this member
+   * permission key". Owners and platform admins always can; a seat is checked
+   * against the effective set the server sent (login/profile). A session that
+   * predates the field reads as an owner here — the API still refuses, this is
+   * only the console's shortcut to hide dead entries.
+   */
+  can: (perm: string) => boolean;
   isLoading: boolean;
 }
 
@@ -235,7 +252,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, token, login, register, completeGoogleLogin, completeTelegramLogin, logout, isLoading }}>
+    <AuthContext.Provider
+      value={{
+        user, token, login, register, completeGoogleLogin, completeTelegramLogin, logout, isLoading,
+        // Member seats are gated by the effective set the server resolved; owners
+        // and platform admins are not. Reads the session user, which
+        // login/register and GET /profile all populate.
+        can: (perm: string) => !user?.is_member || !!user.permissions?.[perm],
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );

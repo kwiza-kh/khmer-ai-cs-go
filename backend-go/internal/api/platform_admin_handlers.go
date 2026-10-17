@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"khmer-ai-cs-go/internal/auth"
 	"khmer-ai-cs-go/internal/usage"
@@ -344,13 +347,26 @@ func (a *App) platformTokens(w http.ResponseWriter, r *http.Request) (any, error
 	since := time.Now().AddDate(0, 0, -days+1)
 	since = time.Date(since.Year(), since.Month(), since.Day(), 0, 0, 0, 0, since.Location())
 
+	// One snapshot: the totals, the daily series, the model mix and the
+	// per-tenant table are four views of the same rows. Live traffic landing
+	// between two queries made them disagree with each other (a turn finishing
+	// mid-request moved one view but not the others), and a board whose numbers
+	// do not reconcile is worse than no board. Read-only REPEATABLE READ is cheap
+	// here — the console opens it rarely — and makes "always reconciled" a
+	// property of the handler rather than a property of traffic timing.
+	tx, err := a.DB.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, ErrInternal("查询失败")
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
 	// --- totals ---
 	var (
 		totalTokens, totalCalls                int64
 		totalCost                              float64
 		promptTokens, completionTokens, cached int64
 	)
-	if err := a.DB.QueryRow(ctx, `SELECT COALESCE(SUM(total_tokens),0), COALESCE(SUM(cost_estimate),0), COUNT(*),
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(SUM(total_tokens),0), COALESCE(SUM(cost_estimate),0), COUNT(*),
 			COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0), COALESCE(SUM(cached_tokens),0)
 		FROM token_usage WHERE created_at >= $1`, since).
 		Scan(&totalTokens, &totalCost, &totalCalls, &promptTokens, &completionTokens, &cached); err != nil {
@@ -359,7 +375,7 @@ func (a *App) platformTokens(w http.ResponseWriter, r *http.Request) (any, error
 
 	// --- daily series (zero-filled so the chart has a continuous x-axis) ---
 	byDate := map[string]*platformTokenDay{}
-	rows, err := a.DB.Query(ctx, `SELECT to_char(date_trunc('day', created_at), 'YYYY-MM-DD'),
+	rows, err := tx.Query(ctx, `SELECT to_char(date_trunc('day', created_at), 'YYYY-MM-DD'),
 			COALESCE(SUM(total_tokens),0), COALESCE(SUM(cost_estimate),0), COUNT(*)
 		FROM token_usage WHERE created_at >= $1 GROUP BY 1`, since)
 	if err != nil {
@@ -391,7 +407,7 @@ func (a *App) platformTokens(w http.ResponseWriter, r *http.Request) (any, error
 
 	// --- model mix ---
 	byModel := make([]map[string]any, 0)
-	mrows, err := a.DB.Query(ctx, `SELECT COALESCE(model,''), COALESCE(SUM(total_tokens),0),
+	mrows, err := tx.Query(ctx, `SELECT COALESCE(model,''), COALESCE(SUM(total_tokens),0),
 			COALESCE(SUM(cost_estimate),0), COUNT(*)
 		FROM token_usage WHERE created_at >= $1 GROUP BY 1 ORDER BY 2 DESC`, since)
 	if err != nil {
@@ -422,7 +438,7 @@ func (a *App) platformTokens(w http.ResponseWriter, r *http.Request) (any, error
 	// whose numbers do not reconcile is worse than no board. The role rides
 	// along so the console can label that row honestly.
 	byTenant := make([]map[string]any, 0)
-	trows, err := a.DB.Query(ctx, `SELECT u.user_id, u.username, u.role::text, COALESCE(b.plan,'free'),
+	trows, err := tx.Query(ctx, `SELECT u.user_id, u.username, u.role::text, COALESCE(b.plan,'free'),
 			COALESCE(SUM(t.total_tokens),0), COALESCE(SUM(t.cost_estimate),0), COUNT(t.usage_id),
 			COALESCE(SUM(t.prompt_tokens),0), COALESCE(SUM(t.cached_tokens),0), MAX(t.created_at)
 		FROM users u
@@ -452,6 +468,37 @@ func (a *App) platformTokens(w http.ResponseWriter, r *http.Request) (any, error
 	if err := trows.Err(); err != nil {
 		return nil, ErrInternal("查询失败")
 	}
+
+	// Spend whose row names no existing account is still on the bill. The roster
+	// above starts from users, so those rows were silently dropped and the
+	// per-tenant column disagreed with the board's own total (found 2026-10-17:
+	// 26 background embedding calls, ~10k tokens). One honest row beats a
+	// breakdown that does not add up.
+	var orphanTokens, orphanCalls, orphanPrompt, orphanCached int64
+	var orphanCost float64
+	var orphanLast *time.Time
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(SUM(total_tokens),0), COALESCE(SUM(cost_estimate),0), COUNT(*),
+			COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(cached_tokens),0), MAX(created_at)
+		FROM token_usage t WHERE t.created_at >= $1
+		  AND NOT EXISTS (SELECT 1 FROM users u WHERE u.user_id = t.user_id)`, since).
+		Scan(&orphanTokens, &orphanCost, &orphanCalls, &orphanPrompt, &orphanCached, &orphanLast); err != nil {
+		return nil, ErrInternal("查询失败")
+	}
+	if orphanCalls > 0 {
+		byTenant = append(byTenant, map[string]any{
+			"user_id": nil, "username": "(unattributed)", "role": "", "plan": "free",
+			"tokens": orphanTokens, "cost": orphanCost, "calls": orphanCalls,
+			"cache_hit_rate": cachedPct(orphanCached, orphanPrompt),
+			"last_call_at":   orphanLast,
+		})
+	}
+	// Keep "who is spending" true after the append: the roster came back sorted,
+	// and the synthetic row goes where its size puts it.
+	sort.SliceStable(byTenant, func(i, j int) bool {
+		a, _ := byTenant[i]["tokens"].(int64)
+		b, _ := byTenant[j]["tokens"].(int64)
+		return a > b
+	})
 
 	return map[string]any{
 		"days": days,

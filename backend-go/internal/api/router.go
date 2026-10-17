@@ -102,12 +102,12 @@ func (a *App) Router() http.Handler {
 	// Bindings are addressed by (scope, target) and never by binding_id —
 	// 067_personas.sql makes that pair unique per tenant, so a rebind is one PUT
 	// and the console never has to carry an id back.
-	authed.Handle("GET /api/v1/personas", a.tenantAdminOnly(a.handle(a.listPersonas)))
-	authed.Handle("POST /api/v1/personas", a.tenantAdminOnly(a.handle(a.createPersona)))
-	authed.Handle("PUT /api/v1/personas/{id}", a.tenantAdminOnly(a.handle(a.updatePersona)))
-	authed.Handle("DELETE /api/v1/personas/{id}", a.tenantAdminOnly(a.handle(a.deletePersona)))
-	authed.Handle("PUT /api/v1/persona-bindings", a.tenantAdminOnly(a.handle(a.putPersonaBinding)))
-	authed.Handle("DELETE /api/v1/persona-bindings", a.tenantAdminOnly(a.handle(a.deletePersonaBinding)))
+	authed.Handle("GET /api/v1/personas", a.permOnly(PermSettingsView)(a.handle(a.listPersonas)))
+	authed.Handle("POST /api/v1/personas", a.permOnly(PermSettingsManage)(a.handle(a.createPersona)))
+	authed.Handle("PUT /api/v1/personas/{id}", a.permOnly(PermSettingsManage)(a.handle(a.updatePersona)))
+	authed.Handle("DELETE /api/v1/personas/{id}", a.permOnly(PermSettingsManage)(a.handle(a.deletePersona)))
+	authed.Handle("PUT /api/v1/persona-bindings", a.permOnly(PermSettingsManage)(a.handle(a.putPersonaBinding)))
+	authed.Handle("DELETE /api/v1/persona-bindings", a.permOnly(PermSettingsManage)(a.handle(a.deletePersonaBinding)))
 	// Agent copilot: one-shot translation (Khmer ↔ 中文 ↔ English).
 	authed.Handle("POST /api/v1/translate", a.handle(a.translateText))
 	authed.Handle("POST /api/v1/translate/batch", a.handle(a.translateBatch))
@@ -144,12 +144,12 @@ func (a *App) Router() http.Handler {
 	// are caller-scoped, not privileged: the /admin/ prefix implied an
 	// adminOnly gate they never had and made the audit middleware record
 	// every merchant's own schedule edit as an administrative action.
-	authed.Handle("GET /api/v1/settings/business-hours", a.handle(a.listBusinessHours))
-	authed.Handle("PUT /api/v1/settings/business-hours", a.handle(a.upsertBusinessHours))
-	authed.Handle("GET /api/v1/settings/business-hours/open", a.handle(a.isBusinessOpen))
-	authed.Handle("GET /api/v1/settings/canned-responses", a.handle(a.listCannedResponses))
-	authed.Handle("POST /api/v1/settings/canned-responses", a.handle(a.createCannedResponse))
-	authed.HandleFunc("DELETE /api/v1/settings/canned-responses/{id}", a.handleDoc(a.deleteCannedResponse))
+	authed.Handle("GET /api/v1/settings/business-hours", a.permOnly(PermSettingsView)(a.handle(a.listBusinessHours)))
+	authed.Handle("PUT /api/v1/settings/business-hours", a.permOnly(PermSettingsManage)(a.handle(a.upsertBusinessHours)))
+	authed.Handle("GET /api/v1/settings/business-hours/open", a.permOnly(PermSettingsView)(a.handle(a.isBusinessOpen)))
+	authed.Handle("GET /api/v1/settings/canned-responses", a.permOnly(PermScriptsView)(a.handle(a.listCannedResponses)))
+	authed.Handle("POST /api/v1/settings/canned-responses", a.permOnly(PermScriptsEdit)(a.handle(a.createCannedResponse)))
+	authed.Handle("DELETE /api/v1/settings/canned-responses/{id}", a.permOnly(PermScriptsEdit)(a.handleDoc(a.deleteCannedResponse)))
 	authed.Handle("GET /api/v1/admin/models", a.platformAdminOnly(a.handle(a.listModelConfigs)))
 	// Read-only companion to the list: the built-in prompt a config falls back
 	// to when its system_prompt is empty. A literal segment, so it can never be
@@ -180,7 +180,7 @@ func (a *App) Router() http.Handler {
 	// there is exactly one place that shows model spend.
 	authed.Handle("GET /api/v1/admin/agent-performance", a.tenantAdminOnly(a.handle(a.agentPerformance)))
 	authed.Handle("GET /api/v1/admin/intent-analytics", a.tenantAdminOnly(a.handle(a.intentAnalytics)))
-	authed.Handle("GET /api/v1/admin/integrations/status", a.tenantAdminOnly(a.handle(a.integrationsStatus)))
+	authed.Handle("GET /api/v1/admin/integrations/status", a.permOnly(PermChannelsView)(a.handle(a.integrationsStatus)))
 
 	// CSV report export. Owner-only: the tenant columns are named in the
 	// statement and the handler gates seats out (requireOwnerOfTenant).
@@ -190,9 +190,9 @@ func (a *App) Router() http.Handler {
 	authed.HandleFunc("GET /api/v1/inbox/sessions/{id}/whatsapp-templates", a.handleSession(a.sessionWhatsAppTemplates))
 
 	// Website widget token management (per tenant).
-	authed.Handle("GET /api/v1/widgets", a.tenantAdminOnly(a.handle(a.listWidgetTokens)))
-	authed.Handle("POST /api/v1/widgets", a.tenantAdminOnly(a.handle(a.createWidgetToken)))
-	authed.Handle("DELETE /api/v1/widgets/{id}", a.tenantAdminOnly(a.handleDoc(a.deleteWidgetToken)))
+	authed.Handle("GET /api/v1/widgets", a.permOnly(PermWidgetView)(a.handle(a.listWidgetTokens)))
+	authed.Handle("POST /api/v1/widgets", a.permOnly(PermWidgetManage)(a.handle(a.createWidgetToken)))
+	authed.Handle("DELETE /api/v1/widgets/{id}", a.permOnly(PermWidgetManage)(a.handleDoc(a.deleteWidgetToken)))
 
 	// TOTP (two-factor auth).
 	authed.Handle("POST /api/v1/auth/totp/setup", a.handle(a.totpSetup))
@@ -212,21 +212,21 @@ func (a *App) Router() http.Handler {
 	authed.Handle("POST /api/v1/notifications/read-all", a.handle(a.notificationsReadAll))
 
 	// SLA policies.
-	authed.Handle("GET /api/v1/sla", a.handle(a.listSLA))
-	authed.Handle("POST /api/v1/sla", a.handle(a.upsertSLA))
-	authed.HandleFunc("DELETE /api/v1/sla/{id}", a.handleDoc(a.deleteSLA))
-	authed.Handle("GET /api/v1/sla/breaches", a.handle(a.listSLABreaches))
+	authed.Handle("GET /api/v1/sla", a.permOnly(PermSettingsView)(a.handle(a.listSLA)))
+	authed.Handle("POST /api/v1/sla", a.permOnly(PermSettingsManage)(a.handle(a.upsertSLA)))
+	authed.Handle("DELETE /api/v1/sla/{id}", a.permOnly(PermSettingsManage)(a.handleDoc(a.deleteSLA)))
+	authed.Handle("GET /api/v1/sla/breaches", a.permOnly(PermSettingsView)(a.handle(a.listSLABreaches)))
 
 	// Routing rules.
-	authed.Handle("GET /api/v1/routing", a.handle(a.listRouting))
-	authed.Handle("POST /api/v1/routing", a.handle(a.upsertRouting))
-	authed.HandleFunc("DELETE /api/v1/routing/{id}", a.handleDoc(a.deleteRouting))
+	authed.Handle("GET /api/v1/routing", a.permOnly(PermSettingsView)(a.handle(a.listRouting)))
+	authed.Handle("POST /api/v1/routing", a.permOnly(PermSettingsManage)(a.handle(a.upsertRouting)))
+	authed.Handle("DELETE /api/v1/routing/{id}", a.permOnly(PermSettingsManage)(a.handleDoc(a.deleteRouting)))
 
 	// Macros.
-	authed.Handle("GET /api/v1/macros", a.handle(a.listMacros))
-	authed.Handle("POST /api/v1/macros", a.handle(a.createMacro))
-	authed.HandleFunc("PUT /api/v1/macros/{id}", a.handleDoc(a.updateMacro))
-	authed.HandleFunc("DELETE /api/v1/macros/{id}", a.handleDoc(a.deleteMacro))
+	authed.Handle("GET /api/v1/macros", a.permOnly(PermScriptsView)(a.handle(a.listMacros)))
+	authed.Handle("POST /api/v1/macros", a.permOnly(PermScriptsEdit)(a.handle(a.createMacro)))
+	authed.Handle("PUT /api/v1/macros/{id}", a.permOnly(PermScriptsEdit)(a.handleDoc(a.updateMacro)))
+	authed.Handle("DELETE /api/v1/macros/{id}", a.permOnly(PermScriptsEdit)(a.handleDoc(a.deleteMacro)))
 
 	// Roles / user_roles were removed here (migration 069 drops the tables, both
 	// were empty). They had CRUD endpoints and no authorization reader anywhere,
@@ -234,24 +234,24 @@ func (a *App) Router() http.Handler {
 	// agent_teams membership plus the tenant-owner checks in tenant_owner.go.
 
 	// Webhook subscriptions.
-	authed.Handle("GET /api/v1/webhooks/subscriptions", a.handle(a.listWebhooks))
-	authed.Handle("POST /api/v1/webhooks/subscriptions", a.handle(a.createWebhook))
-	authed.HandleFunc("DELETE /api/v1/webhooks/subscriptions/{id}", a.handleDoc(a.deleteWebhook))
+	authed.Handle("GET /api/v1/webhooks/subscriptions", a.permOnly(PermSettingsView)(a.handle(a.listWebhooks)))
+	authed.Handle("POST /api/v1/webhooks/subscriptions", a.permOnly(PermSettingsManage)(a.handle(a.createWebhook)))
+	authed.Handle("DELETE /api/v1/webhooks/subscriptions/{id}", a.permOnly(PermSettingsManage)(a.handleDoc(a.deleteWebhook)))
 
 	// Handoff requests.
 	authed.Handle("GET /api/v1/handoff-requests", a.handle(a.listHandoffs))
 	authed.Handle("POST /api/v1/handoff-requests", a.handle(a.createHandoffRequest))
 
 	// Customers.
-	authed.Handle("GET /api/v1/customers", a.tenantAdminOnly(a.handle(a.listCustomers)))
-	authed.Handle("GET /api/v1/customers/{id}", a.tenantAdminOnly(a.handleDoc(a.customer360)))
-	authed.Handle("PUT /api/v1/customers/{id}/notes", a.tenantAdminOnly(a.handleDoc(a.updateCustomerNotes)))
+	authed.Handle("GET /api/v1/customers", a.permOnly(PermCustomersView)(a.handle(a.listCustomers)))
+	authed.Handle("GET /api/v1/customers/{id}", a.permOnly(PermCustomersView)(a.handleDoc(a.customer360)))
+	authed.Handle("PUT /api/v1/customers/{id}/notes", a.permOnly(PermCustomersEdit)(a.handleDoc(a.updateCustomerNotes)))
 
 	// FAQ suggestions — self-scoped like the settings above (faq_suggestions
 	// is keyed by user_id), so it belongs in the tenant namespace too.
-	authed.Handle("GET /api/v1/settings/faq/suggestions", a.tenantAdminOnly(a.handle(a.listFaqSuggestions)))
-	authed.Handle("POST /api/v1/settings/faq/suggestions/{id}/accept", a.tenantAdminOnly(a.handleDoc(a.acceptFaqSuggestion)))
-	authed.Handle("POST /api/v1/settings/faq/suggestions/{id}/dismiss", a.tenantAdminOnly(a.handleDoc(a.dismissFaqSuggestion)))
+	authed.Handle("GET /api/v1/settings/faq/suggestions", a.permOnly(PermScriptsView)(a.handle(a.listFaqSuggestions)))
+	authed.Handle("POST /api/v1/settings/faq/suggestions/{id}/accept", a.permOnly(PermScriptsEdit)(a.handleDoc(a.acceptFaqSuggestion)))
+	authed.Handle("POST /api/v1/settings/faq/suggestions/{id}/dismiss", a.permOnly(PermScriptsEdit)(a.handleDoc(a.dismissFaqSuggestion)))
 
 	// Billing.
 	authed.Handle("GET /api/v1/billing", a.handle(a.getBilling))
@@ -300,22 +300,22 @@ func (a *App) Router() http.Handler {
 	authed.HandleFunc("POST /api/v1/inbox/sessions/{id}/copilot/suggest", a.handleSession(a.copilotSuggest))
 
 	// Platform configs CRUD + verify + work + retry.
-	authed.Handle("GET /api/v1/platforms/configs", a.tenantAdminOnly(a.handle(a.listPlatformConfigs)))
-	authed.Handle("PUT /api/v1/platforms/configs", a.tenantAdminOnly(a.handle(a.upsertPlatformConfig)))
-	authed.Handle("POST /api/v1/platforms/configs/{id}/verify", a.tenantAdminOnly(a.handleDoc(a.verifyPlatformConfig)))
-	authed.Handle("DELETE /api/v1/platforms/configs/{id}", a.tenantAdminOnly(a.handleDoc(a.deactivatePlatformConfig)))
-	authed.Handle("GET /api/v1/platforms/configs/{id}/work", a.tenantAdminOnly(a.handleDoc(a.listPlatformWork)))
-	authed.Handle("POST /api/v1/platforms/configs/{config_id}/inbound-events/{id}/retry", a.tenantAdminOnly(a.handlePlatformRetry("inbound-events")))
-	authed.Handle("POST /api/v1/platforms/configs/{config_id}/deliveries/{id}/retry", a.tenantAdminOnly(a.handlePlatformRetry("deliveries")))
+	authed.Handle("GET /api/v1/platforms/configs", a.permOnly(PermChannelsView)(a.handle(a.listPlatformConfigs)))
+	authed.Handle("PUT /api/v1/platforms/configs", a.permOnly(PermChannelsManage)(a.handle(a.upsertPlatformConfig)))
+	authed.Handle("POST /api/v1/platforms/configs/{id}/verify", a.permOnly(PermChannelsView)(a.handleDoc(a.verifyPlatformConfig)))
+	authed.Handle("DELETE /api/v1/platforms/configs/{id}", a.permOnly(PermChannelsManage)(a.handleDoc(a.deactivatePlatformConfig)))
+	authed.Handle("GET /api/v1/platforms/configs/{id}/work", a.permOnly(PermChannelsView)(a.handleDoc(a.listPlatformWork)))
+	authed.Handle("POST /api/v1/platforms/configs/{config_id}/inbound-events/{id}/retry", a.permOnly(PermChannelsManage)(a.handlePlatformRetry("inbound-events")))
+	authed.Handle("POST /api/v1/platforms/configs/{config_id}/deliveries/{id}/retry", a.permOnly(PermChannelsManage)(a.handlePlatformRetry("deliveries")))
 
 	// Meta OAuth.
-	authed.Handle("POST /api/v1/platforms/meta/oauth/start", a.tenantAdminOnly(a.handle(a.metaOAuthStart)))
-	authed.Handle("GET /api/v1/platforms/meta/oauth/sessions/{id}", a.tenantAdminOnly(http.HandlerFunc(a.handleOAuthSession)))
-	authed.Handle("POST /api/v1/platforms/meta/oauth/complete", a.tenantAdminOnly(a.handle(a.metaOAuthComplete)))
+	authed.Handle("POST /api/v1/platforms/meta/oauth/start", a.permOnly(PermChannelsManage)(a.handle(a.metaOAuthStart)))
+	authed.Handle("GET /api/v1/platforms/meta/oauth/sessions/{id}", a.permOnly(PermChannelsManage)(http.HandlerFunc(a.handleOAuthSession)))
+	authed.Handle("POST /api/v1/platforms/meta/oauth/complete", a.permOnly(PermChannelsManage)(a.handle(a.metaOAuthComplete)))
 
 	// WhatsApp Embedded Signup.
-	authed.Handle("GET /api/v1/platforms/whatsapp/embedded-signup/config", a.tenantAdminOnly(a.handle(a.embeddedSignupConfig)))
-	authed.Handle("POST /api/v1/platforms/whatsapp/embedded-signup/complete", a.tenantAdminOnly(a.handle(a.embeddedSignupComplete)))
+	authed.Handle("GET /api/v1/platforms/whatsapp/embedded-signup/config", a.permOnly(PermChannelsManage)(a.handle(a.embeddedSignupConfig)))
+	authed.Handle("POST /api/v1/platforms/whatsapp/embedded-signup/complete", a.permOnly(PermChannelsManage)(a.handle(a.embeddedSignupComplete)))
 
 	// Platform super-admin (cross-tenant) management.
 	authed.Handle("GET /api/v1/platform/tenants", a.platformAdminOnly(a.handle(a.listTenants)))

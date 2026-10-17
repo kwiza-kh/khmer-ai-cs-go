@@ -32,25 +32,30 @@ import { cn } from "@/lib/utils";
  */
 export function GrowthTab() {
   const { t } = useI18n();
-  const [section, setSection] = React.useState("customers");
+  const { user, can } = useAuth();
+  // Each section calls a differently gated endpoint: customers_view for the 360,
+  // scripts_view for FAQ mining, and the plan buttons are platform-admin only
+  // (setPlan). A seat sees exactly the sections its grants can load.
+  const sections = [
+    { key: "customers", labelKey: "gr.customers", icon: Users, show: can("customers_view") },
+    { key: "faq", labelKey: "gr.faq", icon: Lightbulb, show: can("scripts_view") },
+    { key: "billing", labelKey: "gr.billing", icon: CreditCard, show: user?.role === "platform_admin" },
+  ].filter((s) => s.show);
+  const [section, setSection] = React.useState(sections[0]?.key ?? "");
   return (
     // 二级导航统一用与 Enterprise 相同的 Tabs 组件 —— 此前这里是手写
     // Button 组(实心紫活动态), 导致同一个仪表盘里出现 3 种 tab 视觉。
     <Tabs value={section} onValueChange={(v) => setSection(String(v))}>
       <TabsList className="h-auto w-auto flex-wrap">
-        {[
-          { key: "customers", labelKey: "gr.customers", icon: Users },
-          { key: "faq", labelKey: "gr.faq", icon: Lightbulb },
-          { key: "billing", labelKey: "gr.billing", icon: CreditCard },
-        ].map((s) => (
+        {sections.map((s) => (
           <TabsTrigger key={s.key} value={s.key} className="gap-1.5 text-xs">
             <s.icon className="size-3" /> {t(s.labelKey)}
           </TabsTrigger>
         ))}
       </TabsList>
-      <TabsContent value="customers" className="mt-4"><CustomersCard /></TabsContent>
-      <TabsContent value="faq" className="mt-4"><FaqCard /></TabsContent>
-      <TabsContent value="billing" className="mt-4"><BillingCard /></TabsContent>
+      {can("customers_view") && <TabsContent value="customers" className="mt-4"><CustomersCard /></TabsContent>}
+      {can("scripts_view") && <TabsContent value="faq" className="mt-4"><FaqCard /></TabsContent>}
+      {user?.role === "platform_admin" && <TabsContent value="billing" className="mt-4"><BillingCard /></TabsContent>}
     </Tabs>
   );
 }

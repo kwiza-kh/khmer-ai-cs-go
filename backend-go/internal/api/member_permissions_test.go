@@ -108,6 +108,24 @@ func (p *memberProbe) doc(ownerID int32, title string) {
 func (p *memberProbe) cleanup() {
 	c, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	// The surfaces wired by the permission matrix seed rows under the probe
+	// tenants; delete them before the users they reference, or the user delete
+	// fails on the foreign key and the probe leaves accounts behind.
+	for _, q := range []string{
+		"DELETE FROM canned_responses WHERE user_id = ANY($1::int[])",
+		"DELETE FROM business_hours WHERE user_id = ANY($1::int[])",
+		"DELETE FROM sla_policies WHERE user_id = ANY($1::int[])",
+		"DELETE FROM routing_rules WHERE user_id = ANY($1::int[])",
+		"DELETE FROM macros WHERE user_id = ANY($1::int[])",
+		"DELETE FROM webhook_subscriptions WHERE user_id = ANY($1::int[])",
+		"DELETE FROM customer_profiles WHERE user_id = ANY($1::int[])",
+		"DELETE FROM faq_suggestions WHERE user_id = ANY($1::int[])",
+		"DELETE FROM widget_tokens WHERE user_id = ANY($1::int[])",
+		"DELETE FROM platform_configs WHERE user_id = ANY($1::int[])",
+		"DELETE FROM tenant_billing WHERE user_id = ANY($1::int[])",
+	} {
+		_, _ = p.pool.Exec(c, q, p.ids)
+	}
 	_, _ = p.pool.Exec(c, "DELETE FROM agent_teams WHERE owner_user_id = ANY($1::int[]) OR agent_user_id = ANY($1::int[])", p.ids)
 	_, _ = p.pool.Exec(c, "DELETE FROM agent_teams WHERE owner_user_id = ANY($1::int[])", p.ids)
 	_, _ = p.pool.Exec(c, "DELETE FROM knowledge_documents WHERE uploaded_by = ANY($1::int[])", p.ids)
@@ -383,5 +401,174 @@ func TestOwnerOnlyWrapperRefusesMembers(t *testing.T) {
 		if !tc.reached && (reached || rec.Code != http.StatusForbidden) {
 			t.Errorf("member reached an owner-only route (status %d, reached=%v)", rec.Code, reached)
 		}
+	}
+}
+
+// The surface matrix is data the console renders. If the whitelist and the
+// defaults drift apart, the dialog shows a toggle that grants nothing — or a
+// capability exists that no toggle can reach. Pin both, plus the rule that the
+// write half is never on by default.
+func TestSurfacePermissionsDefaultToReadOnly(t *testing.T) {
+	want := map[string]bool{
+		PermChannelsView: true, PermChannelsManage: false,
+		PermWidgetView: true, PermWidgetManage: false,
+		PermCustomersView: true, PermCustomersEdit: false,
+		PermScriptsView: true, PermScriptsEdit: false,
+		PermSettingsView: true, PermSettingsManage: false,
+	}
+	for key, granted := range want {
+		if !validPermissionKey(key) {
+			t.Errorf("%s is not in the whitelist; the console cannot grant it", key)
+		}
+		if memberPermissionDefaults[key] != granted {
+			t.Errorf("default for %s = %v, want %v", key, memberPermissionDefaults[key], granted)
+		}
+	}
+	// 6 inbox/knowledge keys + 10 surface keys. The console renders exactly the
+	// whitelist, so a new key must land here and in the dialog together.
+	if len(memberPermissionDefaults) != 16 {
+		t.Errorf("matrix has %d keys, want 16 — update the console dialog with any change here", len(memberPermissionDefaults))
+	}
+	// The default floor must not grant a write on any surface.
+	for _, write := range []string{PermChannelsManage, PermWidgetManage, PermCustomersEdit, PermScriptsEdit, PermSettingsManage, PermKnowledgeEdit, PermInboxAssign} {
+		if memberPermissionDefaults[write] {
+			t.Errorf("%s is a write and must be opt-in, but the default grants it", write)
+		}
+	}
+}
+
+// permOnly is the route-level half. It must pass owners and the platform admin,
+// and answer a member exactly like the handler-side requirePermission would.
+func TestPermOnlyGate(t *testing.T) {
+	p := newMemberProbe(t)
+	owner := p.user("gate_owner", "user")
+	member := p.user("gate_member", "user")
+	p.seat(owner, member, map[string]bool{PermCustomersEdit: true}, true)
+
+	reached := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { reached = true })
+	call := func(user *CurrentUser, perm string) int {
+		reached = false
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/probe", nil)
+		req = req.WithContext(context.WithValue(req.Context(), userKey, user))
+		rec := httptest.NewRecorder()
+		p.app.permOnly(perm)(next).ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	memberUser := p.as(member)
+	if code := call(memberUser, PermCustomersEdit); code != http.StatusOK || !reached {
+		t.Errorf("granted customers_edit was refused (status %d)", code)
+	}
+	if code := call(memberUser, PermScriptsEdit); code != http.StatusForbidden || reached {
+		t.Errorf("ungranted scripts_edit reached the handler (status %d)", code)
+	}
+	// A default-granted view passes without an explicit grant.
+	if code := call(memberUser, PermCustomersView); code != http.StatusOK {
+		t.Errorf("default customers_view was refused (status %d)", code)
+	}
+	if code := call(p.as(owner), PermScriptsEdit); code != http.StatusOK || !reached {
+		t.Errorf("owner was refused by the permission gate (status %d)", code)
+	}
+	// No user in context: 401, never a silent pass.
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/probe", nil)
+	rec := httptest.NewRecorder()
+	p.app.permOnly(PermCustomersView)(next).ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("unauthenticated request got status %d, want 401", rec.Code)
+	}
+}
+
+// The regression this matrix would otherwise reintroduce: a seat's write must
+// land in the owner's tenant, and its reads must see the owner's rows. Before
+// the handlers bound user.Tenant(), a member's create landed under the member's
+// own (empty) user_id — the write looked successful and nobody else saw it.
+func TestMemberSurfaceWritesLandInTenant(t *testing.T) {
+	p := newMemberProbe(t)
+	owner := p.user("surf_owner", "user")
+	member := p.user("surf_member", "user")
+	p.seat(owner, member, map[string]bool{
+		PermScriptsEdit:    true,
+		PermSettingsManage: true,
+		PermCustomersEdit:  true,
+	}, true)
+
+	if _, err := p.pool.Exec(p.ctx,
+		"INSERT INTO business_hours (user_id, weekday, open_time, close_time, is_active) VALUES ($1, 3, '09:00', '17:00', true)", owner); err != nil {
+		t.Fatalf("seed business hours: %v", err)
+	}
+	if _, err := p.pool.Exec(p.ctx,
+		"INSERT INTO canned_responses (user_id, title, body, language, is_active) VALUES ($1, 'greet', 'hello', 'en', true)", owner); err != nil {
+		t.Fatalf("seed canned response: %v", err)
+	}
+	if _, err := p.pool.Exec(p.ctx,
+		"INSERT INTO customer_profiles (user_id, platform, platform_user_id, display_name) VALUES ($1, 'telegram', 'probe-cust', 'Probe')", owner); err != nil {
+		t.Fatalf("seed customer: %v", err)
+	}
+
+	memberUser := p.as(member)
+
+	// Reads resolve to the owner's rows, not the empty tenant a raw user_id would name.
+	for name, fn := range map[string]func(http.ResponseWriter, *http.Request) (any, error){
+		"business hours":   p.app.listBusinessHours,
+		"canned responses": p.app.listCannedResponses,
+		"customers":        p.app.listCustomers,
+	} {
+		res, err := p.call(memberUser, "", fn)
+		if err != nil {
+			t.Fatalf("member %s: %v", name, err)
+		}
+		rows, _ := res.([]map[string]any)
+		if len(rows) == 0 {
+			t.Errorf("member %s read landed on the member's own empty tenant", name)
+		}
+	}
+
+	// A write goes to the tenant, and created_by keeps the acting seat.
+	res, err := p.call(memberUser, `{"title":"probe","body":"probe"}`, p.app.createCannedResponse)
+	if err != nil {
+		t.Fatalf("member createCannedResponse: %v", err)
+	}
+	id, _ := res.(map[string]any)["id"].(int)
+	if id == 0 {
+		t.Fatalf("createCannedResponse returned no id: %#v", res)
+	}
+	var ownerID int32
+	var createdBy *int32
+	if err := p.pool.QueryRow(p.ctx,
+		"SELECT user_id, created_by FROM canned_responses WHERE id = $1", id).Scan(&ownerID, &createdBy); err != nil {
+		t.Fatalf("read created row: %v", err)
+	}
+	if ownerID != owner {
+		t.Errorf("row user_id = %d, want the tenant owner %d", ownerID, owner)
+	}
+	if createdBy == nil || *createdBy != member {
+		t.Errorf("created_by = %v, want the acting seat %d", createdBy, member)
+	}
+}
+
+// The login/profile payload is the console's only view of the effective set.
+// It must match what Can() enforces, and owners must get no map at all.
+func TestMemberIdentityPayload(t *testing.T) {
+	p := newMemberProbe(t)
+	owner := p.user("ident_owner", "user")
+	member := p.user("ident_member", "user")
+	p.seat(owner, member, map[string]bool{PermKnowledgeEdit: true, PermScriptsView: false}, true)
+
+	isMember, perms := p.app.memberIdentity(p.ctx, member)
+	if !isMember {
+		t.Fatal("an active seat did not resolve as a member")
+	}
+	if !perms[PermKnowledgeEdit] {
+		t.Error("the payload dropped the explicit knowledge_edit grant")
+	}
+	if perms[PermScriptsView] {
+		t.Error("the payload ignored the explicit scripts_view revocation")
+	}
+	if !perms[PermInboxView] {
+		t.Error("the payload is missing a default (inbox_view)")
+	}
+	if isMember, perms := p.app.memberIdentity(p.ctx, owner); isMember || perms != nil {
+		t.Errorf("owner resolved as a member payload (isMember=%v, perms=%v)", isMember, perms)
 	}
 }

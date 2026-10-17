@@ -137,6 +137,14 @@ func TestGeminiNeverReadsADeepSeekRow(t *testing.T) {
 func TestLoadProviderFindsARowForProvidersThatAreNotServing(t *testing.T) {
 	tx := openRolledBackTx(t)
 	ctx := context.Background()
+	// The table may already hold a Claude row (the console lets an operator add
+	// one). LoadProvider prefers the default, else the lowest id, so an ambient
+	// row would win the assertion and this test would be measuring the database's
+	// history instead of the rule. Clear the provider's rows inside the
+	// transaction — it rolls back.
+	if _, err := tx.Exec(ctx, "DELETE FROM model_configs WHERE provider = $1", ProviderAnthropic); err != nil {
+		t.Fatalf("clear anthropic rows: %v", err)
+	}
 	claudeRow := insertTestRow(t, tx, "claude row", ProviderAnthropic, false)
 	insertTestRow(t, tx, "serving row", ProviderGemini, true)
 

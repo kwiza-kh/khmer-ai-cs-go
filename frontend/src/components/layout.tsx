@@ -149,7 +149,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 }
 
 function AppLayoutShell({ children }: { children: React.ReactNode }) {
-  const { user, token, logout } = useAuth();
+  const { user, token, logout, can } = useAuth();
   const realtimeConnected = useRealtimeConnected();
   const { t } = useI18n();
   const pathname = usePathname();
@@ -440,28 +440,31 @@ function AppLayoutShell({ children }: { children: React.ReactNode }) {
             </div>
             <nav className="flex-1 overflow-auto px-3 py-3">
               <NavSection label={t("nav.groupWorkspace")}>
-                <NavItem href="/inbox" icon={Inbox} label={t("nav.inbox")} active={isActive("/inbox")} onNavigate={close} />
-                <NavItem href="/handoff-requests" icon={UserCheck} label={t("nav.humanRequests")} active={isActive("/handoff-requests")} onNavigate={close} count={handoffPending?.total ?? 0} />
+                {can("inbox_view") && <NavItem href="/inbox" icon={Inbox} label={t("nav.inbox")} active={isActive("/inbox")} onNavigate={close} />}
+                {can("inbox_view") && <NavItem href="/handoff-requests" icon={UserCheck} label={t("nav.humanRequests")} active={isActive("/handoff-requests")} onNavigate={close} count={handoffPending?.total ?? 0} />}
                 <NavItem href="/ai-test" icon={FlaskConical} label={t("nav.aiTest")} active={isActive("/ai-test")} onNavigate={close} badge={t("nav.hot")} />
               </NavSection>
 
               <NavSection label={t("nav.groupContent")}>
-                <NavItem href="/knowledge" icon={BookOpen} label={t("nav.knowledge")} active={isActive("/knowledge")} onNavigate={close} />
-                <NavItem href="/platforms" icon={Globe} label={t("nav.platforms")} active={isActive("/platforms")} onNavigate={close} />
-                <NavItem href="/widget-admin" icon={MessageCircle} label={t("nav.widget")} active={isActive("/widget-admin")} onNavigate={close} />
+                {can("knowledge_view") && <NavItem href="/knowledge" icon={BookOpen} label={t("nav.knowledge")} active={isActive("/knowledge")} onNavigate={close} />}
+                {can("channels_view") && <NavItem href="/platforms" icon={Globe} label={t("nav.platforms")} active={isActive("/platforms")} onNavigate={close} />}
+                {can("widget_view") && <NavItem href="/widget-admin" icon={MessageCircle} label={t("nav.widget")} active={isActive("/widget-admin")} onNavigate={close} />}
               </NavSection>
 
-              {isAdmin && (
+              {/* A seat sees only the entries its grants can open. Owners keep the
+                  whole section; the per-item checks below are what keep a member
+                  from landing on a 403 the console could have predicted. */}
+              {(isAdmin || can("settings_view") || can("scripts_view") || can("customers_view")) && (
                 <NavSection label={t("nav.administration")}>
                   {/* 原仪表盘页内 Tab 的五个视图（2026-10-12 拆分反馈页 2026-10-13 移除）：每个视图一个
                       独立入口，顺序沿用拆分前的 Tab 顺序。 */}
-                  <NavItem href="/admin/analytics" icon={BarChart3} label={t("nav.analytics")} active={isActive("/admin/analytics")} onNavigate={close} />
-                  <NavItem href="/admin/operations" icon={Clock} label={t("nav.operations")} active={isActive("/admin/operations")} onNavigate={close} />
-                  <NavItem href="/admin/growth" icon={Sparkles} label={t("nav.growth")} active={isActive("/admin/growth")} onNavigate={close} />
-                  <NavItem href="/admin/reports" icon={Download} label={t("nav.reports")} active={isActive("/admin/reports")} onNavigate={close} />
-                  <NavItem href="/admin/enterprise" icon={ShieldCheck} label={t("nav.enterprise")} active={isActive("/admin/enterprise")} onNavigate={close} />
-                  <NavItem href="/admin/users" icon={Users} label={t("nav.users")} active={isActive("/admin/users")} onNavigate={close} />
-                  <NavItem href="/admin/personas" icon={Bot} label={t("nav.personas")} active={isActive("/admin/personas")} onNavigate={close} />
+                  {isAdmin && <NavItem href="/admin/analytics" icon={BarChart3} label={t("nav.analytics")} active={isActive("/admin/analytics")} onNavigate={close} />}
+                  {(can("settings_view") || can("scripts_view")) && <NavItem href="/admin/operations" icon={Clock} label={t("nav.operations")} active={isActive("/admin/operations")} onNavigate={close} />}
+                  {(can("customers_view") || can("scripts_view")) && <NavItem href="/admin/growth" icon={Sparkles} label={t("nav.growth")} active={isActive("/admin/growth")} onNavigate={close} />}
+                  {isAdmin && <NavItem href="/admin/reports" icon={Download} label={t("nav.reports")} active={isActive("/admin/reports")} onNavigate={close} />}
+                  {(can("settings_view") || can("scripts_view")) && <NavItem href="/admin/enterprise" icon={ShieldCheck} label={t("nav.enterprise")} active={isActive("/admin/enterprise")} onNavigate={close} />}
+                  {isAdmin && <NavItem href="/admin/users" icon={Users} label={t("nav.users")} active={isActive("/admin/users")} onNavigate={close} />}
+                  {can("settings_view") && <NavItem href="/admin/personas" icon={Bot} label={t("nav.personas")} active={isActive("/admin/personas")} onNavigate={close} />}
                 </NavSection>
               )}
               {isPlatformAdmin && (

@@ -153,6 +153,7 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) (any, error) {
 	if err != nil {
 		return nil, ErrInternal("令牌生成失败")
 	}
+	isMember, perms := a.memberIdentity(ctx, userID)
 	return map[string]any{
 		"token": token,
 		"user": map[string]any{
@@ -164,6 +165,11 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) (any, error) {
 			// the role string cannot answer it: self-service and SSO signups are
 			// owners with role "user" (see isTenantOwner).
 			"is_tenant_owner": a.isTenantOwnerID(ctx, userID, role),
+			// A seat works inside someone else's tenant; the effective permission
+			// set is what the console uses to hide entries the handlers would
+			// refuse. Owners get no map: they are allowed everything.
+			"is_member":   isMember,
+			"permissions": perms,
 		},
 	}, nil
 }
@@ -281,6 +287,8 @@ func (a *App) register(w http.ResponseWriter, r *http.Request) (any, error) {
 			"role":     "user",
 			// A brand-new signup is its own tenant's owner: nothing owns it.
 			"is_tenant_owner": a.isTenantOwnerID(ctx, userID, "user"),
+			"is_member":       false,
+			"permissions":     nil,
 		},
 	}}, nil
 }
