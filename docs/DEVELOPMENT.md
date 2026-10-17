@@ -2549,3 +2549,16 @@ Telegram 通知（决定"每个客户消息进谁的聊天"）、团队与角色
   embedding，~10k tokens，`user_id` 为 NULL）此前只进总量、不进按租户表，让看板自己不自洽。
 - **测试卫生**：`TestLoadProviderFindsARowForProvidersThatAreNotServing` 先清掉事务内的
   anthropic 行——此前库里一旦有 Claude 行，测试断言的就不是规则而是数据库历史。
+
+### 五、验证（2026-10-17 线上，`b15a33b-permmatrix`）
+
+一次性店主 + 成员（SQL 造、用应用自己的 bcrypt；成员账号无 2FA）：
+
+- **API 20/20**：成员 payload 16 键、默认 `scripts_edit=false` / `customers_view=true`；
+  成员 `GET /customers`、`/platforms/configs`、`/sla`、`/widgets` 全 200；
+  `POST/PUT` 的 manage 面、`/team`、`/admin/users` 全 403；店主改成
+  `{scripts_edit:true, customers_view:false}` 后**同一 token** 立即变成 403/200；
+  成员写入的行 `user_id=店主`、`created_by=成员`。
+- **控制台**：成员侧边栏只剩 Workspace / Content & Channels / 管理（运营、增长、企业、人格），
+  分析、报表、用户隐藏；店主侧边栏完整。徽章：成员=Member、店主=Owner
+  （两者此前共用 `role.user → Member` 的旧映射，有了成员概念后必须分开）。
