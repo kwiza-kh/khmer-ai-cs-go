@@ -5,6 +5,8 @@
 > 审计方式：4 个领域并行只读审计 + Lead 交叉复核；每条结论附代码证据（file:line）
 > 归档说明：本文件整合了总报告（第一部分）与四份领域明细（第二至第五部分），原始分报告生成于 `_audit/incomplete/`，此文件为提交到仓库的整合版本。
 
+> **2026-10-21 更新**：P0-1「密码找回/重置整体缺失」已修复并上线（commit `b9cecd6`）：迁移 087 + 公开 request/confirm 端点 + 平台管理员一次性重置链接 + 前端 `/reset-password` 页；生产已部署（SMTP 未配置时由平台管理员在控制台生成链接）。实现与验证细节见 `docs/DEVELOPMENT.md` 第三十七节。
+
 ## 目录
 
 - [第一部分 · 总报告](#part1)（结论摘要、功能地图、P0/P1/P2 清单、dormant、文档核对、修复顺序）
@@ -88,7 +90,7 @@
 ## 三、P0 / P1 不完整清单
 
 ### P0-1 密码找回 / 密码重置整体缺失（账号不可恢复）
-- **状态**：未实现
+- **状态**：未实现 → **已修复（2026-10-21，commit `b9cecd6`）**：迁移 087、公开 request/confirm、平台管理员一次性链接、前端 `/reset-password`；生产已上线
 - **证据**：公开认证路由只有 login/register/SSO/methods（`backend-go/internal/api/router.go:21-36`）；唯一改密端点要求旧密码（`internal/api/auth_handlers.go:341-371` `!auth.VerifyPassword(req.OldPassword, ...)`）；平台管理台无重置入口（`router.go:330-356`）；全仓无 SMTP 发信实现，邮件重置也没有地基。
 - **缺什么**：`/auth/password-reset/request|confirm` + 一次性 token；或至少平台管理员重置端点（带审计）。
 - **影响**：管理员创建的商户是密码账号，忘记密码即永久锁死；只能 SSH 改库。
