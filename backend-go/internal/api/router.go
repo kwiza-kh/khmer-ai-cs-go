@@ -34,6 +34,12 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("GET /api/v1/auth/telegram/callback", a.telegramCallback)
 	mux.Handle("POST /api/v1/auth/telegram/exchange", a.rateLimit(20)(a.handle(a.telegramLoginExchange)))
 	mux.Handle("GET /api/v1/auth/methods", a.handle(a.googleAuthMethods))
+	// Password reset. Public by nature — the caller has lost the credential —
+	// so both routes are per-client rate limited. The request route answers the
+	// same sentence whether or not the account exists (no enumeration oracle),
+	// and the confirm route spends one token per successful call.
+	mux.Handle("POST /api/v1/auth/password-reset/request", a.rateLimit(10)(a.handle(a.passwordResetRequest)))
+	mux.Handle("POST /api/v1/auth/password-reset/confirm", a.rateLimit(10)(a.handle(a.passwordResetConfirm)))
 
 	// Website chat widget — public, authenticated by the embed token only
 	// (CORS is opened for /api/v1/widget/* in a.cors).
@@ -354,6 +360,11 @@ func (a *App) Router() http.Handler {
 	authed.Handle("POST /api/v1/platform/channels/{id}/retry-failed", a.platformAdminOnly(a.handleDoc(a.platformRetryChannel)))
 	authed.Handle("GET /api/v1/platform/todo", a.platformAdminOnly(a.handle(a.platformTodo)))
 	authed.Handle("GET /api/v1/platform/audit-logs", a.platformAdminOnly(a.handle(a.listAuditLogs)))
+	// Operator-issued password reset: the break-glass path for the normal
+	// production state (no SMTP). It never sets a password — it returns a
+	// one-time link the operator hands over out of band — and it is recorded in
+	// audit_logs as password.reset.link.
+	authed.Handle("POST /api/v1/platform/users/{id}/password-reset", a.platformAdminOnly(a.handleDoc(a.platformPasswordReset)))
 
 	// 180/min per user: the admin SPA legitimately aggregates 6-10 pollers
 	// (inbox SWR, handoff badge, notification bell, page loads) — 60 tripped

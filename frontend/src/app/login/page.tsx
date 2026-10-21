@@ -5,6 +5,7 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { API_BASE, useAuth } from "@/lib/auth-client";
 import { peekPendingInvite } from "@/lib/pending-invite";
+import { requestPasswordReset } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -13,7 +14,7 @@ import {
 } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { AnimatePresence, motion } from "motion/react";
-import { Eye, EyeOff, Lock, Mail, UserRound, ShieldCheck, ArrowRight, Loader2 } from "lucide-react";
+import { Eye, EyeOff, Lock, Mail, UserRound, ShieldCheck, ArrowRight, ArrowLeft, CheckCircle2, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { LANGS, useI18n } from "@/lib/i18n";
 import { TelegramIcon } from "@/components/platform-icons";
@@ -60,6 +61,16 @@ export default function LoginPage() {
   const [regUser, setRegUser] = useState("");
   const [regEmail, setRegEmail] = useState("");
   const [regPass, setRegPass] = useState("");
+  // Password reset by e-mail: null until GET /auth/methods answers. Only a
+  // definite false hides the flow — an older/unreachable backend must not
+  // turn a working reset link into a hidden button.
+  const [resetEmailEnabled, setResetEmailEnabled] = useState<boolean | null>(null);
+  // "forgot" replaces the login/register forms with the reset-request form.
+  const [forgot, setForgot] = useState(false);
+  const [forgotLogin, setForgotLogin] = useState("");
+  const [forgotBusy, setForgotBusy] = useState(false);
+  const [forgotSent, setForgotSent] = useState(false);
+  const [forgotNotice, setForgotNotice] = useState("");
 
   // OAuth return: the callback redirects here with ?<provider>_code= (success)
   // or ?<provider>_error= (failure). Swap the one-time code for a session, then
@@ -117,10 +128,11 @@ export default function LoginPage() {
     );
     void fetch(`${API_BASE}/auth/methods`)
       .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
-      .then((data: { google?: boolean; telegram?: boolean }) => {
+      .then((data: { google?: boolean; telegram?: boolean; password_reset_email?: boolean }) => {
         if (cancelled) return;
         setGoogleEnabled(Boolean(data.google));
         setTelegramEnabled(Boolean(data.telegram));
+        setResetEmailEnabled(data.password_reset_email ?? null);
         setDiag("");
       })
       .catch((err: unknown) => {
@@ -153,6 +165,33 @@ export default function LoginPage() {
     finally { setLoading(false); }
   };
 
+  // The link under "Sign In" opens the request form. When the server says
+  // this deployment cannot send e-mail, say so instead of opening a form
+  // whose request could never deliver anything.
+  const openForgot = () => {
+    setError(""); setForgotNotice(""); setForgotSent(false);
+    if (resetEmailEnabled === false) {
+      setForgotNotice(t("login.forgotUnavailable"));
+      return;
+    }
+    setForgot(true);
+  };
+
+  const handleForgot = async (e: React.FormEvent) => {
+    e.preventDefault(); setError(""); setForgotNotice(""); setForgotBusy(true);
+    try {
+      const res = await requestPasswordReset(forgotLogin.trim());
+      // The endpoint answers 200 whether or not the account exists, so the
+      // UI never confirms an account. Only "this deployment has no mailer"
+      // is actionable, hence the separate hint.
+      if (res.email_available === false) setForgotNotice(t("login.forgotUnavailable"));
+      else setForgotSent(true);
+    } catch (err: unknown) {
+      setError((err as Error).message);
+      setDiag(diagLine("auth/password-reset/request", err));
+    } finally { setForgotBusy(false); }
+  };
+
   return (
     <section className="fixed inset-0 overflow-y-auto bg-background text-foreground">
       {/* Header */}
@@ -181,30 +220,33 @@ export default function LoginPage() {
         <Card className="w-full max-w-sm border-border bg-card text-card-foreground">
           <CardHeader className="space-y-1">
             <CardTitle className="text-2xl text-foreground">
-              {tab === "login" ? t("login.title") : t("login.registerTitle")}
+              {forgot ? t("login.forgotTitle") : tab === "login" ? t("login.title") : t("login.registerTitle")}
             </CardTitle>
             <CardDescription className="text-muted-foreground">
-              {tab === "login" ? t("login.desc") : t("login.registerDesc")}
+              {forgot ? t("login.forgotDesc") : tab === "login" ? t("login.desc") : t("login.registerDesc")}
             </CardDescription>
           </CardHeader>
 
           <CardContent className="grid gap-5">
-            {/* Segmented control */}
-            <div className="grid grid-cols-2 gap-1 rounded-lg border border-border bg-muted/50 p-1">
-              {(["login", "register"] as const).map((key) => (
-                <button
-                  key={key}
-                  type="button"
-                  onClick={() => { setError(""); setTab(key); }}
-                  className={cn(
-                    "h-8 rounded-md text-body-sm font-medium transition-colors",
-                    tab === key ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
-                  )}
-                >
-                  {key === "login" ? t("login.tab") : t("login.registerTab")}
-                </button>
-              ))}
-            </div>
+            {/* Segmented control (not shown while the forgot-password view
+                is open: the two tabs belong to the sign-in/register flow). */}
+            {!forgot && (
+              <div className="grid grid-cols-2 gap-1 rounded-lg border border-border bg-muted/50 p-1">
+                {(["login", "register"] as const).map((key) => (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => { setError(""); setForgotNotice(""); setForgotSent(false); setForgot(false); setTab(key); }}
+                    className={cn(
+                      "h-8 rounded-md text-body-sm font-medium transition-colors",
+                      tab === key ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {key === "login" ? t("login.tab") : t("login.registerTab")}
+                  </button>
+                ))}
+              </div>
+            )}
 
             <AnimatePresence>
               {error && (
@@ -215,6 +257,12 @@ export default function LoginPage() {
                 </motion.div>
               )}
             </AnimatePresence>
+
+            {forgotNotice && (
+              <div role="status" className="rounded-lg border border-border bg-muted/60 px-3 py-2">
+                <p className="text-sm text-muted-foreground">{forgotNotice}</p>
+              </div>
+            )}
 
             {/* Connection diagnostics. Load-bearing: this is how a user who
                 cannot sign in tells us which host their browser was calling
@@ -239,7 +287,51 @@ export default function LoginPage() {
             )}
 
             <AnimatePresence mode="wait">
-              {tab === "login" ? (
+              {forgot ? (
+                <motion.form key="forgot" initial={false} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 4 }} transition={{ duration: 0.15 }} onSubmit={handleForgot} className="grid gap-5">
+                  {forgotSent ? (
+                    <div role="status" aria-live="polite" className="flex gap-2.5 rounded-lg border border-success/40 bg-success/10 px-3 py-2">
+                      <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-success" />
+                      <p className="text-sm text-foreground">{t("login.forgotSent")}</p>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="grid gap-2">
+                        <Label htmlFor="forgot-login" className="text-foreground">{t("login.forgotPlaceholder")}</Label>
+                        <div className="relative">
+                          <Mail className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground/70" />
+                          <Input
+                            id="forgot-login"
+                            value={forgotLogin}
+                            onChange={(e) => setForgotLogin(e.target.value)}
+                            placeholder={t("login.forgotPlaceholder")}
+                            required
+                            autoComplete="username"
+                            className="border-input bg-background pl-10 text-foreground placeholder:text-muted-foreground/60"
+                          />
+                        </div>
+                      </div>
+
+                      <button
+                        type="submit"
+                        disabled={forgotBusy || !forgotLogin.trim()}
+                        className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-primary text-sm font-medium text-primary-foreground transition-colors hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {forgotBusy ? <Loader2 className="size-4 animate-spin" /> : t("login.forgotSubmit")}
+                      </button>
+                    </>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => { setForgot(false); setForgotSent(false); setForgotNotice(""); setError(""); }}
+                    className="inline-flex h-9 w-full items-center justify-center gap-2 rounded-lg text-sm text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    <ArrowLeft className="size-4" />
+                    {t("login.forgotBack")}
+                  </button>
+                </motion.form>
+              ) : tab === "login" ? (
                 <motion.form key="login" initial={false} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 4 }} transition={{ duration: 0.15 }} onSubmit={handleLogin} className="grid gap-5">
                   <div className="grid gap-2">
                     <Label htmlFor="login-user" className="text-foreground">{t("login.username")}</Label>
@@ -310,6 +402,16 @@ export default function LoginPage() {
                   >
                     {loading ? <Loader2 className="size-4 animate-spin" /> : t("login.submit")}
                   </button>
+
+                  <div className="-mt-2 text-center">
+                    <button
+                      type="button"
+                      onClick={openForgot}
+                      className="text-sm text-muted-foreground underline-offset-4 transition-colors hover:text-foreground hover:underline"
+                    >
+                      {t("login.forgot")}
+                    </button>
+                  </div>
 
                   {googleEnabled && (
                     <button
@@ -429,7 +531,7 @@ export default function LoginPage() {
                   <Button
                     type="button"
                     variant="outline"
-                    onClick={() => { setError(""); setTab("login"); }}
+                    onClick={() => { setError(""); setForgotNotice(""); setForgotSent(false); setForgot(false); setTab("login"); }}
                     className="h-10 w-full rounded-lg border-border bg-card text-foreground hover:bg-muted/70"
                   >
                     {t("login.tab")}
@@ -440,19 +542,21 @@ export default function LoginPage() {
             </AnimatePresence>
           </CardContent>
 
-          <CardFooter className="flex flex-col items-center gap-3 border-t-0 bg-transparent pt-0 text-sm text-muted-foreground">
-            <div>
-              {tab === "login" ? t("login.noAccount") : t("login.haveAccount")}
-              <button
-                type="button"
-                onClick={() => { setError(""); setTab(tab === "login" ? "register" : "login"); }}
-                className="ml-1 font-medium text-primary hover:underline"
-              >
-                {tab === "login" ? t("login.registerTab") : t("login.tab")}
-              </button>
-            </div>
-            <span className="text-label tracking-wide text-muted-foreground">{t("login.footer")}</span>
-          </CardFooter>
+          {!forgot && (
+            <CardFooter className="flex flex-col items-center gap-3 border-t-0 bg-transparent pt-0 text-sm text-muted-foreground">
+              <div>
+                {tab === "login" ? t("login.noAccount") : t("login.haveAccount")}
+                <button
+                  type="button"
+                  onClick={() => { setError(""); setForgotNotice(""); setForgotSent(false); setForgot(false); setTab(tab === "login" ? "register" : "login"); }}
+                  className="ml-1 font-medium text-primary hover:underline"
+                >
+                  {tab === "login" ? t("login.registerTab") : t("login.tab")}
+                </button>
+              </div>
+              <span className="text-label tracking-wide text-muted-foreground">{t("login.footer")}</span>
+            </CardFooter>
+          )}
         </Card>
       </div>
     </section>

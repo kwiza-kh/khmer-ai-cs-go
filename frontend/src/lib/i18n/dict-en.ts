@@ -72,6 +72,25 @@ export const en: Dict = {
   "login.showPassword": "Show password",
   "login.hidePassword": "Hide password",
   "login.emailPlaceholder": "Enter email",
+  "login.forgot": "Forgot password?",
+  "login.forgotTitle": "Reset your password",
+  "login.forgotDesc": "Enter your username or email and we will send a reset link.",
+  "login.forgotPlaceholder": "Username or email",
+  "login.forgotSubmit": "Send reset link",
+  "login.forgotBack": "Back to sign in",
+  "login.forgotSent": "If that account exists, a reset link has been sent. Check your inbox (and spam folder).",
+  "login.forgotUnavailable": "Self-service password reset by email is not enabled on this deployment — contact your administrator.",
+
+  "reset.title": "Set a new password",
+  "reset.desc": "Choose a new password for your account.",
+  "reset.newPassword": "New password",
+  "reset.confirmPassword": "Confirm new password",
+  "reset.submit": "Reset password",
+  "reset.success": "Your password has been reset — sign in with the new password.",
+  "reset.invalidToken": "This reset link is invalid or has expired. Request a new one.",
+  "reset.tooShort": "Password must be at least 8 characters",
+  "reset.mismatch": "Passwords do not match",
+  "reset.toLogin": "Go to sign in",
 
   // Settings
   "settings.kicker": "Account",
@@ -1244,6 +1263,14 @@ export const en: Dict = {
   "pa.pageN": "Page {page} / {total}",
   "pa.prev": "Prev",
   "pa.next": "Next",
+  "pa.resetPassword": "Generate password reset link",
+  "pa.resetPasswordHint": "Create a one-time password reset link to send to the user. The link is shown only once.",
+  "pa.resetLink": "Reset link",
+  "pa.resetExpires": "Expires",
+  "pa.resetEmailed": "Email sent",
+  "pa.resetNotEmailed": "Email not sent (copy the link manually)",
+  "pa.copy": "Copy",
+  "pa.copied": "Link copied",
 
   // Platform token board (cross-tenant god view). Khmer strings here follow the
   // wording already used elsewhere in the console; a native pass is still owed

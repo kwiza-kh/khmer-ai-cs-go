@@ -4,8 +4,8 @@ import * as React from "react";
 import useSWR, { mutate as globalMutate } from "swr";
 import {
   listTenants, getTenantDetail, setTenantStatus, setTenantPlan, getPlatformAnalytics,
-  createTenant, listAuditLogs, TenantItem, TenantDetail, PlatformAnalytics, AuditLogItem,
-  type PaginatedTenants,
+  createTenant, listAuditLogs, platformPasswordReset, TenantItem, TenantDetail, PlatformAnalytics, AuditLogItem,
+  type PaginatedTenants, type PlatformPasswordReset,
 } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -17,7 +17,7 @@ import { EmptyState } from "@/components/empty-state";
 import { PageHeader } from "@/components/page-header";
 import {
   Building2, Search, Power, ShieldCheck, Loader2, Plus, Users, MessageSquare, FileText,
-  Coins, BarChart3, Eye, ScrollText, ChevronLeft, ChevronRight, Cpu, Zap, Headset, CreditCard, Activity,
+  Coins, BarChart3, Eye, ScrollText, ChevronLeft, ChevronRight, Cpu, Zap, Headset, CreditCard, Activity, KeyRound, Copy,
   type LucideIcon,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -178,6 +178,11 @@ function TenantsPanel() {
   const [auth, setAuth] = React.useState("");
   const { data, mutate } = useSWR(`platform-tenants-${q}-${auth}`, () => listTenants({ q: q || undefined, auth: auth || undefined, pageSize: 100 }));
   const [detail, setDetail] = React.useState<TenantDetail | null>(null);
+  // The one-time link from POST /platform/users/{id}/password-reset. Kept in
+  // this component (not in the detail payload) so opening any tenant clears
+  // it: the server returns the plaintext URL exactly once.
+  const [resetLink, setResetLink] = React.useState<PlatformPasswordReset | null>(null);
+  const [resetBusy, setResetBusy] = React.useState(false);
 
   const toggle = async (tenant: TenantItem) => {
     try {
@@ -213,10 +218,34 @@ function TenantsPanel() {
     }
   };
   const openDetail = async (tenant: TenantItem) => {
+    // A link belongs to the tenant it was generated for; never show it next
+    // to another tenant.
+    setResetLink(null);
     try {
       const d = await getTenantDetail(tenant.user_id);
       setDetail(d);
     } catch (e) { toast.error((e as Error).message); }
+  };
+
+  // Issue a one-time password-reset link for the tenant in the detail pane.
+  // The server may also e-mail it; the plaintext URL is returned once either
+  // way, so it is displayed here and must be copied by the operator.
+  const createResetLink = async (tenantId: number) => {
+    setResetBusy(true);
+    try {
+      setResetLink(await platformPasswordReset(tenantId));
+    } catch (e) { toast.error((e as Error).message); }
+    finally { setResetBusy(false); }
+  };
+
+  const copyResetLink = async () => {
+    if (!resetLink) return;
+    try {
+      await navigator.clipboard.writeText(resetLink.reset_url);
+      toast.success(t("pa.copied"));
+    } catch {
+      /* clipboard blocked — the read-only code below still shows the link */
+    }
   };
 
   return (
@@ -304,7 +333,42 @@ function TenantsPanel() {
             <EmptyState icon={Users} title={t("pa.selectTenant")} description={t("pa.selectTenantDesc")} />
           ) : (
             <div className="space-y-2">
-              <p className="text-xs font-semibold">{detail.tenant.username} <span className="text-muted-foreground font-normal">({detail.tenant.email})</span></p>
+              <div className="flex items-start justify-between gap-2">
+                <p className="text-xs font-semibold">{detail.tenant.username} <span className="text-muted-foreground font-normal">({detail.tenant.email})</span></p>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 shrink-0 gap-1 text-label"
+                  title={t("pa.resetPasswordHint")}
+                  disabled={resetBusy}
+                  onClick={() => void createResetLink(detail.tenant.user_id)}
+                >
+                  {resetBusy ? <Loader2 className="size-3 animate-spin" /> : <KeyRound className="size-3" />}
+                  {t("pa.resetPassword")}
+                </Button>
+              </div>
+
+              {/* One-time password reset: the link is displayed here and
+                  nowhere else — reopening a tenant clears it. */}
+              {resetLink && (
+                <div className="space-y-1.5 rounded border border-border bg-muted/30 p-2">
+                  <p className="text-label font-medium text-muted-foreground">
+                    {t("pa.resetLink")} · {resetLink.username}
+                  </p>
+                  <div className="flex items-start gap-2">
+                    <code className="min-w-0 flex-1 break-all rounded bg-background px-2 py-1 text-label">
+                      {resetLink.reset_url}
+                    </code>
+                    <Button size="sm" className="h-7 shrink-0 gap-1 text-label" onClick={() => void copyResetLink()}>
+                      <Copy className="size-3" />{t("pa.copy")}
+                    </Button>
+                  </div>
+                  <div className="flex flex-wrap gap-x-3 text-label text-muted-foreground">
+                    <span>{t("pa.resetExpires")}: {fmtDateTime(resetLink.expires_at)}</span>
+                    <span>{resetLink.emailed ? t("pa.resetEmailed") : t("pa.resetNotEmailed")}</span>
+                  </div>
+                </div>
+              )}
               {/* Health: what the rollup above cannot tell you — a broken
                   channel, documents that failed to index, and whether anyone is
                   actually using the tenant at all. */}

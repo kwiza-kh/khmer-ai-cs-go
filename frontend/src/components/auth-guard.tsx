@@ -25,7 +25,11 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
     pathname === "/join" ||
     pathname === "/widget" ||
     pathname === "/privacy" ||
-    pathname === "/privacy/deletion-status";
+    pathname === "/privacy/deletion-status" ||
+    // The landing page for password-reset links (e-mailed by the user, or
+    // copied from a platform admin). The visitor is usually signed out by
+    // definition, so it must render without a session and without the shell.
+    pathname === "/reset-password";
 
   useEffect(() => {
     if (isLoading) return;

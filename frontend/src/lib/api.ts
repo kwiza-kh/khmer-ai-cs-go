@@ -947,6 +947,35 @@ export async function getPreferences() {
 }
 
 // ============================================
+// Password reset (public — reached from the login page, usually signed out)
+// ============================================
+
+/** Result of asking for a reset link. `message` is deliberately generic: the
+ *  endpoint answers 200 whether or not the login exists, so an attacker cannot
+ *  enumerate accounts. `email_available` says whether this deployment can send
+ *  the e-mail at all (the caller then points the user at an administrator). */
+export interface PasswordResetRequestResult {
+  message: string;
+  email_available: boolean;
+}
+
+/** Request a self-service password-reset e-mail. Never reveals account existence. */
+export function requestPasswordReset(login: string): Promise<PasswordResetRequestResult> {
+  return apiFetch<PasswordResetRequestResult>("/auth/password-reset/request", {
+    method: "POST",
+    body: JSON.stringify({ login }),
+  });
+}
+
+/** Complete a reset with the one-time token from the e-mailed link. */
+export function confirmPasswordReset(token: string, newPassword: string): Promise<{ message: string }> {
+  return apiFetch<{ message: string }>("/auth/password-reset/confirm", {
+    method: "POST",
+    body: JSON.stringify({ token, new_password: newPassword }),
+  });
+}
+
+// ============================================
 // Business hours + canned responses + session tags (batch 3)
 // ============================================
 
@@ -1262,6 +1291,23 @@ export function setTenantStatus(userId: number, isActive: boolean) {
 export function setTenantPlan(userId: number, plan: string) {
   return apiFetch<{ message: string }>(`/platform/tenants/${userId}/plan`, { method: "PUT", body: JSON.stringify({ plan }) });
 }
+export interface PlatformPasswordReset {
+  /** Plaintext reset URL — the server returns it once and never again. */
+  reset_url: string;
+  /** RFC3339 expiry of the one-time token. */
+  expires_at: string;
+  /** Whether the server also e-mailed the link to the tenant. */
+  emailed: boolean;
+  username: string;
+}
+/**
+ * Issue a one-time password-reset link for a tenant (platform admins only).
+ * The link is shown to the operator once; the server does not persist the URL.
+ */
+export function platformPasswordReset(userId: number): Promise<PlatformPasswordReset> {
+  return apiFetch<PlatformPasswordReset>(`/platform/users/${userId}/password-reset`, { method: "POST" });
+}
+
 export function getPlatformAnalytics() {
   return apiFetch<PlatformAnalytics>("/platform/analytics");
 }

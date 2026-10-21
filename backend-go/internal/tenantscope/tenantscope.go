@@ -78,6 +78,7 @@ var tenantKeyed = map[string]string{
 	"routing_rules":             "user_id",
 	"macros":                    "user_id",
 	"user_totp":                 "user_id",
+	"password_reset_tokens":     "user_id",
 	"message_notes":             "user_id",
 	"webhook_subscriptions":     "user_id",
 	"rag_query_logs":            "user_id",

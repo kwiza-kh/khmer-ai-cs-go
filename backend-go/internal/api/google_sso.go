@@ -333,6 +333,11 @@ func (a *App) googleAuthMethods(w http.ResponseWriter, r *http.Request) (any, er
 		"google_signup":      a.Cfg.SSO.AllowSignup,
 		"telegram":           a.telegramSSOEnabled(),
 		"telegram_signup":    a.Cfg.TelegramLogin.AllowSignup,
+		// Whether the login page should offer the "forgot password" e-mail flow.
+		// Pure deployment capability (SMTP + frontend URL configured), identical
+		// for every visitor, so it leaks nothing about which accounts exist; when
+		// false the page points the user at the platform administrator instead.
+		"password_reset_email": a.passwordResetEmailAvailable(),
 	}, nil
 }
 

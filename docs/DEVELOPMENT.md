@@ -2833,3 +2833,34 @@ server 块（同机的 wms 不信任该头，避免被伪造）。
 `govulncheck` 0 可达；`npm audit --omit=dev` 0；全量 `go test ./...` 绿；SQL 门禁绿；
 线上：新密码 200/旧密码 401、webhook 300×401+20×429、日志真实 IP、CSP 新头、
 `/ready` = `secfix-1`、前端 BUILD 已换。
+
+## 三十七、密码找回/重置（2026-10-21）
+
+审计 P0：找回/重置整体缺失（无 reset/forgot 路由；改密必须提供旧密码；平台管理员无法重置；SMTP 只有 host、没有任何发信代码）。生产未配置 SMTP，所以「平台管理员生成一次性链接」必须不依赖邮件，邮件自助找回则在配置 SMTP 后自动生效。
+
+### 一、两条路径，一套规则
+- **邮件自助**：`POST /api/v1/auth/password-reset/request`（公开）。只有 `SMTP_HOST + SMTP_FROM + 前端地址` 三者齐备时才建 token 并发信；否则直接回通用响应，不建 token。
+- **平台管理员**：`POST /api/v1/platform/users/{id}/password-reset`（platformAdminOnly）。不依赖邮件，返回一次性 `reset_url` 由管理员线下转交；若邮件可用且目标有邮箱，顺带 best-effort 发信，`emailed` 如实返回。
+两条路径写同一张 `password_reset_tokens`，共用同一个 `POST /api/v1/auth/password-reset/confirm`，确认规则只有一套。
+
+### 二、Token：只存哈希、一次性、两种 TTL
+- 32 字节随机 → base64url 原文只出现在邮件正文 / 管理员响应里；库里存 SHA-256 hex（`token_hash` UNIQUE）。数据库被读（备份、只读副本、日志、注入）也换不回可用链接。256 bit 随机输入不需要慢哈希，SHA-256 足够。
+- `used_at` 非空即失效。每次建新 token、每次成功 confirm 都会把该用户其余未用 token 一并标 `used_at`——「新链接使旧链接失效」「重放必失败」。
+- 自助邮件 **30 分钟**（经过第三方邮箱，用户就在电脑前）；管理员链接 **24 小时**（线下转交、可能隔天才看）。都受 `expires_at` 硬约束，没有永久链接；`cmd/retention` 清理 7 天前的已用/过期行。
+
+### 三、确认时的连锁吊销（同一事务）
+`confirm` 在一个事务里：`FOR UPDATE` 校验 token 行（并发二次提交只有一个成功）→ bcrypt cost 12 写新密码 → `token_version + 1`（旧 JWT 全失效）→ 该用户全部未用 token 标 used → `api_keys.is_active=false`（API key 没有 token_version，不吊销等于绕过改密）→ 写 `audit_logs`（`action='password.reset'`、`admin_id NULL`、details 不含 token）。提交后 `realtime.PublishRevoke` 关闭该账号已开的 WebSocket（Redis 为 nil 时安全跳过）。
+管理员生成链接同样入审计：`action='password.reset.link'`、`admin_id` 为调用者、details 只有 `{username}`。审计日志会被平台控制台读到，不能成为找回链接的第二个入口。
+
+### 四、不泄露账号存在 + 两层限流
+- `request` 永远 200，且「账号不存在 / 已禁用 / 无邮箱 / 未配置邮件」返回同一句话；`email_available` 只是全局能力位（部署能不能发信），与具体账号无关。逐用户 3 次/15 分钟（Redis 出错时 fail closed：不发信，仍回 200），路由层另有 10 次/分钟/IP。
+- 管理员端点由 `platformAdminOnly` 把关，audit 中间件再按 `/api/v1/platform/` 前缀记一条。
+
+### 五、配置
+- `PUBLIC_FRONTEND_URL`：重置链接的前端地址；未设时依次回退 `PUBLIC_API_URL` 去掉 `/api/v1`、`SSO_FRONTEND_URL` 去掉 `/login`。
+- `SMTP_HOST + SMTP_FROM`：同时设置才启用密码重置邮件；`SMTP_PORT` 默认 587，`SMTP_USERNAME/SMTP_PASSWORD` 可选（有用户名才认证，STARTTLS 在服务端声明时使用）。**`EMAIL_ENABLED` 是邮件通知渠道开关，不控制这里。** 只配一半时启动往 stderr 告警，不阻断启动（风格同 PayPal 未定价告警）。
+- `GET /api/v1/auth/methods` 新增 `password_reset_email`，登录页据此决定显示「忘记密码」还是「联系管理员」。
+
+### 六、部署注意
+- **迁移 087**（`087_password_reset_tokens.sql`，双目录镜像）：`password_reset_tokens` 表 + `(user_id, created_at DESC)` 与 `expires_at` 索引，全部 `IF NOT EXISTS`。先 migrate 再重启后端；未迁移时三个端点 500，其余功能不受影响。
+- 发布后验证：管理员端点返回的 `reset_url` 能走通 confirm 且使旧链接失效；配置 SMTP 后 `request` 对真实账号发信、对不存在账号仍只回通用响应；重放/过期 token 均 400。

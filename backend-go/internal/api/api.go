@@ -15,6 +15,7 @@ import (
 	"khmer-ai-cs-go/internal/config"
 	"khmer-ai-cs-go/internal/gemini"
 	"khmer-ai-cs-go/internal/llm"
+	"khmer-ai-cs-go/internal/mailer"
 	"khmer-ai-cs-go/internal/paypal"
 	"khmer-ai-cs-go/internal/platform"
 	"khmer-ai-cs-go/internal/rag"
@@ -39,6 +40,13 @@ type App struct {
 	Logger *slog.Logger
 	Sealer *security.Sealer
 	Media  *storager2.Client
+
+	// Mailer sends transactional e-mail — today only the password-reset link.
+	// main.go injects one unconditionally; an unconfigured deployment's Send
+	// answers mailer.ErrNotConfigured. Nil in tests means "mail unavailable",
+	// so a reset request degrades to the operator-generated link instead of
+	// panicking.
+	Mailer mailer.Sender
 
 	// PayPal is the checkout client for the platform's own business account (may
 	// be nil in tests). Billing endpoints check Enabled() and answer "not

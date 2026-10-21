@@ -20,6 +20,7 @@ import (
 	"khmer-ai-cs-go/internal/db"
 	"khmer-ai-cs-go/internal/gemini"
 	"khmer-ai-cs-go/internal/llm"
+	"khmer-ai-cs-go/internal/mailer"
 	"khmer-ai-cs-go/internal/paypal"
 	"khmer-ai-cs-go/internal/platform"
 	"khmer-ai-cs-go/internal/rag"
@@ -300,7 +301,17 @@ func main() {
 		Logger: logger,
 		Sealer: sealer,
 		Media:  media,
-		Pipe:   pipe,
+		// Injected even when SMTP_HOST/SMTP_FROM are unset: the sender then
+		// answers mailer.ErrNotConfigured, which the password-reset handlers
+		// treat as "use the operator-generated link", not as a crash.
+		Mailer: mailer.New(mailer.Config{
+			Host:     cfg.Email.SMTPHost,
+			Port:     cfg.Email.SMTPPort,
+			Username: cfg.Email.SMTPUsername,
+			Password: cfg.Email.SMTPPassword,
+			From:     cfg.Email.SMTPFrom,
+		}),
+		Pipe: pipe,
 		// The platform's own PayPal business account. Left unconfigured (no
 		// credentials) the billing endpoints answer "not configured" and nothing
 		// in the console offers a purchase, which is the correct state for a

@@ -104,6 +104,16 @@ func main() {
 			why:   "per-turn latency samples",
 			where: fmt.Sprintf("created_at < now() - interval '%d days'", *turnMetricsDays),
 		},
+		{
+			// One-time credential material. A spent or expired link can never be
+			// redeemed again, and the remaining row is a hash an offline attacker
+			// could grind against live accounts. Seven days is longer than both
+			// TTLs (30m self-service, 24h operator), so a row is never deleted
+			// while it could still matter to an incident review.
+			table: "password_reset_tokens",
+			why:   "spent or expired one-time password-reset token hashes",
+			where: "(used_at IS NOT NULL AND used_at < now() - interval '7 days') OR expires_at < now() - interval '7 days'",
+		},
 	}
 
 	// Opt-in rules. Audit trails and delivery history have legitimate long-term

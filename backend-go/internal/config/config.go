@@ -19,6 +19,13 @@ type ServerConfig struct {
 	Port         string // SERVER_PORT — listen port (default 8080)
 	Mode         string // GIN_MODE — kept for compatibility; "release" gates Gemini
 	PublicAPIURL string // PUBLIC_API_URL — public HTTPS origin without /api/v1
+	// PublicFrontendURL is the browser origin used to build user-facing links,
+	// most importantly the password-reset link. Empty means "derive it from
+	// PUBLIC_API_URL minus /api/v1, then SSO_FRONTEND_URL minus /login" — see
+	// api.App.frontendBaseURL. It is separate from PUBLIC_API_URL because the
+	// API and the console are routinely different hosts (and the API origin is
+	// what backends fetch, never what a user should see in an e-mail).
+	PublicFrontendURL string // PUBLIC_FRONTEND_URL
 }
 
 type RedisConfig struct {
@@ -63,9 +70,25 @@ type MetaConfig struct {
 }
 
 type EmailConfig struct {
-	Enabled        bool
+	Enabled bool
+	// SMTPHost/SMTPFrom together switch on outbound mail (password-reset
+	// e-mails). SMTP_PORT/USERNAME/PASSWORD complete the relay settings.
 	SMTPHost       string
+	SMTPPort       int
+	SMTPUsername   string
+	SMTPPassword   string
+	SMTPFrom       string
 	InboundDomains string
+}
+
+// SMTPConfigured reports whether outbound mail has the minimum two settings:
+// a relay host and a sender address. It deliberately ignores Enabled —
+// EMAIL_ENABLED gates the notification channel, while a deployment can want
+// password-reset mail without notifications (or the reverse). The pair rule
+// matters: a half-configured relay is a deployment mistake, and sending to a
+// guessed host is worse than not sending.
+func (e EmailConfig) SMTPConfigured() bool {
+	return strings.TrimSpace(e.SMTPHost) != "" && strings.TrimSpace(e.SMTPFrom) != ""
 }
 
 type VoiceConfig struct {
@@ -204,9 +227,10 @@ func Load() (*Config, error) {
 
 	cfg := &Config{
 		Server: ServerConfig{
-			Port:         env("SERVER_PORT", "8080"),
-			Mode:         env("GIN_MODE", "debug"),
-			PublicAPIURL: env("PUBLIC_API_URL", ""),
+			Port:              env("SERVER_PORT", "8080"),
+			Mode:              env("GIN_MODE", "debug"),
+			PublicAPIURL:      env("PUBLIC_API_URL", ""),
+			PublicFrontendURL: env("PUBLIC_FRONTEND_URL", ""),
 		},
 		DatabaseURL: env("DATABASE_URL", ""),
 		Redis: RedisConfig{
@@ -252,6 +276,10 @@ func Load() (*Config, error) {
 		Email: EmailConfig{
 			Enabled:        envBool("EMAIL_ENABLED", false),
 			SMTPHost:       env("SMTP_HOST", ""),
+			SMTPPort:       envInt("SMTP_PORT", 587),
+			SMTPUsername:   env("SMTP_USERNAME", ""),
+			SMTPPassword:   env("SMTP_PASSWORD", ""),
+			SMTPFrom:       env("SMTP_FROM", ""),
 			InboundDomains: env("EMAIL_INBOUND_DOMAINS", ""),
 		},
 		Voice: VoiceConfig{
@@ -340,6 +368,13 @@ func (c *Config) Validate() error {
 	}
 	if err := c.validatePayPal(); err != nil {
 		return err
+	}
+	// Not a fatal error: password-reset e-mail is optional (the platform admin
+	// can generate a link instead), but a half-set pair is almost always an
+	// unfinished rollout and would otherwise only show up as silent "no mail".
+	// Same style as the PayPal no-price warning below.
+	if host, from := strings.TrimSpace(c.Email.SMTPHost) != "", strings.TrimSpace(c.Email.SMTPFrom) != ""; host != from {
+		fmt.Fprintln(os.Stderr, "config: SMTP_HOST and SMTP_FROM must be set together; password-reset e-mail is disabled until both are present (the platform admin can still generate reset links)")
 	}
 	return c.validateDatabaseURL()
 }
