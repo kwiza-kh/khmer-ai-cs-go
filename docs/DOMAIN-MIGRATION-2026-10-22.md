@@ -56,3 +56,14 @@ Google / Telegram / Meta 的 OAuth 回调与前端必须同域：新域登录页
 ## 安全提醒
 
 迁移使用的 Cloudflare API Token 在对话中出现过，完成后应轮换；后续建议只创建 Zone:DNS Edit + Zone Settings Edit（限定 mekongchat.com）的 token。
+
+
+## 2026-10-22 晚：平台 bot 与 Telegram 登录切换到新 bot
+
+- 新 bot：@MekongChat_bot（bot id 8932862489，显示名 MekongChat），同时作为平台 bot 与 Telegram 登录（OIDC）用 bot。
+- 服务器 env 已切：PLATFORM_TELEGRAM_BOT_TOKEN / PLATFORM_TELEGRAM_WEBHOOK_SECRET（新生成）/ PLATFORM_TELEGRAM_BOT_USERNAME=MekongChat_bot / TELEGRAM_LOGIN_CLIENT_ID / CLIENT_SECRET / REDIRECT_URL=https://mekongchat.com/api/v1/auth/telegram/callback / FRONTEND_URL=https://mekongchat.com/login；ADMINS 与 ALERT_CHAT 未变（838928815）。
+- 新 bot webhook 已注册到 https://mekongchat.com/api/v1/webhook/telegram-platform，allowed_updates=[message, callback_query]；getWebhookInfo 回读通过。
+- 旧 bot（@RelayChat_KH_bot）的 webhook 已删除；旧 bot 本身暂时保留，可之后在 BotFather 删除。
+- 影响：管理员与已绑定商家需要先在 Telegram 打开 @MekongChat_bot 并点 Start，否则新 bot 无法主动发消息（实测 sendMessage 返回 chat not found）；已绑定行不需要改库，start 后即可恢复通知。目前只有 1 条绑定记录（user_id=1, chat_id=838928815）。
+- Telegram 登录：新域 start 已返回 oauth.telegram.org 302（client_id、PKCE、新 redirect_uri 正确）；仍需在 BotFather Web Login 的 Redirect URIs 里确认包含新回调地址，并在新域实际登录一次验证。
+- 回滚：env 备份见 /root/khmer-deploy/env-go.botbak-*（记录当时的旧 token/secret）；回滚时恢复 env + 重启，并用旧 bot token 重新 setWebhook 到旧域/新域对应 URL。
