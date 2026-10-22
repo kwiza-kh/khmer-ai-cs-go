@@ -340,7 +340,7 @@ curl -X POST "https://api.telegram.org/bot${PLATFORM_TELEGRAM_BOT_TOKEN}/setWebh
 | 前端 13 个零消费者导出 | `streamChat` / `streamWidgetChat` / `chatVoice` / `sendMessage` / `listSessions` 等，是现成的 API 客户端层，非缺陷 |
 | `/widget` 自带 SSE 解析器 | 未复用 `streamWidgetChat`；重构客户-facing 聊天路径为零收益换风险 |
 | 邮件渠道 | `config.go` 有 SMTP 字段，**零代码** |
-| 域名 | 仍是 `cs.wanfanginsulationmaterial.com`（保温材料公司子域）。换域名要同步改：DNS、Cloudflare、nginx、BotFather Redirect URIs、Meta/Google OAuth 回调，**并且已嵌出的挂件会全部失效** |
+| 域名 | 2026-10-22 起主域名为 `mekongchat.com`；旧 `cs.wanfanginsulationmaterial.com` 并行保留（已嵌入挂件、旧 webhook、旧 OAuth 回调仍可用）。迁移记录与外部待办见 `docs/DOMAIN-MIGRATION-2026-10-22.md` |
 | 平台 bot 单点 | token 泄漏影响所有商家（旧架构是每商家隔离）。这是换掉每商家自建 bot 的代价 |
 | SQL 引用守卫需要 `DATABASE_URL` | `internal/sqlcheck` 已常驻（见 H 节与排查入口），**但只在设了 `DATABASE_URL` 时运行** —— 未设就 skip。常规 `go test ./...` 不会覆盖它，必须显式带着库跑一次，或接进部署流程。这是刻意的：检查只在「已应用迁移的库」上才有意义 |
 
@@ -1428,9 +1428,9 @@ FAQ 的 `ស9`（5 条产品线）在 chunk 2 里的偏移：枚举句起点 695
 
 | 项 | 值 |
 |---|---|
-| 控制台/API | `cs.wanfanginsulationmaterial.com`（Cloudflare 橙云代理；源站自签证书 `/etc/nginx/ssl/wms.crt` 与 WMS 共用 → zone SSL 模式必须 **Full**） |
+| 控制台/API | `mekongchat.com`（Cloudflare 橙云代理；旧 `cs.wanfanginsulationmaterial.com` 并行保留过渡；源站自签证书 `/etc/nginx/ssl/wms.crt` 与 WMS 共用 → zone SSL 模式必须 **Full**） |
 | 媒体 | `media.wanfanginsulationmaterial.com`（R2 公开域名：客户头像、渠道媒体、语音） |
-| nginx 站点 | `/etc/nginx/sites-enabled/khmer-ai-cs`：`:80`/`:443`，`server_name cs.wanfanginsulationmaterial.com`；`/api/` → `127.0.0.1:8081`；`/api/v1/realtime/inbox` → WebSocket 升级（3600s）；`/` → `127.0.0.1:3001` |
+| nginx 站点 | `/etc/nginx/sites-enabled/khmer-ai-cs`：`:80`/`:443`，`server_name cs.wanfanginsulationmaterial.com mekongchat.com www.mekongchat.com app.mekongchat.com`（www → apex 301）；`/api/` → `127.0.0.1:8081`；`/api/v1/realtime/inbox` → WebSocket 升级（3600s）；`/` → `127.0.0.1:3001` |
 
 ### 服务与端口
 
@@ -1480,7 +1480,7 @@ FAQ 的 `ស9`（5 条产品线）在 chunk 2 里的偏移：枚举句起点 695
 2. 本地门禁：`go build ./... && go vet ./... && go test ./...`；**SQL 引用门禁**：开隧道 →`SQLCHECK_REQUIRED=1 DATABASE_URL=<隧道 DSN> go test -count=1 ./internal/sqlcheck/`（不加 `SQLCHECK_REQUIRED=1` 会静默 skip）
 3. 交叉编译 `server-go` + `migrate-go`（`CGO_ENABLED=0 GOOS=linux GOARCH=amd64`，`-ldflags "-X khmer-ai-cs-go/internal/api.Version=<短哈希>"`；服务器上没有 Go）
 4. 上传 → **sha256 对账** → 备份 → `systemctl stop khmer-ai-cs-go` → （有迁移才）`migrate-go` → **迁移后立即再跑一次 SQL 门禁** → `install -o khmerai -g khmerai -m 755` → `start` → 查 `/ready`
-5. 前端：`NEXT_PUBLIC_API_URL=https://cs.wanfanginsulationmaterial.com/api/v1 npm run build` → 组装 standalone + `.next/static` + `public` → 打 tar → 上传 → 解包哨兵 `test -f server.js` → 换目录 → `chown -R khmerai:khmerai` → `restart khmer-ai-cs-web` → 比对 `.next/BUILD_ID`
+5. 前端：`NEXT_PUBLIC_API_URL=https://mekongchat.com/api/v1 npm run build` → 组装 standalone + `.next/static` + `public` → 打 tar → 上传 → 解包哨兵 `test -f server.js` → 换目录 → `chown -R khmerai:khmerai` → `restart khmer-ai-cs-web` → 比对 `.next/BUILD_ID`
 6. 回滚：后端 `cp -a server-go.bak-<ts> server-go` + restart（迁移是增量的，回滚二进制不坏库）；前端换回 `frontend-backup-<ts>`
 
 ### 实测坑位（省下一个人的半天）
@@ -1572,7 +1572,7 @@ SQLCHECK_REQUIRED=1 go test -count=1 ./...   # 全绿，含 DB 门控的席位/�
 ```bash
 cd frontend
 npx tsc --noEmit
-NEXT_PUBLIC_API_URL=https://cs.wanfanginsulationmaterial.com/api/v1 npm run build
+NEXT_PUBLIC_API_URL=https://mekongchat.com/api/v1 npm run build
 ```
 
 注意 `go test ./...` 不带 `DATABASE_URL` 会**静默跳过**那些 DB 门控测试（本轮两个
