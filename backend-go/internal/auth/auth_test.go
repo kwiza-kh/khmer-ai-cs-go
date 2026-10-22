@@ -10,9 +10,9 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// TestTokenIssuer checks both halves of the rename window: tokens minted now
-// carry the RelayChat issuer, tokens minted before it still parse (so the
-// rename does not sign every logged-in user out), and a token from an
+// TestTokenIssuer checks the rename window: tokens minted now carry the
+// MekongChat issuer, tokens minted under either previous brand still parse
+// — so a rename does not sign every logged-in user out — and a token from an
 // unrelated issuer is still rejected.
 func TestTokenIssuer(t *testing.T) {
 	const secret = "0123456789abcdef0123456789abcdef"
@@ -44,10 +44,12 @@ func TestTokenIssuer(t *testing.T) {
 		return signed
 	}
 
-	if claims, err := a.ParseToken(sign(legacyJWTIssuer)); err != nil {
-		t.Fatalf("pre-rename token rejected — the deploy would log everyone out: %v", err)
-	} else if claims.UserID != 5 {
-		t.Fatalf("legacy token parsed to the wrong user: %d", claims.UserID)
+	for _, legacy := range legacyJWTIssuers {
+		if claims, err := a.ParseToken(sign(legacy)); err != nil {
+			t.Fatalf("token carrying legacy issuer %q rejected — the deploy would log everyone out: %v", legacy, err)
+		} else if claims.UserID != 5 {
+			t.Fatalf("legacy token (%q) parsed to the wrong user: %d", legacy, claims.UserID)
+		}
 	}
 
 	if _, err := a.ParseToken(sign("some-other-service")); err == nil {

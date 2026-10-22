@@ -35,7 +35,7 @@ import {
 import { PLATFORM_ICONS, PLATFORM_BRAND_COLORS } from "@/components/platform-icons";
 import { Message, MessageAvatar, MessageContent, MessageFooter, MessageGroup, MessageHeader } from "@/components/ui/message";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { RelayChatLogo } from "@/components/relaychat-logo";
+import { MekongChatLogo } from "@/components/mekongchat-logo";
 import VoiceMessageBubble from "@/components/ui/voice-message-bubble";
 import { cn } from "@/lib/utils";
 import { storageGet, storageSet } from "@/lib/storage";
@@ -1779,7 +1779,7 @@ function ConversationDetail({
                         <MessageAvatar className="size-7 self-end">
                           <Avatar className="size-7">
                             {/* The customer's own picture when the channel gave us one. The
-                                fallback carries the identity instead: the RelayChat mark for
+                                fallback carries the identity instead: the MekongChat mark for
                                 the AI, a headset for a human agent, and AvatarFallback already
                                 covers a picture that fails to load (no manual onError needed). */}
                             {isUser && item.avatar_url ? <AvatarImage src={item.avatar_url} alt="" /> : null}
@@ -1788,7 +1788,7 @@ function ConversationDetail({
                                 : role === "agent" ? "bg-warning/15 text-foreground"
                                 : "bg-brand/10 text-brand",
                             )}>
-                              {isUser ? <UserCircle2 className="size-4" /> : role === "agent" ? <Headset className="size-3.5" /> : <RelayChatLogo className="size-3.5" />}
+                              {isUser ? <UserCircle2 className="size-4" /> : role === "agent" ? <Headset className="size-3.5" /> : <MekongChatLogo className="size-3.5" />}
                             </AvatarFallback>
                           </Avatar>
                         </MessageAvatar>
@@ -2771,7 +2771,7 @@ function AiSidePanel({ item, lastUserMessageId, summaryData, summaryLoading, onR
       <div className="px-3.5 py-3 border-b border-border flex items-center justify-between gap-2 bg-card/60">
         <p className="flex items-center gap-2 text-body-sm font-semibold tracking-tight">
           <span className="flex size-5 items-center justify-center rounded-md bg-brand/10">
-            <RelayChatLogo className="size-3.5 text-brand" />
+            <MekongChatLogo className="size-3.5 text-brand" />
           </span>
           {t("inbox.aiPanel")}
         </p>

@@ -110,7 +110,7 @@ func (p *Pipeline) PlatformAlert(ctx context.Context, key, title, detail string)
 	if detail != "" {
 		text += "\n" + detail
 	}
-	text += "\n\nRelayChat · " + time.Now().In(PhnomPenhLoc()).Format("2006-01-02 15:04")
+	text += "\n\nMekongChat · " + time.Now().In(PhnomPenhLoc()).Format("2006-01-02 15:04")
 	if err := p.SendPlatformMessage(ctx, chatID, text, nil); err != nil {
 		p.Logger.Warn("platform alert delivery failed", "key", key, "error", err.Error())
 	}

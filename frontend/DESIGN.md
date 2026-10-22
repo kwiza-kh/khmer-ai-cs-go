@@ -1,6 +1,6 @@
-# RelayChat Design System
+# MekongChat Design System
 
-Design tokens, component conventions, and visual guidelines for the RelayChat frontend.
+Design tokens, component conventions, and visual guidelines for the MekongChat frontend.
 
 ## Color Tokens
 

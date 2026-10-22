@@ -18,17 +18,18 @@ const PasswordHashCost = 12
 
 const (
 	// JWTIssuer is the `iss` claim stamped on every token this service mints.
-	JWTIssuer = "relaychat"
-
-	// legacyJWTIssuer is the pre-rename issuer ("khmer-ai-cs"). Tokens signed
-	// with it are still accepted so the rename does not sign every logged-in
-	// user out at deploy time.
-	//
-	// Safe to delete once one full token lifetime has passed since the rename
-	// shipped — JWT_EXPIRE_HOUR, 24h by default — after which no token bearing
-	// it can still be valid.
-	legacyJWTIssuer = "khmer-ai-cs"
+	JWTIssuer = "mekongchat"
 )
+
+// legacyJWTIssuers are the two pre-rename issuers, newest first:
+// "relaychat" (2026-09 rename) and "khmer-ai-cs" (original name). Tokens
+// signed with either are still accepted so a brand rename does not sign
+// every logged-in user out at deploy time.
+//
+// Safe to delete once one full token lifetime has passed since the rename
+// shipped — JWT_EXPIRE_HOUR, 24h by default — after which no token bearing
+// them can still be valid.
+var legacyJWTIssuers = []string{"relaychat", "khmer-ai-cs"}
 
 type Claims struct {
 	UserID   int32  `json:"user_id"`
@@ -71,9 +72,22 @@ func (j *JWT) GenerateToken(userID int32, username, role string, tokenVersion in
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(j.secret)
 }
 
+// acceptedIssuer reports whether iss is the current or a legacy brand name.
+func acceptedIssuer(iss string) bool {
+	if iss == JWTIssuer {
+		return true
+	}
+	for _, legacy := range legacyJWTIssuers {
+		if iss == legacy {
+			return true
+		}
+	}
+	return false
+}
+
 // ParseToken validates signature + expiry and rejects algorithm confusion.
-// The issuer is checked by hand rather than via jwt.WithIssuer because two
-// values are valid during the rename window (see legacyJWTIssuer).
+// The issuer is checked by hand rather than via jwt.WithIssuer because three
+// values are valid during the rename window (see legacyJWTIssuers).
 func (j *JWT) ParseToken(token string) (*Claims, error) {
 	claims := &Claims{}
 	_, err := jwt.ParseWithClaims(token, claims, func(t *jwt.Token) (any, error) {
@@ -82,7 +96,7 @@ func (j *JWT) ParseToken(token string) (*Claims, error) {
 		}
 		return j.secret, nil
 	}, jwt.WithExpirationRequired())
-	if err == nil && claims.Issuer != JWTIssuer && claims.Issuer != legacyJWTIssuer {
+	if err == nil && !acceptedIssuer(claims.Issuer) {
 		err = fmt.Errorf("unexpected issuer %q", claims.Issuer)
 	}
 	if err != nil {

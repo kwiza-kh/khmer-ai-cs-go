@@ -244,7 +244,7 @@ func (a *App) paypalCreateOrder(w http.ResponseWriter, r *http.Request) (any, er
 		UserID:    user.Tenant(),
 		ReturnURL: a.billingReturnURL("return"),
 		CancelURL: a.billingReturnURL("cancel"),
-		BrandName: "RelayChat",
+		BrandName: "MekongChat",
 	})
 	if err != nil {
 		a.Logger.Error("paypal create order failed", "user_id", user.UserID, "plan", plan, "error", err.Error())
@@ -470,7 +470,7 @@ func (a *App) expirePaidPlans(ctx context.Context) {
 			// English on purpose for now: the merchant's own UI language would be
 			// the right one and needs the bilingual text table (bot_texts.go).
 			a.Pipe.SendTelegramNotify(ctx, l.userID,
-				"RelayChat: your "+l.plan+" plan has expired and the account is back on the free plan (20 documents / 500 messages per 30 days). Renew from the billing page to restore it.")
+				"MekongChat: your "+l.plan+" plan has expired and the account is back on the free plan (20 documents / 500 messages per 30 days). Renew from the billing page to restore it.")
 		}
 	}
 }

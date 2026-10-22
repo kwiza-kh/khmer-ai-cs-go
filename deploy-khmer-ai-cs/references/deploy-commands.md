@@ -528,7 +528,7 @@ B64=$(echo "$SCRIPT" | base64)
 /tmp/khmer-deploy/sshrun.sh "echo $B64 | base64 -d | bash"
 ```
 
-预期: `active` + `{"service":"relaychat","status":"ok","checks":{"database":true,"redis":true},"version":"<git-sha>"}`。
+预期: `active` + `{"service":"mekongchat","status":"ok","checks":{"database":true,"redis":true},"version":"<git-sha>"}`。
 
 启动失败 (systemd `failed` / 服务没起来) 时看最后 30 行 `journalctl -u khmer-ai-cs-go -n 30 --no-pager -o cat`, 对照:
 

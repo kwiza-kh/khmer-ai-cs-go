@@ -10,7 +10,7 @@ import { listHumanHandoffRequests, listInbox, listKnowledge, getProfile } from "
 import type { InboxItem, KnowledgeDocument } from "@/lib/api";
 import { getBillingCatalog } from "@/lib/billing-api";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { RelayChatLogo } from "@/components/relaychat-logo";
+import { MekongChatLogo } from "@/components/mekongchat-logo";
 import { cn } from "@/lib/utils";
 import {
   BookOpen, Globe, Users, Settings, LogOut, Menu, Search, Loader2,
@@ -122,15 +122,15 @@ const BREADCRUMBS: { match: string; section: string; page: string }[] = [
   { match: "/help", section: "nav.preferences", page: "nav.help" },
 ];
 
-/** Brand mark + wordmark. The mark renders twice (sidebar + mobile header); RelayChatLogo scopes its gradient id per instance. */
+/** Brand mark + wordmark. The mark renders twice (sidebar + mobile header); MekongChatLogo scopes its gradient id per instance. */
 function Brand({ iconOnly = false }: { iconOnly?: boolean }) {
   return (
     <Link href="/inbox" className="group flex items-center gap-2">
       <span className="relative flex size-7 shrink-0 items-center justify-center">
         <span aria-hidden className="absolute inset-0 rounded-lg bg-brand/30 blur-md opacity-60 transition-opacity group-hover:opacity-100" />
-        <RelayChatLogo gradient className="relative size-6 transition-transform duration-300 group-hover:scale-105 group-hover:rotate-3" />
+        <MekongChatLogo gradient className="relative size-6 transition-transform duration-300 group-hover:scale-105 group-hover:rotate-3" />
       </span>
-      {!iconOnly && <span className="text-subtitle font-semibold tracking-tight text-foreground">RelayChat</span>}
+      {!iconOnly && <span className="text-subtitle font-semibold tracking-tight text-foreground">MekongChat</span>}
     </Link>
   );
 }

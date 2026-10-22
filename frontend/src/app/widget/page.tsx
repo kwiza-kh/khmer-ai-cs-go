@@ -46,15 +46,15 @@ const STR: Record<Lang, Record<string, string>> = {
   km: {
     title: "ជំនួយការអតិថិជន", intro: "សួស្តី! តើយើងអាចជួយអ្នកដោយរបៀបណា?",
     placeholder: "សរសេរសារ...",
-    send: "ផ្ញើ", powered: "ដំណើរការដោយ RelayChat", online: "អនឡាញ", ai: "AI",
+    send: "ផ្ញើ", powered: "ដំណើរការដោយ MekongChat", online: "អនឡាញ", ai: "AI",
   },
   en: {
     title: "Support Assistant", intro: "Hi! How can we help you today?", placeholder: "Type a message…",
-    send: "Send", powered: "Powered by RelayChat", online: "online", ai: "AI",
+    send: "Send", powered: "Powered by MekongChat", online: "online", ai: "AI",
   },
   zh: {
     title: "客服助手", intro: "您好！有什么可以帮您？", placeholder: "输入消息…",
-    send: "发送", powered: "由 RelayChat 提供", online: "在线", ai: "AI",
+    send: "发送", powered: "由 MekongChat 提供", online: "在线", ai: "AI",
   },
 };
 

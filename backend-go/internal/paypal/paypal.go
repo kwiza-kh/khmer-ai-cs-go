@@ -126,7 +126,7 @@ func (c *Client) CreateOrder(ctx context.Context, in CreateOrderInput) (Order, e
 			// reconciliation: which plan, and which tenant paid for it.
 			"reference_id": in.Plan,
 			"custom_id":    strconv.FormatInt(int64(in.UserID), 10),
-			"description":  "RelayChat " + in.Plan + " plan (30 days)",
+			"description":  "MekongChat " + in.Plan + " plan (30 days)",
 			"amount": map[string]string{
 				"currency_code": in.Currency,
 				"value":         in.Amount,

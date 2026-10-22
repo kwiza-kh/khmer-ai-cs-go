@@ -171,7 +171,7 @@ func (s *smtpSender) message(to, subject, body string) []byte {
 }
 
 // envelopeAddress strips an optional display name from the configured From
-// ("RelayChat <no-reply@example.com>"), because MAIL FROM takes a bare address
+// ("MekongChat <no-reply@example.com>"), because MAIL FROM takes a bare address
 // while the header may keep the readable form.
 func envelopeAddress(from string) string {
 	from = strings.TrimSpace(from)

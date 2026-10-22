@@ -1,7 +1,7 @@
 import * as React from "react";
 
 /**
- * The RelayChat mark — the four-point sparkle the sidebar has always drawn, lifted
+ * The MekongChat mark — the four-point sparkle the sidebar has always drawn, lifted
  * into one component so the sidebar lockup, the AI message avatars and the AI panel
  * chip cannot drift apart.
  *
@@ -11,7 +11,7 @@ import * as React from "react";
  *     token, which is documented as the logo accent).
  *   - `gradient`: the sidebar's two-stop violet, which it pairs with a blurred glow.
  */
-export function RelayChatLogo({
+export function MekongChatLogo({
   className,
   gradient = false,
 }: {
@@ -22,7 +22,7 @@ export function RelayChatLogo({
   // and duplicate SVG ids make every `url(#…)` resolve to whichever one came first
   // (the sidebar's), which would leave a differently-coloured mark wrong.
   const rawId = React.useId();
-  const gradientId = `relaychat-mark-${rawId.replace(/[^a-zA-Z0-9_-]/g, "")}`;
+  const gradientId = `mekongchat-mark-${rawId.replace(/[^a-zA-Z0-9_-]/g, "")}`;
 
   return (
     <svg viewBox="0 0 24 24" className={className} fill="none" aria-hidden focusable="false">

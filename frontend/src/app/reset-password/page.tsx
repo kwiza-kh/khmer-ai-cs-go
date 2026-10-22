@@ -67,7 +67,7 @@ export default function ResetPasswordPage() {
       {/* Same chrome as the login page — this page is reached from an e-mail,
           usually on a phone, with no session and no app shell. */}
       <header className="absolute inset-x-0 top-0 z-10 flex items-center justify-between border-b border-border px-6 py-4">
-        <span className="text-xs uppercase tracking-[0.12em] text-muted-foreground">RelayChat</span>
+        <span className="text-xs uppercase tracking-[0.12em] text-muted-foreground">MekongChat</span>
       </header>
 
       <div className="grid min-h-full w-full place-items-center px-4 py-6">

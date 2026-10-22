@@ -93,7 +93,7 @@ function DeletionStatusInner() {
 
   return (
     <main className="mx-auto max-w-3xl px-5 py-12">
-      <p className="text-sm font-medium text-muted-foreground">RelayChat</p>
+      <p className="text-sm font-medium text-muted-foreground">MekongChat</p>
       <h1 className="mt-2 text-2xl font-bold text-foreground">{T.title}</h1>
 
       <Row label={T.code} value={code || "—"} />

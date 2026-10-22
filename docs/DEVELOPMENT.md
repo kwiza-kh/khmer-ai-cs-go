@@ -1,4 +1,4 @@
-# RelayChat 开发细节
+# MekongChat 开发细节
 
 面向接手/继续开发的工程师。记录**代码里看不出来的东西**：为什么这么设计、踩过什么坑、哪些约束不能破。
 
@@ -69,20 +69,20 @@
 | 9 | **成本统计盲区** | 只有 4 处调用 `usage.Record`。加 `gemini.AuxUsageObserver` 钩子覆盖编译/翻译/重排/改写/转写/图片描述；上下文用 `usage.WithUser` 携带租户 |
 | 10 | **认证加固** | TOTP 密钥加密存储；`token_version` 会话吊销；重新注册 2FA 需密码；API key 默认一年过期 |
 
-### B. RelayChat 改名
+### B. 改名历史：Khmer AI CS → RelayChat → MekongChat
 
-原名「Khmer AI 客服系统」。改名涉及 18 个文件，其中**两处做了平滑过渡**：
+2026-09 从「Khmer AI 客服系统」改名为 **RelayChat**（涉及 18 个文件）；2026-10-22 随新域名 `mekongchat.com` 再改为 **MekongChat**。两次改名都做了平滑过渡，避免在线用户掉线：
 
 **JWT issuer**（`auth.go`）—— 直接改会让所有在线用户当场登出：
 ```go
-JWTIssuer       = "relaychat"      // 新 token
-legacyJWTIssuer = "khmer-ai-cs"    // 旧 token 仍接受
+JWTIssuer        = "mekongchat"                        // 新 token
+legacyJWTIssuers = []string{"relaychat", "khmer-ai-cs"} // 两次改名前的 token 仍接受
 ```
-配了 `TestTokenIssuer` 三个断言。**旧 issuer 的接受逻辑在 24 小时后（一个 JWT 生命周期）可删**。
+`TestTokenIssuer` 覆盖「当前 issuer + 两个 legacy issuer + 无关 issuer 拒绝」。**旧 issuer 的接受逻辑在 24 小时后（一个 JWT 生命周期）可删**。
 
-**WebSocket 子协议**（`realtime.go` + `lib/realtime.ts`）—— 前后端各写一份，不同步改实时功能就断。服务端 `Subprotocols` 列表和 token 提取都认两个值，缓存旧 JS 的浏览器也能正常升级。
+**WebSocket 子协议**（`realtime.go` + `lib/realtime.ts`）—— 前后端各写一份，不同步改实时功能就断。服务端 `ProtocolName = "mekongchat"`，`legacyProtocolNames = ["relaychat", "khmer-ai-cs"]`：`Subprotocols` 列表和 token 提取都认三个值，缓存旧 JS 的浏览器也能正常升级。前端发 `["mekongchat", token]`。
 
-**刻意没改的**：Go module 名（74 处 import 语句 / 14 个包路径，零用户收益）、`R2_BUCKET` 默认值（真基础设施名）、`InsecureDefaultJwtSecret`（安全绊线常量，改了就检测不到那个弱密钥）。
+**刻意没改的**：Go module 名 / 仓库目录 / 部署路径 / systemd 单元仍是 `khmer-ai-cs-go` / `khmer-ai-cs`（基础设施标识，不是品牌，改了要动 import、服务器目录与 systemd，零用户收益）、`R2_BUCKET` 默认值（真基础设施名）、`InsecureDefaultJwtSecret`（安全绊线常量，改了就检测不到那个弱密钥）。旧 Telegram bot 的 username（旧品牌名）无法改（Telegram bot username 永久），已由新 bot `@MekongChat_bot` 取代，旧 bot webhook 已删除。
 
 ### C. Telegram 登录（OIDC）
 
@@ -194,7 +194,7 @@ legacyJWTIssuer = "khmer-ai-cs"    // 旧 token 仍接受
 - **`ProcessNotifyCallbacks` 与 `tasks.go` 的 12 秒轮询整体删除**。它遍历 `telegram_notify_settings` 全表，对平台 bot 商家会拿平台 bot token 去 `getUpdates` —— 而平台 bot 注册了 webhook，Telegram 直接拒绝。迁移 054 的注释声称这次改动「移除了每租户轮询」，实际上循环还在，只是对不该跑的那批也在跑
 - **按钮回调接进平台 bot webhook**（`handlePlatformCallback`）。顺带发现 webhook 里 `if upd.Message == nil { return }` 会把**所有** callback_query 静默丢弃 —— 这是按钮失效的真正原因
 - **`/unlink`** —— 绑定此前是单向门，绑错号/换号/号被盗都无解。带内联确认按钮，因为误输命令就静默切断自己的通知是很糟的发现方式
-- **机器人文案本地化**（`bot_texts.go`）—— 此前硬编码中文，而产品是高棉语优先。语言解析顺序：`users.language` 偏好 → Telegram 客户端的 `language_code` → 英语。**运营者命令台保持中文**，那个受众是 RelayChat 团队
+- **机器人文案本地化**（`bot_texts.go`）—— 此前硬编码中文，而产品是高棉语优先。语言解析顺序：`users.language` 偏好 → Telegram 客户端的 `language_code` → 英语。**运营者命令台保持中文**，那个受众是 MekongChat 团队
 - **API 面收窄** —— `PUT /settings/telegram-notify` 只接受三个开关；`/settings/telegram-notify/updates`（拉取会话列表）整个删除；不再有接受 bot token 或任意 chat_id 的端点
 
 **存量商家必须重新绑定一次**，这是数据的性质决定的，不是实现选择：`chat_id` 是**和某个特定 bot 的会话**，只有那个 bot 能寻址。平台 bot 往商家与自己 bot 的 chat_id 发消息会 403（`bot can't initiate conversation with a user`）。没有可迁移的东西。
@@ -2672,7 +2672,7 @@ Telegram 通知（决定"每个客户消息进谁的聊天"）、团队与角色
 - **编辑/撤回（B4）**：Meta 没有发送侧的编辑 API；Telegram 有，但需要一个"改正这条已发消息"的
   收件箱动作与 UI，而删除已送达的 AI 回答是破坏性操作，不应由后台任务自动做。
 - **Telegram Business（C2）**：`business_connection`/`business_message` 需要会话按连接维度归属、
-  每条发送带 `business_connection_id`、商家个人号与 RelayChat 账号的绑定流程，以及真实 Telegram
+  每条发送带 `business_connection_id`、商家个人号与 MekongChat 账号的绑定流程，以及真实 Telegram
   Business 账号才能验证，是 1–2 周的独立项目，本轮不交付半成品。
 
 ## 三十三、收件箱更正：编辑/撤回已发消息（2026-10-17）

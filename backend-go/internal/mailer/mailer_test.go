@@ -69,10 +69,10 @@ func TestSendRejectsEmptyRecipient(t *testing.T) {
 // passing the display form through makes net/smtp reject the address.
 func TestEnvelopeAddress(t *testing.T) {
 	cases := map[string]string{
-		"ops@example.com":                   "ops@example.com",
-		"RelayChat <no-reply@example.com>":  "no-reply@example.com",
-		"  spaced@example.com  ":            "spaced@example.com",
-		"RelayChat <no-reply@example.com> ": "no-reply@example.com",
+		"ops@example.com":                    "ops@example.com",
+		"MekongChat <no-reply@example.com>":  "no-reply@example.com",
+		"  spaced@example.com  ":             "spaced@example.com",
+		"MekongChat <no-reply@example.com> ": "no-reply@example.com",
 	}
 	for in, want := range cases {
 		if got := envelopeAddress(in); got != want {

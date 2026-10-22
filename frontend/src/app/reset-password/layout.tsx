@@ -6,7 +6,7 @@ import type { Metadata } from "next";
 // token in a Referer header (the site-wide policy is strict-origin-when-cross-
 // origin, which still includes the full URL on same-origin navigations).
 export const metadata: Metadata = {
-  title: "Reset password | RelayChat",
+  title: "Reset password | MekongChat",
   robots: { index: false, follow: false },
   referrer: "no-referrer",
 };

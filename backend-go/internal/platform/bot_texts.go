@@ -8,7 +8,7 @@ import "strings"
 //
 // The bot used to speak Chinese to everyone, which was wrong twice over: the
 // product is Khmer-first, and the merchants are in Cambodia. The operator
-// console stays Chinese on purpose — that audience is the RelayChat team — but
+// console stays Chinese on purpose — that audience is the MekongChat team — but
 // everything a MERCHANT reads is resolved through merchantText.
 //
 // Language resolution order (see merchantLang):
@@ -52,15 +52,15 @@ var merchantTextKeys = []string{
 
 var merchantTexts = map[string]map[string]string{
 	"en": {
-		"welcome":           "👋 This is the RelayChat bot.\n\nTo connect your RelayChat account, open Settings → Telegram notifications and tap *Connect Telegram*.",
+		"welcome":           "👋 This is the MekongChat bot.\n\nTo connect your MekongChat account, open Settings → Telegram notifications and tap *Connect Telegram*.",
 		"link_invalid":      "⚠️ That connect link is invalid or has expired. Generate a fresh one from Settings → Telegram notifications.",
-		"link_ok":           "✅ Connected. RelayChat notifications for your account will arrive in this chat.",
-		"unlink_confirm":    "Disconnect Telegram notifications from your RelayChat account?\n\nYou will stop receiving new-message and handoff alerts in this chat.",
+		"link_ok":           "✅ Connected. MekongChat notifications for your account will arrive in this chat.",
+		"unlink_confirm":    "Disconnect Telegram notifications from your MekongChat account?\n\nYou will stop receiving new-message and handoff alerts in this chat.",
 		"unlink_done":       "✅ Disconnected. You will no longer receive notifications here.",
-		"unlink_none":       "This Telegram account is not connected to any RelayChat account.",
-		"support_received":  "📨 Got it — your message has been passed to the RelayChat team.",
-		"help_hint":         "Commands: /start — connect your account, /unlink — disconnect.\nSend me anything else and it reaches the RelayChat team.",
-		"team_reply_prefix": "💬 RelayChat team:\n\n",
+		"unlink_none":       "This Telegram account is not connected to any MekongChat account.",
+		"support_received":  "📨 Got it — your message has been passed to the MekongChat team.",
+		"help_hint":         "Commands: /start — connect your account, /unlink — disconnect.\nSend me anything else and it reaches the MekongChat team.",
+		"team_reply_prefix": "💬 MekongChat team:\n\n",
 		"handoff_header":    "🔔 A customer needs a human",
 		"btn_takeover":      "🧑💼 Take over",
 		"btn_resolve":       "✅ Resolve",
@@ -76,15 +76,15 @@ var merchantTexts = map[string]map[string]string{
 		"digest_top":        "Most asked:",
 	},
 	"zh": {
-		"welcome":           "👋 这是 RelayChat 机器人。\n\n要连接你的 RelayChat 账号，请打开 设置 → Telegram 通知，点击 *连接 Telegram*。",
+		"welcome":           "👋 这是 MekongChat 机器人。\n\n要连接你的 MekongChat 账号，请打开 设置 → Telegram 通知，点击 *连接 Telegram*。",
 		"link_invalid":      "⚠️ 连接链接无效或已过期。请在 设置 → Telegram 通知 中重新生成。",
-		"link_ok":           "✅ 已连接。你的 RelayChat 通知将发送到这个会话。",
-		"unlink_confirm":    "确定要断开 RelayChat 的 Telegram 通知吗？\n\n断开后你将不再收到新消息和转人工提醒。",
+		"link_ok":           "✅ 已连接。你的 MekongChat 通知将发送到这个会话。",
+		"unlink_confirm":    "确定要断开 MekongChat 的 Telegram 通知吗？\n\n断开后你将不再收到新消息和转人工提醒。",
 		"unlink_done":       "✅ 已断开。你不会再在这里收到通知。",
-		"unlink_none":       "这个 Telegram 账号尚未连接任何 RelayChat 账号。",
-		"support_received":  "📨 已收到，消息已转达 RelayChat 团队。",
-		"help_hint":         "命令：/start — 连接账号，/unlink — 断开连接。\n直接给我发消息也可以，会转达 RelayChat 团队。",
-		"team_reply_prefix": "💬 RelayChat 团队：\n\n",
+		"unlink_none":       "这个 Telegram 账号尚未连接任何 MekongChat 账号。",
+		"support_received":  "📨 已收到，消息已转达 MekongChat 团队。",
+		"help_hint":         "命令：/start — 连接账号，/unlink — 断开连接。\n直接给我发消息也可以，会转达 MekongChat 团队。",
+		"team_reply_prefix": "💬 MekongChat 团队：\n\n",
 		"handoff_header":    "🔔 有客户需要人工",
 		"btn_takeover":      "🧑💼 接管",
 		"btn_resolve":       "✅ 解决",
@@ -100,15 +100,15 @@ var merchantTexts = map[string]map[string]string{
 		"digest_top":        "客户最常问：",
 	},
 	"km": {
-		"welcome":           "👋 នេះជា bot របស់ RelayChat។\n\nដើម្បីភ្ជាប់គណនី RelayChat សូមបើក ការកំណត់ → ការជូនដំណឹងតាម Telegram រួចចុច *ភ្ជាប់ Telegram*។",
+		"welcome":           "👋 នេះជា bot របស់ MekongChat។\n\nដើម្បីភ្ជាប់គណនី MekongChat សូមបើក ការកំណត់ → ការជូនដំណឹងតាម Telegram រួចចុច *ភ្ជាប់ Telegram*។",
 		"link_invalid":      "⚠️ តំណភ្ជាប់នេះមិនត្រឹមត្រូវ ឬផុតកំណត់ហើយ។ សូមបង្កើតតំណថ្មីពី ការកំណត់ → ការជូនដំណឹងតាម Telegram។",
-		"link_ok":           "✅ បានភ្ជាប់រួចរាល់។ ការជូនដំណឹង RelayChat នឹងមកដល់ក្នុងការសន្ទនានេះ។",
-		"unlink_confirm":    "តើអ្នកចង់ផ្តាច់ការជូនដំណឹង Telegram ចេញពីគណនី RelayChat មែនទេ?\n\nអ្នកនឹងឈប់ទទួលការជូនដំណឹងនៅទីនេះទៀត។",
+		"link_ok":           "✅ បានភ្ជាប់រួចរាល់។ ការជូនដំណឹង MekongChat នឹងមកដល់ក្នុងការសន្ទនានេះ។",
+		"unlink_confirm":    "តើអ្នកចង់ផ្តាច់ការជូនដំណឹង Telegram ចេញពីគណនី MekongChat មែនទេ?\n\nអ្នកនឹងឈប់ទទួលការជូនដំណឹងនៅទីនេះទៀត។",
 		"unlink_done":       "✅ បានផ្តាច់រួចរាល់។ អ្នកនឹងមិនទទួលការជូនដំណឹងនៅទីនេះទៀតទេ។",
-		"unlink_none":       "គណនី Telegram នេះមិនទាន់ភ្ជាប់ជាមួយគណនី RelayChat ណាមួយទេ។",
-		"support_received":  "📨 បានទទួលហើយ — សាររបស់អ្នកត្រូវបានផ្ញើទៅក្រុម RelayChat។",
-		"help_hint":         "ពាក្យបញ្ជា៖ /start — ភ្ជាប់គណនី, /unlink — ផ្តាច់។\nផ្ញើសារធម្មតាមកក៏បាន វានឹងទៅដល់ក្រុម RelayChat។",
-		"team_reply_prefix": "💬 ក្រុម RelayChat៖\n\n",
+		"unlink_none":       "គណនី Telegram នេះមិនទាន់ភ្ជាប់ជាមួយគណនី MekongChat ណាមួយទេ។",
+		"support_received":  "📨 បានទទួលហើយ — សាររបស់អ្នកត្រូវបានផ្ញើទៅក្រុម MekongChat។",
+		"help_hint":         "ពាក្យបញ្ជា៖ /start — ភ្ជាប់គណនី, /unlink — ផ្តាច់។\nផ្ញើសារធម្មតាមកក៏បាន វានឹងទៅដល់ក្រុម MekongChat។",
+		"team_reply_prefix": "💬 ក្រុម MekongChat៖\n\n",
 		"handoff_header":    "🔔 មានអតិថិជនត្រូវការមនុស្ស",
 		"btn_takeover":      "🧑💼 ទទួលយក",
 		"btn_resolve":       "✅ ដោះស្រាយរួច",

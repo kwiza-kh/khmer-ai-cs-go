@@ -26,14 +26,8 @@ const (
 
 	// ProtocolName is the WebSocket subprotocol. Browsers cannot set custom
 	// headers on the handshake, so the JWT rides as the second subprotocol
-	// value (the frontend sends ["relaychat", token]).
-	ProtocolName = "relaychat"
-
-	// legacyProtocolName is the pre-rename subprotocol ("khmer-ai-cs"). It is
-	// still accepted for the handshake so a browser running cached JS from
-	// before the rename can upgrade instead of silently dropping to the
-	// polling fallback. Removable once no cached bundle can still be in use.
-	legacyProtocolName = "khmer-ai-cs"
+	// value (the frontend sends ["mekongchat", token]).
+	ProtocolName = "mekongchat"
 
 	// Event types understood by the frontend (lib/realtime.ts).
 	EventMessage      = "inbox.message"
@@ -50,6 +44,13 @@ const (
 	sendQueueSize   = 64
 	maxConnsPerUser = 10
 )
+
+// legacyProtocolNames are the pre-rename subprotocols, newest first:
+// "relaychat" (2026-09 rename) and "khmer-ai-cs" (original name). They are
+// still accepted for the handshake so a browser running cached JS from
+// before a rename can upgrade instead of silently dropping to the polling
+// fallback. Removable once no cached bundle can still be in use.
+var legacyProtocolNames = []string{"relaychat", "khmer-ai-cs"}
 
 // Event is one realtime notification. UserID routes the event to the
 // tenant's connections and is not rendered by the client.
@@ -137,7 +138,7 @@ func NewHub(jwt *auth.JWT, rdb *redisstore.Client, logger *slog.Logger,
 	h.upgrader = websocket.Upgrader{
 		ReadBufferSize:  1024,
 		WriteBufferSize: 4096,
-		Subprotocols:    []string{ProtocolName, legacyProtocolName},
+		Subprotocols:    append([]string{ProtocolName}, legacyProtocolNames...),
 		CheckOrigin: func(r *http.Request) bool {
 			if h.OriginOK == nil {
 				return true
@@ -195,9 +196,23 @@ func (h *Hub) noteAuthFailure(reason string, r *http.Request) {
 	}
 }
 
+// isProtocolName reports whether p is the current or a legacy subprotocol name.
+func isProtocolName(p string) bool {
+	if p == ProtocolName {
+		return true
+	}
+	for _, legacy := range legacyProtocolNames {
+		if p == legacy {
+			return true
+		}
+	}
+	return false
+}
+
 // authenticate extracts the JWT. Browsers cannot set the Authorization header
 // on a WebSocket handshake, so the token travels as the subprotocol after
-// "khmer-ai-cs"; the header form stays as a fallback for non-browser clients.
+// one of the accepted brand subprotocols; the header form stays as a fallback
+// for non-browser clients.
 //
 // It returns "" when the token is good, or the reason it was not: "no_token",
 // "bad_token" or "revoked". The reason is what makes a rejection storm readable
@@ -206,7 +221,7 @@ func (h *Hub) authenticate(r *http.Request) (int32, string) {
 	token := ""
 	protos := websocket.Subprotocols(r)
 	for i, p := range protos {
-		if (p == ProtocolName || p == legacyProtocolName) && i+1 < len(protos) {
+		if isProtocolName(p) && i+1 < len(protos) {
 			token = protos[i+1]
 			break
 		}

@@ -112,10 +112,12 @@ func TestAuthenticateSubprotocolToken(t *testing.T) {
 	}
 	h := NewHub(jwt, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, nil)
 
-	r := httptest.NewRequest("GET", "/api/v1/realtime/inbox", nil)
-	r.Header.Set("Sec-WebSocket-Protocol", ProtocolName+", "+token)
-	if uid, reason := h.authenticate(r); reason != "" || uid != 11 {
-		t.Fatalf("subprotocol auth failed: uid=%d reason=%q", uid, reason)
+	for _, proto := range append([]string{ProtocolName}, legacyProtocolNames...) {
+		rlegacy := httptest.NewRequest("GET", "/api/v1/realtime/inbox", nil)
+		rlegacy.Header.Set("Sec-WebSocket-Protocol", proto+", "+token)
+		if uid, reason := h.authenticate(rlegacy); reason != "" || uid != 11 {
+			t.Fatalf("subprotocol %q auth failed: uid=%d reason=%q", proto, uid, reason)
+		}
 	}
 
 	// Header fallback for non-browser clients.

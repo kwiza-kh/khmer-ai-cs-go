@@ -97,7 +97,7 @@ export function RealtimeProvider({ token, children }: { token: string | null; ch
       if (!url) return; // unparseable base: no socket, callers poll
       // Bind handlers to THIS socket instance — a late error from a stale
       // socket must not close the freshly reconnected one.
-      const s = new WebSocket(url, ["relaychat", token]);
+      const s = new WebSocket(url, ["mekongchat", token]);
       socket = s;
       s.onopen = () => {
         reconnectAttempts = 0;

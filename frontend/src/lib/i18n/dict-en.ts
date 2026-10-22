@@ -43,7 +43,7 @@ export const en: Dict = {
   "role.member": "Member",
 
   // Login
-  "login.footer": "RelayChat · Production",
+  "login.footer": "MekongChat · Production",
   "login.title": "Sign In",
   "login.registerTitle": "Create Account",
   "login.desc": "Enter your credentials to sign in",
@@ -156,11 +156,11 @@ export const en: Dict = {
   "settings.tgDesc": "Get a Telegram ping when customers message you or a handoff request is created — and take over the conversation straight from your phone.",
   "settings.tgNotConnected": "Not connected — you are not receiving Telegram notifications.",
   "settings.tgLinkedTo": "Connected to {title}",
-  "settings.tgUnlinkHint": "To disconnect, send /unlink to the RelayChat bot.",
+  "settings.tgUnlinkHint": "To disconnect, send /unlink to the MekongChat bot.",
   "settings.tgUnavailable": "Telegram notifications are unavailable on this deployment — the platform bot is not configured.",
   "settings.tgNotifyMessages": "New customer messages",
   "settings.tgNotifyHandoff": "Handoff & system notifications",
-  "settings.tgNotifyAnnouncements": "Product announcements from RelayChat",
+  "settings.tgNotifyAnnouncements": "Product announcements from MekongChat",
   "settings.tgTest": "Send test",
   "settings.tgTestSent": "Test message sent — check your Telegram",
   "settings.tgTestFailed": "Test send failed — check that Telegram is still connected",
@@ -171,7 +171,7 @@ export const en: Dict = {
   "settings.notifNone": "None",
   "settings.saved": "Preferences saved",
   "settings.saveFailed": "Could not save preferences",
-  "settings.version": "RelayChat · v1.0",
+  "settings.version": "MekongChat · v1.0",
 
   // Inbox
   "inbox.kicker": "Operations",

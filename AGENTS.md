@@ -1,6 +1,6 @@
 # AGENTS.md — working notes for an AI agent (or a new human) in this repo
 
-The project is **RelayChat** (customer-service platform): a Go backend
+The project is **MekongChat** (customer-service platform): a Go backend
 (`backend-go/`), a Next.js frontend (`frontend/`), PostgreSQL 17 + pgvector and
 Redis. Production runs on one host behind Cloudflare — see
 `deploy-khmer-ai-cs/SKILL.md` before touching anything that ships.

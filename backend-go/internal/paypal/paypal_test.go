@@ -93,7 +93,7 @@ func TestCreateOrderSendsTheAmountItWasGiven(t *testing.T) {
 	order, err := s.client().CreateOrder(context.Background(), CreateOrderInput{
 		Plan: "pro", Amount: "29.00", Currency: "USD", UserID: 7,
 		ReturnURL: "https://cs.example/billing?paypal=return", CancelURL: "https://cs.example/billing?paypal=cancel",
-		BrandName: "RelayChat",
+		BrandName: "MekongChat",
 	})
 	if err != nil {
 		t.Fatalf("CreateOrder: %v", err)

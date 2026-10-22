@@ -83,7 +83,7 @@ func (a *App) totpSetup(w http.ResponseWriter, r *http.Request) (any, error) {
 	}
 
 	secret := generateTOTPSecret()
-	uri := "otpauth://totp/relaychat:" + user.Username + "?secret=" + secret + "&issuer=relaychat"
+	uri := "otpauth://totp/mekongchat:" + user.Username + "?secret=" + secret + "&issuer=mekongchat"
 	// Store pending (disabled until verified), sealed at rest.
 	_, _ = a.DB.Exec(r.Context(),
 		"INSERT INTO user_totp (user_id, secret, enabled) VALUES ($1,$2,false) "+

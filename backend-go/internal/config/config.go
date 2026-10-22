@@ -168,7 +168,7 @@ type PlatformBotConfig struct {
 	// AlertChatID receives operational alerts. Defaults to the first admin id.
 	AlertChatID string // PLATFORM_TELEGRAM_ALERT_CHAT
 	// PublicBotUsername is the @handle, used to build the t.me deep link for
-	// merchant account-linking (e.g. "relaychat_bot").
+	// merchant account-linking (e.g. "mekongchat_bot").
 	PublicBotUsername string // PLATFORM_TELEGRAM_BOT_USERNAME
 }
 

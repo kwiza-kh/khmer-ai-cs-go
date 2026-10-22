@@ -128,9 +128,9 @@ func TestPasswordResetEmailLanguages(t *testing.T) {
 		ttlText string
 		subject string
 	}{
-		{"en", passwordResetEmailTTL, "30 minutes", "Reset your RelayChat password"},
-		{"zh", passwordResetEmailTTL, "30 分钟", "重置您的 RelayChat 密码"},
-		{"km", passwordResetEmailTTL, "30 នាទី", "កំណត់ពាក្យសម្ងាត់ RelayChat របស់អ្នកឡើងវិញ"},
+		{"en", passwordResetEmailTTL, "30 minutes", "Reset your MekongChat password"},
+		{"zh", passwordResetEmailTTL, "30 分钟", "重置您的 MekongChat 密码"},
+		{"km", passwordResetEmailTTL, "30 នាទី", "កំណត់ពាក្យសម្ងាត់ MekongChat របស់អ្នកឡើងវិញ"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.lang, func(t *testing.T) {

@@ -1,4 +1,4 @@
-// RelayChat — website chat widget embed.
+// MekongChat — website chat widget embed.
 //
 // Usage (paste before </body> on your site):
 //   <script src="https://<your-host>/widget-embed.js"

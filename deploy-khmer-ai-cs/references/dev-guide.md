@@ -61,7 +61,7 @@ LINE/Zalo 的 webhook 按 `platform_configs.channel_identity` (LINE = 机器人 
 ## 4. API 面与验证锚点
 
 - 健康: `GET /health` (进程活着) / `GET /ready` (DB+Redis 双检) — **都不在 /api 前缀下, 公网经 nginx 到不了**, 只在服务器本机验证
-  - `service` 恒为 `"relaychat"` (auth_handlers.go 写死), 不是项目名
+  - `service` 恒为 `"mekongchat"` (auth_handlers.go 写死), 不是项目名
   - `version` 是**构建期注入的 git 短哈希** (`-ldflags "-X khmer-ai-cs-go/internal/api.Version=$VERSION"`), 发布后必须核对它确认线上构建
 - 业务全在 `/api/v1/*`: auth (login/register/password/preferences), chat (+`/chat/stream` SSE +voice), knowledge (upload/file|url, retry), inbox, rag/query, platforms/*webhooks (Telegram/Meta/LINE 回调), admin, reports
 - **隐私合规**: `POST /api/v1/webhook/meta/data-deletion` — Meta 数据删除回调 (Platform Terms §3(d)(i)), 无鉴权、以 `signed_request` 的 HMAC-SHA256 验签; 需在 Meta App Dashboard → User data deletion 选 **Data deletion callback URL** 并填该地址 (选 "instructions URL" 则此端点永不触发)。审计写入 `deletion_requests`; 状态页 `GET /privacy/deletion-status?code=…` + 公开查询 `GET /api/v1/privacy/deletion-status?code=…`
@@ -372,4 +372,3 @@ UPDATE knowledge_documents SET index_status = 'pending'
 `GEMINI_FAST_MODEL=gemini-3.8-flash` 由上面那张判定延迟表背书。§11.7 正文「已搬, 风险未卸」的
 框架**不用改** —— 卸掉的只是 p50 那条。准则: **基准与生产差一个数量级时先信生产, 但要把
 「否掉 p50」和「否掉 p95 长尾」当成两件事。**
-

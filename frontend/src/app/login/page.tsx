@@ -196,7 +196,7 @@ export default function LoginPage() {
     <section className="fixed inset-0 overflow-y-auto bg-background text-foreground">
       {/* Header */}
       <header className="absolute inset-x-0 top-0 z-10 flex items-center justify-between border-b border-border px-6 py-4">
-        <span className="text-xs uppercase tracking-[0.12em] text-muted-foreground">RelayChat</span>
+        <span className="text-xs uppercase tracking-[0.12em] text-muted-foreground">MekongChat</span>
         <div className="flex items-center gap-1 rounded-lg border border-border bg-card p-0.5">
           {LANGS.map((opt) => (
             <button

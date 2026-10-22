@@ -143,7 +143,7 @@ func (p *Pipeline) dispatchPlatformUpdate(ctx context.Context, upd *telegramUpda
 
 	// Everything a MERCHANT reads is resolved through merchantText. The
 	// operator console below stays Chinese on purpose — that audience is the
-	// RelayChat team, not a customer of it.
+	// MekongChat team, not a customer of it.
 	linkedUserID, linked := p.lookupLinkedUser(ctx, senderID, chatID, msg.Chat.Type)
 	lang := botLang(msg.From.LanguageCode)
 	if linked {
@@ -405,7 +405,7 @@ func chatFallbackAllowed(chatType string) bool {
 	return chatType == "private"
 }
 
-// lookupLinkedUser resolves which RelayChat account owns this Telegram chat.
+// lookupLinkedUser resolves which MekongChat account owns this Telegram chat.
 // Matched on the numeric Telegram id via the account's linked telegram_sub —
 // never on @username, which is mutable and recyclable.
 //
@@ -481,7 +481,7 @@ func (p *Pipeline) handleAdminCommand(ctx context.Context, chatID string, sender
 	switch cmd {
 	case "/help":
 		p.SendPlatformMessage(ctx, chatID,
-			"RelayChat operator console\n\n"+
+			"MekongChat operator console\n\n"+
 				"/status — service health and queue depth\n"+
 				"/tenants — merchant list with plan and usage\n"+
 				"/tenant <id> — one merchant in detail\n"+

@@ -473,7 +473,7 @@ func (a *App) health(w http.ResponseWriter, r *http.Request) (any, error) {
 	}
 	body := map[string]any{
 		"status":  status,
-		"service": "relaychat",
+		"service": "mekongchat",
 		"version": Version,
 		"checks":  map[string]bool{"database": dbOK, "redis": redisOK},
 	}

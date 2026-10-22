@@ -1,5 +1,5 @@
 [Unit]
-Description=Probe the RelayChat backend /ready and alert on failure
+Description=Probe the MekongChat backend /ready and alert on failure
 After=network-online.target
 
 [Service]

@@ -1,4 +1,4 @@
-# RelayChat 功能完整性审计报告（整合版）
+# MekongChat 功能完整性审计报告（整合版）
 
 > 审计基线：git `231a755`（2026-10-17，与 origin/main 同步）
 > 审计日期：2026-10-19
@@ -24,7 +24,7 @@
 
 ---
 
-# RelayChat 功能完整性审计报告
+# MekongChat 功能完整性审计报告
 
 - 审计基线：git `231a755`（2026-10-17，与 origin/main 同步；工作树无已跟踪改动）
 - 审计日期：2026-10-19
@@ -346,7 +346,7 @@
 
 # 账号 / 认证 / 权限 / 席位 / 平台管理 / 计费 / 安全 功能完整性审计
 
-> 审计对象：RelayChat 代码库（Go 后端 `backend-go/` + Next.js 前端 `frontend/` + PostgreSQL/Redis）
+> 审计对象：MekongChat 代码库（Go 后端 `backend-go/` + Next.js 前端 `frontend/` + PostgreSQL/Redis）
 > 基线：git HEAD `231a755`（2026-10-17，与 origin/main 同步；其父提交 `a33f793` 为依赖升级 + 密码轮换 + API key/TOTP/WS 吊销 + CSP 收紧）
 > 审计性质：**只读**。未改代码/配置，未部署，未连数据库、未跑服务；仅写本报告文件。忽略 `_audit/`、`_research/` 等未跟踪目录。
 

@@ -14,7 +14,7 @@ import (
 // something feels wrong.
 func (p *Pipeline) adminStatusReport(ctx context.Context) string {
 	var b strings.Builder
-	b.WriteString("🩺 RelayChat status\n\n")
+	b.WriteString("🩺 MekongChat status\n\n")
 
 	dbOK := p.DB.Ping(ctx) == nil
 	redisOK := p.Redis != nil && p.Redis.Ping(ctx)
@@ -93,7 +93,7 @@ func (p *Pipeline) adminTenantsReport(ctx context.Context) string {
 			id, name, flag, plan, sessions, used, quota))
 	}
 	// A truncated read must announce itself. The console is how the operator
-	// decides whether a merchant is missing from RelayChat or simply missing
+	// decides whether a merchant is missing from MekongChat or simply missing
 	// from this list, and silence reads as the former.
 	readErr := rows.Err()
 	if readErr != nil && n == 0 {

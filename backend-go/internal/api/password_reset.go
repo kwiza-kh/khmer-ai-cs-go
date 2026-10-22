@@ -126,18 +126,18 @@ func passwordResetEmail(language, link string, ttl time.Duration) (subject, body
 	validFor := passwordResetTTLText(lang, ttl)
 	switch lang {
 	case "zh":
-		return "重置您的 RelayChat 密码",
-			"我们收到了重置 RelayChat 密码的请求。\n\n" +
+		return "重置您的 MekongChat 密码",
+			"我们收到了重置 MekongChat 密码的请求。\n\n" +
 				"打开下面的链接设置新密码（" + validFor + "内有效）：\n" + link + "\n\n" +
 				"该链接只能使用一次。如果这不是您发起的请求，请忽略本邮件，您的密码不会被修改。"
 	case "km":
-		return "កំណត់ពាក្យសម្ងាត់ RelayChat របស់អ្នកឡើងវិញ",
-			"យើងបានទទួលសំណើដើម្បីកំណត់ពាក្យសម្ងាត់ RelayChat របស់អ្នកឡើងវិញ។\n\n" +
+		return "កំណត់ពាក្យសម្ងាត់ MekongChat របស់អ្នកឡើងវិញ",
+			"យើងបានទទួលសំណើដើម្បីកំណត់ពាក្យសម្ងាត់ MekongChat របស់អ្នកឡើងវិញ។\n\n" +
 				"បើកតំណខាងក្រោមដើម្បីជ្រើសរើសពាក្យសម្ងាត់ថ្មី (មានសុពលភាព " + validFor + ")：\n" + link + "\n\n" +
 				"តំណនេះអាចប្រើបានតែម្ដង។ ប្រសិនបើអ្នកមិនបានស្នើសុំ សូមមិនអើពើអ៊ីមែលនេះ — ពាក្យសម្ងាត់របស់អ្នកនឹងមិនផ្លាស់ប្ដូរទេ។"
 	default:
-		return "Reset your RelayChat password",
-			"We received a request to reset your RelayChat password.\n\n" +
+		return "Reset your MekongChat password",
+			"We received a request to reset your MekongChat password.\n\n" +
 				"Open the link below to choose a new password (valid for " + validFor + "):\n" + link + "\n\n" +
 				"This link can be used only once. If you did not request it, ignore this e-mail — your password will not change."
 	}

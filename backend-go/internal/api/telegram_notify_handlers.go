@@ -121,7 +121,7 @@ func (a *App) postTelegramNotifyTest(w http.ResponseWriter, r *http.Request) (an
 	if a.Pipe == nil {
 		return nil, ErrBadRequest("平台 Telegram bot 未配置")
 	}
-	if err := a.Pipe.SendTelegramNotifyChecked(r.Context(), user.UserID, "✅ RelayChat 通知测试成功 — Telegram 通知已就绪 / Telegram notify test"); err != nil {
+	if err := a.Pipe.SendTelegramNotifyChecked(r.Context(), user.UserID, "✅ MekongChat 通知测试成功 — Telegram 通知已就绪 / Telegram notify test"); err != nil {
 		return nil, &ApiError{http.StatusBadGateway, "测试发送失败: " + err.Error()}
 	}
 	return map[string]string{"message": "已发送"}, nil

@@ -46,9 +46,9 @@ func TestIsQuotaExhausted(t *testing.T) {
 // would otherwise produce a link Telegram cannot resolve.
 func TestPlatformBotLink(t *testing.T) {
 	p := &Pipeline{Cfg: &config.Config{}}
-	p.Cfg.PlatformBot.PublicBotUsername = "@relaychat_bot"
+	p.Cfg.PlatformBot.PublicBotUsername = "@mekongchat_bot"
 
-	if got, want := p.PlatformBotLink("tok123"), "https://t.me/relaychat_bot?start=tok123"; got != want {
+	if got, want := p.PlatformBotLink("tok123"), "https://t.me/mekongchat_bot?start=tok123"; got != want {
 		t.Errorf("link = %q, want %q", got, want)
 	}
 
@@ -57,7 +57,7 @@ func TestPlatformBotLink(t *testing.T) {
 		t.Errorf("no username configured should yield no link, got %q", got)
 	}
 
-	p.Cfg.PlatformBot.PublicBotUsername = "relaychat_bot"
+	p.Cfg.PlatformBot.PublicBotUsername = "mekongchat_bot"
 	if got := p.PlatformBotLink(""); got != "" {
 		t.Errorf("no token should yield no link, got %q", got)
 	}

@@ -1,5 +1,5 @@
 [Unit]
-Description=Run the RelayChat readiness probe every 5 minutes
+Description=Run the MekongChat readiness probe every 5 minutes
 
 [Timer]
 OnBootSec=2min
