@@ -250,22 +250,23 @@ func (a *App) metaOAuthComplete(w http.ResponseWriter, r *http.Request) (any, er
 		return nil, ErrServiceUnavailable("Meta OAuth is not configured")
 	}
 
-	// Subscribe webhooks before saving.
+	// Subscribe webhooks before saving. The extended fields are what the code
+	// already consumes but never received: message_reactions (👍/👎 CSAT) and
+	// feed/comments (comment→DM). They are requested optimistically; Meta may
+	// refuse fields the app has not been approved for, in which case the
+	// baseline set is retried so a connection can never fail over an optional
+	// engagement field.
 	if req.EnableMessenger {
-		_, err := a.metaRequest(r.Context(), "POST", "/"+url.QueryEscape(page.PageID)+"/subscribed_apps",
-			[][2]string{{"subscribed_fields", "messages,messaging_postbacks,message_deliveries,message_reads"}}, page.PageAccessToken)
-		if err != nil {
+		if err := a.subscribeMetaApp(r.Context(), page.PageID, page.PageAccessToken, metaMessengerFields); err != nil {
 			return nil, &ApiError{http.StatusBadGateway, err.Error()}
 		}
 	}
 	if req.EnableInstagram {
-		subFields := [][2]string{{"subscribed_fields", "messages,messaging_postbacks,message_deliveries,message_reads"}}
 		// Instagram messaging webhooks arrive with the Instagram account ID as
 		// the entry id; subscribe that account, falling back to the Page (which
 		// also delivers Instagram messages) so the connection still goes live.
-		_, err := a.metaRequest(r.Context(), "POST", "/"+url.QueryEscape(page.InstagramBusiness)+"/subscribed_apps", subFields, page.PageAccessToken)
-		if err != nil {
-			if _, pageErr := a.metaRequest(r.Context(), "POST", "/"+url.QueryEscape(page.PageID)+"/subscribed_apps", subFields, page.PageAccessToken); pageErr != nil {
+		if err := a.subscribeMetaApp(r.Context(), page.InstagramBusiness, page.PageAccessToken, metaInstagramFields); err != nil {
+			if pageErr := a.subscribeMetaApp(r.Context(), page.PageID, page.PageAccessToken, metaInstagramFields); pageErr != nil {
 				return nil, &ApiError{http.StatusBadGateway, err.Error()}
 			}
 		}
@@ -651,4 +652,40 @@ func newOAuthState() string {
 func sha256HexStr(s string) string {
 	h := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(h[:])
+}
+
+// Meta webhook subscription fields.
+//
+// The baseline set is what a connected channel has always subscribed to. The
+// extended fields are what this codebase already consumes but never received:
+// `message_reactions` (the 👍/👎 reaction-CSAT path in handleMetaReaction) and
+// `feed` / `comments` (the Page/IG comment→DM funnel in handleMetaComment).
+// They are requested optimistically because the merchant's app may already hold
+// the engagement permissions; if Meta refuses them the baseline set is retried,
+// so a channel connection can never fail because an optional field was denied.
+const (
+	metaWebhookBaselineFields = platform.MetaWebhookBaselineFields
+	metaMessengerFields       = platform.MetaMessengerSubscribeFields
+	metaInstagramFields       = platform.MetaInstagramSubscribeFields
+)
+
+// subscribeMetaApp subscribes one Page/IG account to the webhook fields, with a
+// baseline fallback. The returned error comes from the last attempt, so a real
+// failure is reported only when even the baseline cannot be subscribed.
+func (a *App) subscribeMetaApp(ctx context.Context, objectID, token, fields string) error {
+	_, err := a.metaRequest(ctx, "POST", "/"+url.QueryEscape(objectID)+"/subscribed_apps",
+		[][2]string{{"subscribed_fields", fields}}, token)
+	if err == nil {
+		return nil
+	}
+	if fields == metaWebhookBaselineFields {
+		return err
+	}
+	if a.Logger != nil {
+		a.Logger.Warn("extended Meta webhook fields refused; subscribing the baseline set",
+			"object_id", objectID, "fields", fields, "error", err.Error())
+	}
+	_, fallbackErr := a.metaRequest(ctx, "POST", "/"+url.QueryEscape(objectID)+"/subscribed_apps",
+		[][2]string{{"subscribed_fields", metaWebhookBaselineFields}}, token)
+	return fallbackErr
 }

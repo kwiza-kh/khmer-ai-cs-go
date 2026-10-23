@@ -122,13 +122,13 @@
 - **工作量**：S。
 
 ### P1-4 Meta 订阅字段缺口：评论转私信 / reaction CSAT / 回执在事件层不可达
-- **状态**：未接线（代码写好，事件永远不来）
+- **状态**：**已修复（2026-10-23）**：订阅字段加 `message_reactions`/`feed`/`comments`（带 baseline 回退）；`verify` 会为存量连接重新订阅；Messenger/IG delivery/read 回执落 outbox（详见 docs §三十九）
 - **证据**：OAuth 只订阅 `messages,messaging_postbacks,message_deliveries,message_reads`（`internal/api/meta_oauth.go:256,262`），没有 `message_reactions`、`feed`、`comments`；但 `internal/platform/webhooks.go:207-237`（评论→私信）、`:270-294`（reaction→CSAT）已实现；Meta 的 delivery/read 事件也没有落库分支（只有 WhatsApp 状态回执 `webhooks.go:1288+`）。
 - **影响**：即使 Meta App Review 通过，评论转私信/reaction 评分也收不到事件；Messenger/IG 没有已读/送达回执。
 - **工作量**：S（订阅字段+回执分支）/M（评论端到端）。
 
 ### P1-5 权限矩阵两个破口：删席位无门禁；role=admin 绕过矩阵
-- **状态**：未接线 / 半实现
+- **状态**：**已修复（2026-10-23）**：`removeTeamAgent` 加 owner 门禁；owner 判定改为 membership 优先（platform admin 除外）；给 active seat 授 `admin` 直接 400（详见 docs §三十九）
 - **证据**：
   - `router.go:298` 裸挂 `DELETE /api/v1/team/agents/{id}`，handler 只按租户删除（`misc2_handlers.go:806-816`）；席位的 `Tenant()` 就是店主 id，因此**任一席位可删除本租户任意席位**。同组其他 `/team/*` 都有 `requireOwnerOfTenant`。
   - `admin_handlers.go:584-601` 允许租户管理员把席位 role 设为 `admin`；而 `tenant_owner.go:45-48` 对 `admin` 直接返回 owner 真值 → 该席位可过所有 owner-only 路由（PayPal 下单/捕获、CSV 报表、Telegram 通知路由、租户分析）。
@@ -136,7 +136,7 @@
 - **工作量**：S + M。
 
 ### P1-6 通知偏好是空开关
-- **状态**：未接线
+- **状态**：**已修复（2026-10-23）**：新增 `internal/notifypref`，两条 `notifyUser` 与 `NotifyNewCustomerMessage` 按 all/escalations/none 过滤（读失败 fail-open；详见 docs §三十九）
 - **证据**：设置页 all/escalations/none 三档（`frontend/src/app/settings/page.tsx:117-126`）→ `PUT /auth/preferences` 写 `users.notification_pref`（`auth_handlers.go:451`）；但两条 `notifyUser`（`internal/api/api.go:72-89`、`internal/platform/pipeline.go:1456-1469`）从不读取该列。
 - **影响**：选「无」后交接/SLA/负反馈告警照发。
 - **工作量**：S。

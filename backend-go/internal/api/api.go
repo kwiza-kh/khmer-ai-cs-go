@@ -16,6 +16,7 @@ import (
 	"khmer-ai-cs-go/internal/gemini"
 	"khmer-ai-cs-go/internal/llm"
 	"khmer-ai-cs-go/internal/mailer"
+	"khmer-ai-cs-go/internal/notifypref"
 	"khmer-ai-cs-go/internal/paypal"
 	"khmer-ai-cs-go/internal/platform"
 	"khmer-ai-cs-go/internal/rag"
@@ -78,6 +79,17 @@ type App struct {
 // Handoff notifications also ping the tenant's Telegram notify bot — parity
 // with the pipeline so widget-originated escalations reach the owner too.
 func (a *App) notifyUser(ctx context.Context, userID int32, kind, title, body, sessionID string) {
+	// The settings page has always written users.notification_pref; honour it
+	// here instead of letting a merchant who chose "none" keep receiving
+	// handoff/SLA/quality notifications. A failed read fails open (send + log):
+	// a database hiccup must not silence a handoff alert.
+	pref, err := notifypref.Load(ctx, a.DB, userID)
+	if err != nil && a.Logger != nil {
+		a.Logger.Warn("notification preference read failed; sending", "user_id", userID, "error", err.Error())
+	}
+	if !notifypref.Allows(pref, kind) {
+		return
+	}
 	var sess any
 	if sessionID != "" {
 		sess = sessionID

@@ -2935,3 +2935,51 @@ server 块（同机的 wms 不信任该头，避免被伪造）。
 
 - 迁移 088 在服务运行中先应用（表为空、只加列/索引，附加式变更），随后 SQL 门禁 → 停服换二进制（备份 `server-go.bak-20261023064828`，修复版 `server-go.bak-*` 另存）→ 启动，`/ready` = `a6cf8b2` 后再发修复版 `15de86f`；前端备份 `frontend-backup-20261023064839`。
 - 回滚：后端 `server-go.bak-<ts>` + `systemctl restart`；前端换回 `frontend-backup-20261023064839`；迁移前向单行道，088 只加列/索引，旧二进制可继续运行。
+
+## 三十九、三项 P1 收口：权限两洞 / 通知偏好 / Meta 事件到达（2026-10-23）
+
+审计 P1-4/P1-5/P1-6 的共同点：**代码看起来在，行为不成立**。本轮把三条都做成可测、线上可验证的行为，无迁移（全部是既有列/既有表）。
+
+### 一、权限矩阵两个破口（P1-5）
+
+**破口 1：删席位无门禁。** `DELETE /team/agents/{id}` 的 DELETE 语句只按 `owner_user_id` 限定行，不检查调用者——任一席位都能删掉同事们。修法：handler 首行 `requireOwnerOfTenant(user)`（矩阵刻意没有 "manage team" 授权，团队管理仍是店主专属，与文档一致）。
+
+**破口 2：把席位 role 改成 admin 即可绕过矩阵。** 根因是 `tenantOwnerAllowed` 先看 role：`admin` 直接判 owner，而席位一行 `agent_teams` 是谁的 agent 才是真正的边界。修法两层：
+- **判定改成 membership 优先**：`tenantOwnerAllowed(isPlatformAdmin, isAgent) = isPlatformAdmin || !isAgent`。role 不再是 owner 判据；`isTenantOwnerID` 只对 `platform_admin` 放行。这是行为变更：如果一个真实席位被手工设成 role=admin，它会失去 owner 级能力——正确方向（能力来自权限矩阵，不来自角色字符串）。
+- **授角色时直接拒绝**：`updateUserRole` 在授予 `admin` 前查 `agent_teams`，是 active seat 就回 400「席位账号不能设为 admin 角色；请在『成员权限』中授权」。
+
+测试：`TestTenantOwnerDecision`（含 "tenant admin who is a seat elsewhere" 必须为 false）、`TestRemoveTeamAgentRunsTheOwnerGate`、`TestSeatCannotBePromotedToRoleAdmin`（后两个按仓库既有风格扫描 handler 源码，DB 门控测试被 skip 时仍能守住）。现网唯一一条 active seat 的 role 是 `user`，本次变更不影响它。
+
+### 二、通知偏好真正生效（P1-6）
+
+`users.notification_pref`（迁移 034）一直只写不读。新增 `internal/notifypref`：
+
+| 偏好 | 允许的 kind |
+|---|---|
+| `all`（默认） | 全部 |
+| `escalations` | `handoff` / `sla` / `warning`（回复质量） / `negative_feedback` |
+| `none` | 无 |
+
+- 接线：`api.notifyUser` 与 `platform.notifyUser`（落库 + WebSocket + Telegram handoff 推送整条链）在入口统一判定；`NotifyNewCustomerMessage`（kind `message`，"客户发来一条消息"）也受控。
+- **失败方向**：读取偏好失败 = fail open（照发 + WARN）——数据库抖动不能静音交接告警（auxiliary 路径 fail open）。
+- 不动：计费到期提醒与「通知自测」按钮不是用户可关的产品通知，保持原样。
+- 未知偏好值降级为 `all`，绝不静默静音。
+
+测试：`Normalize` / `Allows` / `Load`（含 NULL 列、DB 错误 fail-open、未知值降级）。
+
+### 三、Meta 事件真正可达（P1-4）
+
+**a) 订阅字段补齐。** 连接时原来只订阅 `messages,messaging_postbacks,message_deliveries,message_reads`，而 reaction-CSAT、评论转私信的代码早已存在 → 事件永远不来。现在订阅基线 + `message_reactions` + `feed`(Page) / `comments`(IG)；Meta 可能因 App Review 未过拒绝扩展字段，此时**自动回退 baseline**，连接永不因可选字段失败。
+
+**b) 存量连接修复。** `POST /platforms/configs/{id}/verify`（商家点"验证连接"）现在会重新订阅字段（best-effort）：扩展字段被接受 → detail 写 `webhook fields refreshed (extended)`；被拒 → `baseline only — engagement permissions not approved`。已连接的 Page 点一次验证即补齐，无需重连。
+
+**c) 回执落库。** Messenger/IG 的 `delivery` / `read` 事件原本在 `handleMetaMessaging` 里被 `message == nil` 丢掉：
+- `delivery`（带 `mids`）→ 复用 WhatsApp 的 `applyProviderReceipt`；若 outbox 还没写回 provider id（Send API 与回执的竞态），走 `retainDeliveryReceipt`，worker 回放。
+- `read`（只有 watermark、没有 message id）→ 按时间 watermark 批量更新：只碰已 linked 的 `sent/delivered`、未失败的行，`provider_status='read'` 幂等，`delivered_at/read_at` 用 COALESCE 保留首次时间。
+
+测试：订阅字段集（含 baseline 前缀与 feed/comments 差异）、`metaOccurredAt`（ms 数字/字符串/缺失回退 now）、read watermark SQL 守卫。
+
+### 四、验证
+
+- 本地：`go build/vet/test ./...` 绿；`tenantscope` 绿；`gofmt` 干净；SQL 门禁（生产 schema，`SQLCHECK_REQUIRED=1`）**660 条语句 0 broken**。
+- 线上（发布后）：`/ready` 版本戳、Meta 配置 4 点一次"验证"看 detail 是否出现 `webhook fields refreshed`、journal 无 ERROR；三项的行为级验证以单测为主（权限两洞需要席位会话、通知偏好需要真实通知路径，均不宜在生产制造）。

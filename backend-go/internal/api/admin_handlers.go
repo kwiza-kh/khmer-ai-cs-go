@@ -597,6 +597,19 @@ func (a *App) updateUserRole(w http.ResponseWriter, r *http.Request, userID int3
 		if targetRole == "platform_admin" && caller.Role != "platform_admin" {
 			return nil, ErrForbidden("无权修改平台管理员")
 		}
+		// A seat is an agent of another tenant. Promoting it to role admin used
+		// to be a second way past the member permission matrix (the owner test
+		// trusted the role string); capabilities are granted through the matrix,
+		// never by rewriting the role.
+		if *req.Role == "admin" {
+			var isAgent bool
+			if err := a.DB.QueryRow(r.Context(), sqlCallerIsAgent, userID).Scan(&isAgent); err != nil {
+				return nil, ErrInternal("查询失败")
+			}
+			if isAgent {
+				return nil, ErrBadRequest("席位账号不能设为 admin 角色；请在「成员权限」中授权")
+			}
+		}
 		if _, err := a.DB.Exec(r.Context(), "UPDATE users SET role = $1::user_role WHERE user_id = $2", *req.Role, userID); err != nil {
 			return nil, ErrInternal("更新失败")
 		}

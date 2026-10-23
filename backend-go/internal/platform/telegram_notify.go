@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"khmer-ai-cs-go/internal/config"
+	"khmer-ai-cs-go/internal/notifypref"
 	"khmer-ai-cs-go/internal/textutil"
 	"khmer-ai-cs-go/internal/typesafe"
 	"khmer-ai-cs-go/internal/webhookout"
@@ -168,6 +169,15 @@ func (p *Pipeline) NotifyNewCustomerMessage(ctx context.Context, userID int32, s
 	// Throttle first: a throttled message should not pay for the config
 	// lookup and AES decryption.
 	if !ThrottleTelegramMessage(p.Redis, sessionID) {
+		return
+	}
+	// "A customer messaged you" is a routine notification: suppressed by
+	// "none" and by "escalations" (which keeps handoff/SLA/quality alerts).
+	if pref, err := notifypref.Load(ctx, p.DB, userID); err != nil {
+		if p.Logger != nil {
+			p.Logger.Warn("notification preference read failed; sending", "user_id", userID, "error", err.Error())
+		}
+	} else if !notifypref.Allows(pref, "message") {
 		return
 	}
 	cfg := p.LoadTelegramNotify(ctx, userID)

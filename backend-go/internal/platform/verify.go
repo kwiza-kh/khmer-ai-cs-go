@@ -173,6 +173,30 @@ func verifyMetaFamily(ctx context.Context, plat string, creds ChannelCredentials
 	if err != nil {
 		return VerifyOutcome{}, err
 	}
+	// Re-assert the webhook field list on every verify. Connections created
+	// before the extended fields existed only carry the baseline set, and
+	// "verify" is the merchant's natural repair action (audit P1-4: the
+	// reaction-CSAT and comment→DM handlers existed but the subscription never
+	// asked for their fields). Best-effort: the token may lack the engagement
+	// permissions, in which case the baseline set is re-applied.
+	if plat == "meta" || plat == "instagram" {
+		objectID, fields := creds.PageID, MetaMessengerSubscribeFields
+		if plat == "instagram" {
+			fields = MetaInstagramSubscribeFields
+			if creds.InstagramBusinessID != "" {
+				objectID = creds.InstagramBusinessID
+			}
+		}
+		extended, refreshErr := refreshMetaWebhookFields(ctx, client, objectID, creds.PageID, fields)
+		switch {
+		case refreshErr != nil:
+			detail += "; webhook fields not refreshed: " + refreshErr.Error()
+		case extended:
+			detail += "; webhook fields refreshed (extended)"
+		default:
+			detail += "; webhook fields refreshed (baseline only — engagement permissions not approved)"
+		}
+	}
 	if plat == "meta" {
 		// The entry points a customer sees before typing anything (greeting +
 		// persistent menu). Best-effort: a token without pages_manage_metadata
@@ -185,6 +209,33 @@ func verifyMetaFamily(ctx context.Context, plat string, creds ChannelCredentials
 		}
 	}
 	return VerifyOutcome{AccountName: name, Detail: detail}, nil
+}
+
+// refreshMetaWebhookFields re-subscribes a Page/IG account to the webhook fields
+// this build consumes. The extended set can be refused (App Review not passed),
+// in which case the baseline set is still re-applied — the connection keeps
+// receiving messages even when the engagement fields are unavailable.
+// It reports whether the extended set was accepted.
+func refreshMetaWebhookFields(ctx context.Context, client *MetaClient, objectID, pageID, fields string) (bool, error) {
+	if objectID == "" {
+		return false, errors.New("no provider object id for this connection")
+	}
+	if err := client.SubscribeWebhookFields(ctx, objectID, fields); err == nil {
+		return true, nil
+	}
+	if err := client.SubscribeWebhookFields(ctx, objectID, MetaWebhookBaselineFields); err == nil {
+		return false, nil
+	}
+	// Instagram messaging also arrives through the Page subscription.
+	if pageID != "" && pageID != objectID {
+		if err := client.SubscribeWebhookFields(ctx, pageID, fields); err == nil {
+			return true, nil
+		}
+		if err := client.SubscribeWebhookFields(ctx, pageID, MetaWebhookBaselineFields); err == nil {
+			return false, nil
+		}
+	}
+	return false, errors.New("Meta rejected both the extended and baseline webhook field sets")
 }
 
 func verifyLine(ctx context.Context, _ string, creds ChannelCredentials, p VerifyParams) (VerifyOutcome, error) {

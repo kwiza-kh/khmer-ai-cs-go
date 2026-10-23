@@ -15,21 +15,24 @@ import (
 // gain owner powers, and that is the one thing the old role check did buy.
 func TestTenantOwnerDecision(t *testing.T) {
 	cases := []struct {
-		name    string
-		isAdmin bool
-		isAgent bool
-		want    bool
+		name            string
+		isPlatformAdmin bool
+		isAgent         bool
+		want            bool
 	}{
-		{name: "platform/tenant admin by role", isAdmin: true, isAgent: false, want: true},
-		{name: "admin who is also an agent elsewhere", isAdmin: true, isAgent: true, want: true},
-		{name: "self-service owner (role user, not an agent)", isAdmin: false, isAgent: false, want: true},
-		{name: "agent of another tenant", isAdmin: false, isAgent: true, want: false},
+		{name: "platform admin", isPlatformAdmin: true, isAgent: false, want: true},
+		{name: "platform admin who is also an agent elsewhere", isPlatformAdmin: true, isAgent: true, want: true},
+		{name: "self-service owner (role user, not an agent)", isPlatformAdmin: false, isAgent: false, want: true},
+		{name: "agent of another tenant", isPlatformAdmin: false, isAgent: true, want: false},
+		// Audit P1-5: this row used to be "want: true" because the role string
+		// won over membership, and that is exactly the bypass.
+		{name: "tenant admin who is a seat elsewhere", isPlatformAdmin: false, isAgent: true, want: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := tenantOwnerAllowed(tc.isAdmin, tc.isAgent); got != tc.want {
-				t.Errorf("tenantOwnerAllowed(isAdmin=%v, isAgent=%v) = %v, want %v",
-					tc.isAdmin, tc.isAgent, got, tc.want)
+			if got := tenantOwnerAllowed(tc.isPlatformAdmin, tc.isAgent); got != tc.want {
+				t.Errorf("tenantOwnerAllowed(isPlatformAdmin=%v, isAgent=%v) = %v, want %v",
+					tc.isPlatformAdmin, tc.isAgent, got, tc.want)
 			}
 		})
 	}
@@ -121,5 +124,47 @@ func TestCallerIsAgentStatementLooksAtTheAgentColumn(t *testing.T) {
 	}
 	if strings.Contains(sqlCallerIsAgent, "owner_user_id = $1") {
 		t.Errorf("statement is asking the wrong direction (owner column): %q", sqlCallerIsAgent)
+	}
+}
+
+// funcBody returns the source of one function, so the two matrix fixes can be
+// pinned at the place that enforces them (the repo's other guard tests scan the
+// router the same way). A behavioural test would need a member session, and the
+// security property must hold whether or not a DB-backed test is skipped.
+func funcBody(t *testing.T, file, signature string) string {
+	t.Helper()
+	raw, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatalf("read %s: %v", file, err)
+	}
+	src := string(raw)
+	start := strings.Index(src, signature)
+	if start < 0 {
+		t.Fatalf("%s not found in %s", signature, file)
+	}
+	rest := src[start+len(signature):]
+	if end := strings.Index(rest, "\nfunc "); end >= 0 {
+		rest = rest[:end]
+	}
+	return rest
+}
+
+// Audit P1-5, hole 2: any seat could remove its colleagues because the DELETE
+// scoped rows by tenant but never checked who was deleting.
+func TestRemoveTeamAgentRunsTheOwnerGate(t *testing.T) {
+	if !strings.Contains(funcBody(t, "misc2_handlers.go", "func (a *App) removeTeamAgent"), "requireOwnerOfTenant(user)") {
+		t.Error("removeTeamAgent must run requireOwnerOfTenant before deleting a seat")
+	}
+}
+
+// Audit P1-5, hole 2: promoting a seat to role admin used to bypass the matrix.
+// The role editor must refuse that for an active agent.
+func TestSeatCannotBePromotedToRoleAdmin(t *testing.T) {
+	body := funcBody(t, "admin_handlers.go", "func (a *App) updateUserRole")
+	if !strings.Contains(body, "sqlCallerIsAgent") {
+		t.Error("updateUserRole must check agent_teams membership before granting role admin")
+	}
+	if !strings.Contains(body, "席位账号不能设为 admin") {
+		t.Error("updateUserRole must reject promoting a seat to admin with an explicit message")
 	}
 }

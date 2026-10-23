@@ -307,6 +307,18 @@ func (wh *Webhooks) handleMetaMessaging(ctx context.Context, cfg *webhookConfig,
 	if senderObj, ok := msg["sender"].(map[string]any); ok {
 		sender, _ = senderObj["id"].(string)
 	}
+	// Delivery/read receipts arrive as their own events with no `message`.
+	// Persisting them is what lets the inbox show delivered/read ticks; before
+	// this every receipt hit the `message == nil` return below and vanished,
+	// even though the OAuth connection subscribed the receipt fields.
+	if delivery, ok := msg["delivery"].(map[string]any); ok {
+		wh.applyMetaDeliveryReceipt(ctx, cfg, delivery)
+		return nil
+	}
+	if read, ok := msg["read"].(map[string]any); ok {
+		wh.applyMetaReadReceipt(ctx, cfg, read)
+		return nil
+	}
 	// Reactions arrive as their own event with no `message` object. A 👍/👎 on a
 	// delivered reply is a rating; it is recorded the same way the CSAT quick
 	// replies are, so the two cannot disagree.
@@ -1614,4 +1626,81 @@ func VerifyTelegramSecret(secret, provided string) bool {
 		return false
 	}
 	return hmac.Equal([]byte(secret), []byte(provided))
+}
+
+// Meta delivery/read receipts (Messenger + Instagram).
+//
+// Both arrive as `messaging` events with no message object, which is why they
+// were silently dropped by handleMetaMessaging. The outbox already carries the
+// provider message id and the same retain-now/apply-later contract WhatsApp
+// uses (migration 014), so these handlers reuse that machinery instead of
+// inventing a second receipt table.
+
+// metaOccurredAt converts Meta's millisecond watermark (a JSON number, but a
+// string in some payload shapes) into the receipt time. A missing/unparsable
+// watermark falls back to now: a slightly-late receipt is still applied, and the
+// table's UNIQUE(config_id, provider_message_id, status, occurred_at) key keeps
+// redeliveries idempotent.
+func metaOccurredAt(v any) time.Time {
+	switch n := v.(type) {
+	case float64:
+		if n > 0 {
+			return time.UnixMilli(int64(n))
+		}
+	case string:
+		if ms, err := strconv.ParseInt(strings.TrimSpace(n), 10, 64); err == nil && ms > 0 {
+			return time.UnixMilli(ms)
+		}
+	}
+	return time.Now()
+}
+
+// applyMetaDeliveryReceipt applies one delivery event: every mid in the batch is
+// the provider id of a message we sent.
+func (wh *Webhooks) applyMetaDeliveryReceipt(ctx context.Context, cfg *webhookConfig, delivery map[string]any) {
+	occurredAt := metaOccurredAt(delivery["watermark"])
+	mids, _ := delivery["mids"].([]any)
+	for _, rawMid := range mids {
+		mid, _ := rawMid.(string)
+		if mid == "" {
+			continue
+		}
+		applied, err := applyProviderReceipt(ctx, wh.DB, cfg.ConfigID, mid, "delivered", "")
+		if err != nil {
+			if wh.Logger != nil {
+				wh.Logger.Warn("meta delivery receipt failed",
+					"config_id", cfg.ConfigID, "provider_message_id", mid, "error", err.Error())
+			}
+			continue
+		}
+		if applied {
+			continue
+		}
+		// The webhook can beat the worker that links provider_message_id onto the
+		// outbox row; retain it and let the worker replay it once the link exists.
+		if err := retainDeliveryReceipt(ctx, wh.DB, cfg.ConfigID, mid, "delivered", occurredAt, ""); err != nil && wh.Logger != nil {
+			wh.Logger.Warn("meta delivery receipt not retained",
+				"config_id", cfg.ConfigID, "provider_message_id", mid, "error", err.Error())
+		}
+	}
+}
+
+// metaReadWatermarkSQL marks every linked outbox row up to Meta's read watermark
+// as read. Messenger/IG "read" events carry only a watermark (no message ids),
+// so the receipt is applied by time. The status guard keeps a redelivered read
+// from overwriting a later failure and makes the statement idempotent; rows with
+// a NULL provider_status have been sent (status='sent') but not yet receipted,
+// so they are included.
+const metaReadWatermarkSQL = "UPDATE platform_outbox SET provider_status = 'read', " +
+	"delivered_at = COALESCE(delivered_at, sent_at, created_at), read_at = COALESCE(read_at, NOW()) " +
+	"WHERE config_id = $1 AND provider_message_id IS NOT NULL AND provider_message_id <> '' " +
+	"AND (provider_status IS NULL OR provider_status IN ('sent', 'delivered')) " +
+	"AND COALESCE(sent_at, created_at) <= $2"
+
+// applyMetaReadReceipt applies a read event by watermark.
+func (wh *Webhooks) applyMetaReadReceipt(ctx context.Context, cfg *webhookConfig, read map[string]any) {
+	occurredAt := metaOccurredAt(read["watermark"])
+	if _, err := wh.DB.Exec(ctx, metaReadWatermarkSQL, cfg.ConfigID, occurredAt); err != nil && wh.Logger != nil {
+		wh.Logger.Warn("meta read receipt failed", "config_id", cfg.ConfigID, "error", err.Error())
+	}
 }

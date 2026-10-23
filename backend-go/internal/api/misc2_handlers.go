@@ -828,6 +828,12 @@ func (a *App) addTeamAgent(w http.ResponseWriter, r *http.Request) (any, error) 
 
 func (a *App) removeTeamAgent(w http.ResponseWriter, r *http.Request, teamID int32) (any, error) {
 	user, _ := UserFrom(r)
+	// Owner-only: the DELETE's tenant filter scopes WHICH rows are reachable,
+	// not WHO may delete them. Without this gate any seat could remove its
+	// colleagues (the member matrix deliberately has no "manage team" grant).
+	if err := requireOwnerOfTenant(user); err != nil {
+		return nil, err
+	}
 	tag, err := a.DB.Exec(r.Context(), "DELETE FROM agent_teams WHERE team_id = $1 AND owner_user_id = $2", teamID, user.Tenant())
 	if err != nil {
 		return nil, ErrInternal("删除失败")

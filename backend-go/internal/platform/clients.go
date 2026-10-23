@@ -82,6 +82,19 @@ type SendRequest struct {
 	Tag string
 }
 
+// Meta webhook subscription field sets.
+//
+// The baseline set is what a connected channel has always subscribed to. The
+// extended fields are what this codebase already consumes but never received:
+// message_reactions (reaction CSAT) and feed/comments (comment→DM). Both are
+// requested optimistically; a connection can fall back to the baseline rather
+// than fail because a merchant's app has not passed the engagement review.
+const (
+	MetaWebhookBaselineFields    = "messages,messaging_postbacks,message_deliveries,message_reads"
+	MetaMessengerSubscribeFields = MetaWebhookBaselineFields + ",message_reactions,feed"
+	MetaInstagramSubscribeFields = MetaWebhookBaselineFields + ",message_reactions,comments"
+)
+
 func NewMetaClient(accessToken, pageID, instagramBusiness, version string) *MetaClient {
 	v := strings.TrimSpace(version)
 	if v == "" {
@@ -173,6 +186,26 @@ func (m *MetaClient) do(req *http.Request, what string) (map[string]any, error) 
 		return nil, fmt.Errorf("%s failed (%d): %s", what, resp.StatusCode, msg)
 	}
 	return v, nil
+}
+
+// SubscribeWebhookFields asks Meta to deliver the given webhook fields for one
+// Page/IG account. Form-encoded, matching the connection flow in the API layer
+// (Meta accepts JSON on some endpoints, form on all of them). Idempotent.
+func (m *MetaClient) SubscribeWebhookFields(ctx context.Context, objectID, fields string) error {
+	objectID = strings.TrimSpace(objectID)
+	if objectID == "" {
+		return errors.New("meta subscribe: empty object id")
+	}
+	form := url.Values{"subscribed_fields": {fields}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		m.base()+"/"+url.PathEscape(objectID)+"/subscribed_apps", strings.NewReader(form.Encode()))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", "OAuth "+m.AccessToken)
+	_, err = m.do(req, "meta subscribe webhooks")
+	return err
 }
 
 // VerifyConnection confirms the token works and returns the account name.

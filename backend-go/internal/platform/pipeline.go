@@ -24,6 +24,7 @@ import (
 	"khmer-ai-cs-go/internal/config"
 	"khmer-ai-cs-go/internal/gemini"
 	"khmer-ai-cs-go/internal/llm"
+	"khmer-ai-cs-go/internal/notifypref"
 	"khmer-ai-cs-go/internal/rag"
 	"khmer-ai-cs-go/internal/realtime"
 	"khmer-ai-cs-go/internal/redisstore"
@@ -1471,6 +1472,13 @@ func TurnTriggerFor(v gemini.TurnVerdict, rawNoul float64, hasMatch, hasDocs boo
 // an acceleration, not a guarantee). Handoff-type notifications also ping the
 // tenant's Telegram notify bot when configured.
 func (p *Pipeline) notifyUser(ctx context.Context, userID int32, kind, title, body, sessionID string) {
+	pref, err := notifypref.Load(ctx, p.DB, userID)
+	if err != nil && p.Logger != nil {
+		p.Logger.Warn("notification preference read failed; sending", "user_id", userID, "error", err.Error())
+	}
+	if !notifypref.Allows(pref, kind) {
+		return
+	}
 	_, _ = p.DB.Exec(ctx,
 		"INSERT INTO notifications (user_id, kind, title, body, session_id, created_at) VALUES ($1,$2,$3,$4,$5,NOW())",
 		userID, kind, title, body, nullSession(sessionID))
