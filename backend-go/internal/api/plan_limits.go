@@ -67,10 +67,6 @@ func planByName(name string) usage.Plan {
 }
 
 // checkChannelLimit refuses a new channel once the plan's allowance is in use.
-func (a *App) checkChannelLimit(ctx context.Context, userID int32) error {
-	return a.checkChannelLimitFrom(ctx, a.DB, userID)
-}
-
 // checkChannelLimitFrom runs the same gate on an open transaction, so a count
 // and the INSERT that consumes it see one snapshot (createChannelConfig).
 func (a *App) checkChannelLimitFrom(ctx context.Context, q querier, userID int32) error {

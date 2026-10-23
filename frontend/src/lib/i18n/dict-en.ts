@@ -1025,10 +1025,6 @@ export const en: Dict = {
   "ent.colIntent": "Intent",
   "ent.colSessions": "Sessions",
   "ent.colConfidence": "Avg confidence",
-  "ent.integrations": "Channel integrations",
-  "ent.configured": "Configured",
-  "ent.enabledPending": "Enabled (pending config)",
-  "ent.notEnabled": "Not enabled",
 
   // Platforms page
   "pf.kicker": "Integrations",

@@ -12,7 +12,6 @@
     "@base-ui/react": "^1.8.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "highlight.js": "^11.11.1",
     "lucide-react": "^1.25.0",
     "motion": "^12.42.2",
     "next": "^16.4.2",

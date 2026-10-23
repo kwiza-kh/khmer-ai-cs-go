@@ -21,15 +21,16 @@ func TestValidEvent(t *testing.T) {
 
 func TestNewEnvelopeCarriesStableIdentity(t *testing.T) {
 	data := map[string]any{"session_id": "s-1", "platform": "telegram"}
-	env, payload, err := NewEnvelope(EventSessionCreated, data)
+	const eventID = "11111111-1111-4111-8111-111111111111"
+	env, payload, err := NewEnvelope(EventSessionCreated, eventID, data)
 	if err != nil {
 		t.Fatalf("NewEnvelope: %v", err)
 	}
 	if env.Event != EventSessionCreated {
 		t.Fatalf("event = %q", env.Event)
 	}
-	if len(env.EventID) != 36 {
-		t.Fatalf("event_id = %q, want a UUID", env.EventID)
+	if env.EventID != eventID {
+		t.Fatalf("event_id = %q, want %q", env.EventID, eventID)
 	}
 	if env.CreatedAt.IsZero() {
 		t.Fatal("created_at is zero")
@@ -48,13 +49,19 @@ func TestNewEnvelopeCarriesStableIdentity(t *testing.T) {
 }
 
 func TestNewEnvelopeRejectsUnsupportedEvent(t *testing.T) {
-	if _, _, err := NewEnvelope("message.received", nil); err == nil {
+	if _, _, err := NewEnvelope("message.received", "evt-1", nil); err == nil {
 		t.Fatal("unsupported event must not build an envelope")
 	}
 }
 
+func TestNewEnvelopeRequiresEventID(t *testing.T) {
+	if _, _, err := NewEnvelope(EventSessionCreated, "", nil); err == nil {
+		t.Fatal("an envelope without an event id must be rejected")
+	}
+}
+
 func TestNewEnvelopeNilDataBecomesObject(t *testing.T) {
-	_, payload, err := NewEnvelope(EventSessionResolved, nil)
+	_, payload, err := NewEnvelope(EventSessionResolved, "evt-1", nil)
 	if err != nil {
 		t.Fatalf("NewEnvelope: %v", err)
 	}
@@ -68,7 +75,7 @@ func TestNewEnvelopeNilDataBecomesObject(t *testing.T) {
 }
 
 func TestEmitWithoutDatabaseFailsLoudly(t *testing.T) {
-	if err := Emit(context.Background(), nil, 1, EventSessionCreated, nil); err == nil {
+	if err := Emit(context.Background(), nil, 1, EventSessionCreated, "evt-1", nil); err == nil {
 		t.Fatal("emitting without a database must return an error")
 	}
 }

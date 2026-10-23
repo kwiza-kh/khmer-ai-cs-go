@@ -15,7 +15,9 @@ import (
 	"strings"
 	"time"
 
+	"khmer-ai-cs-go/internal/platform"
 	"khmer-ai-cs-go/internal/rag"
+	"khmer-ai-cs-go/internal/textutil"
 	"khmer-ai-cs-go/internal/webhookout"
 )
 
@@ -184,7 +186,7 @@ func (a *App) deliverWebhook(ctx context.Context, row webhookDeliveryRow) {
 	case sendErr != nil:
 		errMsg = sendErr.Error()
 	case !outcome.success:
-		errMsg = fmt.Sprintf("HTTP %d: %s", statusCode, truncateWebhookText(respBody, 300))
+		errMsg = fmt.Sprintf("HTTP %d: %s", statusCode, textutil.TruncateRunes(respBody, 300))
 	}
 	a.finishWebhookDelivery(ctx, row, outcome, statusCode, respBody, errMsg)
 }
@@ -223,8 +225,8 @@ func (a *App) sendWebhook(ctx context.Context, row webhookDeliveryRow, target *u
 // logged: leaving the row in 'delivering' means the stale-lock reclaim will
 // retry it, so the event is not lost.
 func (a *App) finishWebhookDelivery(ctx context.Context, row webhookDeliveryRow, outcome webhookOutcome, statusCode int, respBody, errMsg string) {
-	respBody = truncateWebhookText(respBody, webhookResponseBodyLimit)
-	errMsg = truncateWebhookText(errMsg, webhookResponseErrorLimit)
+	respBody = textutil.TruncateRunes(respBody, webhookResponseBodyLimit)
+	errMsg = textutil.TruncateRunes(errMsg, webhookResponseErrorLimit)
 	var err error
 	switch {
 	case outcome.success:
@@ -314,32 +316,10 @@ func validateWebhookURL(raw string) error {
 	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
 		return errors.New("URL 不能指向本机")
 	}
-	if ip := net.ParseIP(host); ip != nil && !isPublicWebhookIP(ip) {
+	if ip := net.ParseIP(host); ip != nil && !rag.IsPublicIP(ip) {
 		return errors.New("URL 不能指向内网地址")
 	}
 	return nil
-}
-
-// isPublicWebhookIP rejects everything that cannot be a merchant's public
-// endpoint: loopback, RFC1918/ULA, link-local (cloud metadata lives at
-// 169.254.169.254), multicast and the unspecified address.
-func isPublicWebhookIP(ip net.IP) bool {
-	return ip.IsGlobalUnicast() && !ip.IsPrivate() && !ip.IsLoopback() &&
-		!ip.IsLinkLocalUnicast() && !ip.IsUnspecified()
-}
-
-// truncateWebhookText bounds what the database and the console show. Runes, not
-// bytes: a truncated UTF-8 sequence renders as a replacement character in the
-// history table.
-func truncateWebhookText(s string, limit int) string {
-	if len(s) <= limit {
-		return s
-	}
-	runes := []rune(s)
-	if len(runes) <= limit {
-		return s
-	}
-	return string(runes[:limit])
 }
 
 // sealWebhookSecret seals a subscription signing secret with the platform
@@ -370,7 +350,7 @@ func (a *App) openWebhookSecret(stored string) string {
 // produced the event, so the failure is logged (and the event is not retried —
 // there is nothing to retry from; the queue row was never written).
 func (a *App) emitWebhookEvent(ctx context.Context, tenantID int32, event string, data map[string]any) {
-	if err := webhookout.Emit(ctx, a.DB, tenantID, event, data); err != nil && a.Logger != nil {
+	if err := webhookout.Emit(ctx, a.DB, tenantID, event, platform.NewUUID(), data); err != nil && a.Logger != nil {
 		a.Logger.Warn("webhook event not queued", "event", event, "tenant_id", tenantID, "error", err.Error())
 	}
 }

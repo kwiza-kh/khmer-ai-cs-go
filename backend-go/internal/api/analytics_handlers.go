@@ -302,27 +302,6 @@ func (a *App) intentAnalytics(w http.ResponseWriter, r *http.Request) (any, erro
 	return out, nil
 }
 
-// integrationsStatus — env-derived capability matrix for the Enterprise tab.
-func (a *App) integrationsStatus(w http.ResponseWriter, r *http.Request) (any, error) {
-	return map[string]any{
-		"email": map[string]any{
-			"enabled":         a.Cfg.Email.Enabled,
-			"configured":      a.Cfg.Email.SMTPHost != "",
-			"inbound_domains": a.Cfg.Email.InboundDomains,
-		},
-		"voice": map[string]any{
-			"enabled":     a.Cfg.Voice.Enabled,
-			"configured":  a.Cfg.Voice.TwilioAccountSID != "" && a.Cfg.Voice.FromNumber != "",
-			"from_number": a.Cfg.Voice.FromNumber,
-		},
-		"sso": map[string]any{
-			"enabled":    a.Cfg.SSO.Enabled,
-			"configured": a.Cfg.SSO.OIDCClientID != "" && a.Cfg.SSO.OIDCIssuer != "",
-			"provider":   a.Cfg.SSO.Provider,
-		},
-	}, nil
-}
-
 // ============================================
 // CSV report export
 // ============================================

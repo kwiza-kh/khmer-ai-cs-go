@@ -8,9 +8,9 @@ import {
   listMacros, createMacro, deleteMacro,
   listWebhookSubscriptions, createWebhookSubscription, deleteWebhookSubscription,
   listWebhookDeliveries, retryWebhookDelivery,
-  getAgentPerformance, getIntentAnalytics, getIntegrationStatus,
+  getAgentPerformance, getIntentAnalytics,
   type SlaPolicy, type RoutingRule, type Macro, type WebhookSubscription,
-  type WebhookDelivery, type AgentPerformance, type IntentCount, type IntegrationStatus,
+  type WebhookDelivery, type AgentPerformance, type IntentCount,
 } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -24,7 +24,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { EmptyState } from "@/components/empty-state";
 import { toast } from "sonner";
 import {
-  AlarmClock, GitBranch, ListChecks, Webhook, BarChart3, Plug, Trash2, Plus,
+  AlarmClock, GitBranch, ListChecks, Webhook, BarChart3, Trash2, Plus,
   History, RefreshCw,
 } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
@@ -360,7 +360,6 @@ function AnalyticsPanel() {
   const { t } = useI18n();
   const { data: perf } = useSWR<AgentPerformance[]>("agent-performance", () => getAgentPerformance(30));
   const { data: intents } = useSWR<IntentCount[]>("intent-analytics", () => getIntentAnalytics(30));
-  const { data: status } = useSWR<IntegrationStatus>("integrations-status", getIntegrationStatus);
 
   const agents = perf ?? [];
   const intentRows = intents ?? [];
@@ -403,21 +402,6 @@ function AnalyticsPanel() {
               ))}
             </TableBody>
           </Table>
-        )}
-      </SectionCard>
-
-      <SectionCard title={t("ent.integrations")} action={<Plug className="size-4 text-muted-foreground" />}>
-        {!status ? <p className="text-xs text-muted-foreground">{t("settings.loading")}</p> : (
-          <div className="grid gap-2 sm:grid-cols-3">
-            {([["Email", status.email], ["Voice/SMS", status.voice], ["SSO", status.sso]] as const).map(([label, s]) => (
-              <div key={label} className="rounded-lg border border-border p-3">
-                <p className="text-xs font-medium">{label}</p>
-                <Badge variant={s.configured ? "success" : s.enabled ? "secondary" : "outline"} className="mt-1 text-label">
-                  {s.configured ? t("ent.configured") : s.enabled ? t("ent.enabledPending") : t("ent.notEnabled")}
-                </Badge>
-              </div>
-            ))}
-          </div>
         )}
       </SectionCard>
     </div>

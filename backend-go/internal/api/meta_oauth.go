@@ -7,9 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"khmer-ai-cs-go/internal/platform"
 	"net/http"
 	"net/url"
@@ -18,19 +16,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 )
-
-// stripURLErr drops the *url.Error wrapper, whose message embeds the full
-// request URL. Meta request URLs must stay free of credentials AND free of
-// echo: keeping only the underlying cause (timeout, DNS, refused, TLS) means
-// any error string that reaches a tenant or a log can never carry request
-// material.
-func stripURLErr(err error) error {
-	var uerr *url.Error
-	if errors.As(err, &uerr) {
-		return uerr.Err
-	}
-	return err
-}
 
 // ============================================
 // Meta OAuth (Facebook / Instagram Login)
@@ -69,10 +54,6 @@ func (a *App) graphVersion() string {
 	return v
 }
 
-func (a *App) graphAPIBase() string {
-	return "https://graph.facebook.com/" + a.graphVersion()
-}
-
 func (a *App) authorizationURL(oauthState string) string {
 	c := a.Cfg.Meta
 	scope := strings.TrimSpace(c.OAuthScopes)
@@ -97,67 +78,21 @@ func (a *App) authorizationURL(oauthState string) string {
 	)
 }
 
-// metaRequest — Meta Graph API helper. Credentials never travel in the URL:
-// the access token rides the Authorization header, and POST parameters (which
-// include client_secret during code exchanges) go in the form body, because a
-// transport-level *url.Error renders the full request URL into the error
-// string that reaches tenants on failure paths.
+// metaRequest — one Graph API call through the shared Meta client. Credentials
+// never travel in the URL: the token rides the Authorization header, and POST
+// parameters (which include client_secret during code exchanges) go in the form
+// body — a transport-level *url.Error would otherwise render the request URL
+// into an error string that reaches tenants.
 func (a *App) metaRequest(ctx context.Context, method, path string, params [][2]string, accessToken string) (map[string]any, error) {
-	u := a.graphAPIBase() + path
-	client := &http.Client{Timeout: 20 * time.Second}
-	var req *http.Request
-	var err error
-	if method == "POST" {
-		form := url.Values{}
-		for _, kv := range params {
-			form.Set(kv[0], kv[1])
-		}
-		req, err = http.NewRequestWithContext(ctx, http.MethodPost, u, strings.NewReader(form.Encode()))
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	} else {
-		var query []string
-		for _, kv := range params {
-			query = append(query, url.QueryEscape(kv[0])+"="+url.QueryEscape(kv[1]))
-		}
-		if len(query) > 0 {
-			u += "?" + strings.Join(query, "&")
-		}
-		req, err = http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-		if err != nil {
-			return nil, err
-		}
+	values := url.Values{}
+	for _, kv := range params {
+		values.Set(kv[0], kv[1])
 	}
-	if accessToken != "" {
-		req.Header.Set("Authorization", "OAuth "+accessToken)
+	client := platform.NewMetaClient(accessToken, "", "", a.Cfg.Meta.GraphAPIVersion)
+	if method == http.MethodPost {
+		return client.PostForm(ctx, path, values)
 	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("Meta API request failed: %w", stripURLErr(err))
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("Meta API request failed: %w", stripURLErr(err))
-	}
-	text := string(body)
-	if resp.StatusCode >= 400 {
-		preview := text
-		if len(preview) > 512 {
-			preview = preview[:512]
-		}
-		return nil, fmt.Errorf("Meta API returned HTTP %d: %s", resp.StatusCode, preview)
-	}
-	if strings.TrimSpace(text) == "" {
-		return map[string]any{}, nil
-	}
-	var v map[string]any
-	if err := json.Unmarshal([]byte(text), &v); err != nil {
-		return nil, fmt.Errorf("decode Meta API response: %w", err)
-	}
-	return v, nil
+	return client.Get(ctx, path, values)
 }
 
 // metaOAuthStart — return the Facebook Login URL.

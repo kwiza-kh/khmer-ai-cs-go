@@ -79,7 +79,6 @@ var tenantKeyed = map[string]string{
 	"macros":                    "user_id",
 	"user_totp":                 "user_id",
 	"password_reset_tokens":     "user_id",
-	"message_notes":             "user_id",
 	"webhook_subscriptions":     "user_id",
 	"rag_query_logs":            "user_id",
 	"widget_tokens":             "user_id",
@@ -110,10 +109,9 @@ var tenantKeyed = map[string]string{
 // then either scope the join's table or live under a funnel — the two cases
 // 061's RLS policies exist for.
 var tenantDerived = map[string]string{
-	"chat_messages":       "session_id",
-	"knowledge_chunks":    "doc_id",
-	"session_assignments": "session_id",
-	"webhook_deliveries":  "subscription_id",
+	"chat_messages":      "session_id",
+	"knowledge_chunks":   "doc_id",
+	"webhook_deliveries": "subscription_id",
 	// platform_user_sessions is keyed by session: its tenant is reached through
 	// sessions.user_id (in the same statement, or via a session funnel).
 	"platform_user_sessions": "session_id",

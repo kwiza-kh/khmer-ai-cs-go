@@ -1254,7 +1254,7 @@ func (p *Pipeline) escalateToHuman(ctx context.Context, ev *InboundEvent, cfg *c
 // emitWebhookEvent queues an outbound webhook event (best effort; a queue
 // failure is logged, never returned — the business write already happened).
 func (p *Pipeline) emitWebhookEvent(ctx context.Context, tenantID int32, event string, data map[string]any) {
-	if err := webhookout.Emit(ctx, p.DB, tenantID, event, data); err != nil && p.Logger != nil {
+	if err := webhookout.Emit(ctx, p.DB, tenantID, event, NewUUID(), data); err != nil && p.Logger != nil {
 		p.Logger.Warn("webhook event not queued", "event", event, "tenant_id", tenantID, "error", err.Error())
 	}
 }
@@ -1487,7 +1487,7 @@ func (p *Pipeline) notifyUser(ctx context.Context, userID int32, kind, title, bo
 	})
 	if kind == "handoff" {
 		text := title + " — " + textutil.Ellipsize(body, 200)
-		if link := p.sessionLink(sessionID); link != "" {
+		if link := p.SessionLink(sessionID); link != "" {
 			text += "\n🔗 " + link
 		}
 		p.NotifyHandoffRequest(ctx, userID, sessionID, text)

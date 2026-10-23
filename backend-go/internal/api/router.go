@@ -192,7 +192,6 @@ func (a *App) Router() http.Handler {
 	// there is exactly one place that shows model spend.
 	authed.Handle("GET /api/v1/admin/agent-performance", a.tenantAdminOnly(a.handle(a.agentPerformance)))
 	authed.Handle("GET /api/v1/admin/intent-analytics", a.tenantAdminOnly(a.handle(a.intentAnalytics)))
-	authed.Handle("GET /api/v1/admin/integrations/status", a.permOnly(PermChannelsView)(a.handle(a.integrationsStatus)))
 
 	// CSV report export. Owner-only: the tenant columns are named in the
 	// statement and the handler gates seats out (requireOwnerOfTenant).

@@ -185,10 +185,6 @@ func TestPasswordResetEmailAvailable(t *testing.T) {
 		Server: config.ServerConfig{PublicAPIURL: "https://api.example/api/v1"},
 		Email:  on.Email,
 	}
-	// EMAIL_ENABLED is the notification-channel switch, not this feature's.
-	disabledChannel := on
-	disabledChannel.Email.Enabled = false
-
 	cases := []struct {
 		name string
 		cfg  *config.Config
@@ -200,7 +196,6 @@ func TestPasswordResetEmailAvailable(t *testing.T) {
 		{"host without from", &hostOnly, false},
 		{"from without host", &fromOnly, false},
 		{"frontend derived from the api url", &apiFallback, true},
-		{"email channel disabled is irrelevant", &disabledChannel, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

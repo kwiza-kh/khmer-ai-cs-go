@@ -333,8 +333,8 @@ func (wh *Webhooks) deleteMetaSubject(ctx context.Context, configID *int32, meta
 	}
 
 	// 6. Finally the sessions: this cascades chat_messages,
-	//    human_handoff_requests, message_notes, session_assignments,
-	//    sla_breaches, platform_user_sessions and platform_outbox.
+	//    human_handoff_requests, sla_breaches, platform_user_sessions and
+	//    platform_outbox.
 	tag, err = tx.Exec(ctx,
 		"DELETE FROM sessions WHERE platform::text = ANY($1::text[]) AND platform_user_id = $2 "+
 			"AND ($3::int IS NULL OR user_id = $3)",

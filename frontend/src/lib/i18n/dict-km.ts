@@ -1004,10 +1004,6 @@ export const km: Dict = {
   "ent.colIntent": "បំណង",
   "ent.colSessions": "ការសន្ទនា",
   "ent.colConfidence": "ទំនុកចិត្តមធ្យម",
-  "ent.integrations": "ស្ថានភាពរួមបញ្ចូលប៉ុស្តិ៍",
-  "ent.configured": "បានកំណត់",
-  "ent.enabledPending": "បានបើក (កំពុងរង់ចាំកំណត់)",
-  "ent.notEnabled": "មិនទាន់បើក",
 
   "pf.kicker": "ការរួមបញ្ចូល",
   "pf.title": "ការរួមបញ្ចូលវេទិកា",

@@ -1003,10 +1003,6 @@ export const zh: Dict = {
   "ent.colIntent": "意图",
   "ent.colSessions": "会话数",
   "ent.colConfidence": "平均置信度",
-  "ent.integrations": "渠道集成状态",
-  "ent.configured": "已配置",
-  "ent.enabledPending": "已启用（待配置）",
-  "ent.notEnabled": "未启用",
 
   "pf.kicker": "集成",
   "pf.title": "平台集成",

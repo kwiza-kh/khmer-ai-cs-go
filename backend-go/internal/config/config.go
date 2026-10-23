@@ -70,15 +70,13 @@ type MetaConfig struct {
 }
 
 type EmailConfig struct {
-	Enabled bool
 	// SMTPHost/SMTPFrom together switch on outbound mail (password-reset
 	// e-mails). SMTP_PORT/USERNAME/PASSWORD complete the relay settings.
-	SMTPHost       string
-	SMTPPort       int
-	SMTPUsername   string
-	SMTPPassword   string
-	SMTPFrom       string
-	InboundDomains string
+	SMTPHost     string
+	SMTPPort     int
+	SMTPUsername string
+	SMTPPassword string
+	SMTPFrom     string
 }
 
 // SMTPConfigured reports whether outbound mail has the minimum two settings:
@@ -89,12 +87,6 @@ type EmailConfig struct {
 // guessed host is worse than not sending.
 func (e EmailConfig) SMTPConfigured() bool {
 	return strings.TrimSpace(e.SMTPHost) != "" && strings.TrimSpace(e.SMTPFrom) != ""
-}
-
-type VoiceConfig struct {
-	Enabled          bool
-	TwilioAccountSID string
-	FromNumber       string
 }
 
 type SSOConfig struct {
@@ -210,7 +202,6 @@ type Config struct {
 	Meta                   MetaConfig
 	MetaVerifyToken        string
 	Email                  EmailConfig
-	Voice                  VoiceConfig
 	SSO                    SSOConfig
 	TelegramLogin          TelegramLoginConfig
 	PlatformBot            PlatformBotConfig
@@ -274,18 +265,11 @@ func Load() (*Config, error) {
 		},
 		MetaVerifyToken: env("META_VERIFY_TOKEN", ""),
 		Email: EmailConfig{
-			Enabled:        envBool("EMAIL_ENABLED", false),
-			SMTPHost:       env("SMTP_HOST", ""),
-			SMTPPort:       envInt("SMTP_PORT", 587),
-			SMTPUsername:   env("SMTP_USERNAME", ""),
-			SMTPPassword:   env("SMTP_PASSWORD", ""),
-			SMTPFrom:       env("SMTP_FROM", ""),
-			InboundDomains: env("EMAIL_INBOUND_DOMAINS", ""),
-		},
-		Voice: VoiceConfig{
-			Enabled:          envBool("VOICE_ENABLED", false),
-			TwilioAccountSID: env("TWILIO_ACCOUNT_SID", ""),
-			FromNumber:       env("TWILIO_FROM_NUMBER", ""),
+			SMTPHost:     env("SMTP_HOST", ""),
+			SMTPPort:     envInt("SMTP_PORT", 587),
+			SMTPUsername: env("SMTP_USERNAME", ""),
+			SMTPPassword: env("SMTP_PASSWORD", ""),
+			SMTPFrom:     env("SMTP_FROM", ""),
 		},
 		TelegramLogin: TelegramLoginConfig{
 			Enabled:      envBool("TELEGRAM_LOGIN_ENABLED", false),

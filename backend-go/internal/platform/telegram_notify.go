@@ -95,16 +95,9 @@ func (p *Pipeline) loadTelegramNotifyUncached(ctx context.Context, userID int32)
 	}
 }
 
-// SessionLink — deep link that opens the session in the agent inbox
-// (/inbox?session=...). Exported for the request-side notify path. Empty when
-// PUBLIC_API_URL is unset.
-func (p *Pipeline) SessionLink(sessionID string) string {
-	return p.sessionLink(sessionID)
-}
-
 // sessionLink — deep link that opens the session in the agent inbox
 // (/inbox?session=...). Empty when PUBLIC_API_URL is unset.
-func (p *Pipeline) sessionLink(sessionID string) string {
+func (p *Pipeline) SessionLink(sessionID string) string {
 	origin := strings.TrimSuffix(strings.TrimSpace(p.Cfg.Server.PublicAPIURL), "/")
 	if origin == "" || sessionID == "" {
 		return ""
@@ -195,7 +188,7 @@ func (p *Pipeline) NotifyNewCustomerMessage(ctx context.Context, userID int32, s
 		name = "customer"
 	}
 	text := "💬 [" + strings.ToUpper(platformName[:1]) + platformName[1:] + "] " + name + "\n" + textutil.Ellipsize(content, 300)
-	if link := p.sessionLink(sessionID); link != "" {
+	if link := p.SessionLink(sessionID); link != "" {
 		text += "\n🔗 " + link
 	}
 	p.SendTelegramNotify(ctx, userID, text)

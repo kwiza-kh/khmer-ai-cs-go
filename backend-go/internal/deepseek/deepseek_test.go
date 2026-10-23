@@ -69,8 +69,6 @@ func responseJSON(text string, in, out, cached int) string {
 		text, in, out, cached, in-cached)
 }
 
-func floatPtr(v float64) *float64 { return &v }
-
 func TestChatMapsOurTurnOntoChatCompletions(t *testing.T) {
 	st := newStub(t)
 	st.body = responseJSON("សូស្តី!", 120, 7, 40)

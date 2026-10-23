@@ -507,6 +507,10 @@ var publicFetchClient = &http.Client{
 // media path (which fetches a webhook-supplied source_url) cannot drift from it.
 func PublicFetchClient() *http.Client { return publicFetchClient }
 
+// IsPublicIP reports whether ip is globally routable. Exported so the outbound
+// webhook target check reuses this guard instead of keeping a second copy.
+func IsPublicIP(ip net.IP) bool { return isPublicIP(ip) }
+
 // ValidateFetchURL enforces the scheme allowlist and the pre-dial public-host
 // check on a caller-supplied URL, returning the parsed URL for use.
 func ValidateFetchURL(rawURL string) (*url.URL, error) {

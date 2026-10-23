@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"unicode/utf8"
 )
 
 func TestWebhookSignatureKnownVector(t *testing.T) {
@@ -122,19 +121,5 @@ func TestWebhookDeliveryTargetRejectsPlainHTTP(t *testing.T) {
 	}
 	if _, err := webhookDeliveryTarget("https://example.com/hook"); err != nil {
 		t.Fatalf("https URL rejected: %v", err)
-	}
-}
-
-func TestTruncateWebhookTextKeepsValidUTF8(t *testing.T) {
-	// Khmer text is multi-byte; truncating by runes must not split a rune.
-	got := truncateWebhookText("កសិករ", 3)
-	if got != "កសិ" {
-		t.Fatalf("truncate = %q (want the first three runes)", got)
-	}
-	if !utf8.ValidString(got) {
-		t.Fatalf("truncation split a rune: %q", got)
-	}
-	if truncateWebhookText("short", 100) != "short" {
-		t.Fatal("short text must pass through")
 	}
 }

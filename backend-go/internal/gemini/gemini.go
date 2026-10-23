@@ -65,8 +65,7 @@ const (
 
 // ConfiguredEmbeddingModel resolves GEMINI_EMBEDDING_MODEL: the model this
 // deployment embeds and searches with. It is read per call like every other env
-// knob, so tests and the A/B tooling (cmd/embedab) can point one process at one
-// model without rebuilding.
+// knob, so tests can point one process at one model without rebuilding.
 func ConfiguredEmbeddingModel() string {
 	return NormalizeModelName(config.EnvText(embeddingModelEnv, EmbeddingModel))
 }
@@ -505,8 +504,8 @@ func (s *Service) EmbeddingModel() string {
 
 // SetEmbeddingModel pins the embedding model for this service, overriding
 // GEMINI_EMBEDDING_MODEL. Intended for measurement tooling that needs two
-// models in one process (cmd/embedab); production switches the env var instead
-// — one writer, one source of truth. The query cache is keyed by model, so a
+// models in one process; production switches the env var instead — one writer,
+// one source of truth. The query cache is keyed by model, so a
 // swap cannot serve one model's vectors for another's query.
 func (s *Service) SetEmbeddingModel(model string) {
 	s.mu.Lock()

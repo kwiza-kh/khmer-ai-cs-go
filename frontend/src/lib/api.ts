@@ -1706,12 +1706,6 @@ export interface IntentCount {
   avg_confidence?: number | null;
 }
 
-export interface IntegrationStatus {
-  email: { enabled: boolean; configured: boolean; inbound_domains: string };
-  voice: { enabled: boolean; configured: boolean; from_number: string };
-  sso: { enabled: boolean; configured: boolean; provider: string };
-}
-
 // 2FA
 export function totpStatus() {
   return apiFetch<{ enabled: boolean }>("/auth/totp/status");
@@ -1807,10 +1801,6 @@ export function getAgentPerformance(days = 30) {
 export function getIntentAnalytics(days = 30) {
   return apiFetch<IntentCount[]>(`/admin/intent-analytics?days=${days}`);
 }
-export function getIntegrationStatus() {
-  return apiFetch<IntegrationStatus>("/admin/integrations/status");
-}
-
 // ============================================
 // Website chat widget
 // ============================================

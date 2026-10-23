@@ -146,15 +146,6 @@ func (s *scriptedModel) promptAt(i int) string {
 	return s.prompts[i]
 }
 
-func (s *scriptedModel) budgetAt(i int) int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if i >= len(s.budgets) {
-		return 0
-	}
-	return s.budgets[i]
-}
-
 // echoModel reads the JSON array out of the prompt and answers one translated
 // string per entry, so a test can assert on chunking and ordering without
 // hard-coding the chunk boundaries.

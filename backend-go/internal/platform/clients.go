@@ -149,7 +149,7 @@ func (m *MetaClient) get(ctx context.Context, path string, params url.Values) (m
 	// Access token rides the Authorization header, never the URL query: a
 	// transport-level *url.Error would otherwise render the token into the
 	// error string that reaches last_error columns and operator alerts.
-	req.Header.Set("Authorization", "OAuth "+m.AccessToken)
+	m.authorize(req)
 	return m.do(req, "meta get "+path)
 }
 
@@ -163,8 +163,33 @@ func (m *MetaClient) post(ctx context.Context, path string, body any) (map[strin
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "OAuth "+m.AccessToken)
+	m.authorize(req)
 	return m.do(req, "meta post "+path)
+}
+
+// Get calls the Graph API with query parameters.
+func (m *MetaClient) Get(ctx context.Context, path string, params url.Values) (map[string]any, error) {
+	return m.get(ctx, path, params)
+}
+
+// PostForm calls the Graph API with form-encoded parameters (Meta's OAuth token
+// exchange and webhook-subscription endpoints are form endpoints).
+func (m *MetaClient) PostForm(ctx context.Context, path string, params url.Values) (map[string]any, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.base()+path, strings.NewReader(params.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	m.authorize(req)
+	return m.do(req, "meta post "+path)
+}
+
+// authorize attaches the app/page token when present. OAuth token-exchange
+// calls carry no user token (client_secret travels in the form body).
+func (m *MetaClient) authorize(req *http.Request) {
+	if m.AccessToken != "" {
+		req.Header.Set("Authorization", "OAuth "+m.AccessToken)
+	}
 }
 
 func (m *MetaClient) do(req *http.Request, what string) (map[string]any, error) {
@@ -196,15 +221,8 @@ func (m *MetaClient) SubscribeWebhookFields(ctx context.Context, objectID, field
 	if objectID == "" {
 		return errors.New("meta subscribe: empty object id")
 	}
-	form := url.Values{"subscribed_fields": {fields}}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		m.base()+"/"+url.PathEscape(objectID)+"/subscribed_apps", strings.NewReader(form.Encode()))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Authorization", "OAuth "+m.AccessToken)
-	_, err = m.do(req, "meta subscribe webhooks")
+	_, err := m.PostForm(ctx, "/"+url.PathEscape(objectID)+"/subscribed_apps",
+		url.Values{"subscribed_fields": {fields}})
 	return err
 }
 
