@@ -1160,6 +1160,8 @@ FAQ 的 `ស9`（5 条产品线）在 chunk 2 里的偏移：枚举句起点 695
 
 ## 十一、功能清单与缺口（2026-10-04 核对）
 
+> 本节是 2026-10-04 的快照；2026-10-19 起以独立审计报告与 §三十八–四十 的增量为准，本表不再逐条维护。
+
 本节回答“现在能卖什么、还差什么”，每一条都能在代码、路由或迁移里找到落点。核对方式见本节末。
 
 ### 结论
@@ -2858,7 +2860,7 @@ server 块（同机的 wms 不信任该头，避免被伪造）。
 
 ### 五、配置
 - `PUBLIC_FRONTEND_URL`：重置链接的前端地址；未设时依次回退 `PUBLIC_API_URL` 去掉 `/api/v1`、`SSO_FRONTEND_URL` 去掉 `/login`。
-- `SMTP_HOST + SMTP_FROM`：同时设置才启用密码重置邮件；`SMTP_PORT` 默认 587，`SMTP_USERNAME/SMTP_PASSWORD` 可选（有用户名才认证，STARTTLS 在服务端声明时使用）。**`EMAIL_ENABLED` 是邮件通知渠道开关，不控制这里。** 只配一半时启动往 stderr 告警，不阻断启动（风格同 PayPal 未定价告警）。
+- `SMTP_HOST + SMTP_FROM`：同时设置才启用密码重置邮件；`SMTP_PORT` 默认 587，`SMTP_USERNAME/SMTP_PASSWORD` 可选（有用户名才认证，STARTTLS 在服务端声明时使用）。只配一半时启动往 stderr 告警，不阻断启动（风格同 PayPal 未定价告警）。
 - `GET /api/v1/auth/methods` 新增 `password_reset_email`，登录页据此决定显示「忘记密码」还是「联系管理员」。
 
 ### 六、部署注意
@@ -2984,3 +2986,28 @@ server 块（同机的 wms 不信任该头，避免被伪造）。
 - 本地：`go build/vet/test ./...` 绿；`tenantscope` 绿；`gofmt` 干净；SQL 门禁（生产 schema，`SQLCHECK_REQUIRED=1`）**660 条语句 0 broken**。
 - 线上（2026-10-23，v `b637aa3`）：`/ready` = `b637aa3`；对 config 4（active Meta）点一次「验证」→ 200，`platform_connection_health.detail` = `Connection verified via Meta Graph API; webhook fields refreshed (extended); existing Messenger menu kept` —— `message_reactions`/`feed` 被 Meta 接受，**存量连接已补齐、无需重连**；platform-admin 的 `/platform/tenants`、`/platform/audit-logs` 仍 200（owner 判定变更没有误伤平台超管）；journal 无 ERROR。
 - 权限两洞与通知偏好的行为级验证以单测 + 源码守卫为主：前者需要一个席位会话（现网唯一 seat 属租户 10，没有其凭据），后者需要制造真实通知路径，均不宜在生产制造。
+
+## 四十、2026-10-23 清理收口（ponytail 审计）
+
+一次 ponytail 审计的删除与去重：34 个文件、+194/−2073（净 −1,879 行）、−1 个前端依赖；`deadcode` 复跑为 0。唯一行为变更来自删除（无新增功能）。
+
+### 删掉的
+- `cmd/embedab`（924 行）、`cmd/evalgen`（464 行）：无文档/CI/测试引用的一次性评测工具。`cmd/claudeeval`、`embedcmp`、`rageval` 仍被文档引用，保留。
+- `frontend/verify-app.js` / `verify-theme.js`（85 行）：无引用的一次性脚本，且是 `npm run lint` 的唯一失败来源；删除后 lint 0 error。
+- `backend-go/README.md`（57 行）：仍写「Go 重写进行中 / 阶段 2-5 待移植」，与事实相反；以 AGENTS.md 与本文件 §三十七–四十 为准。
+- Email/Voice 渠道脚手架：`VoiceConfig`、`Email.Enabled/InboundDomains`、`TWILIO_*`/`EMAIL_*`、`GET /admin/integrations/status` 与企业页「渠道集成状态」卡。SMTP_* 保留（密码重置邮件）。
+- 迁移 **089**：`message_notes`、`session_assignments` 两张死表 + `customer_profiles.linked_to` 死列。
+- 死函数：`App.checkChannelLimit`（唯一调用点早已走 `checkChannelLimitFrom`）、测试 helper `scriptedModel.budgetAt` / `floatPtr`；`stripURLErr` / `graphAPIBase` 随 Meta 客户端合并删除。
+
+### 合并的
+- `webhookout.newEventID` → 调用方传 `platform.NewUUID()`（platform 导入 webhookout，反向引用会成环）。
+- `truncateWebhookText` → `textutil.TruncateRunes`；`isPublicWebhookIP` → `rag.IsPublicIP`。
+- `sessionLink` / `SessionLink` 合并为一个导出方法。
+- `api.metaRequest` 的 61 行手搓 HTTP 栈 → `platform.MetaClient.Get/PostForm` 薄包装（OAuth 与消息共用一份 Graph 客户端）。
+
+### 配置模板
+`.env.example` 与代码对齐：补齐 `ALLOW_REGISTRATION`、`REGISTRATION_INVITE_CODE`、`META_COMMENT_DM_ENABLED`、`FOLLOWUP_HOURS`、`SCHEDULER_TZ`、`SAFETY_*`、`T2I_*`；删除僵尸键；`PAYPAL_*` 仍以注释形式作为启用模板。
+
+### 验证
+`go test ./...` 绿；`deadcode` 0；`tenantscope` 绿；SQL 门禁 **657 条 0 broken**；`npm run lint` 0 error；`npm run build` 绿；线上 v `42edf22`，`/ready` ok，移除的端点 404，Webhook 投递回归 smoke `success/200`，journal 0 ERROR。回滚点：`server-go.bak-20261023075615` / `frontend-backup-20261023075615`；089 仅删无人引用的对象。
+

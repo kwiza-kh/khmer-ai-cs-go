@@ -7,6 +7,8 @@
 
 > **2026-10-21 更新**：P0-1「密码找回/重置整体缺失」已修复并上线（commit `b9cecd6`）：迁移 087 + 公开 request/confirm 端点 + 平台管理员一次性重置链接 + 前端 `/reset-password` 页；生产已部署（SMTP 未配置时由平台管理员在控制台生成链接）。实现与验证细节见 `docs/DEVELOPMENT.md` 第三十七节。
 
+> **2026-10-23 更新**：P1-1 / P1-4 / P1-5 / P1-6 与 P2-5 / P2-14 / P2-25 已收口——分别见 `docs/DEVELOPMENT.md` §三十八（Webhook 投递）、§三十九（权限/通知偏好/Meta 事件）、§四十（清理与迁移 089）。
+
 ## 目录
 
 - [第一部分 · 总报告](#part1)（结论摘要、功能地图、P0/P1/P2 清单、dormant、文档核对、修复顺序）
@@ -211,7 +213,7 @@
 | P2-2 | 分配规则（routing_rules） | 未接线 | `misc2_handlers.go:109-165` 只有 CRUD；全仓无 `FROM routing_rules` 运行时读取 | VIP→客服规则永远不生效，「假开关」 |
 | P2-3 | FAQ 建议（faq_suggestions） | 未接线 | 只有 list/accept/dismiss（`misc2_handlers.go:519-566`），全仓无 `INSERT INTO faq_suggestions` | 表永远为空，Growth 页该面板永远空 |
 | P2-4 | 客户身份合并（linked_to） | 未实现 | 迁移 026 加 `customer_profiles.linked_to`（`026_marketing_and_identity.sql:9`），Go 代码 0 引用；customer360 只按单一 platform_user_id 查（`misc2_handlers.go:460-495`） | 跨渠道同一客户无法合并，360 视图不完整 |
-| P2-5 | `message_notes` / `session_assignments` | 死表 | 仅 `tenantscope.go:81,114` 表清单与 `deletion.go:336` 注释引用；实际备注/指派走 `sessions` 列 | 结构误导后续开发/外部集成 |
+| P2-5 | `message_notes` / `session_assignments` | **已修复（2026-10-23）**：迁移 089 已删除两张表 | 仅 `tenantscope.go:81,114` 表清单与 `deletion.go:336` 注释引用；实际备注/指派走 `sessions` 列 | 结构误导后续开发/外部集成 |
 | P2-6 | `turn_metrics` | 只写不读 | 写：`pipeline.go:598`；清理：`cmd/retention/main.go:103`；全仓 0 条 SELECT | 文档「p95 可查询」不成立，只增加写盘成本 |
 | P2-7 | `model_configs.context_cache_ttl` | 只写不读 | API 写入/列表回显（`model_config.go:91,275`），管理页可编辑；Gemini 只读 env `GEMINI_CACHE_TTL`（`contextcache.go:81-88`），四个行加载 SQL 都不选该列 | 管理页死旋钮，改了缓存不生效 |
 | P2-8 | 近似重复检测 `similar_docs` | 前端未接线 | 后端已算并返回（`rag/service.go:632-667`，阈值 0.88）；前端 grep `similar_docs`=0 | 商家重复上传无提示；后端每次上传白付一次 embedding |
@@ -220,7 +222,7 @@
 | P2-11 | 渠道断开 teardown | 半实现 | 只有 Telegram 实现 provider 侧清理（`channel_telegram.go:20`），LINE/Zalo/Meta 嵌入 `noTeardown`（`channel.go:170-172`） | 换租户重连时旧 app 仍可能收事件 |
 | P2-12 | SLA 解决超时通知 | 半实现 | 首响违约有通知，解决违约传空 title/body（`internal/api/tasks.go:371-379`，注释自认「record only」） | 客户等解决等到超时永远不提醒 |
 | P2-13 | Widget token 生命周期 | 半实现 | 只有 GET/POST/DELETE（`router.go:199-201`），无更新端点；前端只能创建/删除（`widget-admin/page.tsx`） | 颜色/欢迎语/建议问题/域名创建后不可改 |
-| P2-14 | Email / Voice(SMS) 渠道 | 未实现（配置/UI 已声明） | 配置在 `config.go:252-261`；唯一消费者是企业页状态卡（`analytics_handlers.go:305-317`、`enterprise-tab.tsx:326-339`）；`net/smtp`=0、`TWILIO_AUTH_TOKEN` 无人读 | 运营看到「已配置」实际零渠道 |
+| P2-14 | Email / Voice(SMS) 渠道 | **已移除声明（2026-10-23）**：配置/环境变量/状态卡已删，SMTP 仅保留密码重置 | 配置在 `config.go:252-261`；唯一消费者是企业页状态卡（`analytics_handlers.go:305-317`、`enterprise-tab.tsx:326-339`）；`net/smtp`=0、`TWILIO_AUTH_TOKEN` 无人读 | 运营看到「已配置」实际零渠道 |
 | P2-15 | LINE 渠道媒体 | 半实现 | 出站仅文本（`channel_line.go:19-21`）；入站只处理 text/audio，图片/文件/贴纸静默丢（`webhooks.go:917-928`） | LINE 客户发商品图，AI 收不到 |
 | P2-16 | Zalo 入站媒体 | 半实现 | 只认 `user_send_text`/`user_send_image`，其余忽略（`webhooks.go:985-1004`） | 文件/位置/贴纸无记录 |
 | P2-17 | 知识库后端搜索 `q` | 未实现 | `knowledge_handlers.go:345-358` 只读 page/page_size；前端本地过滤标题/分类（`knowledge/page.tsx:295`） | 正文关键词搜不到；上千篇时本地过滤只覆盖当前页 |
@@ -231,7 +233,7 @@
 | P2-22 | 审计日志覆盖 | 半实现 | 只记录 `auditedPrefixes` 的非 GET（`router.go:504-555`），登录/注册/SSO 明确排除；读取仅 `platformAdminOnly`（`router.go:356`） | 无法回答「谁何时登录/谁改了凭据」；租户看不到本租户审计 |
 | P2-23 | 遗留 `PUT /billing/plan` | 半实现/契约漂移 | `misc2_handlers.go:599-635` 硬编码 500/20、5000/500、`1<<62`（int4 溢出）且吞错误；权威 `usage/plans.go:57-93` 是 200/10、5000/300；前端 Growth 页仍在调用 | 平台管理员切套餐可能「成功但没变」；两套配额数字 |
 | P2-24 | 计费数字文案不一致 | 文档不符 | 到期通知仍写「20 documents / 500 messages」（`billing_paypal.go:472-473`）；文档 §十一-6 写 free 500/20、pro 5000/500 | 运营/商户看到矛盾额度 |
-| P2-25 | `.env.example` 漂移 | 配置不完整 | 僵尸键：`SMTP_PORT/USERNAME/PASSWORD/FROM`、`TWILIO_AUTH_TOKEN`、`FRONTEND_PORT`，以及注释中的 `REPLY_CACHE_*`（功能已在迁移 076 删除）；反向缺 `SAFETY_*`×6、`T2I_*`×5、`META_COMMENT_DM_ENABLED`、`FOLLOWUP_HOURS`、`SCHEDULER_TZ`、`PAYPAL_*` 等 | 按模板部署打不开内容安全/跟进/支付等；运维被误导 |
+| P2-25 | `.env.example` 漂移 | **大部分修复（2026-10-23）**：僵尸键已删并补齐缺失键；PAYPAL_* 仍为注释模板 | 僵尸键：`SMTP_PORT/USERNAME/PASSWORD/FROM`、`TWILIO_AUTH_TOKEN`、`FRONTEND_PORT`，以及注释中的 `REPLY_CACHE_*`（功能已在迁移 076 删除）；反向缺 `SAFETY_*`×6、`T2I_*`×5、`META_COMMENT_DM_ENABLED`、`FOLLOWUP_HOURS`、`SCHEDULER_TZ`、`PAYPAL_*` 等 | 按模板部署打不开内容安全/跟进/支付等；运维被误导 |
 | P2-26 | SSO signup 默认开 | 默认开放 | `SSO_ALLOW_SIGNUP` 默认 true（`config.go:290`），与 `ALLOW_REGISTRATION=false` 解耦；启用 SSO 的部署可自助开租户 | 运营以为注册已关，实际仍可自助开号耗预算 |
 | P2-27 | Widget / 知识库规模与搜索 | 半实现 | 见 P1-10/P2-17 | 同上 |
 | P2-28 | 关键路径测试缺口 | 测试缺口 | 支付激活/webhook/到期降级、TOTP 生命周期、`removeTeamAgent`、`createAPIKey`、`setPlan`、Meta 删除签名均无 handler/DB 测试（`api/billing_paypal_test.go` 仅 5 个纯函数测试） | 钱/凭据路径无回归保护 |
