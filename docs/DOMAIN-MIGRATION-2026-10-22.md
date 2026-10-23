@@ -67,3 +67,34 @@ Google / Telegram / Meta 的 OAuth 回调与前端必须同域：新域登录页
 - 影响：管理员与已绑定商家需要先在 Telegram 打开 @MekongChat_bot 并点 Start，否则新 bot 无法主动发消息（实测 sendMessage 返回 chat not found）；已绑定行不需要改库，start 后即可恢复通知。目前只有 1 条绑定记录（user_id=1, chat_id=838928815）。
 - Telegram 登录：新域 start 已返回 oauth.telegram.org 302（client_id、PKCE、新 redirect_uri 正确）；仍需在 BotFather Web Login 的 Redirect URIs 里确认包含新回调地址，并在新域实际登录一次验证。
 - 回滚：env 备份见 /root/khmer-deploy/env-go.botbak-*（记录当时的旧 token/secret）；回滚时恢复 env + 重启，并用旧 bot token 重新 setWebhook 到旧域/新域对应 URL。
+
+## 2026-10-23：SSO / OAuth 回调切换进展
+
+> 顺序原则不变：**先让外部控制台接受新回调，再切 env 并重启**。先切 env 会让新域登录报 `invalid_state`/`redirect_uri_mismatch`。
+
+| 项 | 状态 |
+|---|---|
+| Google SSO | ✅ **已切换**（2026-10-23）：Google 控制台已验证接受 `https://mekongchat.com/api/v1/auth/google/callback`，且旧域回调已从控制台移除（探测旧 redirect_uri 返回 `redirect_uri_mismatch`）。`.env-go` 的 `SSO_REDIRECT_URL` / `SSO_FRONTEND_URL` 已切到新域，env 备份 `env-go.bak-20261023060314` |
+| Telegram 登录 | 🟡 链路已复核、登录未实测：env 已是新域；新域 `/auth/telegram/start` → `oauth.telegram.org` 参数正确（client_id/PKCE/新 redirect_uri），`/auth/telegram/callback` 错误回跳新前端；**BotFather Web Login Redirect URIs 确认 + 新域真实登录一次仍待账号持有人完成** |
+| Meta OAuth | ⛔ **未切换，故意保持旧域**：Meta 控制台尚未登记新回调；先切 env 会让「连接 Messenger/Instagram/WhatsApp」在授权时直接报 URL Blocked。待办见下 |
+
+### Google 切换当天实测（2026-10-23）
+
+- `/api/v1/auth/google/start` → 302 到 Google，`redirect_uri=https://mekongchat.com/api/v1/auth/google/callback`；Google 侧 302 到 `/v3/signin`（接受，无 mismatch）
+- `/api/v1/auth/google/callback?code=<bogus>&state=<有效 state>` → 302 `https://mekongchat.com/login?google_error=failed`（**不是 `invalid_state`**，证明跨新域的 state + `sso_flow` cookie 绑定正常，只是假 code 换 token 失败）
+- `/api/v1/auth/google/callback?code=bogus&state=bogus` → 302 `https://mekongchat.com/login?google_error=invalid_state`（错误回跳也落新前端）
+- `/ready` = `{"service":"mekongchat",...,"version":"c03808b"}`；`/auth/methods` 仍 `google:true`
+
+### Meta 控制台待办（完成后才能切 env）
+
+1. developers.facebook.com → App `Kwiza…` / id `2831499227197390` → **App settings → Basic**：App Domains 增加 `mekongchat.com`
+2. **Products → Facebook Login → Settings**：Valid OAuth Redirect URIs 增加 `https://mekongchat.com/api/v1/platforms/meta/oauth/callback`（旧域的条目**先保留**，便于回滚）
+3. **Webhooks**：Callback URL 增加/改为 `https://mekongchat.com/api/v1/webhook/meta`（含 `/meta/data-deletion`），verify token 不变（`META_VERIFY_TOKEN`）
+4. WhatsApp / Instagram 若在该 App 下：同一 App 的 Webhook 一并更新
+5. 完成后把 `.env-go` 的 `META_OAUTH_REDIRECT_URL` 切到 `https://mekongchat.com/api/v1/platforms/meta/oauth/callback`、`META_OAUTH_FRONTEND_URL` 切到 `https://mekongchat.com/platforms`，重启后端；验证 `/platforms/meta/oauth/start` 的 302 里 `redirect_uri` 为新域
+
+### 仍待外部操作（非 SSO）
+
+- PayPal：为 `https://mekongchat.com/api/v1/billing/paypal/webhook` 新建 webhook 并把 id 写入 `PAYPAL_WEBHOOK_ID`（当前仍是 sandbox）
+- 各租户已配置的 Telegram/LINE/Zalo webhook 仍指旧域（旧域继续服务，可逐步迁移）
+- 已嵌入商家网站的挂件仍加载旧域 `widget-embed.js`（旧域保留，逐步替换）
