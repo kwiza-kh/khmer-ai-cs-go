@@ -12,6 +12,7 @@ import (
 	"khmer-ai-cs-go/internal/config"
 	"khmer-ai-cs-go/internal/textutil"
 	"khmer-ai-cs-go/internal/typesafe"
+	"khmer-ai-cs-go/internal/webhookout"
 )
 
 // TelegramNotifyConfig is the decrypted per-tenant notify setup.
@@ -280,6 +281,9 @@ func (p *Pipeline) applyNotifyAction(ctx context.Context, userID int32, action, 
 		_, _ = p.DB.Exec(ctx,
 			"UPDATE sessions SET status='resolved', resolved_at=NOW() WHERE session_id=$1 AND status IN ('active','handoff')", sessionID)
 		p.publishSession(ctx, userID, sessionID)
+		p.emitWebhookEvent(ctx, userID, webhookout.EventSessionResolved, map[string]any{
+			"session_id": sessionID, "source": "telegram",
+		})
 		return true
 	}
 	return false

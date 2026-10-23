@@ -48,6 +48,7 @@ func main() {
 	inboundDays := flag.Int("inbound-events-days", 30, "keep completed platform_inbound_events newer than this")
 	turnMetricsDays := flag.Int("turn-metrics-days", 90, "keep per-turn latency samples newer than this")
 	auditDays := flag.Int("audit-days", 0, "purge audit_logs older than this; 0 = never (opt-in)")
+	webhookDays := flag.Int("webhook-deliveries-days", 30, "keep delivered/failed outbound webhook history newer than this")
 	outboxDays := flag.Int("outbox-days", 0, "purge sent platform_outbox older than this; 0 = never (opt-in)")
 	flag.Parse()
 
@@ -113,6 +114,13 @@ func main() {
 			table: "password_reset_tokens",
 			why:   "spent or expired one-time password-reset token hashes",
 			where: "(used_at IS NOT NULL AND used_at < now() - interval '7 days') OR expires_at < now() - interval '7 days'",
+		},
+		{
+			// Terminal rows only: a pending/delivering row is still the retry
+			// queue, and deleting it would drop an undelivered event.
+			table: "webhook_deliveries",
+			why:   "delivered or permanently failed outbound webhook payloads",
+			where: fmt.Sprintf("status IN ('success','failed') AND created_at < now() - interval '%d days'", *webhookDays),
 		},
 	}
 

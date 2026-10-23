@@ -7,9 +7,10 @@ import {
   listRoutingRules, upsertRoutingRule, deleteRoutingRule,
   listMacros, createMacro, deleteMacro,
   listWebhookSubscriptions, createWebhookSubscription, deleteWebhookSubscription,
+  listWebhookDeliveries, retryWebhookDelivery,
   getAgentPerformance, getIntentAnalytics, getIntegrationStatus,
   type SlaPolicy, type RoutingRule, type Macro, type WebhookSubscription,
-  type AgentPerformance, type IntentCount, type IntegrationStatus,
+  type WebhookDelivery, type AgentPerformance, type IntentCount, type IntegrationStatus,
 } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -18,20 +19,22 @@ import { useAuth } from "@/lib/auth-client";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { EmptyState } from "@/components/empty-state";
 import { toast } from "sonner";
 import {
   AlarmClock, GitBranch, ListChecks, Webhook, BarChart3, Plug, Trash2, Plus,
+  History, RefreshCw,
 } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { confirmDelete } from "@/lib/confirm-delete";
 
 
-const EVENT_OPTIONS = [
-  "session.created", "message.received", "message.sent", "handoff.requested",
-  "handoff.assigned", "session.resolved", "sentiment.negative",
-];
+// Mirrors webhookout.SupportedEvents on the Go side: only events with a real
+// emission site are selectable. The old list advertised four names that never
+// fired — a saved filter that can never match is worse than no subscription.
+const EVENT_OPTIONS = ["session.created", "handoff.requested", "session.resolved"];
 
 /** 小号可见标签 + 控件, 用于紧凑表单行。 */
 function LabeledField({ label, children }: { label: string; children: React.ReactNode }) {
@@ -220,12 +223,85 @@ function MacrosPanel() {
 }
 
 // ---------------- Webhooks ----------------
+function deliveryStatusVariant(status: string): "success" | "destructive" | "info" | "outline" {
+  switch (status) {
+    case "success": return "success";
+    case "failed": return "destructive";
+    case "delivering": return "info";
+    default: return "outline";
+  }
+}
+
+// The delivery history is the answer to "my endpoint received nothing": it shows
+// every event queued for this subscription, the last HTTP status, the attempt
+// count, and lets the integrator re-queue a finished row after fixing the URL.
+function WebhookDeliveriesDialog({ sub, onClose }: { sub: WebhookSubscription; onClose: () => void }) {
+  const { t } = useI18n();
+  const { data, mutate, isLoading } = useSWR<WebhookDelivery[]>(
+    `webhook-deliveries-${sub.subscription_id}`,
+    () => listWebhookDeliveries(sub.subscription_id),
+  );
+  const rows = data ?? [];
+  const retry = async (id: number) => {
+    try {
+      await retryWebhookDelivery(id);
+      await mutate();
+      toast.success(t("ent.retried"));
+    } catch (err) { toast.error((err as Error).message); }
+  };
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="max-h-[85vh] overflow-auto sm:max-w-3xl">
+        <DialogHeader>
+          <DialogTitle>{t("ent.deliveriesTitle")}</DialogTitle>
+          <DialogDescription className="truncate text-xs">{sub.url}</DialogDescription>
+        </DialogHeader>
+        {isLoading ? (
+          <p className="text-xs text-muted-foreground">{t("ent.deliveriesLoading")}</p>
+        ) : rows.length === 0 ? (
+          <EmptyState icon={History} title={t("ent.noDeliveries")} />
+        ) : (
+          <Table>
+            <TableHeader><TableRow>
+              <TableHead className="text-xs">{t("ent.colEvent")}</TableHead>
+              <TableHead className="text-xs">{t("ent.colDeliveryStatus")}</TableHead>
+              <TableHead className="text-xs">{t("ent.colStatusCode")}</TableHead>
+              <TableHead className="text-xs">{t("ent.colAttempts")}</TableHead>
+              <TableHead className="text-xs">{t("ent.colCreatedAt")}</TableHead>
+              <TableHead className="text-xs">{t("ent.colActions")}</TableHead>
+            </TableRow></TableHeader>
+            <TableBody>
+              {rows.map((d) => (
+                <TableRow key={d.delivery_id}>
+                  <TableCell className="text-xs font-medium">{d.event}</TableCell>
+                  <TableCell><Badge variant={deliveryStatusVariant(d.status)} className="text-label">{t(`ent.deliveryStatus.${d.status}`)}</Badge></TableCell>
+                  <TableCell className="text-xs">{d.status_code || "—"}</TableCell>
+                  <TableCell className="text-xs">{d.attempts}</TableCell>
+                  <TableCell className="text-xs whitespace-nowrap">{new Date(d.created_at).toLocaleString()}</TableCell>
+                  <TableCell>
+                    {d.status !== "pending" && d.status !== "delivering" && (
+                      <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => void retry(d.delivery_id)}>
+                        <RefreshCw className="size-3" />{t("ent.retryDelivery")}
+                      </Button>
+                    )}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function WebhooksPanel() {
   const { t } = useI18n();
   const { data, mutate } = useSWR<WebhookSubscription[]>("webhook-subs", listWebhookSubscriptions);
   const [url, setUrl] = React.useState("");
   const [secret, setSecret] = React.useState("");
   const [events, setEvents] = React.useState<string[]>(["session.resolved"]);
+  const [deliveriesFor, setDeliveriesFor] = React.useState<WebhookSubscription | null>(null);
 
   const toggle = (e: string) => setEvents((prev) => prev.includes(e) ? prev.filter((x) => x !== e) : [...prev, e]);
 
@@ -245,6 +321,7 @@ function WebhooksPanel() {
       <div className="mb-3 space-y-2">
         <Input placeholder="https://your-app.com/hook" value={url} onChange={(e) => setUrl(e.target.value)} className="h-8 text-xs" />
         <Input placeholder={t("ent.secretPh")} value={secret} onChange={(e) => setSecret(e.target.value)} className="h-8 text-xs" />
+        <p className="text-xs text-muted-foreground">{t("ent.webhookSignatureHint")}</p>
         <div className="flex flex-wrap gap-1.5">
           {EVENT_OPTIONS.map((e) => (
             <Badge key={e} variant={events.includes(e) ? "info" : "outline"} onClick={() => toggle(e)} className="cursor-pointer text-label">{e}</Badge>
@@ -261,13 +338,19 @@ function WebhooksPanel() {
                 <TableCell className="text-xs font-medium truncate max-w-[200px]">{s.url}</TableCell>
                 <TableCell className="text-xs">{s.events.join(", ")}</TableCell>
                 <TableCell>
-                  <Button size="sm" variant="ghost" onClick={() => confirmDelete(t("ent.deleteWebhookConfirm"), () => deleteWebhookSubscription(s.subscription_id), mutate)} className="h-7 text-xs text-danger"><Trash2 className="size-3" /></Button>
+                  <div className="flex items-center gap-1">
+                    <Button size="sm" variant="ghost" onClick={() => setDeliveriesFor(s)} className="h-7 text-xs">
+                      <History className="size-3" />{t("ent.viewDeliveries")}
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => confirmDelete(t("ent.deleteWebhookConfirm"), () => deleteWebhookSubscription(s.subscription_id), mutate)} className="h-7 text-xs text-danger"><Trash2 className="size-3" /></Button>
+                  </div>
                 </TableCell>
               </TableRow>
             ))}
           </TableBody>
         </Table>
       )}
+      {deliveriesFor && <WebhookDeliveriesDialog sub={deliveriesFor} onClose={() => setDeliveriesFor(null)} />}
     </SectionCard>
   );
 }

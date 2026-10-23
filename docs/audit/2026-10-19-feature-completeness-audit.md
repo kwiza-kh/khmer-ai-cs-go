@@ -104,10 +104,10 @@
 - **工作量**：M。
 
 ### P1-1 出站 Webhook 订阅只有 CRUD，没有任何投递（已售企业集成）
-- **状态**：未接线
-- **证据**：订阅 CRUD 在 `internal/api/misc2_handlers.go:280,318,327`；迁移 030 建了 `webhook_deliveries`（`migrations/030_enterprise_agent_platform.sql:132`），但全仓库无 `INSERT INTO webhook_deliveries`、无投递 worker、无签名发送（字段 `secret` 存了没人用）；前端有增删面板 `components/admin/enterprise-tab.tsx:124`。
+- **状态**：**已修复（2026-10-23）**：迁移 088 + `internal/webhookout`（事件/扇出）+ `internal/api/webhook_delivery.go`（worker/签名/重试/SSRF）+ 投递历史/重试 API + 企业版面板；首批支持 `session.created / handoff.requested / session.resolved`
+- **证据（修复前）**：订阅 CRUD 在 `internal/api/misc2_handlers.go:280,318,327`；迁移 030 建了 `webhook_deliveries`（`migrations/030_enterprise_agent_platform.sql:132`），但全仓库无 `INSERT INTO webhook_deliveries`、无投递 worker、无签名发送（字段 `secret` 存了没人用）；前端有增删面板 `components/admin/enterprise-tab.tsx:124`。
 - **影响**：企业客户订阅后永远收不到事件；文档 §十一-7「Webhook 订阅与投递」不成立。
-- **工作量**：L。
+- **工作量**：L（MVP 已交付，其余 4 个事件/订阅更新/测试按钮列在 docs §三十八「明确没做」）。
 
 ### P1-2 API 密钥：后端完整、企业版卖点、前端 0 入口
 - **状态**：前后端契约不完整

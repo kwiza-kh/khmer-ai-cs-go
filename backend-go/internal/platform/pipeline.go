@@ -32,6 +32,7 @@ import (
 	"khmer-ai-cs-go/internal/textutil"
 	"khmer-ai-cs-go/internal/typesafe"
 	"khmer-ai-cs-go/internal/usage"
+	"khmer-ai-cs-go/internal/webhookout"
 )
 
 const (
@@ -1249,6 +1250,14 @@ func (p *Pipeline) escalateToHuman(ctx context.Context, ev *InboundEvent, cfg *c
 	}
 }
 
+// emitWebhookEvent queues an outbound webhook event (best effort; a queue
+// failure is logged, never returned — the business write already happened).
+func (p *Pipeline) emitWebhookEvent(ctx context.Context, tenantID int32, event string, data map[string]any) {
+	if err := webhookout.Emit(ctx, p.DB, tenantID, event, data); err != nil && p.Logger != nil {
+		p.Logger.Warn("webhook event not queued", "event", event, "tenant_id", tenantID, "error", err.Error())
+	}
+}
+
 // createHandoffRequest inserts a queue row + session status + notification.
 // The partial unique index keeps exactly one open request per session, so
 // repeat triggers are silently deduplicated.
@@ -1257,12 +1266,20 @@ func (p *Pipeline) escalateToHuman(ctx context.Context, ev *InboundEvent, cfg *c
 // would normally be "normal".
 func (p *Pipeline) createHandoffRequest(ctx context.Context, userID int32, sessionID, trigger, reason, urgency string) error {
 	priority := handoffPriority(trigger, urgency)
-	_, err := p.DB.Exec(ctx,
+	tag, err := p.DB.Exec(ctx,
 		"INSERT INTO human_handoff_requests (session_id, user_id, status, priority, trigger, reason, created_at) "+
 			"VALUES ($1,$2,'pending',$3,$4::human_handoff_trigger,$5,NOW()) ON CONFLICT DO NOTHING",
 		sessionID, userID, priority, trigger, reason)
 	if err != nil {
 		return err
+	}
+	if tag.RowsAffected() > 0 {
+		// ON CONFLICT DO NOTHING dedupes repeat triggers: only the request that
+		// actually landed is a new handoff, so only it emits an event.
+		p.emitWebhookEvent(ctx, userID, webhookout.EventHandoffRequested, map[string]any{
+			"session_id": sessionID, "trigger": trigger,
+			"reason": textutil.Ellipsize(reason, 200), "priority": priority,
+		})
 	}
 	_, _ = p.DB.Exec(ctx,
 		"UPDATE sessions SET status='handoff', escalated_at=COALESCE(escalated_at, NOW()) WHERE session_id=$1 AND status='active'", sessionID)

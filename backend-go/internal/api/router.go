@@ -245,10 +245,15 @@ func (a *App) Router() http.Handler {
 	// so they only looked like access control — the real boundaries are
 	// agent_teams membership plus the tenant-owner checks in tenant_owner.go.
 
-	// Webhook subscriptions.
+	// Webhook subscriptions (outbound event delivery).
 	authed.Handle("GET /api/v1/webhooks/subscriptions", a.permOnly(PermSettingsView)(a.handle(a.listWebhooks)))
 	authed.Handle("POST /api/v1/webhooks/subscriptions", a.permOnly(PermSettingsManage)(a.handle(a.createWebhook)))
 	authed.Handle("DELETE /api/v1/webhooks/subscriptions/{id}", a.permOnly(PermSettingsManage)(a.handleDoc(a.deleteWebhook)))
+	// The queue is the integrator's answer to "my endpoint received nothing":
+	// history is viewable with the same grant that lets them read settings, and
+	// a manual retry needs the manage grant.
+	authed.Handle("GET /api/v1/webhooks/subscriptions/{id}/deliveries", a.permOnly(PermSettingsView)(a.handleDoc(a.listWebhookDeliveries)))
+	authed.Handle("POST /api/v1/webhooks/deliveries/{id}/retry", a.permOnly(PermSettingsManage)(a.handleDoc(a.retryWebhookDelivery)))
 
 	// Handoff requests.
 	authed.Handle("GET /api/v1/handoff-requests", a.handle(a.listHandoffs))

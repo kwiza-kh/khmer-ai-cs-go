@@ -13,6 +13,7 @@ import (
 	"khmer-ai-cs-go/internal/platform"
 	"khmer-ai-cs-go/internal/realtime"
 	"khmer-ai-cs-go/internal/textutil"
+	"khmer-ai-cs-go/internal/webhookout"
 )
 
 // ============================================
@@ -577,6 +578,9 @@ func (a *App) updateSessionStatus(w http.ResponseWriter, r *http.Request, sessio
 	case "resolved":
 		_, _ = a.DB.Exec(r.Context(), "UPDATE sessions SET status='resolved', resolved_at=$1, internal_notes=$2 WHERE session_id=$3", now, req.InternalNote, sessionID)
 		a.markHandoffResolved(r.Context(), sessionID, req.InternalNote)
+		a.emitWebhookEvent(r.Context(), user.Tenant(), webhookout.EventSessionResolved, map[string]any{
+			"session_id": sessionID, "source": "console",
+		})
 	case "closed":
 		_, _ = a.DB.Exec(r.Context(), "UPDATE sessions SET status='closed', closed_at=$1, internal_notes=$2 WHERE session_id=$3", now, req.InternalNote, sessionID)
 		a.markHandoffResolved(r.Context(), sessionID, req.InternalNote)

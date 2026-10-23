@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"khmer-ai-cs-go/internal/textutil"
+	"khmer-ai-cs-go/internal/webhookout"
 )
 
 // ensureSession finds or creates the session + platform mapping, persists the
@@ -42,6 +43,11 @@ func (p *Pipeline) ensureSession(ctx context.Context, ev *InboundEvent, cfg *con
 		if err := tx.Commit(ctx); err != nil {
 			return "", 0, false, "", err
 		}
+		// Queue the event only after the commit: a webhook consumer must never
+		// see a session id that rolled back.
+		p.emitWebhookEvent(ctx, cfg.UserID, webhookout.EventSessionCreated, map[string]any{
+			"session_id": sessionID, "platform": cfg.Platform, "title": title,
+		})
 	} else {
 		_, _ = p.DB.Exec(ctx,
 			"UPDATE platform_user_sessions SET last_inbound_at = $1, user_display_name = $2 WHERE config_id = $3 AND platform_user_id = $4",

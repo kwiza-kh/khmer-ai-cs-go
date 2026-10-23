@@ -2864,3 +2864,50 @@ server 块（同机的 wms 不信任该头，避免被伪造）。
 ### 六、部署注意
 - **迁移 087**（`087_password_reset_tokens.sql`，双目录镜像）：`password_reset_tokens` 表 + `(user_id, created_at DESC)` 与 `expires_at` 索引，全部 `IF NOT EXISTS`。先 migrate 再重启后端；未迁移时三个端点 500，其余功能不受影响。
 - 发布后验证：管理员端点返回的 `reset_url` 能走通 confirm 且使旧链接失效；配置 SMTP 后 `request` 对真实账号发信、对不存在账号仍只回通用响应；重放/过期 token 均 400。
+
+## 三十八、出站 Webhook 投递（2026-10-23）
+
+审计 P1-1：出站 Webhook 只有订阅 CRUD，**没有任何投递**——商家配好 URL 后永远收不到事件，而套餐把「Webhook 订阅与投递」当 Enterprise 卖点。本轮补齐 MVP：3 个真实事件 + 持久队列 + 签名投递 + 指数退避 + 投递历史/重试 + 前端记录面板。
+
+### 一、事件与语义
+
+只有**有真实发射点**的事件可订阅（后端 `webhookout.SupportedEvents` 与前端 `EVENT_OPTIONS` 同源，旧 UI 的 7 个里 4 个从未触发，已从列表删除）：
+
+| 事件 | 发射点 | data |
+|---|---|---|
+| `session.created` | `platform.ensureSession` 建会话事务提交后 | session_id / platform / title |
+| `handoff.requested` | 自动（pipeline `createHandoffRequest`，仅在 ON CONFLICT 真的插入时）、控制台/挂件/手动转人工 | session_id / trigger / reason / priority |
+| `session.resolved` | 收件箱「解决」与 Telegram 通知按钮「解决」 | session_id / source |
+
+发射是 **best-effort**：队列写失败只记 WARN，绝不让商家的集成失败回滚客户侧的业务写（与内容安全同一侧）。投递侧才是可靠性的重点：事件先落库，进程重启不丢。
+
+### 二、队列（迁移 088）
+
+- `webhook_deliveries` 补齐 `user_id / event_id / payload / status / attempts / next_attempt_at / locked_at / last_attempt_at / delivered_at / response_body`。
+- **一行 = (事件, 一个感兴趣订阅)**，由 `webhookout.Emit` 一条 `INSERT ... SELECT` 扇出；`events` 为空 = 全部支持事件。
+- `UNIQUE (subscription_id, event_id)` 让重复发射幂等（inbound 事件重投不会重复投递）。
+- `attempts` 在 **claim 时**自增：worker 中途死掉也算一次尝试，防止毒化 payload 无限重试。
+- `user_id` 落在行上：worker 跨租户消费，但后续每条语句（状态更新、订阅读取、历史查询）都绑定它，满足 `tenantscope` 静态门禁。
+
+### 三、投递 worker
+
+- `internal/api/webhook_delivery.go`，`StartBackgroundTasks` 每 **10s** 跑一批（最多 10 条），`FOR UPDATE SKIP LOCKED` claim；`delivering` 且锁超过 5 分钟视为 worker 崩溃，可被重新 claim。
+- **HTTPS only**；复用 URL 摄入的 SSRF 防护 transport（`rag.PublicFetchClient` 的 dial-time Control 拒绝私网/回环/云元数据地址，DNS rebinding 也挡；redirect 直接拒绝——30x 视为失败）。
+- 签名：`X-MekongChat-Signature: sha256=HMAC-SHA256(secret, "<timestamp>.<body>")` + `X-MekongChat-Timestamp`，另带 `X-MekongChat-Event / -Event-Id / -Delivery`；无 secret 只发事件头。
+- 重试：**6 次封顶**，退避 1m / 5m / 30m / 2h / 6h；终态 `failed` 写 `error`+`response_body` 并 WARN。2xx 即成功。
+- secret 用平台 sealer 加封（`enc:v1:`），旧明文行自动兼容。
+
+### 四、API 与前端
+
+- `GET /api/v1/webhooks/subscriptions/{id}/deliveries`（PermSettingsView）→ 最近 100 条投递（状态/响应码/尝试次数/时间/error）。
+- `POST /api/v1/webhooks/deliveries/{id}/retry`（PermSettingsManage）→ 重置为 pending（attempts 归零，重新获得完整退避预算）。
+- 企业版「出站 Webhook」面板：每个订阅有「记录」按钮，弹窗展示投递历史并可重试；创建时校验 https URL、拒绝私网字面量与未知事件。
+- `cmd/retention` 新增 `-webhook-deliveries-days`（默认 30，仅清 `success/failed` 终态行）。
+
+### 五、明确没做（下一步）
+- 其余 4 个事件（`message.received/sent`、`handoff.assigned`、`sentiment.negative`）——需要各自的发射点与 payload 设计；
+- 订阅更新端点（改 URL/事件/secret 目前只能删了重建）、「发送测试事件」按钮；
+- 套餐功能门禁（`FeatureWebhooks` 仍是宣传项，未按 plan 限制——见 P2-21）。
+
+### 六、验证
+`go build/vet/test ./...` 绿（新增 `internal/webhookout` 与 api worker 的单测：签名向量、URL/SSRF 校验、退避表、状态机、UTF-8 截断）；迁移双目录镜像一致；`tenantscope` 静态租户门禁绿；SQL 门禁（`SQLCHECK_REQUIRED=1`，生产 schema）绿；前端 `npm run build` 绿。

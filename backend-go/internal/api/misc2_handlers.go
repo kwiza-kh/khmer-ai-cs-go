@@ -6,12 +6,14 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"khmer-ai-cs-go/internal/gemini"
 	"khmer-ai-cs-go/internal/textutil"
+	"khmer-ai-cs-go/internal/webhookout"
 )
 
 // ============================================
@@ -277,7 +279,7 @@ type webhookSubRequest struct {
 func (a *App) listWebhooks(w http.ResponseWriter, r *http.Request) (any, error) {
 	user, _ := UserFrom(r)
 	rows, err := a.DB.Query(r.Context(),
-		"SELECT subscription_id, url, events, is_active, created_at FROM webhook_subscriptions WHERE user_id = $1 ORDER BY created_at DESC",
+		"SELECT subscription_id, url, events, is_active, created_at, COALESCE(secret,'') <> '' FROM webhook_subscriptions WHERE user_id = $1 ORDER BY created_at DESC",
 		user.Tenant())
 	if err != nil {
 		return nil, ErrInternal("查询失败")
@@ -290,10 +292,11 @@ func (a *App) listWebhooks(w http.ResponseWriter, r *http.Request) (any, error) 
 		var events []string
 		var isActive bool
 		var createdAt time.Time
-		if err := rows.Scan(&id, &url, &events, &isActive, &createdAt); err != nil {
+		var hasSecret bool
+		if err := rows.Scan(&id, &url, &events, &isActive, &createdAt, &hasSecret); err != nil {
 			continue
 		}
-		out = append(out, map[string]any{"subscription_id": id, "url": url, "events": events, "is_active": isActive, "created_at": createdAt})
+		out = append(out, map[string]any{"subscription_id": id, "url": url, "events": events, "is_active": isActive, "created_at": createdAt, "has_secret": hasSecret})
 	}
 	// A short read must not be published as a short list: the client cannot tell
 	// the two apart, so an unchecked Err() turns a dropped connection into
@@ -310,13 +313,33 @@ func (a *App) createWebhook(w http.ResponseWriter, r *http.Request) (any, error)
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		return nil, ErrBadRequest("请求格式错误")
 	}
-	if req.URL == "" {
-		return nil, ErrBadRequest("url 不能为空")
+	urlValue := strings.TrimSpace(req.URL)
+	// Structural check here, DNS-level SSRF check at delivery time: a host that
+	// does not resolve yet is a legitimate setup (the integrator saves first,
+	// deploys the receiver second), but a private literal must never be stored.
+	if err := validateWebhookURL(urlValue); err != nil {
+		return nil, ErrBadRequest(err.Error())
+	}
+	// Only events this build actually emits may be subscribed to. The previous
+	// UI offered seven names and four had no producer, so a saved filter could
+	// look correct and never fire.
+	events := make([]string, 0, len(req.Events))
+	seen := make(map[string]bool, len(req.Events))
+	for _, raw := range req.Events {
+		e := strings.TrimSpace(raw)
+		if e == "" || seen[e] {
+			continue
+		}
+		if !webhookout.ValidEvent(e) {
+			return nil, ErrBadRequest("未知事件: " + e)
+		}
+		seen[e] = true
+		events = append(events, e)
 	}
 	var id int
 	if err := a.DB.QueryRow(r.Context(),
 		"INSERT INTO webhook_subscriptions (user_id, url, secret, events, is_active) VALUES ($1,$2,$3,$4::text[],true) RETURNING subscription_id",
-		user.Tenant(), req.URL, req.Secret, req.Events).Scan(&id); err != nil {
+		user.Tenant(), urlValue, a.sealWebhookSecret(strings.TrimSpace(req.Secret)), events).Scan(&id); err != nil {
 		return nil, ErrInternal("创建失败")
 	}
 	return map[string]any{"subscription_id": id, "message": "已创建"}, nil

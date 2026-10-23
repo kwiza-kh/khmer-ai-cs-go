@@ -18,6 +18,7 @@ import (
 	"khmer-ai-cs-go/internal/realtime"
 	"khmer-ai-cs-go/internal/textutil"
 	"khmer-ai-cs-go/internal/usage"
+	"khmer-ai-cs-go/internal/webhookout"
 )
 
 // ============================================
@@ -192,6 +193,14 @@ func (a *App) escalateWebSession(ctx context.Context, userID int32, sessionID, p
 	if err != nil {
 		a.Logger.Error("handoff request not recorded", "session_id", sessionID, "trigger", trigger, "error", err.Error())
 		return ""
+	}
+	if requestID != "" {
+		// requestID is empty when the partial unique index swallowed the insert
+		// (a request was already open): that is not a new handoff, so no event.
+		a.emitWebhookEvent(ctx, userID, webhookout.EventHandoffRequested, map[string]any{
+			"session_id": sessionID, "trigger": trigger,
+			"reason": textutil.Ellipsize(note, 200), "priority": priority,
+		})
 	}
 	updated, err := a.DB.Exec(ctx,
 		"UPDATE sessions SET status='handoff', escalated_at=COALESCE(escalated_at, NOW()) "+

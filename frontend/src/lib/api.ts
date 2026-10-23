@@ -1671,6 +1671,22 @@ export interface WebhookSubscription {
   events: string[];
   is_active: boolean;
   created_at: string;
+  has_secret: boolean;
+}
+
+// One row of the outbound delivery queue (GET .../deliveries). status is the
+// state machine in migration 088: pending | delivering | success | failed.
+export interface WebhookDelivery {
+  delivery_id: number;
+  event: string;
+  event_id: string;
+  status: string;
+  status_code: number;
+  attempts: number;
+  error: string;
+  created_at: string;
+  last_attempt_at: string | null;
+  delivered_at: string | null;
 }
 
 export interface AgentPerformance {
@@ -1767,6 +1783,12 @@ export function createWebhookSubscription(input: { url: string; events: string[]
 }
 export function deleteWebhookSubscription(id: number) {
   return apiFetch<{ message: string }>(`/webhooks/subscriptions/${id}`, { method: "DELETE" });
+}
+export function listWebhookDeliveries(subscriptionId: number) {
+  return apiFetch<WebhookDelivery[]>(`/webhooks/subscriptions/${subscriptionId}/deliveries`);
+}
+export function retryWebhookDelivery(deliveryId: number) {
+  return apiFetch<{ message: string }>(`/webhooks/deliveries/${deliveryId}/retry`, { method: "POST" });
 }
 
 // Copilot

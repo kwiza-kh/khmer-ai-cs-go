@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"time"
+
+	"khmer-ai-cs-go/internal/webhookout"
 )
 
 // ============================================
@@ -102,11 +104,16 @@ func (a *App) createHandoffRequest(w http.ResponseWriter, r *http.Request) (any,
 		return nil, ErrInternal("查询失败")
 	}
 	if !openExists {
-		_, err = a.DB.Exec(r.Context(),
+		tag, err := a.DB.Exec(r.Context(),
 			"INSERT INTO human_handoff_requests (session_id, user_id, status, priority, trigger, reason, created_at) VALUES ($1,$2,'pending',$3,'manual',$4,NOW()) ON CONFLICT DO NOTHING",
 			req.SessionID, tid, priority, reason)
 		if err != nil {
 			return nil, ErrInternal("创建失败")
+		}
+		if tag.RowsAffected() > 0 {
+			a.emitWebhookEvent(r.Context(), tid, webhookout.EventHandoffRequested, map[string]any{
+				"session_id": req.SessionID, "trigger": "manual", "reason": reason, "priority": priority,
+			})
 		}
 		a.notifyUser(r.Context(), tid, "handoff", "New human-handoff request", "manual: "+reason, req.SessionID)
 	}

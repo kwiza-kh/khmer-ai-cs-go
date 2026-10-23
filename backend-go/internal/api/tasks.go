@@ -39,6 +39,11 @@ func (a *App) StartBackgroundTasks(ctx context.Context) {
 	// Every merchant message creates one, so without this they accumulate
 	// forever.
 	go a.loop(ctx, 6*time.Hour, a.pruneStaleSupportRelays)
+	// Outbound webhook deliveries: webhookout.Emit writes the queue next to the
+	// business event, this loop drains it. The sender shares the
+	// SSRF-guarded transport with URL ingestion (see webhook_delivery.go) — a
+	// subscriber URL must never be able to reach a private address.
+	go a.loop(ctx, webhookDeliveryInterval, a.deliverPendingWebhooks)
 	// Daily digest at 08:00 Phnom Penh. The 接管/解决 button presses no longer
 	// need a poller of their own: since 056 every notification goes out through
 	// the platform bot, whose webhook receives the presses directly. The old

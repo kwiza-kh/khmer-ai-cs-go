@@ -17,6 +17,7 @@ import (
 	"khmer-ai-cs-go/internal/platform"
 	"khmer-ai-cs-go/internal/rag"
 	"khmer-ai-cs-go/internal/usage"
+	"khmer-ai-cs-go/internal/webhookout"
 )
 
 // widgetRateLimit caps requests per client IP for the public widget endpoints
@@ -439,10 +440,14 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 	// same way the platform pipeline computes it instead of a hardcoded "high".
 	webEscalate := func(trigger, reason, urgency string) {
 		priority := platform.HandoffPriority(trigger, urgency)
-		_, _ = a.DB.Exec(persistCtx,
+		if tag, _ := a.DB.Exec(persistCtx,
 			"INSERT INTO human_handoff_requests (session_id, user_id, status, priority, trigger, reason, created_at) "+
 				"VALUES ($1,$2,'pending',$3,$4::human_handoff_trigger,$5,NOW()) ON CONFLICT DO NOTHING",
-			sid, t.ownerID, priority, trigger, reason)
+			sid, t.ownerID, priority, trigger, reason); tag.RowsAffected() > 0 {
+			a.emitWebhookEvent(persistCtx, t.ownerID, webhookout.EventHandoffRequested, map[string]any{
+				"session_id": sid, "trigger": trigger, "reason": reason, "priority": priority,
+			})
+		}
 		_, _ = a.DB.Exec(persistCtx, "UPDATE sessions SET status='handoff', escalated_at=COALESCE(escalated_at,NOW()) WHERE session_id=$1 AND status='active'", sid)
 		ack := platform.HandoffAcknowledgement(language)
 		a.persistSystemReply(ctx, t.ownerID, sid, ack)
@@ -648,10 +653,16 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 	escalated := false
 	if platform.ReplyClaimsHandoff(reply) || claimsHandoff {
 		priority := platform.HandoffPriority("ai_decision", inboundUrgency)
-		if _, err := a.DB.Exec(ctx,
+		if tag, err := a.DB.Exec(ctx,
 			"INSERT INTO human_handoff_requests (session_id, user_id, status, priority, trigger, reason, created_at) "+
 				"VALUES ($1,$2,'pending',$3,'ai_decision'::human_handoff_trigger,$4,NOW()) ON CONFLICT DO NOTHING",
 			sid, t.ownerID, priority, "AI reply announced a handoff to the customer"); err == nil {
+			if tag.RowsAffected() > 0 {
+				a.emitWebhookEvent(ctx, t.ownerID, webhookout.EventHandoffRequested, map[string]any{
+					"session_id": sid, "trigger": "ai_decision",
+					"reason": "AI reply announced a handoff to the customer", "priority": priority,
+				})
+			}
 			_, _ = a.DB.Exec(ctx, "UPDATE sessions SET status='handoff', escalated_at=COALESCE(escalated_at,NOW()) WHERE session_id=$1 AND status='active'", sid)
 			a.notifyUser(ctx, t.ownerID, "handoff", "New human-handoff request", "ai_decision (widget): AI announced a transfer", sid)
 			a.publishSessionEvent(ctx, t.ownerID, sid)
@@ -704,10 +715,15 @@ func (a *App) widgetFeedback(w http.ResponseWriter, r *http.Request) (any, error
 	}
 	_, _ = a.DB.Exec(r.Context(), "UPDATE chat_messages SET feedback_rating = $1, feedback_at = NOW() WHERE message_id = $2", req.Rating, req.MessageID)
 	if req.Rating == -1 {
-		_, _ = a.DB.Exec(r.Context(),
+		if tag, err := a.DB.Exec(r.Context(),
 			"INSERT INTO human_handoff_requests (session_id, user_id, status, priority, trigger, reason, created_at) "+
 				"VALUES ($1,$2,'pending','high','negative_feedback'::human_handoff_trigger,$3,NOW()) ON CONFLICT DO NOTHING",
-			sid, t.ownerID, "Customer rated the AI reply 👎")
+			sid, t.ownerID, "Customer rated the AI reply 👎"); err == nil && tag.RowsAffected() > 0 {
+			a.emitWebhookEvent(r.Context(), t.ownerID, webhookout.EventHandoffRequested, map[string]any{
+				"session_id": sid, "trigger": "negative_feedback",
+				"reason": "Customer rated the AI reply 👎", "priority": "high",
+			})
+		}
 		_, _ = a.DB.Exec(r.Context(), "UPDATE sessions SET status='handoff', escalated_at=COALESCE(escalated_at,NOW()) WHERE session_id=$1 AND status='active'", sid)
 		a.notifyUser(r.Context(), t.ownerID, "handoff", "New human-handoff request", "negative_feedback (widget)", sid)
 		a.publishSessionEvent(r.Context(), t.ownerID, sid)
