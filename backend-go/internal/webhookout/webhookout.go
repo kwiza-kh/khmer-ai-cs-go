@@ -112,11 +112,11 @@ func Emit(ctx context.Context, pool *pgxpool.Pool, tenantID int32, event string,
 	_, err = pool.Exec(ctx,
 		`INSERT INTO webhook_deliveries
 		     (subscription_id, user_id, event, event_id, payload, status, attempts, next_attempt_at, created_at)
-		 SELECT s.subscription_id, s.user_id, $2, $3, $4::jsonb, 'pending', 0, NOW(), NOW()
+		 SELECT s.subscription_id, s.user_id, $2::text, $3, $4::jsonb, 'pending', 0, NOW(), NOW()
 		   FROM webhook_subscriptions s
 		  WHERE s.user_id = $1
 		    AND s.is_active
-		    AND (cardinality(s.events) = 0 OR $2 = ANY(s.events))
+		    AND (cardinality(s.events) = 0 OR $2::text = ANY(s.events))
 		 ON CONFLICT DO NOTHING`,
 		tenantID, env.Event, env.EventID, string(payload))
 	if err != nil {
