@@ -2909,5 +2909,29 @@ server 块（同机的 wms 不信任该头，避免被伪造）。
 - 订阅更新端点（改 URL/事件/secret 目前只能删了重建）、「发送测试事件」按钮；
 - 套餐功能门禁（`FeatureWebhooks` 仍是宣传项，未按 plan 限制——见 P2-21）。
 
-### 六、验证
-`go build/vet/test ./...` 绿（新增 `internal/webhookout` 与 api worker 的单测：签名向量、URL/SSRF 校验、退避表、状态机、UTF-8 截断）；迁移双目录镜像一致；`tenantscope` 静态租户门禁绿；SQL 门禁（`SQLCHECK_REQUIRED=1`，生产 schema）绿；前端 `npm run build` 绿。
+### 六、验证（本地门禁 + 线上实测，2026-10-23）
+
+本地与门禁：
+
+- `go build/vet/test ./...` 绿（新增 `internal/webhookout` 与 api worker 的单测：签名向量、URL/SSRF 校验、退避表、状态机、UTF-8 截断）；
+- 迁移双目录镜像逐字节一致；`tenantscope` 静态租户门禁绿（队列跨租户 claim 在 `exceptions.go` 留了带理由的复核项，其余语句全部绑定 `user_id`）；
+- SQL 门禁（`SQLCHECK_REQUIRED=1`，经 SSH 隧道指向生产 schema）：658 条语句 **0 broken**；前端 `npm run build` 绿；二进制 `sha256` 上传前后对账一致。
+
+线上实测（v `15de86f`，`/ready` 回读）：
+
+| 步骤 | 结果 |
+|---|---|
+| 创建期 SSRF（`https://127.0.0.1/hook`） | **400「URL 不能指向内网地址」** |
+| 未知事件（`message.received`） | **400「未知事件」** |
+| 创建订阅到 `https://httpbin.org/post`（secret 明文提交） | 200；库内 `secret` 已 `enc:v1:` 加封 |
+| PATCH 一个测试会话为 resolved（发 `session.resolved`） | 15s 内生成投递行：`status=success, status_code=200, attempts=1, user_id=1` |
+| 签名 | 从 httpbin 回显里取回 body+timestamp，**重算 HMAC 与 `X-MekongChat-Signature` 完全一致**；`X-MekongChat-Event/-Event-Id/-Delivery` 均在 |
+| 手动重试 | `POST /webhooks/deliveries/1/retry` → 200「已重新排队」，约 15s 后再次 success（attempts 重置为 1） |
+| 清理 | 删除订阅级联删除投递行；测试会话恢复 active；journal 无 ERROR |
+
+**顺带修掉的交付门禁盲区**：第一版 Emit SQL 把 `$2` 同时用作 varchar 列与 `= ANY(text[])`，运行时报 `42P08 inconsistent types deduced for parameter`，而 `sqlcheck` 把它归为 "unparseable fragment" 记 note、不失败。现在 42P08 已列为**致命码**（与 42703/42P01/42704/42883 同级），并有单测钉住；`go test ./internal/sqlcheck/` 复跑 658 条语句 0 broken。
+
+### 七、发布记录
+
+- 迁移 088 在服务运行中先应用（表为空、只加列/索引，附加式变更），随后 SQL 门禁 → 停服换二进制（备份 `server-go.bak-20261023064828`，修复版 `server-go.bak-*` 另存）→ 启动，`/ready` = `a6cf8b2` 后再发修复版 `15de86f`；前端备份 `frontend-backup-20261023064839`。
+- 回滚：后端 `server-go.bak-<ts>` + `systemctl restart`；前端换回 `frontend-backup-20261023064839`；迁移前向单行道，088 只加列/索引，旧二进制可继续运行。

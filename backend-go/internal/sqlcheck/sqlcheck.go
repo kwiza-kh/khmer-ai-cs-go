@@ -298,6 +298,12 @@ const (
 	codeUndefinedTable    = "42P01"
 	codeUndefinedObject   = "42704" // type, operator class, …
 	codeUndefinedFunction = "42883"
+	// 42P08 is the same parameter used with incompatible types in one statement
+	// (2026-10-23: an INSERT … SELECT used $2 both as a varchar column and as
+	// the right operand of `= ANY(text[])`; the gate logged it as an
+	// "unparseable fragment" and passed). That is always a defect in the
+	// statement, never an extraction artifact, so it fails the gate.
+	codeParamsInconsistent = "42P08"
 )
 
 // Verify prepares every complete statement against the database behind dsn.
@@ -342,14 +348,25 @@ func Verify(ctx context.Context, dsn string, stmts []Stmt) (*Report, error) {
 			continue
 		}
 		f := Finding{Stmt: s, Code: sqlstate(perr), Message: perr.Error()}
-		switch f.Code {
-		case codeUndefinedColumn, codeUndefinedTable, codeUndefinedObject, codeUndefinedFunction:
+		if isFatalCode(f.Code) {
 			rep.Broken = append(rep.Broken, f)
-		default:
+		} else {
 			rep.Syntax = append(rep.Syntax, f)
 		}
 	}
 	return rep, nil
+}
+
+// isFatalCode reports whether a prepare error is a source defect rather than an
+// extraction artifact. Undefined objects catch schema drift; 42P08 catches a
+// statement whose parameters are typed inconsistently (it could never run).
+func isFatalCode(code string) bool {
+	switch code {
+	case codeUndefinedColumn, codeUndefinedTable, codeUndefinedObject,
+		codeUndefinedFunction, codeParamsInconsistent:
+		return true
+	}
+	return false
 }
 
 func sqlstate(err error) string {
