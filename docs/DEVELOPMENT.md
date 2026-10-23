@@ -2982,4 +2982,5 @@ server 块（同机的 wms 不信任该头，避免被伪造）。
 ### 四、验证
 
 - 本地：`go build/vet/test ./...` 绿；`tenantscope` 绿；`gofmt` 干净；SQL 门禁（生产 schema，`SQLCHECK_REQUIRED=1`）**660 条语句 0 broken**。
-- 线上（发布后）：`/ready` 版本戳、Meta 配置 4 点一次"验证"看 detail 是否出现 `webhook fields refreshed`、journal 无 ERROR；三项的行为级验证以单测为主（权限两洞需要席位会话、通知偏好需要真实通知路径，均不宜在生产制造）。
+- 线上（2026-10-23，v `b637aa3`）：`/ready` = `b637aa3`；对 config 4（active Meta）点一次「验证」→ 200，`platform_connection_health.detail` = `Connection verified via Meta Graph API; webhook fields refreshed (extended); existing Messenger menu kept` —— `message_reactions`/`feed` 被 Meta 接受，**存量连接已补齐、无需重连**；platform-admin 的 `/platform/tenants`、`/platform/audit-logs` 仍 200（owner 判定变更没有误伤平台超管）；journal 无 ERROR。
+- 权限两洞与通知偏好的行为级验证以单测 + 源码守卫为主：前者需要一个席位会话（现网唯一 seat 属租户 10，没有其凭据），后者需要制造真实通知路径，均不宜在生产制造。
