@@ -75,8 +75,8 @@ Google / Telegram / Meta 的 OAuth 回调与前端必须同域：新域登录页
 | 项 | 状态 |
 |---|---|
 | Google SSO | ✅ **已切换**（2026-10-23）：Google 控制台已验证接受 `https://mekongchat.com/api/v1/auth/google/callback`，且旧域回调已从控制台移除（探测旧 redirect_uri 返回 `redirect_uri_mismatch`）。`.env-go` 的 `SSO_REDIRECT_URL` / `SSO_FRONTEND_URL` 已切到新域，env 备份 `env-go.bak-20261023060314` |
-| Telegram 登录 | 🟡 链路已复核、登录未实测：env 已是新域；新域 `/auth/telegram/start` → `oauth.telegram.org` 参数正确（client_id/PKCE/新 redirect_uri），`/auth/telegram/callback` 错误回跳新前端；**BotFather Web Login Redirect URIs 确认 + 新域真实登录一次仍待账号持有人完成** |
-| Meta OAuth | ⛔ **未切换，故意保持旧域**：Meta 控制台尚未登记新回调；先切 env 会让「连接 Messenger/Instagram/WhatsApp」在授权时直接报 URL Blocked。待办见下 |
+| Telegram 登录 | ✅ **已完成**（2026-10-23）：env 已是新域；新域 `/auth/telegram/start` → `oauth.telegram.org` 参数正确（client_id/PKCE/新 redirect_uri），`/auth/telegram/callback` 错误回跳新前端；账号持有人已确认 BotFather Web Login Redirect URIs 并**在新域真实登录成功** |
+| Meta OAuth | ✅ **已切换**（2026-10-23）：Meta 控制台已登记新回调；`.env-go` 的 `META_OAUTH_REDIRECT_URL` / `META_OAUTH_FRONTEND_URL` 已切到新域，env 备份 `env-go.bak-meta-20261023060458`；实测见下 |
 
 ### Google 切换当天实测（2026-10-23）
 
@@ -85,13 +85,19 @@ Google / Telegram / Meta 的 OAuth 回调与前端必须同域：新域登录页
 - `/api/v1/auth/google/callback?code=bogus&state=bogus` → 302 `https://mekongchat.com/login?google_error=invalid_state`（错误回跳也落新前端）
 - `/ready` = `{"service":"mekongchat",...,"version":"c03808b"}`；`/auth/methods` 仍 `google:true`
 
-### Meta 控制台待办（完成后才能切 env）
+### Meta 切换当天实测（2026-10-23）
 
-1. developers.facebook.com → App `Kwiza…` / id `2831499227197390` → **App settings → Basic**：App Domains 增加 `mekongchat.com`
-2. **Products → Facebook Login → Settings**：Valid OAuth Redirect URIs 增加 `https://mekongchat.com/api/v1/platforms/meta/oauth/callback`（旧域的条目**先保留**，便于回滚）
-3. **Webhooks**：Callback URL 增加/改为 `https://mekongchat.com/api/v1/webhook/meta`（含 `/meta/data-deletion`），verify token 不变（`META_VERIFY_TOKEN`）
-4. WhatsApp / Instagram 若在该 App 下：同一 App 的 Webhook 一并更新
-5. 完成后把 `.env-go` 的 `META_OAUTH_REDIRECT_URL` 切到 `https://mekongchat.com/api/v1/platforms/meta/oauth/callback`、`META_OAUTH_FRONTEND_URL` 切到 `https://mekongchat.com/platforms`，重启后端；验证 `/platforms/meta/oauth/start` 的 302 里 `redirect_uri` 为新域
+- `.env-go` 已切：`META_OAUTH_REDIRECT_URL=https://mekongchat.com/api/v1/platforms/meta/oauth/callback`、`META_OAUTH_FRONTEND_URL=https://mekongchat.com/platforms`（备份 `env-go.bak-meta-20261023060458`），重启后 `/ready` ok
+- `POST /api/v1/platforms/meta/oauth/start`（管理员会话）→ 200，返回的 `authorize_url`：host=`www.facebook.com`、path=`/v24.0/dialog/oauth`、`redirect_uri=https://mekongchat.com/api/v1/platforms/meta/oauth/callback`
+- `GET /api/v1/platforms/meta/oauth/callback?error=access_denied&state=bogus` → **303 `https://mekongchat.com/platforms?meta_oauth_error=invalid_state`**（新域与旧域入口都验证过，均回新前端）
+- 完整「点连接 → Facebook 授权 → 选主页 → 完成」仍需商家账号带真实 Page 权限走一遍（无法用命令行替代）
+
+### Meta 控制台操作清单（2026-10-23 账号持有人已完成）
+
+1. developers.facebook.com → App id `2831499227197390` → **App settings → Basic**：App Domains 增加 `mekongchat.com` ✅
+2. **Products → Facebook Login → Settings**：Valid OAuth Redirect URIs 增加 `https://mekongchat.com/api/v1/platforms/meta/oauth/callback`（旧域条目保留，便于回滚）✅
+3. **Webhooks**：Callback URL 增加 `https://mekongchat.com/api/v1/webhook/meta`（含 `/meta/data-deletion`），verify token 不变（`META_VERIFY_TOKEN`）——待确认（不影响本次 OAuth 切换，租户级 webhook 仍走旧域且旧域在线）
+4. WhatsApp / Instagram 同 App：Webhook 一并更新——待确认
 
 ### 仍待外部操作（非 SSO）
 
