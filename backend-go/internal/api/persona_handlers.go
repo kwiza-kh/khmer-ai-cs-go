@@ -54,13 +54,18 @@ type bindingJSON struct {
 }
 
 type personaJSON struct {
-	PersonaID    string        `json:"persona_id"`
-	Name         string        `json:"name"`
-	SystemPrompt string        `json:"system_prompt"`
-	BeginDialogs []string      `json:"begin_dialogs"`
-	Tools        []string      `json:"tools"`
-	ErrorReply   string        `json:"error_reply"`
-	Bindings     []bindingJSON `json:"bindings"`
+	PersonaID    string   `json:"persona_id"`
+	Name         string   `json:"name"`
+	SystemPrompt string   `json:"system_prompt"`
+	BeginDialogs []string `json:"begin_dialogs"`
+	// Tools keeps its three-valued shape on the wire: null = every capability
+	// (SQL NULL), [] = none, an array = exactly those. It is NOT normalised to []
+	// here — collapsing NULL to [] would tell the console "no capability" for a
+	// persona that never touched the checkbox, and the next save would write that
+	// reading back as [] and silently disable everything.
+	Tools      []string      `json:"tools"`
+	ErrorReply string        `json:"error_reply"`
+	Bindings   []bindingJSON `json:"bindings"`
 }
 
 type personaRequest struct {
@@ -101,7 +106,8 @@ func (a *App) listPersonas(w http.ResponseWriter, r *http.Request) (any, error) 
 	}
 	// Scopes travels with the payload so the binding editor offers exactly the
 	// precedences the resolver implements, in order, without hard-coding them.
-	return map[string]any{"personas": out, "scopes": persona.Scopes}, nil
+	// Capabilities does the same for the tools checkboxes.
+	return map[string]any{"personas": out, "scopes": persona.Scopes, "capabilities": persona.Capabilities}, nil
 }
 
 // createPersona — POST /api/v1/personas. A missing persona_id is minted here.
@@ -269,6 +275,15 @@ func (req *personaRequest) toPersona() (persona.Persona, error) {
 			return persona.Persona{}, ErrBadRequest("工具白名单里有空项")
 		}
 	}
+	// tools is a capability whitelist, so a name this build cannot act on is a
+	// client bug, not something to store: it would sit in the row looking enabled
+	// while persona.Allows() never matches it. The 400 names the whole usable set.
+	tools, unknown := persona.NormalizeTools(p.Tools)
+	if len(unknown) > 0 {
+		return persona.Persona{}, ErrBadRequest(fmt.Sprintf("未知的工具能力：%s，可用：%s",
+			strings.Join(unknown, "、"), strings.Join(persona.Capabilities, "、")))
+	}
+	p.Tools = tools
 	return p, nil
 }
 
@@ -301,10 +316,8 @@ func normalizeScopeTarget(scope, target string) (string, string, error) {
 }
 
 func personaToJSON(p persona.Persona, bindings []bindingJSON) personaJSON {
-	tools := p.Tools
-	if tools == nil {
-		tools = []string{}
-	}
+	// Tools is deliberately not defaulted (see the field comment): nil has to reach
+	// the wire as null, or the console reads "no capability" for an untouched persona.
 	dialogs := p.BeginDialogs
 	if dialogs == nil {
 		dialogs = []string{}
@@ -317,7 +330,7 @@ func personaToJSON(p persona.Persona, bindings []bindingJSON) personaJSON {
 		Name:         p.Name,
 		SystemPrompt: p.SystemPrompt,
 		BeginDialogs: dialogs,
-		Tools:        tools,
+		Tools:        p.Tools,
 		ErrorReply:   p.ErrorReply,
 		Bindings:     bindings,
 	}

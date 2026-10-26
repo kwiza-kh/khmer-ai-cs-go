@@ -14,6 +14,7 @@ import (
 	"khmer-ai-cs-go/internal/auth"
 	"khmer-ai-cs-go/internal/config"
 	"khmer-ai-cs-go/internal/gemini"
+	"khmer-ai-cs-go/internal/khqrpay"
 	"khmer-ai-cs-go/internal/llm"
 	"khmer-ai-cs-go/internal/mailer"
 	"khmer-ai-cs-go/internal/notifypref"
@@ -53,6 +54,13 @@ type App struct {
 	// be nil in tests). Billing endpoints check Enabled() and answer "not
 	// configured" rather than failing later at the redirect.
 	PayPal *paypal.Client
+
+	// KHQRPay is the second one-time checkout channel (Cambodia's KHQR through
+	// khqr.cc). May be nil in tests; khqrEnabled() treats nil as "channel off",
+	// because a deployment without the client can neither create a QR nor confirm
+	// one. Its switch and credentials live in Cfg.KHQRPay — the route gate is that
+	// switch AND a non-nil client here.
+	KHQRPay *khqrpay.Client
 
 	// Pipe is the platform pipeline (used to wake outbound workers when an
 	// agent reply is enqueued).

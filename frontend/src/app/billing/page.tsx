@@ -3,11 +3,12 @@
 import * as React from "react";
 import { useSearchParams } from "next/navigation";
 import useSWR from "swr";
-import { Check, CreditCard, Loader2, ShieldCheck, Sparkles } from "lucide-react";
+import { Check, CircleCheck, CreditCard, Loader2, QrCode, RefreshCw, ShieldCheck, Sparkles, Timer, TriangleAlert } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useI18n } from "@/lib/i18n";
 import { useAuth } from "@/lib/auth-client";
 import { fmtDate, fmtInt } from "@/lib/format";
@@ -15,10 +16,15 @@ import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import {
   capturePaypalOrder,
+  createKhqrOrder,
   createPaypalOrder,
   getBillingCatalog,
+  getKhqrStatus,
+  type BillingCatalog,
   type BillingPlan,
   type BillingStatus,
+  type KhqrOrder,
+  type KhqrStatus,
   type PlanOffer,
 } from "@/lib/billing-api";
 
@@ -39,6 +45,25 @@ function paypalApproveURL(raw: string): string | null {
     return null;
   }
 }
+
+// KHQR (spec docs/khqrpay-integration-spec.md §五) is a second, independent
+// one-off channel, sold beside PayPal, never instead of it. A plan offers it
+// only when the deployment switched the channel on AND configured a price for
+// that plan — two separate backend fields, because an operator turning the
+// channel off does not clear the prices, and a button that answers 503 is worse
+// than no button.
+//
+// Both fields are read defensively (`=== true`, absent price = not offered) so a
+// frontend that ships before the backend routes exist shows nothing at all
+// rather than a dead entry point.
+function khqrOffered(catalog: BillingCatalog | undefined, offer: PlanOffer): boolean {
+  return catalog?.khqr_enabled === true && Boolean(offer.khqr_price);
+}
+
+// How often the open QR dialog asks whether it has been paid. The QR lives 15
+// minutes, so even a buyer who walks away costs 300 status reads — cheap enough
+// that a paid plan appears within three seconds of the webhook landing.
+const KHQR_POLL_MS = 3000;
 
 // Buying a plan: the catalogue comes from the server (prices are the
 // deployment's, not this bundle's), the order is created server-side, the buyer
@@ -92,9 +117,33 @@ export default function BillingPage() {
     }
   };
 
+  // KHQR: the order creates a QR that lives outside this page, so the state here
+  // is only "which order is showing" and "a new one is being created". Closing
+  // the dialog clears the order, which unmounts the poller with it.
+  const [khqrOrder, setKhqrOrder] = React.useState<KhqrOrder | null>(null);
+  const [khqrBusy, setKhqrBusy] = React.useState<BillingPlan | null>(null);
+
+  const startKhqr = async (plan: BillingPlan) => {
+    setKhqrBusy(plan);
+    try {
+      // Regenerating replaces the order rather than mutating it: the new
+      // transaction id re-keys the dialog's poller and the QR the buyer scans.
+      setKhqrOrder(await createKhqrOrder(plan));
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setKhqrBusy(null);
+    }
+  };
+
   const current: BillingStatus | undefined = data?.current;
   const currency = data?.currency || "USD";
   const currentPlan = current?.plan ?? "free";
+  // Whether this deployment can take money over KHQR at all — a plan-level
+  // switch is not enough on its own: the channel can be enabled with no plan
+  // priced for it, and then it sells nothing. The footer uses this rather than
+  // the raw switch so it cannot advertise a channel that would answer 503.
+  const khqrSellable = (data?.plans ?? []).some((offer) => khqrOffered(data, offer));
   const percent = (used?: number | null, quota?: number | null) => {
     if (!used || !quota || !Number.isFinite(quota)) return 0;
     return Math.min(100, Math.round((used / quota) * 100));
@@ -179,6 +228,9 @@ export default function BillingPage() {
               isCurrent={currentPlan === offer.plan}
               busy={busy}
               onBuy={() => void startCheckout(offer.plan)}
+              khqrOffered={khqrOffered(data, offer)}
+              khqrBusy={khqrBusy}
+              onKhqr={() => void startKhqr(offer.plan)}
               canBuy={canBuy}
               t={t}
               limit={limit}
@@ -188,21 +240,50 @@ export default function BillingPage() {
 
         <p className="flex items-center gap-1.5 text-label text-muted-foreground">
           <ShieldCheck className="size-3.5" />
-          {data?.checkout_ready ? t("bl.checkoutHint") : t("bl.notConfigured")}
+          {/* PayPal's hint, else KHQR's, else the honest "nothing is on sale".
+              Each names the channel it describes: telling a merchant who can
+              only pay by QR to "wait for checkout to be configured" would read
+              as a broken deployment. */}
+          {data?.checkout_ready
+            ? t("bl.checkoutHint")
+            : khqrSellable
+              ? t("bl.checkoutKhqrOnly")
+              : t("bl.notConfigured")}
         </p>
       </div>
+
+      {/* The dialog owns its poller: it exists only while an order is set, so
+          closing it (order → null) unmounts the poller with it. Keyed by order
+          id so "generate again" gets a fresh QR, countdown and poll loop rather
+          than a stale one under new digits. */}
+      {khqrOrder && (
+        <KhqrDialog
+          key={khqrOrder.transaction_id}
+          order={khqrOrder}
+          regenerating={khqrBusy !== null}
+          onClose={() => setKhqrOrder(null)}
+          onRegenerate={() => void startKhqr(khqrOrder.plan)}
+          onPaid={() => void mutate()}
+          t={t}
+          tf={tf}
+        />
+      )}
     </div>
   );
 }
 
 function PlanCard({
-  offer, currency, isCurrent, busy, onBuy, canBuy, t, limit,
+  offer, currency, isCurrent, busy, onBuy, khqrOffered: khqrAvailable, khqrBusy, onKhqr, canBuy, t, limit,
 }: {
   offer: PlanOffer;
   currency: string;
   isCurrent: boolean;
   busy: BillingPlan | null;
   onBuy: () => void;
+  /** The deployment sells this plan over KHQR (switch on + price configured). */
+  khqrOffered: boolean;
+  khqrBusy: BillingPlan | null;
+  onKhqr: () => void;
   canBuy: boolean;
   t: (key: string) => string;
   limit: (value: number | null | undefined) => string;
@@ -238,7 +319,7 @@ function PlanCard({
         {offer.price && <span className="text-xs text-muted-foreground">{currency} {t("bl.per30days")}</span>}
       </p>
 
-      <div className="mt-4">
+      <div className="mt-4 space-y-2">
         {offer.purchasable && canBuy ? (
           <Button className="w-full gap-2" disabled={busy !== null} onClick={onBuy}>
             {busy === offer.plan ? <Loader2 className="size-3.5 animate-spin" /> : <CreditCard className="size-3.5" />}
@@ -246,8 +327,18 @@ function PlanCard({
           </Button>
         ) : (
           <p className="rounded-lg bg-muted/40 px-3 py-2.5 text-label leading-5 text-muted-foreground">
-            {offer.plan === "free" ? t("bl.freeNote") : !canBuy ? t("bl.ownerOnly") : t("bl.notForSale")}
+            {offer.plan === "free" ? t("bl.freeNote") : !canBuy ? t("bl.ownerOnly") : khqrAvailable ? t("bl.khqrOnlyHint") : t("bl.notForSale")}
           </p>
+        )}
+        {/* Beside PayPal, not instead of it: `purchasable` describes the PayPal
+            side, so the QR entry point is gated on its own fields. Stacked
+            rather than side by side because the three locales make these labels
+            wide ("扫码支付（KHQR）" wraps at half a card's width). */}
+        {khqrAvailable && canBuy && (
+          <Button variant="outline" className="w-full gap-2" disabled={busy !== null || khqrBusy !== null} onClick={onKhqr}>
+            {khqrBusy === offer.plan ? <Loader2 className="size-3.5 animate-spin" /> : <QrCode className="size-3.5" />}
+            {t("bl.khqrButton")}
+          </Button>
         )}
       </div>
 
@@ -272,6 +363,174 @@ function PlanCard({
           ))}
         </ul>
       </div>
+
+      {/* Spec §二.3: the compliance warning ships with the code, on the card
+          where the buy buttons are — not in a footnote. Only shown when this
+          plan is actually sold over that channel; a warning about a channel the
+          buyer cannot choose is noise. */}
+      {khqrAvailable && (
+        <p className="mt-4 flex items-start gap-1.5 border-t border-border/70 pt-3 text-label leading-4 text-muted-foreground">
+          <TriangleAlert className="mt-0.5 size-3 shrink-0 text-warning" />
+          {t("bl.khqrRisk")}
+        </p>
+      )}
     </div>
+  );
+}
+
+// The poll interval handed to SWR. It lives at module scope on purpose: SWR
+// re-arms its timer whenever this value's identity changes (its polling effect
+// depends on it), and an inline arrow is a new identity on every render — the
+// 1 Hz countdown below would then clear the 3-second timer before it ever
+// fired. A stable function is called with the cached data on each tick, so the
+// terminal check still sees the newest status.
+function khqrPollInterval(latest?: KhqrStatus): number {
+  return latest && latest.status !== "pending" ? 0 : KHQR_POLL_MS;
+}
+
+// The QR dialog: one order, shown until the buyer closes it.
+//
+// It owns the two things the page must not: the countdown (a timer, which has to
+// be cleared when the dialog closes) and the status poll (SWR, whose key dies
+// with this component). `paid` is rendered from the STATUS endpoint, never from
+// anything the browser decides — the webhook is what activates the plan, and all
+// this screen does is notice.
+function KhqrDialog({
+  order, regenerating, onClose, onRegenerate, onPaid, t, tf,
+}: {
+  order: KhqrOrder;
+  regenerating: boolean;
+  onClose: () => void;
+  onRegenerate: () => void;
+  /** Paid landed: revalidate the catalogue so the card behind the dialog updates. */
+  onPaid: () => void;
+  t: (key: string) => string;
+  tf: (key: string, params: Record<string, string | number>) => string;
+}) {
+  // The tick only exists to redraw the countdown; the server owns expiry. This
+  // is the one timer the component owns, so it is the one it must clear.
+  const [now, setNow] = React.useState(() => Date.now());
+  React.useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  // The vendor image is the only rendering of the QR we get. When its host is
+  // blocked or down the buyer must still be able to pay, so the raw KHQR string
+  // is shown instead (spec §五: "失败则用 qr 原始串兜底").
+  const [imageBroken, setImageBroken] = React.useState(false);
+
+  const expiresAt = Date.parse(order.expires_at);
+  const remaining = Number.isFinite(expiresAt) ? Math.max(0, expiresAt - now) : null;
+
+  const { data: status, error: statusError } = useSWR<KhqrStatus>(
+    `khqr-status-${order.transaction_id}`,
+    () => getKhqrStatus(order.transaction_id),
+    {
+      refreshInterval: khqrPollInterval,
+      onSuccess: (latest) => {
+        if (latest.paid) onPaid();
+      },
+    },
+  );
+
+  const state = status?.status ?? "pending";
+  // The countdown can only bring "expired" forward for the message: if the two
+  // clocks disagree, the server's answer wins (it is the one that refuses the
+  // money). A null `remaining` means the payload had no usable expires_at, in
+  // which case the poll and the server decide everything.
+  const view = state === "pending" && remaining === 0 ? "expired" : state;
+  const clock =
+    remaining === null
+      ? ""
+      : `${String(Math.floor(remaining / 60000)).padStart(2, "0")}:${String(Math.floor((remaining % 60000) / 1000)).padStart(2, "0")}`;
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="sm:max-w-sm">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <QrCode className="size-4 text-primary" />
+            {t("bl.khqrTitle")}
+          </DialogTitle>
+          <DialogDescription className="text-xs">{t("bl.khqrHint")}</DialogDescription>
+        </DialogHeader>
+
+        <div className="flex items-baseline justify-between rounded-lg bg-muted/40 px-3 py-2">
+          <span className="text-label font-semibold uppercase tracking-[0.12em] text-muted-foreground">{order.plan}</span>
+          <span className="text-sm font-semibold tabular-nums text-foreground">
+            {order.amount} {order.currency}
+          </span>
+        </div>
+
+        <div className="flex flex-col items-center gap-3">
+          {imageBroken ? (
+            <div className="w-full space-y-2 rounded-lg border border-dashed border-border px-3 py-2.5">
+              <p className="flex items-start gap-1.5 text-xs leading-5 text-muted-foreground">
+                <TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-warning" />
+                {t("bl.khqrQrFallback")}
+              </p>
+              <code className="block max-h-24 overflow-auto break-all rounded bg-muted/50 px-2 py-1.5 text-label leading-5 text-foreground">
+                {order.qr}
+              </code>
+            </div>
+          ) : (
+            /* eslint-disable-next-line @next/next/no-img-element */
+            <img
+              src={order.qr_url}
+              alt={t("bl.khqrTitle")}
+              // Plain <img>: the host is the vendor's, chosen at runtime, so it
+              // cannot be a next/image remotePattern. White plate on purpose —
+              // a QR drawn on the dark card does not scan.
+              className="size-56 rounded-xl bg-white p-2 ring-1 ring-border"
+              onError={() => setImageBroken(true)}
+            />
+          )}
+
+          {view === "pending" && (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="size-3.5 animate-spin" />
+              <span>{t("bl.khqrWaiting")}</span>
+              {clock !== "" && (
+                <span className="inline-flex items-center gap-1 text-xs tabular-nums">
+                  <Timer className="size-3.5" />
+                  {clock}
+                </span>
+              )}
+            </div>
+          )}
+          {view === "paid" && (
+            <div className="w-full space-y-1 rounded-lg border border-primary/40 bg-primary/5 px-3 py-2.5">
+              <p className="flex items-center gap-2 text-sm font-medium text-foreground">
+                <CircleCheck className="size-4 text-primary" />
+                {t("bl.khqrPaid")}
+              </p>
+              {status?.paid_until && (
+                <p className="text-xs text-muted-foreground">{tf("bl.paidUntil", { date: fmtDate(status.paid_until) })}</p>
+              )}
+            </div>
+          )}
+          {(view === "expired" || view === "failed") && (
+            <p className="flex items-center gap-2 text-sm text-destructive">
+              <TriangleAlert className="size-4 shrink-0" />
+              {view === "expired" ? t("bl.khqrExpired") : t("bl.khqrFailed")}
+            </p>
+          )}
+          {/* A failed status read is not a failed payment: say so without
+              replacing the waiting/paid state, which the server still owns. */}
+          {statusError && <p className="text-label text-destructive">{(statusError as Error).message}</p>}
+        </div>
+
+        <DialogFooter>
+          {(view === "expired" || view === "failed") && (
+            <Button className="gap-2" disabled={regenerating} onClick={onRegenerate}>
+              {regenerating ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
+              {t("bl.khqrRegenerate")}
+            </Button>
+          )}
+          <Button variant="outline" onClick={onClose}>{t("common.close")}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

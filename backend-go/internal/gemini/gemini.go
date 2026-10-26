@@ -1898,15 +1898,29 @@ func usageFromValue(v map[string]any) (int, int, int, int) {
 // then goes silent is exactly the case a streaming client never notices on its
 // own.
 func (s *Service) ChatStream(ctx context.Context, message string, history []HistoryItem, language string, onToken func(string)) (ChatResult, error) {
+	return s.ChatStreamAs(ctx, message, history, language, "", onToken)
+}
+
+// ChatStreamAs is ChatStream under a caller-supplied system prompt; an empty
+// systemPrompt is exactly ChatStream.
+//
+// It exists because the dashboard's /chat, /chat/stream and /ai-test and the
+// website widget rendered replies with the tenant prompt only: a persona bound to
+// the console or to a widget conversation applied everywhere except the surfaces
+// the operator uses to check it. The override travels with the turn for the same
+// reason ChatAs's does (one Service serves every tenant), and the explicit
+// context cache is skipped: it is registered against the BASE prompt
+// (contextcache.go) and sending it alongside a systemInstruction is a 400.
+func (s *Service) ChatStreamAs(ctx context.Context, message string, history []HistoryItem, language, systemPrompt string, onToken func(string)) (ChatResult, error) {
 	ctx, cancel := withCallBudget(ctx)
 	defer cancel()
-	res, err := s.chatStream(ctx, message, history, language, onToken)
+	res, err := s.chatStream(ctx, message, history, language, systemPrompt, onToken)
 	return res, budgetExceeded(err)
 }
 
-// chatStream is the budget-free body. ChatStream owns the budget so there is
+// chatStream is the budget-free body. ChatStreamAs owns the budget so there is
 // exactly one place that applies it.
-func (s *Service) chatStream(ctx context.Context, message string, history []HistoryItem, language string, onToken func(string)) (ChatResult, error) {
+func (s *Service) chatStream(ctx context.Context, message string, history []HistoryItem, language, systemPrompt string, onToken func(string)) (ChatResult, error) {
 	if !s.IsConfigured() {
 		res := s.chatMock(message, language)
 		onToken(res.Reply)
@@ -1918,33 +1932,46 @@ func (s *Service) chatStream(ctx context.Context, message string, history []Hist
 	// failure — the non-streaming path returns the error.
 	prov, perr := s.activeProvider()
 	if perr != nil {
-		return s.chatWithModel(ctx, message, history, language, "", "")
+		return s.chatWithModel(ctx, message, history, language, "", systemPrompt)
 	}
-	body := s.buildRequestBody(message, history, language, s.contextCacheFor(ctx, language))
+	// A persona turn never carries the explicit cache: it was registered for the
+	// tenant prompt, and the API rejects a request that sends both.
+	cached := ""
+	if systemPrompt == "" {
+		cached = s.contextCacheFor(ctx, language)
+	}
+	body := s.buildRequestBody(message, history, language, cached)
+	if systemPrompt != "" {
+		// Same shape as chatWithProvider: buildRequestBody keeps its signature
+		// (tests call it directly) and the override lands on the body it built.
+		body["systemInstruction"] = map[string]any{
+			"parts": []map[string]any{{"text": s.systemInstructionFor(language, systemPrompt)}},
+		}
+	}
 	payload, err := json.Marshal(body)
 	if err != nil {
-		return s.chatWithModel(ctx, message, history, language, "", "")
+		return s.chatWithModel(ctx, message, history, language, "", systemPrompt)
 	}
 	// Read the serving config through the mutex: an admin saving a new model
 	// config calls Reload, which rewrites modelName/client under the lock.
 	cfg := s.snapshot()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, prov.streamURL(cfg.modelName), bytes.NewReader(payload))
 	if err != nil {
-		return s.chatWithModel(ctx, message, history, language, "", "")
+		return s.chatWithModel(ctx, message, history, language, "", systemPrompt)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	// Credential selection is shared with postWithRetry (see provider.authorize).
 	if err := prov.authorize(ctx, req, cfg.apiKey); err != nil {
-		return s.chatWithModel(ctx, message, history, language, "", "")
+		return s.chatWithModel(ctx, message, history, language, "", systemPrompt)
 	}
 	resp, err := cfg.client.Do(req)
 	if err != nil {
-		return s.chatWithModel(ctx, message, history, language, "", "")
+		return s.chatWithModel(ctx, message, history, language, "", systemPrompt)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-		return s.chatWithModel(ctx, message, history, language, "", "")
+		return s.chatWithModel(ctx, message, history, language, "", systemPrompt)
 	}
 
 	var full strings.Builder
@@ -1992,11 +2019,11 @@ func (s *Service) chatStream(ctx context.Context, message string, history []Hist
 			res.Reply = SanitizeReply(full.String())
 			return res, fmt.Errorf("gemini stream interrupted after %d chars: %w", full.Len(), serr)
 		}
-		return s.chatWithModel(ctx, message, history, language, "", "")
+		return s.chatWithModel(ctx, message, history, language, "", systemPrompt)
 	}
 	res.Reply = full.String()
 	if res.Reply == "" {
-		return s.chatWithModel(ctx, message, history, language, "", "")
+		return s.chatWithModel(ctx, message, history, language, "", systemPrompt)
 	}
 	res.Reply = SanitizeReply(res.Reply)
 	return res, nil

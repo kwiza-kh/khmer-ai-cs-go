@@ -98,6 +98,11 @@ type inboundTurn struct {
 	// resolves it to a URL and turns the payload into a media message.
 	AttachMediaKey string
 	ClaimsHandoff  bool
+	// HandoffSafetyNet is true when this turn's handoff came from the safety net
+	// (quota, empty reply, unreadable media, guard, content safety) rather than
+	// from the AI's own decision. persona tools never gate those; see
+	// personaAllowsHandoff.
+	HandoffSafetyNet bool
 }
 
 // inboundStage is one step of the turn. next=false means the turn is over
@@ -273,21 +278,30 @@ func (p *Pipeline) stageEnsureSession(ctx context.Context, t *inboundTurn) (bool
 // customer's turn over: both leave the turn on the per-tenant prompt, which is
 // exactly what every deployment ran before this stage existed.
 func (p *Pipeline) stageResolvePersona(ctx context.Context, t *inboundTurn) (bool, error) {
-	// conversationID is "": this platform has no conversation entity above
-	// sessions — 001_init.sql gives one sessions row per customer thread — so the
-	// session scope is the narrowest binding that can exist today.
-	// persona.Resolve walks session → conversation → global, so the conversation
-	// scope starts matching the day a conversation id exists, with no change here.
-	per, ok, err := persona.NewStore(p.DB).ForTurn(ctx, t.Config.UserID, t.SessionID, "")
-	if err != nil {
-		p.Logger.Warn("persona lookup failed; answering with the tenant system prompt",
-			"session_id", t.SessionID, "error", err.Error())
-		return true, nil
-	}
-	if ok {
-		t.Persona = &per
-	}
+	// The conversation id is derived, not stored: sessions has no conversation
+	// column, and persona.ConversationID reads the stable customer identity out of
+	// the row that does exist (platform + platform_user_id). This argument used to
+	// be the literal "" — the conversation scope was implemented, documented and
+	// permanently unreachable, so every conversation binding an operator saved was
+	// dead on arrival.
+	t.Persona = p.personaForTurn(ctx, t.Config.UserID, t.SessionID, t.Event.Platform, t.Event.PlatformUserID)
 	return true, nil
+}
+
+// personaAllowsHandoff reports whether this turn may move the conversation to a
+// human. safetyNet is true for the paths that are the safety net rather than the
+// persona's own behaviour.
+//
+// The persona's handoff capability gates ONLY the AI's judgement (the model
+// announcing a transfer, the turn classifier's verdict). It must never gate the
+// safety net — quota exhausted, an empty or blocked reply, unreadable media, the
+// reply guard, content safety, an agent taking over. A tenant setting tools: []
+// is saying "this persona does not transfer people"; if that also switched off
+// the fallbacks, a denied or empty generation would leave a customer holding an
+// error nobody was paged for, and a persona setting would have become a way to
+// disconnect the hotline.
+func personaAllowsHandoff(per *persona.Persona, safetyNet bool) bool {
+	return safetyNet || per.Allows(persona.CapabilityHandoff)
 }
 
 // personaHistory turns a persona's begin_dialogs into the turns that lead the
@@ -309,6 +323,12 @@ func personaHistory(dialogs []string) []gemini.HistoryItem {
 	}
 	return out
 }
+
+// PersonaHistory is personaHistory for callers outside this package: the console's
+// /chat, /chat/stream and /ai-test and the website widget now run under the same
+// persona, and a second copy of the positional role rule would let the surfaces
+// disagree about what the opening turns are.
+func PersonaHistory(dialogs []string) []gemini.HistoryItem { return personaHistory(dialogs) }
 
 // reopen-finished-session — a customer replying on a resolved/closed session
 // reopens it, so they always get an answer.
@@ -674,6 +694,18 @@ func (p *Pipeline) stageHandoffReply(_ context.Context, t *inboundTurn) (bool, e
 	if !t.ClaimsHandoff && !ReplyClaimsHandoff(t.Reply) {
 		return true, nil
 	}
+	if !personaAllowsHandoff(t.Persona, t.HandoffSafetyNet) {
+		// The persona forbids handoffs, so this turn will not become one. Writing the
+		// canonical sentence here would put "a human will follow up" in front of a
+		// customer whose conversation post-delivery deliberately leaves with the AI.
+		// The model's own wording is left untouched for the same reason it is left
+		// untouched everywhere: rewriting a persona's answer is not this stage's job.
+		if p.Logger != nil {
+			p.Logger.Warn("persona forbids handoff; reply kept as written and no agent will be paged",
+				"session_id", t.SessionID, "model_claimed", ReplyClaimsHandoff(t.Reply))
+		}
+		return true, nil
+	}
 	if next := CanonicalHandoffReply(t.Reply, t.ReplyLang); next != t.Reply {
 		t.Reply = next
 		if p.Logger != nil {
@@ -713,7 +745,11 @@ func (p *Pipeline) stagePersistAndDeliver(ctx context.Context, t *inboundTurn) (
 			feedbackPayload["media_url"] = url
 		}
 	}
-	if err := p.enqueueDelivery(ctx, t.Event, t.Config, t.SessionID, modelMessageID, t.Reply, feedbackPayload); err != nil {
+	// The persona's `image` capability is decided here, at the one point where a
+	// long reply is turned into a picture: a persona that forbids it sends the same
+	// answer as text instead of a rendered one.
+	if err := p.enqueueDelivery(ctx, t.Event, t.Config, t.SessionID, modelMessageID, t.Reply, feedbackPayload,
+		t.Persona.Allows(persona.CapabilityImage)); err != nil {
 		return false, err
 	}
 
@@ -732,12 +768,18 @@ func (p *Pipeline) stagePersistAndDeliver(ctx context.Context, t *inboundTurn) (
 // handOffWithoutReply replaces the turn's answer with the handoff
 // acknowledgement and makes post-delivery raise the human handoff request. Every
 // path where the model cannot answer (quota exhausted, blocked generation, empty
-// reply) goes through here, so the turn still leaves a trace in the inbox.
+// reply, unreadable media) goes through here, so the turn still leaves a trace in
+// the inbox.
+//
+// Everything reaching this function is the safety net by definition — the customer
+// was going to get nothing — which is why it marks the turn: persona tools never
+// gate these handoffs (personaAllowsHandoff).
 func (t *inboundTurn) handOffWithoutReply(label, reason string) {
 	t.Reply = HandoffAcknowledgement(t.ReplyLang)
 	t.Canned = true
 	t.CannedLabel = label
 	t.ClaimsHandoff = true
+	t.HandoffSafetyNet = true
 	t.HandoffReason = reason
 }
 
@@ -895,13 +937,26 @@ func (p *Pipeline) stagePostDelivery(ctx context.Context, t *inboundTurn) (bool,
 	// Auto-handoff triggers 2+3. The reply announced a handoff to the customer
 	// ("已为您转接人工…") — make it true: create the request now. No canned ack
 	// (ev=nil) since the reply itself already told the customer.
+	//
+	// This is an AI decision, so the persona's handoff capability decides it; the
+	// safety-net handoffs (quota, empty reply, guard, content safety) were already
+	// marked and skip the check (personaAllowsHandoff). A blocked handoff falls
+	// through to classification: the turn was answered normally and is still a
+	// candidate for the verdict-based triggers below — which apply the same gate.
 	if ReplyClaimsHandoff(t.Reply) || t.ClaimsHandoff {
-		reason := "AI reply announced a handoff to the customer"
-		if t.HandoffReason != "" {
-			reason = t.HandoffReason
+		if !personaAllowsHandoff(t.Persona, t.HandoffSafetyNet) {
+			if p.Logger != nil {
+				p.Logger.Warn("persona forbids handoff; the announced transfer is not created",
+					"session_id", t.SessionID, "reply_claimed", ReplyClaimsHandoff(t.Reply), "canned", t.Canned)
+			}
+		} else {
+			reason := "AI reply announced a handoff to the customer"
+			if t.HandoffReason != "" {
+				reason = t.HandoffReason
+			}
+			p.escalateToHuman(ctx, nil, t.Config, t.SessionID, "ai_decision", reason, t.Urgency)
+			return false, nil
 		}
-		p.escalateToHuman(ctx, nil, t.Config, t.SessionID, "ai_decision", reason, t.Urgency)
-		return false, nil
 	}
 	grounded := t.GroundCtx.HasMatch
 	p.classifyTurnAsync(t.Config.UserID, t.SessionID, t.Content, t.Reply, grounded)
@@ -955,5 +1010,8 @@ func (p *Pipeline) stageScreenReply(ctx context.Context, t *inboundTurn) (bool, 
 		"session_id", t.SessionID, "strategy", v.Strategy, "reason", v.Reason)
 	t.Reply = handoffAcknowledgement(t.ReplyLang)
 	t.ClaimsHandoff = true
+	// Content safety is the platform's own decision, not the persona's: the
+	// replacement promises a human, so it must produce one whatever tools says.
+	t.HandoffSafetyNet = true
 	return true, nil
 }

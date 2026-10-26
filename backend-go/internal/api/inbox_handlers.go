@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"khmer-ai-cs-go/internal/gemini"
+	"khmer-ai-cs-go/internal/persona"
 	"khmer-ai-cs-go/internal/platform"
 	"khmer-ai-cs-go/internal/realtime"
 	"khmer-ai-cs-go/internal/textutil"
@@ -226,6 +227,13 @@ func (a *App) listInbox(w http.ResponseWriter, r *http.Request) (any, error) {
 		}
 		items = append(items, map[string]any{
 			"session_id": sid, "user_id": uid, "platform": textutil.DerefString(platform), "platform_user_id": textutil.DerefString(puid),
+			// Derived from the row that is already selected (persona.ConversationID),
+			// so an operator can copy it straight into a conversation-scoped persona
+			// binding: "telegram:123456789" for a channel customer, "web:session:<id>"
+			// for a widget visitor without a stored id, "console:<id>" for a console
+			// session. Computed in Go rather than in SQL (platform is NULL for the
+			// web/console rows) and never with a second query.
+			"conversation_id":         persona.ConversationID(textutil.DerefString(platform), textutil.DerefString(puid), sid),
 			"user_display_name":       displayName,
 			"avatar_url":              avatarURL,
 			"reply_window_expires_at": replyWindow,

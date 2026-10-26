@@ -32,13 +32,18 @@ import (
 const (
 	sqlPaymentInsert = "INSERT INTO payments (user_id, provider, provider_order_id, plan, amount, currency, status) VALUES ($1,'paypal',$2,$3,$4::numeric,$5,'created') ON CONFLICT (provider, provider_order_id) DO NOTHING"
 
-	sqlPaymentLookup = "SELECT user_id, plan, amount::text, currency, status FROM payments WHERE provider='paypal' AND provider_order_id=$1"
+	// The three statements the activation transaction runs are provider
+	// parameterized, because activatePayment is shared: KHQR's webhook needs the
+	// same "flip the row, then grant, in one transaction" guarantee, and a second
+	// copy of that transaction is how the two money paths would drift apart
+	// (billing_khqr.go:khqrWebhook passes khqrProvider here).
+	sqlPaymentLookupByProvider = "SELECT user_id, plan, amount::text, currency, status FROM payments WHERE provider=$1 AND provider_order_id=$2"
 
 	sqlPaymentOwner = "SELECT user_id, status FROM payments WHERE provider='paypal' AND provider_order_id=$1"
 
-	sqlPaymentMarkCaptured = "UPDATE payments SET status='captured', provider_capture_id=$2, detail=$3::jsonb, updated_at=NOW() WHERE provider='paypal' AND provider_order_id=$1 AND status='created'"
+	sqlPaymentMarkCapturedByProvider = "UPDATE payments SET status='captured', provider_capture_id=$3, detail=$4::jsonb, updated_at=NOW() WHERE provider=$1 AND provider_order_id=$2 AND status='created'"
 
-	sqlPaymentMarkFailed = "UPDATE payments SET status='failed', detail=$2::jsonb, updated_at=NOW() WHERE provider='paypal' AND provider_order_id=$1 AND status='created'"
+	sqlPaymentMarkFailedByProvider = "UPDATE payments SET status='failed', detail=$3::jsonb, updated_at=NOW() WHERE provider=$1 AND provider_order_id=$2 AND status='created'"
 
 	// GREATEST + COALESCE: renewing before the period ends extends from the end
 	// date (not from today), paying after it starts from today.
@@ -97,13 +102,19 @@ func amountMatches(captured, expected, capturedCurrency, expectedCurrency string
 	return c != "" && c == e
 }
 
-// billingReturnURL is where PayPal sends the buyer back. Derived from the public
-// API URL (the console is served from the same host) so a deployment cannot end
-// up with checkout returning to the wrong site.
-func (a *App) billingReturnURL(action string) string {
+// billingConsoleBase is the console origin PayPal and KHQR send the buyer back
+// to. Derived from the public API URL (the console is served from the same host)
+// so a deployment cannot end up with checkout returning to the wrong site.
+func (a *App) billingConsoleBase() string {
 	base := strings.TrimSpace(a.Cfg.Server.PublicAPIURL)
 	base = strings.TrimSuffix(base, "/")
 	base = strings.TrimSuffix(base, "/api/v1")
+	return base
+}
+
+// billingReturnURL is where PayPal sends the buyer back.
+func (a *App) billingReturnURL(action string) string {
+	base := a.billingConsoleBase()
 	if base == "" {
 		return ""
 	}
@@ -190,8 +201,14 @@ func (a *App) billingCatalog(w http.ResponseWriter, r *http.Request) (any, error
 		Channels    *int64   `json:"channels"`
 		Seats       *int64   `json:"seats"`
 		Included    []string `json:"included"`
+		// KHQRPrice is the same plan's price through the QR rail; empty means
+		// "not sold there", which is also what free always gets. A flat string
+		// rather than a nested object because the console's rule is exactly
+		// `khqr_enabled && khqr_price` — one truthy check, no shape to guess.
+		KHQRPrice string `json:"khqr_price"`
 	}
 	plans := make([]planEntry, 0, len(usage.Plans()))
+	khqrReady := a.khqrEnabled()
 	for _, spec := range usage.Plans() {
 		entry := planEntry{
 			Plan:      spec.Name,
@@ -205,6 +222,13 @@ func (a *App) billingCatalog(w http.ResponseWriter, r *http.Request) (any, error
 			entry.Price = price
 			entry.Purchasable = a.paypalEnabled()
 		}
+		// Only when the channel is on: a price the console could accidentally
+		// render behind a disabled channel is a button that answers 503.
+		if khqrReady {
+			if price, ok := a.khqrPlanPrice(spec.Name); ok {
+				entry.KHQRPrice = price
+			}
+		}
 		plans = append(plans, entry)
 	}
 	state, err := a.paidState(r.Context(), user.Tenant())
@@ -214,6 +238,7 @@ func (a *App) billingCatalog(w http.ResponseWriter, r *http.Request) (any, error
 	return map[string]any{
 		"currency":       strings.TrimSpace(a.Cfg.PayPal.Currency),
 		"checkout_ready": a.paypalEnabled(),
+		"khqr_enabled":   khqrReady,
 		"plans":          plans,
 		"current":        state,
 	}, nil
@@ -310,7 +335,7 @@ func (a *App) paypalCapture(w http.ResponseWriter, r *http.Request) (any, error)
 	if capture.Status != "" && !strings.EqualFold(capture.Status, "COMPLETED") {
 		return nil, ErrServiceUnavailable("支付尚未完成（状态 " + capture.Status + "），请稍后重试")
 	}
-	if _, err := a.activatePayment(r.Context(), orderID, capture.CaptureID, capture.Amount, capture.Currency, "capture"); err != nil {
+	if _, err := a.activatePayment(r.Context(), "paypal", orderID, capture.CaptureID, capture.Amount, capture.Currency, "capture"); err != nil {
 		a.Logger.Error("paypal activation failed", "user_id", user.UserID, "order_id", orderID, "error", err.Error())
 		return nil, ErrInternal("支付已收到但开通失败，请联系管理员")
 	}
@@ -364,7 +389,7 @@ func (a *App) paypalWebhook(w http.ResponseWriter, r *http.Request) (any, error)
 		a.Logger.Warn("paypal capture webhook carried no order id", "capture_id", event.Resource.ID)
 		return map[string]string{"status": "ignored"}, nil
 	}
-	if _, err := a.activatePayment(r.Context(), orderID, event.Resource.ID, event.Resource.Amount.Value, event.Resource.Amount.CurrencyCode, "webhook"); err != nil {
+	if _, err := a.activatePayment(r.Context(), "paypal", orderID, event.Resource.ID, event.Resource.Amount.Value, event.Resource.Amount.CurrencyCode, "webhook"); err != nil {
 		// The money is already captured: a 5xx makes PayPal retry instead of
 		// leaving a paid tenant unprovisioned.
 		a.Logger.Error("paypal webhook activation failed", "order_id", orderID, "error", err.Error())
@@ -376,15 +401,18 @@ func (a *App) paypalWebhook(w http.ResponseWriter, r *http.Request) (any, error)
 // activatePayment flips one payment row to captured and, only for the caller that
 // flipped it, grants the paid window. The conditional UPDATE is the idempotency:
 // PayPal's capture response and its webhook race each other routinely, and only
-// one of them may hand out 30 days.
+// one of them may hand out 30 days. KHQR reuses the whole transaction through the
+// provider argument — its webhook is the only caller there, but the same race
+// exists against a retried callback, and a second copy of this transaction is
+// exactly what the three-statement version below cost once.
 //
 // The amount is checked against the row we wrote at order time, so a tampered or
 // mismatched capture (wrong plan, wrong currency, wrong value) is recorded as
 // failed instead of activating anything.
-func (a *App) activatePayment(ctx context.Context, orderID, captureID, capturedAmount, capturedCurrency, source string) (bool, error) {
+func (a *App) activatePayment(ctx context.Context, provider, orderID, captureID, capturedAmount, capturedCurrency, source string) (bool, error) {
 	var userID int32
 	var plan, amount, currency, status string
-	if err := a.DB.QueryRow(ctx, sqlPaymentLookup, orderID).Scan(&userID, &plan, &amount, &currency, &status); err != nil {
+	if err := a.DB.QueryRow(ctx, sqlPaymentLookupByProvider, provider, orderID).Scan(&userID, &plan, &amount, &currency, &status); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, nil // an order we never recorded: nothing to grant
 		}
@@ -399,12 +427,23 @@ func (a *App) activatePayment(ctx context.Context, orderID, captureID, capturedA
 			"captured": capturedAmount + " " + capturedCurrency,
 			"expected": amount + " " + currency,
 		})
-		if _, err := a.DB.Exec(ctx, sqlPaymentMarkFailed, orderID, string(detail)); err != nil {
+		if _, err := a.DB.Exec(ctx, sqlPaymentMarkFailedByProvider, provider, orderID, string(detail)); err != nil {
 			return false, err
 		}
 		return false, &ApiError{http.StatusBadGateway, "支付金额与订单不一致，已拒绝开通"}
 	}
-	detail, _ := json.Marshal(map[string]string{"source": source, "capture_id": captureID})
+	// provider_capture_id is nullable, and its unique index is partial on
+	// IS NOT NULL: a channel that does not hand back a capture id (KHQR's
+	// callback carries none) must leave it NULL. Binding "" instead made the
+	// second such order fail on the unique index — money in, no row, no error
+	// anybody could explain.
+	var capture any
+	recorded := map[string]string{"source": source}
+	if id := strings.TrimSpace(captureID); id != "" {
+		capture = id
+		recorded["capture_id"] = id
+	}
+	detail, _ := json.Marshal(recorded)
 	// One transaction for "record the capture, grant the plan, extend the paid
 	// window". Three statements on the pool meant a failure between them left the
 	// tenant paid and unprovisioned: the conditional UPDATE had already flipped the
@@ -416,7 +455,7 @@ func (a *App) activatePayment(ctx context.Context, orderID, captureID, capturedA
 		return false, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	tag, err := tx.Exec(ctx, sqlPaymentMarkCaptured, orderID, captureID, string(detail))
+	tag, err := tx.Exec(ctx, sqlPaymentMarkCapturedByProvider, provider, orderID, capture, string(detail))
 	if err != nil {
 		return false, err
 	}
@@ -432,7 +471,7 @@ func (a *App) activatePayment(ctx context.Context, orderID, captureID, capturedA
 	if err := tx.Commit(ctx); err != nil {
 		return false, err
 	}
-	a.Logger.Info("paid plan activated", "user_id", userID, "plan", plan, "amount", amount+" "+currency, "source", source)
+	a.Logger.Info("paid plan activated", "user_id", userID, "plan", plan, "amount", amount+" "+currency, "source", source, "provider", provider)
 	return true, nil
 }
 

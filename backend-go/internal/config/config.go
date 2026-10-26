@@ -190,6 +190,72 @@ func (p PayPalConfig) Enabled() bool {
 	return strings.TrimSpace(p.ClientID) != "" && strings.TrimSpace(p.ClientSecret) != ""
 }
 
+// KHQRPayConfig is the second one-time checkout channel: Cambodia's KHQR
+// standard through the khqr.cc / anajakpay.com gateway (internal/khqrpay).
+//
+// It is deliberately not folded into PayPalConfig: different credentials,
+// possibly a different currency, its own price list (the merchant may price the
+// local rail differently), and its own switch — the 2026-09-11 NBC notice that
+// khqr.cc is unlicensed means operations must be able to remove this channel
+// with one environment variable and no deploy (docs/khqrpay-integration-spec.md §二).
+type KHQRPayConfig struct {
+	// Toggle is KHQRPAY_ENABLED — the operator's switch, and nothing more.
+	// Every sell path asks Enabled() instead: a switch without credentials is
+	// not a channel, and offering a payment button that cannot work is worse
+	// than offering none.
+	Toggle bool // KHQRPAY_ENABLED, default false
+	// ProfileID is the merchant profile id and a path segment of every call.
+	ProfileID string // KHQRPAY_PROFILE_ID
+	// Secret signs every create/verify call. Env only: never in the database,
+	// never in a log line or an error string (see internal/khqrpay).
+	Secret string // KHQRPAY_SECRET
+	// BaseURL exists so a test profile or a staging host never needs a code
+	// change; no trailing slash. Defaults to anajakpay.com: khqr.cc 301s there and
+	// both hosts reach the same application, but the endpoint verified with real
+	// credentials (2026-10-26) lives on the former.
+	BaseURL string // KHQRPAY_BASE_URL, default https://anajakpay.com
+	// CreatePath replaces the whole create path. Empty keeps the built-in
+	// template; a value may contain {profile}, substituted with the escaped
+	// merchant id at request time, and is used verbatim when it does not. It
+	// exists because the marketing page's documented path answered 404 on the real
+	// gateway (probed 2026-10-26) — a wrong route has to be correctable in
+	// .env-go, not by rebuilding this service.
+	CreatePath string // KHQRPAY_CREATE_PATH
+	// Currency is the sale currency for this channel; amounts are compared
+	// against it exactly (USD and KHR are not interchangeable).
+	Currency string // KHQRPAY_CURRENCY, default USD
+	// A plan with no price here is not sold through KHQR — same rule as the
+	// PayPal price fields, and the reason free never needs an entry.
+	PricePro        string // KHQRPAY_PRICE_PRO
+	PriceEnterprise string // KHQRPAY_PRICE_ENTERPRISE
+	// VerifyPath is the provider's verification endpoint, relative to
+	// BaseURL/{ProfileID}. Empty (the shipped default) means webhook-only: the
+	// callback is then a trigger and the local row is the record. Filling it
+	// in later upgrades to a server-side confirmation with no code change.
+	VerifyPath string // KHQRPAY_VERIFY_PATH
+	// WebhookToken is the unguessable path segment of the callback URL
+	// (POST /api/v1/billing/khqr/webhook/{token}). It proves the caller was given
+	// the URL, which only the gateway was.
+	//
+	// It is a separate secret from Secret on purpose, and the reason is where each
+	// one travels: this value sits in a URL, so it lands in nginx access logs, in
+	// a proxy's history and in whatever an operator pastes into a merchant
+	// console. The signing secret must never be in any of those places, so one
+	// string cannot serve both roles. Empty = settlement refused (fail closed):
+	// without it the callback route is an unauthenticated "grant me a plan" and
+	// any shop owner could POST their own paid event with a transaction id they
+	// were just handed.
+	WebhookToken string // KHQRPAY_WEBHOOK_TOKEN
+}
+
+// Enabled reports whether this deployment can actually take KHQR money: the
+// switch is on and both credentials are present. A half-configured channel is a
+// boot warning (validateKHQRPay), not a crash — the route then answers "not
+// configured" and the upgrade page offers no QR button.
+func (k KHQRPayConfig) Enabled() bool {
+	return k.Toggle && strings.TrimSpace(k.ProfileID) != "" && strings.TrimSpace(k.Secret) != ""
+}
+
 type Config struct {
 	Server                 ServerConfig
 	DatabaseURL            string
@@ -209,6 +275,7 @@ type Config struct {
 	AllowRegistration      bool
 	RegistrationInviteCode string
 	PayPal                 PayPalConfig
+	KHQRPay                KHQRPayConfig
 }
 
 // Load reads .env from the working directory (real environment variables win)
@@ -316,6 +383,18 @@ func Load() (*Config, error) {
 			PricePro:        env("PAYPAL_PRICE_PRO", ""),
 			PriceEnterprise: env("PAYPAL_PRICE_ENTERPRISE", ""),
 		},
+		KHQRPay: KHQRPayConfig{
+			Toggle:          envBool("KHQRPAY_ENABLED", false),
+			ProfileID:       env("KHQRPAY_PROFILE_ID", ""),
+			Secret:          env("KHQRPAY_SECRET", ""),
+			BaseURL:         env("KHQRPAY_BASE_URL", "https://anajakpay.com"),
+			Currency:        env("KHQRPAY_CURRENCY", "USD"),
+			PricePro:        env("KHQRPAY_PRICE_PRO", ""),
+			PriceEnterprise: env("KHQRPAY_PRICE_ENTERPRISE", ""),
+			VerifyPath:      env("KHQRPAY_VERIFY_PATH", ""),
+			CreatePath:      env("KHQRPAY_CREATE_PATH", ""),
+			WebhookToken:    env("KHQRPAY_WEBHOOK_TOKEN", ""),
+		},
 	}
 
 	for _, o := range strings.Split(env("ALLOWED_ORIGINS", "http://localhost:3000"), ",") {
@@ -353,6 +432,7 @@ func (c *Config) Validate() error {
 	if err := c.validatePayPal(); err != nil {
 		return err
 	}
+	c.validateKHQRPay()
 	// Not a fatal error: password-reset e-mail is optional (the platform admin
 	// can generate a link instead), but a half-set pair is almost always an
 	// unfinished rollout and would otherwise only show up as silent "no mail".
@@ -390,6 +470,65 @@ func (c *Config) validatePayPal() error {
 		fmt.Fprintln(os.Stderr, "config: PayPal is configured but no plan has a price (PAYPAL_PRICE_PRO / PAYPAL_PRICE_ENTERPRISE); the upgrade page will offer nothing")
 	}
 	return nil
+}
+
+// validateKHQRPay warns about the half-finished states this channel can boot in:
+// a switch without credentials, a configuration with nothing priced, a missing
+// callback token, and a token that is weak or doubles as the signing secret. It
+// never fails the boot, on purpose: the channel is off by default and must stay
+// removable with one environment variable, so a wrong KHQRPAY_* value has to cost
+// a log line, not a stopped service. It also never prints the secret or the token
+// — only which variable is wrong and how.
+func (c *Config) validateKHQRPay() {
+	k := c.KHQRPay
+	if !k.Toggle {
+		return
+	}
+	hasProfile, hasSecret := strings.TrimSpace(k.ProfileID) != "", strings.TrimSpace(k.Secret) != ""
+	if !hasProfile || !hasSecret {
+		missing := "KHQRPAY_PROFILE_ID"
+		if hasProfile {
+			missing = "KHQRPAY_SECRET"
+		}
+		fmt.Fprintln(os.Stderr, "config: KHQRPAY_ENABLED=true but "+missing+" is empty; the KHQR channel stays disabled (no route will offer it)")
+		return
+	}
+	if strings.TrimSpace(k.PricePro) == "" && strings.TrimSpace(k.PriceEnterprise) == "" {
+		fmt.Fprintln(os.Stderr, "config: KHQRPay is configured but no plan has a price (KHQRPAY_PRICE_PRO / KHQRPAY_PRICE_ENTERPRISE); the upgrade page will offer no QR button")
+	}
+	if strings.TrimSpace(k.VerifyPath) == "" {
+		// Not a violation — the shipped design works webhook-only — but the
+		// operator should know the callback is a trigger rather than a judge
+		// (docs/khqrpay-integration-spec.md §三.2).
+		fmt.Fprintln(os.Stderr, "config: KHQRPAY_VERIFY_PATH is empty; KHQR payments are confirmed from the webhook payload and the local order row only")
+	}
+	// Say out loud when the create route is not the built-in one. The vendor's
+	// marketing page documented a path that the real gateway answered with 404
+	// (2026-10-26), so a deployment running a custom route is legitimate — and
+	// otherwise invisible, which is how the next person concludes the code and
+	// production disagree.
+	createPath := strings.TrimSpace(k.CreatePath)
+	if createPath != "" {
+		fmt.Fprintln(os.Stderr, "config: KHQRPAY_CREATE_PATH is set; QR creation uses the custom path "+createPath+" instead of the built-in "+"/{profile}/payment-gateway/v1/payments/qr-api-khqr")
+		if !strings.Contains(createPath, "{profile}") {
+			// Legitimate (the merchant id may belong in a query string), but much
+			// more often a forgotten placeholder.
+			fmt.Fprintln(os.Stderr, "config: KHQRPAY_CREATE_PATH has no {profile} placeholder; the merchant profile id will not appear anywhere in the create URL")
+		}
+	}
+	// The token is a hard requirement for settlement, so say it loudly at boot
+	// instead of letting the first real callback discover it: refusing every
+	// callback is the correct behaviour, and the operator needs to know why the
+	// gateway is retrying.
+	token := strings.TrimSpace(k.WebhookToken)
+	switch {
+	case token == "":
+		fmt.Fprintln(os.Stderr, "config: KHQRPAY_WEBHOOK_TOKEN is empty; KHQR callbacks will be REFUSED (503) and no payment can settle until it is set to a random 32+ character string that is not KHQRPAY_SECRET")
+	case token == strings.TrimSpace(k.Secret):
+		fmt.Fprintln(os.Stderr, "config: KHQRPAY_WEBHOOK_TOKEN must not be the signing secret; the callback URL ends up in access logs, the signing key must not")
+	case len(token) < 32:
+		fmt.Fprintln(os.Stderr, "config: KHQRPAY_WEBHOOK_TOKEN is shorter than 32 characters; it is the only thing standing between a logged-in tenant and a free plan")
+	}
 }
 
 func (c *Config) validateDatabaseURL() error {

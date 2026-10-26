@@ -360,6 +360,14 @@ export interface InboxItem {
   user_id: number;
   platform?: string;
   platform_user_id?: string;
+  /**
+   * The customer's stable identity on their channel: `telegram:<platform_user_id>`,
+   * `web:<visitor_id>`, `console:<session_id>`. This is the exact string a
+   * conversation-scoped persona binding takes as its target, so the inbox shows
+   * it to copy. Optional: a backend that does not send it yet must not break the
+   * page, so it is read defensively and simply not rendered.
+   */
+  conversation_id?: string;
   user_display_name?: string;
   avatar_url?: string | null;
   status: SessionStatus;
@@ -1905,13 +1913,26 @@ export interface PersonaBinding {
   target: string;
 }
 
+/**
+ * The platform capabilities a persona may trigger — the only two that exist
+ * today (docs/persona-completion-spec.md §4). Order is the server's canonical
+ * order; it is also the order the editor renders the checkboxes in.
+ */
+export const PERSONA_TOOLS = ["handoff", "image"] as const;
+export type PersonaTool = (typeof PERSONA_TOOLS)[number];
+
 export interface PersonaItem {
   persona_id: string;
   name: string;
   system_prompt: string;
   begin_dialogs: string[];
-  /** Empty means "no tools", but the API also has a null = "all tools" state. */
-  tools: string[];
+  /**
+   * Three-valued, and the three values mean different things:
+   * `null` = every capability (what every persona written before the field
+   * existed does), `[]` = none, a list = whitelist. Never test it with
+   * `tools.length === 0` alone — that reads "all" as "none".
+   */
+  tools: string[] | null;
   error_reply: string;
   bindings: PersonaBinding[];
 }
@@ -1923,17 +1944,18 @@ export interface PersonasResponse {
 }
 
 /**
- * The write payload deliberately omits `tools`. It is three-valued on the wire
- * (absent = every tool, [] = none) and the server returns null as [], so echoing
- * a persona back would silently turn "every tool" into "no tool". Nothing reads
- * the field yet — the Gemini client has no tool layer — so the console leaves it
- * alone rather than pretending to edit it.
+ * The write payload. `tools` is three-valued on the wire and is sent
+ * explicitly: `null` = every capability, `[]` = none, a list = whitelist.
+ * Omitting the field also means "every capability", but the console always
+ * sends it — a persona narrowed to "none" must stay narrowed on the next save,
+ * and an echo-without-rethink is exactly how `null` used to become `[]`.
  */
 export interface PersonaInput {
   name: string;
   system_prompt: string;
   begin_dialogs?: string[];
   error_reply?: string;
+  tools?: string[] | null;
 }
 
 export function listPersonas() {

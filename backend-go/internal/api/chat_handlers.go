@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"khmer-ai-cs-go/internal/gemini"
+	"khmer-ai-cs-go/internal/persona"
 	"khmer-ai-cs-go/internal/platform"
 	"khmer-ai-cs-go/internal/rag"
 	"khmer-ai-cs-go/internal/realtime"
@@ -40,18 +41,24 @@ type chatRequest struct {
 // the caller omitted session_id. Test turns land in is_test sessions (never
 // shown in the customer inbox); real turns create platform='web' sessions so
 // the web widget conversations reach agents.
-func (a *App) resolveChatSession(ctx context.Context, userID int32, req *chatRequest) (string, bool, error) {
+//
+// conversationID is the persona scope this turn resolves under
+// (persona.ConversationID, derived from the row so every surface — this handler,
+// the inbox list, the widget path — agrees on the string an operator binds).
+// It is also why the is_test read was folded into this function's first query:
+// that read used to be a second statement for one column, and this one needs the
+// row's channel identity anyway.
+func (a *App) resolveChatSession(ctx context.Context, userID int32, req *chatRequest) (string, bool, string, error) {
 	isTest := req.Test
 	if req.SessionID != nil && *req.SessionID != "" {
-		var sid, status string
+		var sid, status, platform, platformUser string
 		err := a.DB.QueryRow(ctx,
-			"SELECT session_id, status::text FROM sessions WHERE session_id = $1 AND user_id = $2",
-			*req.SessionID, userID).Scan(&sid, &status)
+			"SELECT session_id, status::text, is_test, COALESCE(platform::text, ''), COALESCE(platform_user_id, '') "+
+				"FROM sessions WHERE session_id = $1 AND user_id = $2",
+			*req.SessionID, userID).Scan(&sid, &status, &isTest, &platform, &platformUser)
 		if err != nil {
-			return "", false, ErrNotFound("会话不存在")
+			return "", false, "", ErrNotFound("会话不存在")
 		}
-		var test bool
-		_ = a.DB.QueryRow(ctx, "SELECT is_test FROM sessions WHERE session_id = $1", sid).Scan(&test)
 		// Customer replied on a finished session → reopen (same rule as the
 		// platform pipeline).
 		if status == "resolved" || status == "closed" {
@@ -59,7 +66,7 @@ func (a *App) resolveChatSession(ctx context.Context, userID int32, req *chatReq
 		}
 		// New activity revives an archived conversation so it is not hidden.
 		_, _ = a.DB.Exec(ctx, "UPDATE sessions SET archived_at=NULL WHERE session_id=$1 AND archived_at IS NOT NULL", sid)
-		return sid, test, nil
+		return sid, isTest, persona.ConversationID(platform, platformUser, sid), nil
 	}
 	sid := platform.NewUUID()
 	platformVal := any(nil)
@@ -72,10 +79,10 @@ func (a *App) resolveChatSession(ctx context.Context, userID int32, req *chatReq
 			"VALUES ($1,$2,$3::platform_type,$4,'active',$5,$6,NOW())",
 		sid, userID, platformVal, req.Language, title, isTest)
 	if err != nil {
-		return "", false, ErrInternal("创建会话失败")
+		return "", false, "", ErrInternal("创建会话失败")
 	}
 	req.SessionID = &sid
-	return sid, isTest, nil
+	return sid, isTest, persona.ConversationID(textutil.DerefString(ptrIfSet(platformVal)), "", sid), nil
 }
 
 // chatHistory loads the newest 20 persisted turns (chronological) so web/test
@@ -230,6 +237,76 @@ func (a *App) webHandoffCheck(ctx context.Context, userID int32, sessionID, mess
 		"customer_request: customer asked for a human (matched: "+keyword+")")
 }
 
+// ============================================
+// Persona on the console and widget surfaces
+// ============================================
+
+// personaForTurn resolves the persona that applies to one console or widget turn:
+// the session binding, then the customer's conversation on that channel, then the
+// tenant default. nil means "no binding" (or an unreadable store) — the turn then
+// runs on the tenant prompt exactly as it did before personas reached these
+// surfaces.
+func (a *App) personaForTurn(ctx context.Context, userID int32, sessionID, platform, platformUserID string) *persona.Persona {
+	return a.personaForScope(ctx, userID, sessionID, persona.ConversationID(platform, platformUserID, sessionID))
+}
+
+// personaForScope is personaForTurn for a caller that already holds the derived
+// conversation id (resolveChatSession returns it, so the console turn and the id
+// an operator copies out of the inbox are the same string by construction).
+//
+// A lookup failure is logged and drops the override rather than failing the turn:
+// a persona is a tone override, and losing it must never lose the answer.
+func (a *App) personaForScope(ctx context.Context, userID int32, sessionID, conversationID string) *persona.Persona {
+	per, ok, err := persona.NewStore(a.DB).ForTurn(ctx, userID, sessionID, conversationID)
+	if err != nil {
+		a.Logger.Warn("persona lookup failed; answering with the tenant system prompt",
+			"session_id", sessionID, "error", err.Error())
+		return nil
+	}
+	if !ok {
+		return nil
+	}
+	return &per
+}
+
+// personaPrompt turns a persona into the two things a generation call needs: the
+// system prompt that replaces the tenant prompt, and the history led by the
+// persona's opening turns. A nil persona returns "" and the history untouched, so
+// the request is byte-identical to the pre-persona behaviour (no binding must
+// change nothing — that is the compatibility promise of this change).
+func personaPrompt(per *persona.Persona, history []gemini.HistoryItem) (string, []gemini.HistoryItem) {
+	if per == nil {
+		return "", history
+	}
+	return per.SystemPrompt, append(platform.PersonaHistory(per.BeginDialogs), history...)
+}
+
+// generationErrorText is the message a failed console or widget generation
+// returns: the persona's error_reply when one is configured, else the existing
+// wording. Nothing is invented for the unconfigured case — a default line here
+// would put words in every merchant's mouth on every failed turn.
+func generationErrorText(per *persona.Persona, fallback string) string {
+	if text := per.ErrorText(); text != "" {
+		return text
+	}
+	return fallback
+}
+
+// streamChatAs runs one streaming turn under a persona prompt.
+//
+// With no persona this is ChatStream unchanged — the streaming shape, the token
+// callbacks and the fallbacks are all the ones the deployment already ran. With a
+// persona every provider streams under the override (llm.Model carries
+// ChatStreamAs, so Gemini, Claude and DeepSeek all implement it); an empty override
+// is defined to be exactly ChatStream, which is what makes the branch above a
+// compatibility statement rather than a different code path.
+func (a *App) streamChatAs(ctx context.Context, message string, history []gemini.HistoryItem, language, systemPrompt string, onToken func(string)) (gemini.ChatResult, error) {
+	if systemPrompt == "" {
+		return a.serving().ChatStream(ctx, message, history, language, onToken)
+	}
+	return a.serving().ChatStreamAs(ctx, message, history, language, systemPrompt, onToken)
+}
+
 // chatPlain — synchronous chat turn (persisted).
 func (a *App) chatPlain(w http.ResponseWriter, r *http.Request) (any, error) {
 	user, _ := UserFrom(r)
@@ -259,7 +336,7 @@ func (a *App) chatPlain(w http.ResponseWriter, r *http.Request) (any, error) {
 		return nil, ErrInternal("配额校验失败")
 	}
 
-	sessionID, _, err := a.resolveChatSession(r.Context(), user.UserID, &req)
+	sessionID, _, conversationID, err := a.resolveChatSession(r.Context(), user.UserID, &req)
 	if err != nil {
 		return nil, err
 	}
@@ -294,13 +371,22 @@ func (a *App) chatPlain(w http.ResponseWriter, r *http.Request) (any, error) {
 	}
 
 	history := a.chatHistory(r.Context(), sessionID, historyFromRequest(req), userMsgID)
+	// A persona bound to this console session or to its conversation replaces the
+	// tenant prompt for this turn; with no binding the prompt stays "" and the call
+	// is exactly the one this handler always made.
+	//
+	// Retrieval keeps the plain conversation history: the persona's opening turns
+	// are prompt setup (the model must see them as already said), not customer
+	// turns, so they must not become part of a query-rewrite or a search.
+	per := a.personaForScope(r.Context(), user.UserID, sessionID, conversationID)
+	systemPrompt, genHistory := personaPrompt(per, history)
 	sid := sessionID
 	groundCtx := a.RAG.Ground(r.Context(), user.Tenant(), &sid, req.Message, language, history, 0)
 	message := req.Message
 	if groundCtx.HasMatch {
 		message = rag.AugmentMessage(req.Message, &groundCtx)
 	}
-	result, err := a.serving().Chat(r.Context(), message, history, language)
+	result, err := a.serving().ChatAs(r.Context(), message, genHistory, language, systemPrompt)
 	if err != nil {
 		// The upstream reason (quota 429, 5xx, transport) is the only thing that
 		// makes this actionable, and returning a bare 500 threw it away: a load
@@ -325,7 +411,9 @@ func (a *App) chatPlain(w http.ResponseWriter, r *http.Request) (any, error) {
 				"used_mock": false, "escalated": true,
 			}, nil
 		}
-		return nil, ErrInternal("生成回答失败")
+		// A customer who gets nothing at all is the one case personas.error_reply
+		// is for; without one the console keeps the wording it always had.
+		return nil, ErrInternal(generationErrorText(per, "生成回答失败"))
 	}
 	usage.Record(r.Context(), a.DB, user.Tenant(), &sid, a.serving().ModelName(), result.PromptTokens, result.OutputTokens, result.CachedTokens, result.ThoughtsTokens)
 	reply := result.Reply
@@ -402,7 +490,7 @@ func (a *App) chatStream(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 	}
 
-	sessionID, _, err := a.resolveChatSession(r.Context(), user.UserID, &req)
+	sessionID, _, conversationID, err := a.resolveChatSession(r.Context(), user.UserID, &req)
 	if err != nil {
 		sendEvent("error", map[string]string{"message": "会话不存在"})
 		return
@@ -437,6 +525,11 @@ func (a *App) chatStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	history := a.chatHistory(r.Context(), sessionID, historyFromRequest(req), userMsgID)
+	// Same persona rule as chatPlain (this is the surface /ai-test streams on), and
+	// the same split: the opening turns lead the generation prompt, retrieval keeps
+	// the real conversation.
+	per := a.personaForScope(r.Context(), user.UserID, sessionID, conversationID)
+	systemPrompt, genHistory := personaPrompt(per, history)
 	sid := sessionID
 	groundCtx := a.RAG.Ground(r.Context(), user.Tenant(), &sid, req.Message, language, history, 0)
 	message := req.Message
@@ -450,7 +543,7 @@ func (a *App) chatStream(w http.ResponseWriter, r *http.Request) {
 	// from every later turn's context and from the agent inbox.
 	persistCtx := context.WithoutCancel(r.Context())
 	var streamed strings.Builder
-	result, err := a.serving().ChatStream(r.Context(), message, history, language, func(chunk string) {
+	result, err := a.streamChatAs(r.Context(), message, genHistory, language, systemPrompt, func(chunk string) {
 		streamed.WriteString(chunk)
 		sendEvent("token", map[string]string{"text": chunk})
 	})
@@ -471,7 +564,7 @@ func (a *App) chatStream(w http.ResponseWriter, r *http.Request) {
 			sendEvent("done", map[string]any{"reply": ack, "tokens_used": 0, "cached_tokens": 0, "used_mock": false, "escalated": true})
 			return
 		}
-		sendEvent("error", map[string]string{"message": "生成回答失败"})
+		sendEvent("error", map[string]string{"message": generationErrorText(per, "生成回答失败")})
 		if partial := strings.TrimSpace(streamed.String()); partial != "" {
 			a.persistModelReply(persistCtx, user.UserID, sessionID, gemini.ChatResult{}, partial, &groundCtx, language, time.Now(), "")
 		}
@@ -619,9 +712,13 @@ func (a *App) createSession(w http.ResponseWriter, r *http.Request) (any, error)
 		sid, user.UserID, platformVal, language, textutil.TruncateRunes(req.Title, 60), req.Test); err != nil {
 		return nil, ErrInternal("创建失败")
 	}
+	platformName := textutil.DerefString(ptrIfSet(platformVal))
 	return map[string]any{
-		"session_id": sid, "user_id": user.UserID, "platform": textutil.DerefString(ptrIfSet(platformVal)), "language": language,
+		"session_id": sid, "user_id": user.UserID, "platform": platformName, "language": language,
 		"status": "active", "title": req.Title, "user_message_count": 0, "model_message_count": 0,
+		// The same derivation the resolver uses, so the console can bind a persona
+		// to the conversation it just created without guessing the shape.
+		"conversation_id": persona.ConversationID(platformName, "", sid),
 	}, nil
 }
 
@@ -672,23 +769,31 @@ func (a *App) updateSession(w http.ResponseWriter, r *http.Request, sessionID st
 }
 
 // getSession — one session with owner check.
+//
+// conversation_id is derived, not stored (persona.ConversationID): it is the value
+// an operator copies into a conversation-scoped persona binding, so it has to be
+// the exact string the resolver will compute on the customer's next turn.
 func (a *App) getSession(w http.ResponseWriter, r *http.Request, sessionID string) (any, error) {
 	user, _ := UserFrom(r)
 	row := a.DB.QueryRow(r.Context(),
-		"SELECT session_id, status::text, language, title, user_message_count, model_message_count, created_at "+
+		"SELECT session_id, status::text, language, title, user_message_count, model_message_count, created_at, "+
+			"COALESCE(platform::text, ''), COALESCE(platform_user_id, '') "+
 			"FROM sessions WHERE session_id = $1 AND user_id = $2", sessionID, user.UserID)
 	var (
-		sid, status, language string
-		title                 *string
-		umc, mmc              int32
-		createdAt             time.Time
+		sid, status, language  string
+		title                  *string
+		umc, mmc               int32
+		createdAt              time.Time
+		platform, platformUser string
 	)
-	if err := row.Scan(&sid, &status, &language, &title, &umc, &mmc, &createdAt); err != nil {
+	if err := row.Scan(&sid, &status, &language, &title, &umc, &mmc, &createdAt, &platform, &platformUser); err != nil {
 		return nil, ErrNotFound("会话不存在")
 	}
 	return map[string]any{
 		"session_id": sid, "status": status, "language": language, "title": textutil.DerefString(title),
 		"user_message_count": umc, "model_message_count": mmc, "created_at": createdAt,
+		"platform": platform, "platform_user_id": platformUser,
+		"conversation_id": persona.ConversationID(platform, platformUser, sid),
 	}, nil
 }
 

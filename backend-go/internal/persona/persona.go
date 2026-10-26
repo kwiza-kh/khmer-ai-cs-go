@@ -33,11 +33,158 @@ type Persona struct {
 	// said, which is why they are copied into the request rather than merged into
 	// the instructions.
 	BeginDialogs []string
-	// Tools is nil for "every tool", empty for "no tools", otherwise a whitelist.
+	// Tools is nil for "every capability", empty for "no capability", otherwise a
+	// whitelist of Capabilities. Read it through Allows, never directly: the three
+	// states are what the console edits and what a nil persona has to mean.
 	Tools []string
-	// ErrorReply is shown to the customer when the turn fails.
+	// ErrorReply is shown to the customer when the turn fails. Read it through
+	// ErrorText, which is "" when nothing is configured.
 	ErrorReply string
 }
+
+// Capabilities are the platform abilities a persona may be allowed to trigger.
+//
+// 067_personas.sql's tools column was written, read and displayed but had no
+// consumer: the model client has no function-calling layer, so "tools the model
+// may call" could only ever have been a fiction. What a persona CAN really
+// change is which of the platform's own actions a turn may take, and these two
+// are the ones that exist.
+const (
+	// CapabilityHandoff lets the turn hand the conversation to a human. It gates
+	// the AI's own decisions only (the model announcing a transfer, the turn
+	// classifier's negative-feedback / no-knowledge verdict). The safety net —
+	// quota exhausted, an empty or blocked model reply, unreadable media, the
+	// reply guard, content safety, an agent taking over in the console — never
+	// consults it: a persona may change how the bot talks, never whether a
+	// customer can reach a person.
+	CapabilityHandoff = "handoff"
+	// CapabilityImage lets a long reply be rendered as a picture (t2i.go).
+	// Forbidden means the same answer goes out as text.
+	CapabilityImage = "image"
+)
+
+// Capabilities lists every name tools may contain, in the order the console shows
+// them and the API validates against.
+var Capabilities = []string{CapabilityHandoff, CapabilityImage}
+
+// Allows reports whether this persona may trigger one platform capability.
+//
+// Both a nil persona (no binding resolved) and a nil Tools (SQL NULL) allow
+// everything: an unbound tenant, and a persona whose checkbox was never touched,
+// must behave exactly as they did before tools had a consumer. A non-nil empty
+// Tools forbids everything.
+func (p *Persona) Allows(capability string) bool {
+	if p == nil || p.Tools == nil {
+		return true
+	}
+	for _, name := range p.Tools {
+		if strings.EqualFold(strings.TrimSpace(name), capability) {
+			return true
+		}
+	}
+	return false
+}
+
+// ErrorText is error_reply: the copy for a customer who would otherwise get
+// nothing at all. "" means no copy is configured, and the caller then keeps its
+// existing wording — inventing a default line here would put words in every
+// merchant's mouth on every failed turn.
+func (p *Persona) ErrorText() string {
+	if p == nil {
+		return ""
+	}
+	return strings.TrimSpace(p.ErrorReply)
+}
+
+// NormalizeTools maps a submitted tools list onto Capabilities: case-insensitive,
+// whitespace-trimmed, deduplicated, and ordered like Capabilities so two
+// equivalent payloads store identically. unknown lists the names this build does
+// not implement, in submission order, for the API's 400.
+//
+// nil stays nil ("every capability") and a non-nil empty list stays non-nil ("no
+// capability"): that distinction IS the three-valued column, so it has to survive
+// validation rather than collapse to an empty slice.
+func NormalizeTools(tools []string) (normalized, unknown []string) {
+	if tools == nil {
+		return nil, nil
+	}
+	wanted := map[string]bool{}
+	reported := map[string]bool{}
+	for _, raw := range tools {
+		name := strings.ToLower(strings.TrimSpace(raw))
+		if name == "" {
+			continue
+		}
+		known := false
+		for _, c := range Capabilities {
+			if c == name {
+				known = true
+				break
+			}
+		}
+		if !known {
+			if !reported[name] {
+				reported[name] = true
+				unknown = append(unknown, name)
+			}
+			continue
+		}
+		wanted[name] = true
+	}
+	normalized = make([]string, 0, len(wanted))
+	for _, c := range Capabilities {
+		if wanted[c] {
+			normalized = append(normalized, c)
+		}
+	}
+	return normalized, unknown
+}
+
+// ConversationID is the stable identity a conversation-scoped binding addresses.
+//
+// A conversation is the customer on one channel, not the thread: it survives the
+// session that happens to be open, which is the whole difference between "this
+// conversation" and "this session" that migration 067's middle scope exists for.
+// It is derived from the sessions row rather than stored (sessions has no
+// conversation column, and one would need a migration plus a backfill to say
+// something the row already implies):
+//
+//	platform + platform_user_id  → "telegram:123456789" — stable across sessions;
+//	platform, no platform id     → "web:session:<sessionID>" — the historical rows
+//	                               and the website widget have no customer id, so
+//	                               the conversation degrades to the session: it
+//	                               stops matching across sessions but never
+//	                               matches a different customer's;
+//	no platform (NULL)           → "console:<sessionID>" — /ai-test and the
+//	                               dashboard have no "same customer" above the
+//	                               session, and say so instead of pretending.
+//
+// An id with nothing to address ("") is returned when the session id is missing
+// too: Resolve skips empty targets, so an unaddressable turn simply resolves to
+// the tenant default.
+func ConversationID(platform, platformUserID, sessionID string) string {
+	platform = strings.TrimSpace(platform)
+	platformUserID = strings.TrimSpace(platformUserID)
+	sessionID = strings.TrimSpace(sessionID)
+	if platform == "" {
+		if sessionID == "" {
+			return ""
+		}
+		return "console:" + sessionID
+	}
+	if platformUserID != "" {
+		return platform + ":" + platformUserID
+	}
+	if sessionID == "" {
+		return ""
+	}
+	return platform + ":session:" + sessionID
+}
+
+// ConsoleConversation is ConversationID for a console turn. Named so the call
+// sites in the dashboard's chat and /ai-test say what they mean instead of
+// passing two empty strings and leaving the reader to look up why.
+func ConsoleConversation(sessionID string) string { return ConversationID("", "", sessionID) }
 
 // Binding points a persona at a scope target.
 type Binding struct {
@@ -52,6 +199,10 @@ type Binding struct {
 // sessionID wins over conversationID, which wins over the tenant default — so an
 // operator can switch one live conversation to a different personality without
 // touching the other conversations of that tenant.
+//
+// The session id is the row the turn runs on; the conversation id comes from
+// ConversationID (the customer's identity on that channel), which is why a
+// conversation binding keeps applying when the customer opens a new thread.
 func Resolve(bindings []Binding, sessionID, conversationID string) (Binding, bool) {
 	for _, want := range []struct {
 		scope  string

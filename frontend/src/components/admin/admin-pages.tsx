@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import useSWR from "swr";
 import Link from "next/link";
-import { listUsers, updateUserRole, listModelConfigs, listAvailableModels, listVertexRegions, testModelConfig, updateModelConfig, getDefaultSystemPrompt, listPromptVersions, restorePromptVersion, listPersonas, createPersona, updatePersona, deletePersona, putPersonaBinding, deletePersonaBinding, type AvailableModel, type ModelItem, type ModelProvider, type PaginatedResponse, type PersonaBinding, type PersonaItem, type PersonasResponse, listTeam, removeAgent, updateTeamMemberPermissions, listTeamInvites, listTeamInviteHistory, createTeamInvite, revokeTeamInvite, type AgentMember, type InviteHistoryEntry, type UserItem, type UsersStats } from "@/lib/api";
+import { listUsers, updateUserRole, listModelConfigs, listAvailableModels, listVertexRegions, testModelConfig, updateModelConfig, getDefaultSystemPrompt, listPromptVersions, restorePromptVersion, listPersonas, createPersona, updatePersona, deletePersona, putPersonaBinding, deletePersonaBinding, PERSONA_TOOLS, type AvailableModel, type ModelItem, type ModelProvider, type PaginatedResponse, type PersonaBinding, type PersonaItem, type PersonasResponse, listTeam, removeAgent, updateTeamMemberPermissions, listTeamInvites, listTeamInviteHistory, createTeamInvite, revokeTeamInvite, type AgentMember, type InviteHistoryEntry, type UserItem, type UsersStats } from "@/lib/api";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -81,6 +81,44 @@ function PageLoadingState() {
   return <div className="py-10 text-center text-sm text-muted-foreground">{t("settings.loading")}</div>;
 }
 
+// ---------------------------------------------------------------------------
+// Persona capabilities ("tools") — three states on the wire, not two
+// ---------------------------------------------------------------------------
+
+/** What the editor shows: every capability, none, or a hand-picked subset. */
+type PersonaToolsMode = "all" | "none" | "custom";
+
+const PERSONA_TOOLS_MODES: { value: PersonaToolsMode; labelKey: string }[] = [
+  { value: "all", labelKey: "personas.toolsMode.all" },
+  { value: "none", labelKey: "personas.toolsMode.none" },
+  { value: "custom", labelKey: "personas.toolsMode.custom" },
+];
+
+/**
+ * `null` means every capability and `[]` means none — an absent field (an older
+ * server) is the former. Folding both into "no tools" would disable handoff on
+ * every persona that predates the field.
+ */
+function toolsModeOf(tools: string[] | null | undefined): PersonaToolsMode {
+  if (tools == null) return "all";
+  return tools.length === 0 ? "none" : "custom";
+}
+
+/**
+ * Canonical order, trimmed and de-duplicated. Names this build does not know
+ * are kept: a newer server may have added a capability, and saving a persona
+ * from an older console must not silently delete it.
+ */
+function normalizeTools(names: string[]): string[] {
+  const lowered = names.map((name) => name.trim().toLowerCase()).filter(Boolean);
+  const known = PERSONA_TOOLS.filter((tool) => lowered.includes(tool));
+  const extra = [...new Set(lowered)].filter((name) => !(PERSONA_TOOLS as readonly string[]).includes(name));
+  return [...known, ...extra];
+}
+
+/** The three shapes a conversation target takes, exactly as the resolver builds it. */
+const CONVERSATION_TARGET_EXAMPLES = ["telegram:123456789", "web:9f2c…", "console:<sessionID>"];
+
 /**
  * Personas — the console side of internal/persona.
  *
@@ -100,14 +138,28 @@ export function PersonasAdminPage() {
 
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<PersonaItem | null>(null);
-  const [form, setForm] = useState({ name: "", systemPrompt: "", beginDialogs: "", errorReply: "" });
+  const [form, setForm] = useState({
+    name: "",
+    systemPrompt: "",
+    beginDialogs: "",
+    errorReply: "",
+    // Capabilities are edited as a mode plus a selection; only the mode decides
+    // what goes on the wire, so a stale selection cannot narrow a persona the
+    // operator meant to leave on "every capability".
+    toolsMode: "all" as PersonaToolsMode,
+    tools: [...PERSONA_TOOLS] as string[],
+  });
   const [saving, setSaving] = useState(false);
   // After every hook, so the hook order cannot change when the profile resolves.
   if (!can("settings_view")) return <PermissionRequired title={t("nav.personas")} />;
 
   const openCreate = () => {
     setEditing(null);
-    setForm({ name: "", systemPrompt: "", beginDialogs: "", errorReply: "" });
+    setForm({
+      name: "", systemPrompt: "", beginDialogs: "", errorReply: "",
+      toolsMode: "all",
+      tools: [...PERSONA_TOOLS],
+    });
     setOpen(true);
   };
 
@@ -120,6 +172,10 @@ export function PersonasAdminPage() {
       // of real conversational prose.
       beginDialogs: persona.begin_dialogs.join("\n"),
       errorReply: persona.error_reply,
+      toolsMode: toolsModeOf(persona.tools),
+      // "Every capability" seeds the whole list so switching to "pick some"
+      // starts from what is actually allowed today.
+      tools: persona.tools == null ? [...PERSONA_TOOLS] : normalizeTools(persona.tools),
     });
     setOpen(true);
   };
@@ -132,6 +188,12 @@ export function PersonasAdminPage() {
         system_prompt: form.systemPrompt,
         begin_dialogs: form.beginDialogs.split("\n").map((line) => line.trim()).filter(Boolean),
         error_reply: form.errorReply,
+        // null / [] / list — the three states the server stores (§4).
+        tools: form.toolsMode === "all"
+          ? null
+          : form.toolsMode === "none"
+            ? []
+            : normalizeTools(form.tools),
       };
       if (editing) await updatePersona(editing.persona_id, input);
       else await createPersona(input);
@@ -143,6 +205,16 @@ export function PersonasAdminPage() {
     } finally {
       setSaving(false);
     }
+  };
+
+  // Functional update: two boxes ticked in the same tick must both land.
+  const toggleTool = (tool: string, checked: boolean) => {
+    setForm((prev) => ({
+      ...prev,
+      tools: checked
+        ? normalizeTools([...prev.tools, tool])
+        : prev.tools.filter((name) => name !== tool),
+    }));
   };
 
   return (
@@ -218,6 +290,46 @@ export function PersonasAdminPage() {
                 placeholder={t("personas.errorReplyPlaceholder")}
               />
             </div>
+            {/* Capabilities. Three states, and the difference between the first
+                two is invisible in the widget, so each one is named in words. */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium">{t("personas.tools")}</label>
+              <Select
+                value={form.toolsMode}
+                onValueChange={(value) => setForm({ ...form, toolsMode: (value || "all") as PersonaToolsMode })}
+              >
+                <SelectTrigger className="h-8 w-full text-xs"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {PERSONA_TOOLS_MODES.map((option) => (
+                    <SelectItem key={option.value} value={option.value} className="text-xs">
+                      {t(option.labelKey)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {form.toolsMode === "custom" && (
+                <div className="space-y-1.5 rounded-md border border-border p-2">
+                  {PERSONA_TOOLS.map((tool) => (
+                    <label key={tool} className="flex cursor-pointer items-start gap-2">
+                      <input
+                        type="checkbox"
+                        checked={form.tools.includes(tool)}
+                        onChange={(event) => toggleTool(tool, event.target.checked)}
+                        className="mt-0.5 size-3.5 accent-primary"
+                      />
+                      <span className="text-xs">
+                        {t(`personas.tool.${tool}`)}
+                        <span className="ml-1.5 text-label text-muted-foreground">{t(`personas.tool.${tool}Hint`)}</span>
+                      </span>
+                    </label>
+                  ))}
+                  {form.tools.length === 0 && (
+                    <p className="text-label text-muted-foreground">{t("personas.toolsNoneSelected")}</p>
+                  )}
+                </div>
+              )}
+              <p className="text-label text-muted-foreground">{t("personas.toolsHint")}</p>
+            </div>
           </div>
           <DialogFooter>
             <Button variant="ghost" size="sm" onClick={() => setOpen(false)}>{t("common.cancel")}</Button>
@@ -251,6 +363,16 @@ function PersonaCard({
   const [target, setTarget] = useState("");
   const [busy, setBusy] = useState(false);
 
+  // A capability name this build does not know is shown raw rather than hidden:
+  // a newer server may allow more, and silently dropping it would be a lie.
+  const toolLabel = (name: string) =>
+    (PERSONA_TOOLS as readonly string[]).includes(name) ? t(`personas.tool.${name}`) : name;
+  const toolsSummary = persona.tools == null
+    ? t("personas.toolsAll")
+    : persona.tools.length === 0
+      ? t("personas.toolsNone")
+      : persona.tools.map(toolLabel).join(" · ");
+
   const bind = async () => {
     // A global binding has no target — the server normalises it away — so the
     // field is hidden for it rather than filled in and silently discarded.
@@ -283,6 +405,17 @@ function PersonaCard({
       onChanged,
     );
 
+  // The format line is what an operator pastes and then edits, so the examples
+  // are buttons: the shape is easy to get wrong from memory.
+  const copyTargetExample = async (value: string) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      toast.success(t("personas.targetCopied"));
+    } catch {
+      /* clipboard blocked — the example stays on screen to be typed by hand */
+    }
+  };
+
   return (
     <Card>
       <CardHeader className="pb-3">
@@ -291,6 +424,9 @@ function PersonaCard({
             <CardTitle className="text-sm">{persona.name}</CardTitle>
             <div className="flex flex-wrap items-center gap-1.5">
               <Badge variant="secondary" className="font-mono text-label">{persona.persona_id}</Badge>
+              <Badge variant="outline" className="gap-1 text-label">
+                <Zap className="size-2.5" />{toolsSummary}
+              </Badge>
               {persona.bindings.length === 0 ? (
                 <span className="text-label text-muted-foreground">{t("personas.unbound")}</span>
               ) : (
@@ -341,7 +477,9 @@ function PersonaCard({
             <Input
               value={target}
               onChange={(event) => setTarget(event.target.value)}
-              placeholder={t("personas.targetPlaceholder")}
+              placeholder={scope === "conversation"
+                ? t("personas.conversationTargetPlaceholder")
+                : t("personas.targetPlaceholder")}
               className="h-7 w-64 text-xs"
             />
           )}
@@ -354,6 +492,27 @@ function PersonaCard({
             <Plus className="size-3" />{t("personas.bind")}
           </Button>
         </div>
+        {/* A conversation target is not a session id: it is the customer's stable
+            identity on the channel, and the inbox prints the exact string. */}
+        {scope === "conversation" && (
+          <div className="space-y-1">
+            <p className="text-label text-muted-foreground">{t("personas.conversationTargetHint")}</p>
+            <div className="flex flex-wrap items-center gap-1">
+              {CONVERSATION_TARGET_EXAMPLES.map((example) => (
+                <button
+                  key={example}
+                  type="button"
+                  onClick={() => void copyTargetExample(example)}
+                  title={t("personas.targetCopyExample")}
+                  aria-label={`${t("personas.targetCopyExample")}: ${example}`}
+                  className="inline-flex items-center gap-1 rounded border border-border bg-muted/40 px-1.5 py-0.5 font-mono text-label text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+                >
+                  <Copy className="size-2.5" />{example}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </CardContent>
     </Card>
   );

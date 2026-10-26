@@ -3011,3 +3011,123 @@ server 块（同机的 wms 不信任该头，避免被伪造）。
 ### 验证
 `go test ./...` 绿；`deadcode` 0；`tenantscope` 绿；SQL 门禁 **657 条 0 broken**；`npm run lint` 0 error；`npm run build` 绿；线上 v `42edf22`，`/ready` ok，移除的端点 404，Webhook 投递回归 smoke `success/200`，journal 0 ERROR。回滚点：`server-go.bak-20261023075615` / `frontend-backup-20261023075615`；089 仅删无人引用的对象。
 
+## 四十一、KHQR 扫码收款通道（第三方 khqr.cc / KHQRPay，2026-10-26）
+
+在 PayPal 之外加**第二个一次性收款通道**：买 30 天付费套餐，语义与 `internal/paypal` 完全一致（不是订阅、不自动续费）。资金不经平台托管，直接结算到商户自己绑定的银行账户。完整契约、字段表与文案表见 `docs/khqrpay-integration-spec.md`。
+
+### 一、合规前置（先读这条）
+
+2026-09-11 柬埔寨国家银行（NBC）公开通告：`khqr.cc`（KHQRPay）**未获 NBC 许可或授权**提供支付相关服务，提醒商户谨慎使用（来源：<https://cambodiabusinesswatch.com/banking/khqrpay-nbc-warning/>）。KHQRPay 自己的服务条款也写明它不是 NBC/Bakong 官方服务，只是独立软件工具/网关。
+
+因此本通道的三条硬约束，改代码时不要破坏：
+
+1. **默认关闭**（`KHQRPAY_ENABLED=false`），运营显式打开才出现入口；
+2. **不得成为唯一通道**：PayPal 路径不降级、不删除；
+3. 账单页对该通道显示风险提示（`bl.khqrRisk`），平台侧可随时用环境变量关停，**不需要回滚发布**。
+
+### 二、厂商 API（**已用真实商户凭据实测确认**，2026-10-26）
+
+- 创建：`POST https://anajakpay.com/api/{profileId}/payment-gateway/v1/payments/qr-api`，form 编码 `transaction_id / amount / success_url / remark / hash`（`remark` **必填**），可选 `items / custom_fields（JSON 要 base64）/ cancel_url`；
+  - ⚠️ 营销页/博客里的 `/…/payment-gateway/v1/payments/qr-api-khqr` 是**旧路径，真网关 404**（实测 13 种变体全 404，同域 `GET /api/user` 返回 401 证明探测方法有效）。真路径有 `/api` 前缀、末尾是 `qr-api`；
+  - 下单响应 envelope 是 **`responseCode`（0 = 成功）/ `responseMessage` / `data{qr, qr_url, md5, req_time, hash}`**，不是 `code`/`message`；
+  - 下单路径做成配置项 `KHQRPAY_CREATE_PATH`（空 = 内置真路径模板），改 `.env-go` + 重启即可，不需要发版；
+- 签名：`hash = sha1_hex(secret + transaction_id + amount + success_url + remark)`（四段直接拼接、无分隔符）；
+- 回执：网关 POST `application/json` 到**「Global Webhook URL」（后台配置，优先于下单的 `success_url`）**，报文含 `req_time / transaction_id / amount / status:"SUCCESS" / items / custom_fields / payment_details{…} / hash`；
+- **回执有 sha256 签名**：`hash = sha256_hex(secret + req_time + transaction_id + amount + "SUCCESS")`，官方要求「always verify this on your server before fulfilling any order」。本接入**强制验签**才结算（`amount` 用报文原始字符串、`req_time` 用十进制整数、常量时间比较、缺 `hash` 视为失败）；
+- 回执地址必须带**不可猜的路径令牌**（`KHQRPAY_WEBHOOK_TOKEN`，路由 `POST /billing/khqr/webhook/{token}`，`hmac.Equal` 常量时间比较，不匹配回 404）。令牌与签名是两道独立的门：令牌证明「调用方是网关」，sha256 证明「这笔钱确实付了」。令牌与 `KHQRPAY_SECRET` **必须分开**（URL 会进 nginx access log）。未配置令牌 = 拒绝结算（fail closed + ERROR 日志）；
+- 核对端点：文档里的 verify 端点只对「不收回执、只轮询」的接法有意义，本接入以签名为准，`KHQRPAY_VERIFY_PATH` 保持空（配置了也只是可选加固）。
+### 三、实现落点
+
+| 层 | 位置 | 要点 |
+|---|---|---|
+| 客户端 | `internal/khqrpay` | 下单 / 可配置核对 / 双形态响应解析（`data.data.*` 与 `data.*`）/ 金额两位小数词法格式化 / 错误串把 secret 与 hash 抹成 `***` |
+| 配置 | `internal/config`（`KHQRPAY_*` 八键） | `Enabled()` = 开关开 + profile id + secret 齐；缺一半启动只 WARN（照 `validatePayPal` 风格，不阻断启动） |
+| 接口 | `internal/api/billing_khqr.go` | 下单（`tenantAdminOnly`）/ 状态查询（登录 + 租户归属）/ 公开 webhook（`rateLimit(120)`） |
+| 数据 | 复用 `payments`（迁移 068） | `provider='khqr'`；**无新迁移** |
+| 开通 | `billing_paypal.go:activatePayment(ctx, provider, …)` | 与 PayPal 共用同一个幂等事务（条件 UPDATE 决定谁开通）——**不要复制第二份**，那段注释记着三语句版本的「钱收了套餐没开」事故 |
+
+状态四态（前端只认这四个）：`pending | paid | failed | expired`。`payments.status` 仍是 `created → captured / failed`，四态是 `created` 行按 `detail.expires_at`（默认 15 分钟）投影出来的。
+
+### 四、失败方向与信任边界（钱路径的规矩）
+
+- **先落库再要二维码**：反过来的静默失败是「二维码已可付、我方没落库 → webhook 只能 ignored → 钱收了套餐没开」；
+- webhook 判定 = 路径令牌（证明调用方是网关）+ 订单行存在 + `amountMatches`（金额逐字、币种精确，KHR/USD 不互认）+（配了 `VERIFY_PATH` 时的）厂商核对；
+- 金额不符 → 记 `failed` 并 WARN；**未识别的 `status` 词 → 不动状态**只 WARN（留着自然过期，方向安全）；
+- 未知 `transaction_id` → 200 `ignored`（不让厂商为一个我们无法处理的回调无限重试）；
+- 空 `provider_capture_id` 绑 **NULL** 而不是 `''`：`payments_capture_idx` 是 `IS NOT NULL` 偏索引，绑空串会让第二笔无 capture id 的单撞唯一索引（钱进、行没写、无法解释）；
+- 熔断语义：**写入口关，读与结算口不关**。`KHQRPAY_ENABLED=false` 时不再签发新二维码，但 `status` 仍可读、webhook 仍会结算在途回调——否则运营一拨开关，已付款的订单就永远停在 `created`。
+
+### 五、前端
+
+账单页套餐卡片并列两条结账路径（PayPal 跳转 / KHQR 扫码）。出按钮条件 `khqr_enabled === true && Boolean(offer.khqr_price)`——两个字段缺一不显示（fail closed：宁可少一个入口，也不给一个打不通的按钮）。弹窗显示 `qr_url`（图片挂了用 `qr` 原始串兜底）、金额、倒计时，3 秒轮询直到 `paid/failed/expired`；**关弹窗 = 组件卸载 = SWR key 消失**，轮询不靠记得 cancel。已实测踩坑：SWR 的 polling effect 依赖 `refreshInterval` 的 identity，内联箭头函数会被每秒的倒计时 render 反复 `clearTimeout`，3 秒轮询永不触发——必须用模块级稳定函数。
+
+### 六、验证
+
+- 本地：`go build/vet/test ./...` 全绿（含新增 `internal/khqrpay` 与 `billing_khqr` 单测：签名向量、双形态解析、金额/币种边界、四态投影、webhook 源码守卫与回执验签）；`internal/tenantscope` 与 `internal/sqlcheck` 静态门禁绿；`npm run build` + `npm run lint` 绿；三语字典键集一致。
+- **网关实测（2026-10-26，真实 profileId+secret）**：用文档真路径 + 正确 sha1 签名下单 → **422 `{"responseCode":1,"responseMessage":"Bakong Token Required: No active official Bakong OpenAPI token configured…"}`**。即「路径对、签名被接受」，卡在商户账户没有可用的官方 Bakong OpenAPI 令牌。
+- **未验证**：真实扫码付款全链路（需先补 Bakong 令牌，再下一笔 0.01 订单走完 扫码→回调→开通）；回执报文在真实付款后的字段细节（`payment_details` 内容）。
+- 定位技巧（留档）：该应用对未匹配路由返回会**回显路径**的 JSON 404（`Accept: application/json`），拿它判断「拼错」还是「路由不存在」。
+
+### 七、上线步骤
+
+1. 在 <https://anajakpay.com> 注册商户、绑定结算银行账户；**并在后台配置可用的官方 Bakong OpenAPI 令牌**——没有它下单接口恒定 422 `Bakong Token Required`，钱进不来（2026-10-26 实测）；
+2. `KHQRPAY_PROFILE_ID` / `KHQRPAY_SECRET` / `KHQRPAY_WEBHOOK_TOKEN`（`openssl rand -hex 24`）/ `KHQRPAY_PRICE_PRO|ENTERPRISE` 写进服务器 `.env-go`（`chmod 600`，不进仓库）；
+3. 在商户后台把 **Global Webhook URL**（优先于下单时的 `success_url`，务必配这个）设成 `https://<部署域名>/api/v1/billing/khqr/webhook/<token>`；再 `KHQRPAY_ENABLED=true`；
+4. 下一笔 0.01 订单，核对：`payments` 行 → 回执验签通过 → `paid_until` +30 天 → 前端弹窗变绿 → 运营收入看板出现该笔；
+5. 通过后换生产 profile；任何异常 `KHQRPAY_ENABLED=false` 立即关停（冻结新单，在途回调照常结算）。
+
+### 八、明确没做
+
+退款/争议（与 PayPal 同一个 P0-2 缺口，等统一处理）；自动续费/发票/税费（P1-7）；订阅式扣款（KHQR 无此概念）；真实生产商户联调。
+
+## 四十二、人格（persona）四条缺口收口（2026-10-26）
+
+审计 P1-9：人格有数据模型、有 UI，但**四个字段/作用域没有消费者**——看起来能用，行为不成立。本节记四条怎么修好的，以及为什么留了一条不做。完整契约见 `docs/persona-completion-spec.md`。
+
+### 一、conversation 作用域从"死的"变成"跨会话的客户身份"
+
+此前 `Resolve` 支持 session → conversation → global 三级，但唯一生产调用点恒传 `""`，库里也没有 conversation 实体。现在 `persona.ConversationID(platform, platformUserID, sessionID)` 派生：
+
+| 场景 | conversation id |
+|---|---|
+| 渠道客户（有 `platform_user_id`） | `<platform>:<platform_user_id>`（如 `telegram:123456789`） |
+| 渠道客户但没有 platform_user_id（历史行/未落库访客） | `<platform>:session:<sessionID>` |
+| 控制台 `/ai-test`（`sessions.platform IS NULL`） | `console:<sessionID>` |
+| 三者皆空 | `""`（落到租户默认） |
+
+`conversation_id` 在 `GET /inbox` 列表项、`GET /chat/sessions/{id}`、`POST /chat/sessions` 响应里都带，运营从会话页复制就能绑定——**同一个会话在所有表面显示同一个字符串**（控制台普通会话落库是 `platform='web'`，所以它是 `web:session:<sid>` 而不是 `console:<sid>`；后者只在 platform 为 NULL 的 `/ai-test` 出现）。
+
+### 二、人格在控制台与挂件也生效
+
+此前只有渠道入站走 `ChatAs`；`/chat`、`/chat/stream`、`/ai-test`、网站挂件都用租户默认提示词。现在四条路径共用一套解析（`personaForScope` / `personaForTurn` + `personaPrompt` + `streamChatAs`），并新增 `gemini.ChatStreamAs`——带人格覆盖时**跳过显式 context cache**（缓存在 base prompt 上注册，两者同发会 400）。
+**无绑定时 systemPrompt 传空，请求与改动前字节级等价**（有测试钉住）。
+
+### 三、`error_reply` 有了消费者，且只用在一个地方
+
+它只在"客户最终收不到任何回复"时出现：
+
+1. **入站事件重试耗尽**（`retryInbound` 标 `failed`）：解析该会话人格，有文案就写 `chat_messages(role=system)` 并经**正常 outbox** 发出，另记一条 `notifications(kind=warning)`；
+2. **控制台/挂件的生成失败**：用该文案替换默认错误。
+
+没配 `error_reply` 的人格保持原样——**不发明默认文案**，否则等于替所有商户凭空给客户发一句话。配额耗尽/无回复/守卫拦截这些已经有人工接管的分支**不**使用它（那里客户本来就收到了回复或已转人工）。
+
+### 四、`tools` 落地为"平台能力白名单"
+
+我们的模型客户端**没有 function-calling 层**，所以"模型自己调工具"这条路现在做不了，装了也是假的。改成让 `tools` 控制**这个人格被允许触发的平台能力**：
+
+| 能力 | 含义 |
+|---|---|
+| `handoff` | 允许 AI 判断后转人工（`ai_decision` / `negative_feedback` / AI 自称转人工） |
+| `image` | 允许长回复渲染成图片（T2I） |
+
+`null` = 全部允许（存量人格行为不变）、`[]` = 全禁、数组 = 白名单；未知名字 → 400 并列出可用集合。
+
+**安全网永不受 `tools` 控制**：配额/余额耗尽、模型无回复或空回复、媒体不可读、回复守卫拦截、内容安全拦截、以及人工在控制台手动转人工——人格可以改语气，**不能拔掉客户找人的路**。这条边界有两组测试钉死。
+
+**踩到的坑（值得记）**：`personaToJSON` 原来把 nil tools 折成 `[]`，于是"从没设置过"的人格在控制台显示成"全禁"，运营一保存就真的写回 `[]` —— 静默降级。现在读路径直出 `null`，并有 JSON 往返测试钉住三态。
+
+### 五、明确不做
+
+- **不做假的 function-calling**（客户端不支持，等真的接入工具调用层再说）；
+- **不做"禁用转人工后，模型仍写了『已为您转接人工』"的改写**：现在不发 canonical 那句、也不建转人工请求，但模型原话会照发并 WARN。要彻底解决需要一个"去掉转接承诺"的中性承接文案——那是产品文案决策，不在本轮。
+- **`/chat` 的 PUT tools 不做"字段缺省 = 不改"**：`PUT` 本来就是整份替换，控制台每次回写全量。

@@ -61,6 +61,16 @@ func (a *App) Router() http.Handler {
 	// retries a 5xx, so a slow dependency is answered with one.
 	mux.Handle("POST /api/v1/billing/paypal/webhook", a.rateLimit(120)(a.handle(a.paypalWebhook)))
 
+	// KHQR webhook. Public for the same reason, and this one has no signature
+	// header to offer — so the path carries an unguessable token
+	// (KHQRPAY_WEBHOOK_TOKEN) as proof that the caller is the gateway: without it
+	// any signed-in shop owner could POST their own "paid" event for an order they
+	// just created and open a plan for free. The token is checked before the body
+	// is read, a missing token refuses settlement (fail closed), and a wrong one
+	// answers 404 so the route's existence is not confirmed. Shares PayPal's
+	// limiter so an unauthenticated flood is bounded the same way.
+	mux.Handle("POST /api/v1/billing/khqr/webhook/{token}", a.rateLimit(120)(a.handle(a.khqrWebhook)))
+
 	// Authenticated group.
 	authed := http.NewServeMux()
 	authed.Handle("PUT /api/v1/auth/password", a.handle(a.changePassword))
@@ -291,6 +301,13 @@ func (a *App) Router() http.Handler {
 	// so a member can see the plan without being able to change it.
 	authed.Handle("POST /api/v1/billing/paypal/order", a.tenantAdminOnly(a.handle(a.paypalCreateOrder)))
 	authed.Handle("POST /api/v1/billing/paypal/capture", a.tenantAdminOnly(a.handle(a.paypalCapture)))
+	// KHQR checkout: the same owner-only rule for the same reason (a seat paying
+	// for a plan it does not own puts the money on the wrong row). There is no
+	// capture twin — the QR is confirmed by the webhook or by polling — so the
+	// status read is the only other route, and it compares the row's user_id with
+	// the caller's tenant instead of trusting the transaction id.
+	authed.Handle("POST /api/v1/billing/khqr/order", a.tenantAdminOnly(a.handle(a.khqrCreateOrder)))
+	authed.Handle("GET /api/v1/billing/khqr/{transaction_id}/status", a.handle(a.khqrStatus))
 
 	// Teams (agent management). The tenant boundary lives in each statement, not
 	// in a role check: listTeam gates on requireOwnerOfTenant and filters on

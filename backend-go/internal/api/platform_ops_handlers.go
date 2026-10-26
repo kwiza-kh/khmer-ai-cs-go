@@ -190,6 +190,18 @@ func (a *App) platformSupport(w http.ResponseWriter, r *http.Request) (any, erro
 }
 
 // platformRevenue — captured money, and who is about to lapse.
+//
+// The totals cover EVERY row in `payments`, deliberately without a provider
+// filter: this board read `provider = 'paypal'` only, so the day KHQR started
+// taking money the operator would have watched a figure that never moved and
+// concluded nothing had been collected. The per-provider breakdown below says
+// which rail the money came through, so a new channel shows up here on its own
+// instead of needing this handler edited again.
+//
+// `gross_usd` adds the captured amounts as stored, exactly as it did for PayPal
+// alone — meaningful while every channel settles in USD (both default to it).
+// A deployment that prices KHQR in KHR needs a currency split; the breakdown
+// answers "which rail", not "which currency".
 func (a *App) platformRevenue(w http.ResponseWriter, r *http.Request) (any, error) {
 	var captured, pending int64
 	var gross float64
@@ -199,8 +211,43 @@ func (a *App) platformRevenue(w http.ResponseWriter, r *http.Request) (any, erro
 			COALESCE(SUM(amount) FILTER (WHERE status = 'captured'),0)::float8,
 			count(DISTINCT user_id) FILTER (WHERE status = 'captured'),
 			count(*) FILTER (WHERE status <> 'captured')
-		FROM payments WHERE provider = 'paypal'`).
+		FROM payments`).
 		Scan(&captured, &gross, &paidTenants, &pending); err != nil {
+		return nil, ErrInternal("查询失败")
+	}
+
+	// Same four figures per channel. Read separately from the totals rather than
+	// summed from this result: paid_tenants is a distinct count per provider, so
+	// adding it up would double-count a tenant who bought over both rails.
+	byProvider := make([]map[string]any, 0, 2)
+	providerRows, err := a.DB.Query(r.Context(), `SELECT provider,
+			count(*) FILTER (WHERE status = 'captured'),
+			COALESCE(SUM(amount) FILTER (WHERE status = 'captured'),0)::float8,
+			count(DISTINCT user_id) FILTER (WHERE status = 'captured'),
+			count(*) FILTER (WHERE status <> 'captured')
+		FROM payments GROUP BY provider ORDER BY provider`)
+	if err != nil {
+		return nil, ErrInternal("查询失败")
+	}
+	for providerRows.Next() {
+		var (
+			provider                   string
+			pCaptured, pTenants, pPend int64
+			pGross                     float64
+		)
+		if providerRows.Scan(&provider, &pCaptured, &pGross, &pTenants, &pPend) != nil {
+			continue
+		}
+		byProvider = append(byProvider, map[string]any{
+			"provider":          provider,
+			"captured_payments": pCaptured,
+			"gross":             pGross,
+			"paid_tenants":      pTenants,
+			"pending_payments":  pPend,
+		})
+	}
+	providerRows.Close()
+	if err := providerRows.Err(); err != nil {
 		return nil, ErrInternal("查询失败")
 	}
 
@@ -314,6 +361,7 @@ func (a *App) platformRevenue(w http.ResponseWriter, r *http.Request) (any, erro
 		"gross_usd":         gross,
 		"paid_tenants":      paidTenants,
 		"pending_payments":  pending,
+		"by_provider":       byProvider,
 		"mrr_estimate_usd":  mrr,
 		"prices":            prices,
 		"expiring_soon":     expiringSoon,

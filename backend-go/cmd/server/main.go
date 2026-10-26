@@ -19,6 +19,7 @@ import (
 	"khmer-ai-cs-go/internal/config"
 	"khmer-ai-cs-go/internal/db"
 	"khmer-ai-cs-go/internal/gemini"
+	"khmer-ai-cs-go/internal/khqrpay"
 	"khmer-ai-cs-go/internal/llm"
 	"khmer-ai-cs-go/internal/mailer"
 	"khmer-ai-cs-go/internal/paypal"
@@ -320,6 +321,19 @@ func main() {
 			ClientID:     cfg.PayPal.ClientID,
 			ClientSecret: cfg.PayPal.ClientSecret,
 			Mode:         cfg.PayPal.Mode,
+		}),
+		// The second one-time channel, off unless KHQRPAY_ENABLED is set with
+		// credentials (internal/config warns at boot about a half-set pair). The
+		// client is always constructed so the kill switch is the environment
+		// variable alone: turning the channel off never needs a code change and
+		// never touches the PayPal path.
+		KHQRPay: khqrpay.New(khqrpay.Config{
+			ProfileID:  cfg.KHQRPay.ProfileID,
+			Secret:     cfg.KHQRPay.Secret,
+			BaseURL:    cfg.KHQRPay.BaseURL,
+			Currency:   cfg.KHQRPay.Currency,
+			CreatePath: cfg.KHQRPay.CreatePath,
+			VerifyPath: cfg.KHQRPay.VerifyPath,
 		}),
 	}
 

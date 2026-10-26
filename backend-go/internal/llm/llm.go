@@ -98,6 +98,16 @@ type Model interface {
 	Chat(ctx context.Context, message string, history []gemini.HistoryItem, language string) (gemini.ChatResult, error)
 	ChatAs(ctx context.Context, message string, history []gemini.HistoryItem, language, systemPrompt string) (gemini.ChatResult, error)
 	ChatStream(ctx context.Context, message string, history []gemini.HistoryItem, language string, onToken func(string)) (gemini.ChatResult, error)
+	// ChatStreamAs is ChatStream under a per-turn system prompt (a persona); an
+	// empty override is exactly ChatStream.
+	//
+	// It is on the interface rather than an optional capability: the console's
+	// /chat, /chat/stream and /ai-test and the website widget all stream, so a
+	// provider missing it would answer exactly the screens an operator uses to check
+	// a persona with the tenant prompt — the persona applying on every channel and
+	// silently not on the dashboard. Every client here implements it; a new provider
+	// has to as well.
+	ChatStreamAs(ctx context.Context, message string, history []gemini.HistoryItem, language, systemPrompt string, onToken func(string)) (gemini.ChatResult, error)
 	GenerateFast(ctx context.Context, prompt string, timeout time.Duration) (string, bool)
 	GenerateFastMax(ctx context.Context, prompt string, timeout time.Duration, maxOutputTokens int) (string, bool)
 	ModelName() string
@@ -255,6 +265,10 @@ func (u unavailable) ChatAs(context.Context, string, []gemini.HistoryItem, strin
 }
 
 func (u unavailable) ChatStream(context.Context, string, []gemini.HistoryItem, string, func(string)) (gemini.ChatResult, error) {
+	return gemini.ChatResult{}, u.err()
+}
+
+func (u unavailable) ChatStreamAs(context.Context, string, []gemini.HistoryItem, string, string, func(string)) (gemini.ChatResult, error) {
 	return gemini.ChatResult{}, u.err()
 }
 

@@ -197,8 +197,21 @@ func (s *Service) ChatAs(ctx context.Context, message string, history []gemini.H
 // either way: the shape of the request is decided by the method, not by whether a
 // callback was passed.
 func (s *Service) ChatStream(ctx context.Context, message string, history []gemini.HistoryItem, language string, onToken func(string)) (gemini.ChatResult, error) {
+	return s.ChatStreamAs(ctx, message, history, language, "", onToken)
+}
+
+// ChatStreamAs is ChatStream under a caller-supplied system prompt (a persona); an
+// empty override is exactly ChatStream, as it is for ChatAs.
+//
+// It exists because the dashboard's /chat, /chat/stream and /ai-test and the website
+// widget stream their turns. Without it those surfaces had no override slot at all
+// and a persona bound to a console session or to a widget conversation applied
+// everywhere except the two screens an operator checks it on. The override replaces
+// the configured prompt through the same resolver as ChatAs, so SafetyRules still
+// ride along and a persona cannot drop them.
+func (s *Service) ChatStreamAs(ctx context.Context, message string, history []gemini.HistoryItem, language, systemPrompt string, onToken func(string)) (gemini.ChatResult, error) {
 	sn := s.snapshot()
-	return s.send(ctx, sn, chatCall(sn.cfg, message, history, language, "", true, onToken))
+	return s.send(ctx, sn, chatCall(sn.cfg, message, history, language, systemPrompt, true, onToken))
 }
 
 // GenerateFast is the auxiliary path with the default output budget.

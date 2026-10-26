@@ -29,7 +29,7 @@ import {
 	Send, Loader2, Sparkles, Zap, FileText, Clock3, CircleAlert, CheckCheck,
 	Image as ImageIcon, ListChecks, FileCode2, Plus, Trash2, Paperclip, MessageSquare, Volume2,
 	AlertTriangle, RefreshCw, ChevronDown, ChevronUp, PanelRight, ChevronRight, Phone, Mail, ChevronLeft, Pencil,
-	Archive, ArchiveRestore,
+	Archive, ArchiveRestore, Copy,
 	Languages, Check, AudioLines, Headset, BellRing,
 } from "lucide-react";
 import { PLATFORM_ICONS, PLATFORM_BRAND_COLORS } from "@/components/platform-icons";
@@ -1594,6 +1594,20 @@ function ConversationDetail({
     catch (e) { toast.error((e as Error).message); }
   };
 
+  // The conversation id is the target a conversation-scoped persona binding
+  // takes, so it is worth copying verbatim rather than retyped from the chip.
+  // It is optional: a backend that does not ship it yet renders no chip at all.
+  const conversationID = item.conversation_id?.trim() || "";
+  const copyConversationID = async () => {
+    if (!conversationID) return;
+    try {
+      await navigator.clipboard.writeText(conversationID);
+      toast.success(t("inbox.conversationIdCopied"));
+    } catch {
+      /* clipboard blocked — the id stays visible in the chip */
+    }
+  };
+
   return (
     <div className="flex h-full min-w-0">
       <div className="flex flex-col h-full flex-1 min-w-0">
@@ -1620,6 +1634,18 @@ function ConversationDetail({
               {item.user_message_count + item.model_message_count}
             </span>
             <span className="truncate">{tf("inbox.sessionLabel", { id: item.session_id.slice(0, 8) })}</span>
+            {conversationID && (
+              <button
+                type="button"
+                onClick={() => void copyConversationID()}
+                title={t("inbox.conversationIdCopyTitle")}
+                className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border border-border/70 px-1.5 py-0.5 transition-colors hover:border-primary/40 hover:text-foreground"
+              >
+                <Copy className="size-2.5 shrink-0" />
+                <span className="shrink-0">{t("inbox.conversationIdLabel")}</span>
+                <span className="truncate font-mono">{conversationID}</span>
+              </button>
+            )}
             {item.assigned_agent_name && <span className="truncate">· {tf("inbox.agentLabel", { name: item.assigned_agent_name })}</span>}
           </p>
         </div>

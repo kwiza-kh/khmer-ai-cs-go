@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"khmer-ai-cs-go/internal/gemini"
+	"khmer-ai-cs-go/internal/persona"
 	"khmer-ai-cs-go/internal/platform"
 	"khmer-ai-cs-go/internal/rag"
 	"khmer-ai-cs-go/internal/usage"
@@ -574,13 +575,32 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A persona bound to this widget session or to the visitor's conversation
+	// applies here too: the widget is where most customers actually talk, and it
+	// used to answer with the tenant prompt only. The conversation id comes off the
+	// session row, so a visitor id stored there (platform_user_id) is honoured and a
+	// session without one degrades to "web:session:<id>" (persona.ConversationID).
+	//
+	// Resolved here, not next to history: it costs two round trips and nothing above
+	// this line can use it, while retrieval (started above) is the visitor's wait.
+	//
+	// The opening turns lead the generation prompt only: retrieval already ran on the
+	// plain conversation, because begin_dialogs is prompt setup rather than something
+	// the customer said.
+	var sessPlatform, sessPlatformUser string
+	_ = a.DB.QueryRow(ctx,
+		"SELECT COALESCE(platform::text, ''), COALESCE(platform_user_id, '') FROM sessions WHERE session_id = $1",
+		sid).Scan(&sessPlatform, &sessPlatformUser)
+	per := a.personaForTurn(ctx, t.ownerID, sid, sessPlatform, sessPlatformUser)
+	systemPrompt, genHistory := personaPrompt(per, history)
+
 	message := req.Message
 	if groundCtx.HasMatch {
 		message = rag.AugmentMessage(req.Message, &groundCtx)
 		sendEvent("sources", groundCtx.Sources)
 	}
 	var streamed strings.Builder
-	result, cerr := a.serving().ChatStream(ctx, message, history, language, func(chunk string) {
+	result, cerr := a.streamChatAs(ctx, message, genHistory, language, systemPrompt, func(chunk string) {
 		streamed.WriteString(chunk)
 		sendEvent("token", map[string]string{"text": chunk})
 	})
@@ -608,7 +628,9 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 			webEscalate("ai_decision", "Model returned no usable reply (blocked or empty)", inboundUrgency)
 			return
 		}
-		sendEvent("error", map[string]string{"message": "生成回答失败"})
+		// A visitor who gets nothing at all is the case personas.error_reply is
+		// for; without one the widget keeps the wording it always had.
+		sendEvent("error", map[string]string{"message": generationErrorText(per, "生成回答失败")})
 		// Keep whatever already streamed: the visitor may have read part of
 		// it, and the next turn must not see a question with no answer.
 		if partial := strings.TrimSpace(streamed.String()); partial != "" {
@@ -650,8 +672,13 @@ func (a *App) widgetChat(w http.ResponseWriter, r *http.Request) {
 	// request so an agent is actually notified. No canned ack: the reply
 	// itself already told the customer. Priority computed the same way the
 	// platform pipeline computes it, urgent turns jumping the line.
+	//
+	// This is the AI's own decision, so the persona's handoff capability decides
+	// it. The widget's other escalations (quota, spend, the customer asking for a
+	// person, the Jev human-request route) are the safety net and deliberately do
+	// not pass through this gate — see persona.CapabilityHandoff.
 	escalated := false
-	if platform.ReplyClaimsHandoff(reply) || claimsHandoff {
+	if (platform.ReplyClaimsHandoff(reply) || claimsHandoff) && per.Allows(persona.CapabilityHandoff) {
 		priority := platform.HandoffPriority("ai_decision", inboundUrgency)
 		if tag, err := a.DB.Exec(ctx,
 			"INSERT INTO human_handoff_requests (session_id, user_id, status, priority, trigger, reason, created_at) "+
@@ -775,8 +802,10 @@ func (a *App) classifyWebTurnAsync(userID int32, sessionID, message, reply strin
 			return
 		}
 		a.Pipe.PersistTurnVerdict(ctx, sessionID, verdict, topic)
-		var status string
-		_ = a.DB.QueryRow(ctx, "SELECT status::text FROM sessions WHERE session_id=$1", sessionID).Scan(&status)
+		var status, sessPlatform, sessPlatformUser string
+		_ = a.DB.QueryRow(ctx,
+			"SELECT status::text, COALESCE(platform::text, ''), COALESCE(platform_user_id, '') "+
+				"FROM sessions WHERE session_id=$1", sessionID).Scan(&status, &sessPlatform, &sessPlatformUser)
 		if status != "active" {
 			return
 		}
@@ -787,6 +816,15 @@ func (a *App) classifyWebTurnAsync(userID int32, sessionID, message, reply strin
 			trigger, reason = platform.TurnTrigger(verdict, hasMatch, a.Pipe.HasReadyDocs(ctx, userID), message)
 		}
 		if trigger == "" {
+			return
+		}
+		// Same rule as the pipeline's classifyTurn: a verdict-based escalation is the
+		// AI's judgement, so a persona that forbids handoffs blocks it here too — the
+		// widget is a customer-facing surface and must not answer one setting with two
+		// behaviours.
+		if per := a.personaForTurn(ctx, userID, sessionID, sessPlatform, sessPlatformUser); !per.Allows(persona.CapabilityHandoff) {
+			slog.Info("persona forbids handoff; widget verdict-based escalation skipped",
+				"session_id", sessionID, "trigger", trigger, "persona_id", per.ID)
 			return
 		}
 		a.Pipe.EscalateHuman(ctx, userID, sessionID, trigger, reason+" (widget)")

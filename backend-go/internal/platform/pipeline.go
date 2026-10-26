@@ -25,6 +25,7 @@ import (
 	"khmer-ai-cs-go/internal/gemini"
 	"khmer-ai-cs-go/internal/llm"
 	"khmer-ai-cs-go/internal/notifypref"
+	"khmer-ai-cs-go/internal/persona"
 	"khmer-ai-cs-go/internal/rag"
 	"khmer-ai-cs-go/internal/realtime"
 	"khmer-ai-cs-go/internal/redisstore"
@@ -524,10 +525,115 @@ func (p *Pipeline) retryInbound(ctx context.Context, eventID int64) {
 		_ = p.DB.QueryRow(ctx, "SELECT platform::text FROM platform_inbound_events WHERE event_id = $1", eventID).Scan(&platform)
 		p.alertInboundFailures(ctx, platform,
 			fmt.Sprintf("event %d exhausted %d attempts; the customer was not answered", eventID, attempts))
+		// Still answer if the bound persona has error_reply copy: "the customer was
+		// not answered" is exactly the case personas.error_reply exists for, and
+		// until now the column had a UI, a row and no reader.
+		p.sendPersonaErrorReply(ctx, eventID)
 		return
 	}
 	delay := retryDelay(int(attempts))
 	_, _ = p.DB.Exec(ctx, "UPDATE platform_inbound_events SET status='pending', next_attempt_at=$1, locked_at=NULL WHERE event_id=$2", time.Now().Add(delay), eventID)
+}
+
+// sendPersonaErrorReply delivers the bound persona's error_reply to a customer
+// whose event exhausted its retries, through the normal outbox so it arrives on the
+// channel the thread belongs to.
+//
+// No persona, or a persona without error_reply, sends nothing: today's behaviour
+// (the operator is paged, the customer gets silence) is the honest one, and a
+// default line here would put words in every merchant's mouth.
+func (p *Pipeline) sendPersonaErrorReply(ctx context.Context, eventID int64) {
+	var (
+		configID     int32
+		platform     string
+		platformUser string
+		sessionID    *string
+		userID       int32
+	)
+	err := p.DB.QueryRow(ctx,
+		"SELECT e.config_id, e.platform::text, e.platform_user_id, e.session_id::text, c.user_id "+
+			"FROM platform_inbound_events e JOIN platform_configs c ON c.config_id = e.config_id "+
+			"WHERE e.event_id = $1", eventID).Scan(&configID, &platform, &platformUser, &sessionID, &userID)
+	if err != nil {
+		// The event row itself is unreadable: nothing to deliver into and nobody to
+		// bill. The operator alert above already fired.
+		if p.Logger != nil {
+			p.Logger.Warn("persona error reply: event not readable", "event_id", eventID, "error", err.Error())
+		}
+		return
+	}
+	if sessionID == nil || *sessionID == "" {
+		// The turn failed before ensure-session created the thread (load-config,
+		// prepare-media). There is no conversation to deliver into, and inventing a
+		// session here would put a stray thread in the inbox.
+		return
+	}
+	sid := *sessionID
+	per := p.personaForTurn(ctx, userID, sid, platform, platformUser)
+	text := per.ErrorText()
+	if text == "" {
+		return
+	}
+	var msgID int64
+	if err := p.DB.QueryRow(ctx,
+		"INSERT INTO chat_messages (session_id, role, message_type, content, created_at) "+
+			"VALUES ($1,'system','text',$2,NOW()) RETURNING message_id",
+		sid, text).Scan(&msgID); err != nil {
+		if p.Logger != nil {
+			p.Logger.Warn("persona error reply not persisted", "event_id", eventID, "session_id", sid, "error", err.Error())
+		}
+		return
+	}
+	p.publishMessage(ctx, userID, sid, msgID, "system")
+	ev := &InboundEvent{EventID: eventID, ConfigID: configID, Platform: platform, PlatformUserID: platformUser}
+	cfg := &configCred{UserID: userID, Platform: platform}
+	if err := p.enqueueDelivery(ctx, ev, cfg, sid, msgID, text, nil, per.Allows(persona.CapabilityImage)); err != nil {
+		if p.Logger != nil {
+			p.Logger.Warn("persona error reply not queued", "event_id", eventID, "session_id", sid, "error", err.Error())
+		}
+		return
+	}
+	if p.Logger != nil {
+		p.Logger.Info("persona error reply queued for an exhausted event",
+			"event_id", eventID, "session_id", sid, "persona_id", per.ID)
+	}
+	p.notifyUser(ctx, userID, "warning", "已发送人格兜底文案",
+		fmt.Sprintf("事件 %d 重试耗尽，已按人格「%s」的失败提示回复客户。", eventID, per.Name), sid)
+}
+
+// personaForTurn resolves the persona that applies to one turn: the session
+// binding, then the customer's conversation on that channel, then the tenant
+// default. nil means "no binding" (or an unreadable store) and every caller then
+// behaves exactly as it did before personas existed.
+func (p *Pipeline) personaForTurn(ctx context.Context, userID int32, sessionID, platform, platformUserID string) *persona.Persona {
+	per, ok, err := persona.NewStore(p.DB).ForTurn(ctx, userID, sessionID,
+		persona.ConversationID(platform, platformUserID, sessionID))
+	if err != nil {
+		// Answering with the tenant prompt is the safe failure: a persona is an
+		// override, and losing it must not lose the answer.
+		if p.Logger != nil {
+			p.Logger.Warn("persona lookup failed; answering with the tenant system prompt",
+				"session_id", sessionID, "error", err.Error())
+		}
+		return nil
+	}
+	if !ok {
+		return nil
+	}
+	return &per
+}
+
+// personaForSessionID is personaForTurn when only the session id is at hand (the
+// async turn classifier): it reads the row's channel identity first, because the
+// conversation scope is derived from it.
+func (p *Pipeline) personaForSessionID(ctx context.Context, userID int32, sessionID string) *persona.Persona {
+	var platform, platformUserID string
+	if err := p.DB.QueryRow(ctx,
+		"SELECT COALESCE(platform::text, ''), COALESCE(platform_user_id, '') FROM sessions WHERE session_id = $1 AND user_id = $2",
+		sessionID, userID).Scan(&platform, &platformUserID); err != nil {
+		return nil
+	}
+	return p.personaForTurn(ctx, userID, sessionID, platform, platformUserID)
 }
 
 func retryDelay(attempts int) time.Duration {
@@ -935,7 +1041,7 @@ func (p *Pipeline) enqueueHandoffAck(ctx context.Context, ev *InboundEvent, cfg 
 		return
 	}
 	p.publishMessage(ctx, cfg.UserID, sessionID, msgID, "system")
-	_ = p.enqueueDelivery(ctx, ev, cfg, sessionID, msgID, reply, nil)
+	_ = p.enqueueDelivery(ctx, ev, cfg, sessionID, msgID, reply, nil, true)
 }
 
 func handoffAcknowledgement(language string) string {
@@ -1532,6 +1638,17 @@ func (p *Pipeline) classifyTurn(userID int32, sessionID, customerMsg, reply stri
 			trigger, reason = TurnTrigger(verdict, hasMatch, p.hasReadyDocs(ctx, userID), customerMsg)
 		}
 		if trigger != "" {
+			// The verdict-based triggers (negative feedback, no knowledge base) are
+			// the AI's judgement, so a persona that forbids handoffs blocks them —
+			// the turn was answered, it just was not handed over. The customer-request
+			// and safety paths do not pass through here.
+			if per := p.personaForSessionID(ctx, userID, sessionID); !per.Allows(persona.CapabilityHandoff) {
+				if p.Logger != nil {
+					p.Logger.Info("persona forbids handoff; verdict-based escalation skipped",
+						"session_id", sessionID, "trigger", trigger, "persona_id", per.ID)
+				}
+				return
+			}
 			p.escalateToHuman(ctx, nil, &configCred{UserID: userID}, sessionID, trigger, reason, "")
 		}
 	}
@@ -1764,7 +1881,9 @@ func (p *Pipeline) enqueueVoiceReply(ctx context.Context, ev *InboundEvent, cfg 
 	_, _ = p.DB.Exec(ctx, "UPDATE sessions SET model_message_count = model_message_count + 1 WHERE session_id = $1", sessionID)
 	p.publishMessage(ctx, cfg.UserID, sessionID, msgID, "model")
 	payload := map[string]any{"kind": "media", "media_url": audioURL, "media_type": "audio"}
-	_ = p.enqueueDelivery(ctx, ev, cfg, sessionID, msgID, text, payload)
+	// The payload is already a media message, so the renderer would skip it anyway
+	// (maybeRenderReply only touches plain text); true keeps that decision here.
+	_ = p.enqueueDelivery(ctx, ev, cfg, sessionID, msgID, text, payload, true)
 }
 
 // stripMarkdown — rough markdown → plain text for TTS.
@@ -1828,7 +1947,12 @@ func sourcesJSON(groundCtx rag.GroundingContext) any {
 // transports get the Markdown flattened here; a channel that renders formatting
 // (Telegram: MarkupHTML) keeps the source and converts per chunk at send time.
 // The chat_messages row always keeps the original for the agent console.
-func (p *Pipeline) enqueueDelivery(ctx context.Context, ev *InboundEvent, cfg *configCred, sessionID string, chatMessageID int64, content string, payload map[string]any) error {
+//
+// allowImage is the persona's `image` capability for this turn: false skips the
+// text-to-image render and delivers the same answer as text. Callers with no
+// persona in scope pass true, which is the behaviour every delivery had before
+// the capability existed.
+func (p *Pipeline) enqueueDelivery(ctx context.Context, ev *InboundEvent, cfg *configCred, sessionID string, chatMessageID int64, content string, payload map[string]any, allowImage bool) error {
 	now := time.Now()
 	// Only plain-text transports lose their formatting here. Telegram keeps the
 	// Markdown source and converts it per chunk at send time (MarkupHTML), so a
@@ -1841,7 +1965,7 @@ func (p *Pipeline) enqueueDelivery(ctx context.Context, ev *InboundEvent, cfg *c
 	// messages rather than characters (WeChat customer service), it costs one
 	// message instead of five. Any failure leaves the text untouched — an image
 	// is an optimisation, never a reason to drop an answer.
-	content, payload = p.maybeRenderReply(ctx, cfg, content, payload)
+	content, payload = p.renderableDelivery(ctx, cfg, content, payload, allowImage)
 	var payloadJSON []byte
 	if payload != nil {
 		payloadJSON, _ = json.Marshal(payload)
@@ -1859,6 +1983,17 @@ func (p *Pipeline) enqueueDelivery(ctx context.Context, ev *InboundEvent, cfg *c
 		p.SignalOutbound()
 	}
 	return nil
+}
+
+// renderableDelivery applies the persona's `image` capability to one delivery: it
+// is the door in front of maybeRenderReply, and a closed door means the same
+// answer goes out as text. Split out so the decision is testable without a
+// delivery row (the renderer and uploader are injected).
+func (p *Pipeline) renderableDelivery(ctx context.Context, cfg *configCred, content string, payload map[string]any, allowImage bool) (string, map[string]any) {
+	if !allowImage {
+		return content, payload
+	}
+	return p.maybeRenderReply(ctx, cfg, content, payload)
 }
 
 // outboundDelivery is a claimed delivery row.
